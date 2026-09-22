@@ -4,10 +4,12 @@ Not part of the no-radio tests; run it when a BB60D is plugged in:
 
     python tools/tests/hw_bb60_check.py [--keep]     (about two minutes)
 
-1. **Sweep stitching.** Sweeps the FM band in two steps, and compares it
-   bin by bin with two single-step sweeps - each one LO, never retuned, so
-   nothing stale can reach them. A stitched bin standing well above its
-   reference would be a ghost of the other step.
+1. **Stations.** Sweeps the FM band with the BB60D's own sweep, as the
+   window does, and lists the strongest stations. (Until 2026-09-22 this
+   stage stitched an LO-hopping sweep against single-LO references. The
+   window hasn't hopped the BB60D's LO since it learnt to sweep in the
+   device, and the comparison failed on weak stations fading between the
+   sweeps. The HackRF check keeps the ghost test, where hopping is used.)
 2. **Reception.** Tunes the strongest stations the sweep found, in turn,
    until one carries RDS - not all do: here 102.1, the strongest, sends a
    pilot and stereo but nothing at 57 kHz, and the RF bench toolkit's own
@@ -56,56 +58,23 @@ from fm_receiver.bb60_source import KEEP_OPEN  # noqa: E402
 #: Receive at the lowest rate that can be chosen: 2.5 MS/s, or 5 on a Mac,
 #: whose library streams garbage below that (see radios.BB60).
 RX_RATE = min(BB60.usable_receive_rates())
-from fm_receiver.sweep import SweepPlan, find_stations, to_db  # noqa: E402
+from fm_receiver.sweep import find_stations, to_db  # noqa: E402
 
 
-def average_sweeps(tb, seconds):
-    s = tb.sweeper
-    time.sleep(0.5)
-    total, count, serial = None, 0, -1
-    end = time.time() + seconds
-    while time.time() < end:
-        _, _, done, ser = s.snapshot()
-        if done is not None and ser != serial:
-            serial = ser
-            lin = 10 ** (done / 10)
-            total = lin if total is None else total + lin
-            count += 1
-        time.sleep(0.01)
-    return total / max(count, 1), count
-
-
-def sweep_check(tb, radio, rate=20e6):
-    plan = SweepPlan(87.5e6, 108e6, rate, 4096, radio.usable_fraction(rate),
-                     radio.dc_notch_hz)
-    assert plan.steps == 2, plan.describe()
-    tb.start_sweep(plan, frames=16, settle_ms=radio.settle_ms)
-    stitched, n = average_sweeps(tb, 4.0)
-    print(f"stitched: {plan.describe()}, {n} sweeps averaged, "
-          f"{tb.sweeper.sweep_seconds * 1e3:.0f} ms per sweep")
-    reference = np.zeros_like(stitched)
-    u = plan.usable_bins
-    for k in range(plan.steps):
-        lo = plan.start_hz + k * u * plan.rbw
-        one = SweepPlan(lo, lo + u * plan.rbw, rate, 4096, radio.usable_fraction(rate),
-                        radio.dc_notch_hz)
-        assert one.steps == 1
-        tb.start_sweep(one, frames=16, settle_ms=radio.settle_ms)
-        part, m = average_sweeps(tb, 2.0)
-        j1 = min((k + 1) * u, len(reference))
-        reference[k * u:j1] = part[:j1 - k * u]
-        print(f"reference step {k}: LO {one.center(0) / 1e6:.2f} MHz, {m} captures")
-    s_db, r_db = to_db(stitched), to_db(reference)
-    floor = np.median(r_db)
-    quiet = r_db < floor + 6                       # bins with nothing in them
-    excess = s_db[quiet] - r_db[quiet]
-    ghosts = int(np.sum(excess > 15))
-    diff = np.abs(s_db - r_db)
-    print(f"stitched vs reference: median |diff| {np.median(diff):.2f} dB, "
-          f"quiet bins {int(quiet.sum())}, ghosts (>15 dB over a quiet bin) {ghosts}")
-    assert np.median(diff) < 2.0
-    assert ghosts == 0
-    return plan.freqs(), s_db
+def stations_check(tb):
+    """The strongest FM stations, from the BB60D's own sweep at 10 kHz RBW."""
+    tb.start_sweep(NativeSweepPlan(87.5e6, 108e6, 10e3))
+    freqs, db, serial = _next_sweep(tb, 0)
+    total, n = 10 ** (db / 10), 1
+    for _ in range(9):                               # ten sweeps averaged
+        freqs, db, serial = _next_sweep(tb, serial)
+        total, n = total + 10 ** (db / 10), n + 1
+    db = to_db(total / n)
+    found = find_stations(freqs, db, min_snr_db=20)
+    print(f"own sweep of the FM band: {tb.sweeper.plan.describe()}, {n} sweeps averaged; "
+          "strongest:", ", ".join(f"{f / 1e6:.1f} ({snr:.0f} dB)" for f, snr, _ in found[:6]))
+    assert found, 'no FM stations in the sweep'
+    return found
 
 
 def tune_for_rds(tb, radio, station, wait_s=15, rate=RX_RATE):
@@ -333,9 +302,7 @@ def main():
     tb = Engine(want_audio=False)
     tb.use_radio(radio)
     try:
-        freqs, db = sweep_check(tb, radio)
-        found = find_stations(freqs, db, min_snr_db=20)
-        print("strongest:", ", ".join(f"{f / 1e6:.1f} ({s:.0f} dB)" for f, s, _ in found[:6]))
+        found = stations_check(tb)
         pi, iq_path = receive_check(tb, radio, [f for f, _, _ in found[:5]], folder)
         station = tb.station_hz
         center_check(tb, pi)

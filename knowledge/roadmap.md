@@ -17,8 +17,8 @@ Each phase can be used on its own:
 
 **Status:** all three phases shipped on 2026-09-21. All tests pass
 (`run_all.py --hw`: 5/5), including the new `test_tuning.py` and a
-Center-move step in the BB60D check. One choice is still open: the
-waterfall palettes (item 1).
+Center-move step in the BB60D check. The waterfall palettes (item 1) stay
+on A, decided 2026-09-22.
 
 Phase 3 depends on phase 2 for two reasons. The radio card's Center field
 uses phase 2's widget. And phase 3 changes the tuning model: the center
@@ -52,7 +52,7 @@ only makes sense under that model.
   | Reading Room | Ink on paper (ultramarine to ink) | Teal ink | Sepia and rust |
   | Walnut | Dial glow (tan to cream) | Valve (red-brown, orange, amber) | Amber |
 
-  To switch, name the letter. B and C are these stops, one line each in
+  **Kept on A** (2026-09-22). To switch later, name the letter. B and C are these stops, one line each in
   `WATERFALL`:
 
   ```python
@@ -324,8 +324,8 @@ done.
 All shipped the same day. `run_all.py`: 4/4. The BB60D check passed off air
 with two new stages (its own sweep, and letting go of the device). On later
 runs its older stitching stage flagged 2-15 bins that came and went, at
-either settle time; stages 2-6 passed on the final code. See
-capabilities.md, *Known limitations*.
+either settle time; stages 2-6 passed on the final code. Fixed
+2026-09-22: see *Loose ends* below.
 
 - [x] **1. Knobs light orange under the pointer.**
   - The arc, rim and pointer turn the on-air orange. Slate and Walnut add
@@ -446,8 +446,8 @@ Found on the way: a station that scrolls words through its PS has no one
 name. Its decoder's most common PS changes with each fragment, and the
 first build kept "n" for 90.1. Now a name must hold for 8 s to be kept.
 
-Still to do: listen to playback on a sound card, and try Show in folder on
-both systems.
+Playback was listened to on a sound card (2026-09-22). Still to do: try
+Show in folder on both systems.
 
 ## Linux and Mac (requested 2026-09-22)
 
@@ -487,10 +487,28 @@ same checkout.
   the Mac library, with the steps that show them: open then close; and
   IQ at 2.5, 1.25 and 0.625 MS/s against 5 and up. When a fixed library
   comes out, drop `KEEP_OPEN` and the 5 MS/s floor for it.
-- [ ] **Run it on the Mac**: `run_all.py`, `--hackrf` and `--hw` all
+- [x] **Run it on the Mac**: `run_all.py`, `--hackrf` and `--hw` all
   passed on the Mac mini (2026-09-22), after the HackRF's clipping check
   learned to raise the gain until it clips and the BB60D's to pick a
   station with clean RDS. Left: listening to it there. Watch for the sound device,
   the fonts' metrics on a Retina screen (the left column is measured, so
   it should fit), and whether the BB60D opens without root. Signal Hound's
   README says it may need root, but their text is copied from Linux.
+  **Done 2026-09-22:** it ran on the Mac mini, and the BB60D opened
+  without root.
+
+## Loose ends (2026-09-22)
+
+- [x] **Waterfall palettes stay on A**, and the Mac run (no root needed) and
+  listening to the Recordings tab's playback are recorded above.
+- [x] **The flaky stitching test.** It compared a sweep with references
+  taken seconds apart, so a weak station fading between them counted as a
+  ghost (at 93.6, 102.5 and 107.5 MHz, none with a signal a step away to be
+  a copy of).
+  - The BB60D check no longer stitches: the window has swept the BB60D in
+    the device since Round 4, so the stage tested a path it doesn't use.
+    Stage 1 now lists the stations from ten of its own FM-band sweeps.
+  - The HackRF check, where hopping is real, counts a ghost only where the
+    other step's reference has a signal at the same place in its step, and
+    prints the rest apart. Its references now cover each step whole, past
+    108 MHz.

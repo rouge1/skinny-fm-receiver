@@ -9,8 +9,13 @@ nothing else has it open:
 2. **Sweep settle time.** The HackRF's queue of samples in USB transfers is
    invisible to the sweep's backlog count, so its settle time has to cover
    it; 40 ms was an estimate. Sweeps the FM band in two steps at several
-   settle times against single-LO references (as the BB60D check does),
-   and reports the ghosts at each. The default must show none.
+   settle times against single-LO references, and reports the ghosts at
+   each. The default must show none. A ghost is a stale frame from the
+   other step, so it lands exactly one step away from a signal: a bin
+   counts only if it stands 15 dB over a quiet reference *and* the other
+   step's reference has a signal at the same place in its step. A weak
+   station fading between the sweeps, which the bare 15 dB rule counted,
+   has no such source and is reported apart.
 3. **Reception and gain.** Tunes the strongest stations until one carries
    RDS, then tries several gains on it: RDS blocks good, SNR, pilot.
 4. **The DC spike**: its height at the LO, against the tuner's 100 kHz
@@ -39,10 +44,48 @@ sys.path.insert(0, os.path.dirname(HERE))
 from fm_receiver.engine import Engine  # noqa: E402
 from fm_receiver.radios import HackRF, detect_radios  # noqa: E402
 from fm_receiver.sweep import SweepPlan, find_stations, to_db  # noqa: E402
-from tests.hw_bb60_check import (average_sweeps, center_check,  # noqa: E402
-                                 playback_check, receive_check)
+from tests.hw_bb60_check import (center_check, playback_check,  # noqa: E402
+                                 receive_check)
 
 RATE_RX = 2e6
+
+
+def average_sweeps(tb, seconds):
+    s = tb.sweeper
+    time.sleep(0.5)
+    total, count, serial = None, 0, -1
+    end = time.time() + seconds
+    while time.time() < end:
+        _, _, done, ser = s.snapshot()
+        if done is not None and ser != serial:
+            serial = ser
+            lin = 10 ** (done / 10)
+            total = lin if total is None else total + lin
+            count += 1
+        time.sleep(0.01)
+    return total / max(count, 1), count
+
+
+def count_ghosts(s_db, ref_db, u):
+    """Ghosts in a stitched sweep ``s_db`` against ``ref_db``, each step's
+    single-LO reference in full (``u`` bins a step, the last one past the
+    plan's stop). Returns (ghosts, unexplained): both stand 15 dB over a
+    quiet reference bin; a ghost also has a signal 15 dB over the floor at
+    the same place in another step's reference, and the rest don't."""
+    steps = len(ref_db) // u
+    floor = np.median(ref_db[:len(s_db)])
+    ref = ref_db.reshape(steps, u)
+    ghosts = unexplained = 0
+    for i in range(len(s_db)):
+        k, j = divmod(i, u)
+        if ref[k, j] >= floor + 6 or s_db[i] - ref[k, j] <= 15:
+            continue
+        others = np.delete(ref[:, j], k)
+        if np.any(others > floor + 15):
+            ghosts += 1
+        else:
+            unexplained += 1
+    return ghosts, unexplained
 
 
 def settle_check(tb, radio, settles=(0.0, 5.0, 10.0, 20.0, 40.0)):
@@ -52,33 +95,32 @@ def settle_check(tb, radio, settles=(0.0, 5.0, 10.0, 20.0, 40.0)):
     u_frac = radio.usable_fraction(rate)
     plan = SweepPlan(87.5e6, 108e6, rate, 4096, u_frac, radio.dc_notch_hz)
     assert plan.steps == 2, plan.describe()
-    reference = None
     u = plan.usable_bins
+    # Each step's reference whole, the last one past 108 MHz too: a stale
+    # frame from it carries whatever is there.
+    reference = np.full(plan.steps * u, np.nan)
     for k in range(plan.steps):
         lo = plan.start_hz + k * u * plan.rbw
         one = SweepPlan(lo, lo + u * plan.rbw, rate, 4096, u_frac, radio.dc_notch_hz)
+        assert one.steps == 1 and one.usable_bins == u, one.describe()
         tb.start_sweep(one, frames=16, settle_ms=radio.settle_ms)
         part, m = average_sweeps(tb, 2.0)
-        if reference is None:
-            reference = np.zeros(plan.total_bins)
-        j1 = min((k + 1) * u, len(reference))
-        reference[k * u:j1] = part[:j1 - k * u]
+        reference[k * u:(k + 1) * u] = part[:u]
     r_db = to_db(reference)
-    floor = np.median(r_db)
-    quiet = r_db < floor + 6
+    quiet = r_db[:plan.total_bins] < np.median(r_db[:plan.total_bins]) + 6
     results = {}
     s_db = None
     for settle in settles:
         tb.start_sweep(plan, frames=16, settle_ms=settle)
         stitched, n = average_sweeps(tb, 3.0)
         s_db = to_db(stitched)
-        excess = s_db[quiet] - r_db[quiet]
-        ghosts = int(np.sum(excess > 15))
-        diff = float(np.median(np.abs(s_db - r_db)))
+        ghosts, unexplained = count_ghosts(s_db, r_db, u)
+        diff = float(np.median(np.abs(s_db - r_db[:plan.total_bins])))
         ms = tb.sweeper.sweep_seconds * 1e3 if tb.sweeper.sweep_seconds else float('nan')
         results[settle] = ghosts
         print(f"settle {settle:4.0f} ms: {n:3d} sweeps, {ms:4.0f} ms per sweep, "
-              f"median |diff| {diff:.2f} dB, ghosts {ghosts} of {int(quiet.sum())} quiet bins")
+              f"median |diff| {diff:.2f} dB, ghosts {ghosts} of {int(quiet.sum())} quiet bins"
+              f" (+{unexplained} over a quiet bin with no source a step away)")
     return plan.freqs(), s_db, results
 
 
