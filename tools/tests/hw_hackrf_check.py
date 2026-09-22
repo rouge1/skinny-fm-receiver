@@ -24,9 +24,10 @@ nothing else has it open:
 6. **Mode switch time**, Sweep to Receive.
 7. **Let go**: once the engine is closed, ``hackrf_info`` - another
    program - must be able to open the HackRF while this one still runs.
-8. **The window**: opens the HackRF, sweeps, switches to Receive, warns
-   of clipping at too much gain and not at the default, and after **Stop**
-   leaves the HackRF free for another program.
+8. **The window**: opens the HackRF, sweeps, switches to Receive, shows
+   the clipped share at all times, warns of clipping at too much gain and
+   not at the default - in Receive, and in a sweep naming the step - and
+   after **Stop** leaves the HackRF free for another program.
 """
 
 import os
@@ -199,7 +200,14 @@ def window_check():
         pump(0.2)
         w.start_initial()
         assert w._mode == 'sweep' and w.engine.running, w.status.text()
-        pump(3)
+        # The FM band: the full range takes tens of seconds a sweep, and at
+        # the default gain clipped 2.5% in a UHF TV step (533.5 MHz) here.
+        w.preset_combo.setCurrentIndex(1)
+        w._preset_chosen(1)
+        pump(5, lambda: 'clipped' in w.status.text())
+        swept = w.status.text()
+        print(f"window: sweeping at {HackRF.default_gain}% gain the status reads {swept!r}")
+        assert 'clipped' in swept and 'overloaded' not in swept, swept
         w.tabs.setCurrentIndex(1)
         assert w._mode == 'receive' and w.engine.running, w.status.text()
         assert w.gain_slider.value() == HackRF.default_gain
@@ -210,12 +218,20 @@ def window_check():
         # strongest station at -12 dBFS.
         for loud_gain in (60, 75, 90):
             w.gain_slider.setValue(loud_gain)
-            if pump(3, lambda: 'clipped' in w.status.text()):
+            if pump(3, lambda: 'overloaded' in w.status.text()):
                 break
         loud = w.status.text()
         print(f"window: at {HackRF.default_gain}% gain the status reads {calm!r}")
         print(f"window: at {loud_gain}% gain it reads {loud!r}")
-        assert 'overloaded' not in calm and 'clipped' in loud
+        assert 'clipped' in calm and 'overloaded' not in calm, calm
+        assert 'overloaded' in loud and 'of samples clipped' in loud, loud
+        # The sweep counts its clipping too, and names the step.
+        w.tabs.setCurrentIndex(0)
+        assert w._mode == 'sweep' and w.engine.running, w.status.text()
+        pump(5, lambda: 'step centred on' in w.status.text())
+        loud_sweep = w.status.text()
+        print(f"window: sweeping at {loud_gain}% gain it reads {loud_sweep!r}")
+        assert 'overloaded' in loud_sweep and 'step centred on' in loud_sweep, loud_sweep
         w.gain_slider.setValue(HackRF.default_gain)
         w.run_btn.click()                              # Stop
         assert w.radio is None and w.run_btn.text() == 'Start'

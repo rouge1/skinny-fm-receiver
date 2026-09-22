@@ -16,7 +16,8 @@ sys.path.insert(0, os.path.dirname(HERE))
 
 from gnuradio import gr  # noqa: E402
 
-from fm_receiver.sweep import SweepPlan, find_stations, sweep_sink  # noqa: E402
+from fm_receiver.dsp import clip_probe  # noqa: E402
+from fm_receiver.sweep import FULL_SCALE, SweepPlan, find_stations, sweep_sink  # noqa: E402
 
 
 def test_plan_tiles_the_span():
@@ -156,7 +157,39 @@ def test_replan_drops_the_old_sweep():
     assert done is None and len(live) == len(freqs)
 
 
+def test_clipping_is_counted():
+    """The probe's share of samples at full scale, and the sweep's, which
+    counts only the frames each step measures and names the worst step."""
+    x = np.full(1000, 0.1 + 0.1j, dtype=np.complex64)
+    x[:30] = FULL_SCALE + 0j                     # I at full scale
+    x[30:50] = -1j                               # Q past it
+    x[50:60] = 0.97 + 0.97j                      # close, but under
+    probe = clip_probe()
+    probe.work([x], [])
+    assert probe.take() == (50, 1000)
+    assert probe.take() == (0, 0)
+
+    plan = SweepPlan(87.5e6, 108e6, 10e6, 1024, 0.75)
+    assert plan.steps == 3, plan.describe()
+    lo = [plan.center(0)]
+    sink = sweep_sink(plan, lambda hz: lo.append(hz), frames=4, settle_ms=0)
+    assert sink.clip_report() is None            # no sweep yet
+    loud = plan.center(1)                        # only the middle step clips
+    rng = np.random.default_rng(1)
+    while sink.sweeps < 2:
+        chunk = (0.01 * (rng.standard_normal(4096) + 1j * rng.standard_normal(4096))
+                 ).astype(np.complex64)
+        if lo[-1] == loud:
+            chunk[::20] = 1.0                        # 5% of it
+        sink.work([chunk], [])
+    worst, where = sink.clip_report()
+    assert where == loud and abs(worst - 0.05) < 0.005, (worst, where)
+    sink.set_plan(plan)
+    assert sink.clip_report() is None            # a new plan starts again
+
+
 if __name__ == '__main__':
+    test_clipping_is_counted()
     test_plan_tiles_the_span()
     test_place_and_notch()
     test_find_stations()

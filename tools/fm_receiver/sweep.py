@@ -101,6 +101,17 @@ class SweepPlan:
                 f"{self.step_hz / 1e6:.2f} MHz, RBW {self.rbw / 1e3:.2f} kHz")
 
 
+#: Full scale for the clipping count: an 8-bit sample of 125 of 127 or
+#: more, the threshold ble-scanner uses, so the two apps agree.
+FULL_SCALE = 125 / 127
+
+
+def full_scale_count(x):
+    """Samples of ``x`` with I or Q at full scale (:data:`FULL_SCALE`)."""
+    return int(np.count_nonzero((np.abs(x.real) >= FULL_SCALE)
+                                | (np.abs(x.imag) >= FULL_SCALE)))
+
+
 def power_spectrum(frames, window):
     """Mean power over frames, fftshifted, in full-scale units."""
     spec = np.fft.fft(frames * window, axis=1)
@@ -206,10 +217,22 @@ class sweep_sink(gr.sync_block):
         # plan's, and paired with its frequencies they mislabelled the
         # station list (and could not be masked, being another length).
         self._completed = None
+        self._clip_steps = np.zeros(plan.steps)
+        self._clip_last = None
         self._step = 0
         self._skip = self._settle_samples() + self.GUARD
         self._retune_pending = False
         self._t_sweep = time.monotonic()
+
+    def clip_report(self):
+        """The last complete sweep's worst step for clipping: (share of its
+        samples at full scale, the step's centre in Hz), or None before a
+        sweep is complete. Only the frames each step measures are counted,
+        not the settle or the stale backlog. One step is what matters: a
+        full-range sweep takes tens of seconds, and one TV transmitter
+        clipping its step is lost in an average over all of them."""
+        with self._lock:
+            return self._clip_last
 
     def set_settle_ms(self, ms):
         with self._lock:
@@ -290,12 +313,15 @@ class sweep_sink(gr.sync_block):
                     i += take
                     if self._fill < self.frames * size:
                         continue
+                    self._clip_steps[self._step] = full_scale_count(self._buf) / self._buf.size
                     plan.place(self._panorama, self._step,
                                power_spectrum(self._buf, self._window))
                     self._step += 1
                     if self._step >= plan.steps:
                         self._step = 0
                         self._completed = self._panorama.copy()
+                        worst = int(np.argmax(self._clip_steps))
+                        self._clip_last = (float(self._clip_steps[worst]), plan.center(worst))
                         self._completed_serial += 1
                         self.sweeps += 1
                         now = time.monotonic()

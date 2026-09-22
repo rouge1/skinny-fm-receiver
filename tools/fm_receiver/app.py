@@ -79,6 +79,12 @@ CHANNEL_STEP_HZ = 5e3
 #: 77% of them, and at 54% all, with RDS lost; at 40% a strong station
 #: clipped 0-0.4% with RDS at 99% - harmless, so no warning.
 CLIP_WARN = 1e-2
+#: Under this share the clipped readout stays in the good colour: ble-scanner
+#: saw 0.1-0.6% at its best gain, and 2-8% where packets were lost.
+CLIP_NOTE = 3e-3
+#: The clipped readout is smoothed over about this long, as ble-scanner's is
+#: (0.95 old + 0.05 new per 16 ms).
+CLIP_TAU_S = 0.3
 RADIO_ORDER = ('hackrf', 'usrp', 'bb60', 'file')
 #: The tabs, in order.
 TAB_MODES = ('sweep', 'receive', 'recordings')
@@ -179,6 +185,12 @@ def _freq_text(hz):
     return f"{hz:.0f} Hz"
 
 
+def _share_text(share):
+    """A clipped share as a percentage: two decimals below 10%."""
+    pct = share * 100
+    return f"{pct:.2f}%" if pct < 10 else f"{pct:.1f}%"
+
+
 class MainWindow(Qt.QWidget):
 
     def __init__(self, args, config):
@@ -210,6 +222,9 @@ class MainWindow(Qt.QWidget):
         self._last_overload = 0
         self._overload_until = 0.0
         self._clipped = 0.0
+        self._clipped_at = None
+        self._clip_smooth = None
+        self._clip_t = time.monotonic()
         self._names = {}
         self._rx_sig = None
         self._starting = False
@@ -2274,6 +2289,20 @@ class MainWindow(Qt.QWidget):
             seen.add(text)
             print(f"FM receiver ({where}):\n{text}", file=sys.stderr)
 
+    def _clip_counts(self):
+        """On a radio with no overload flag: ('receive', full scale,
+        samples) since the last call, ('sweep', worst step's share, its
+        centre in Hz) for the last complete sweep, or None."""
+        if self.radio is None or not self.radio.clip_warn:
+            return None
+        if self._mode == 'receive' and self.engine.rx is not None:
+            return ('receive',) + self.engine.rx.clip.take()
+        report = getattr(self.engine.sweeper, 'clip_report', None)
+        if self._mode == 'sweep' and report is not None:
+            got = report()
+            return None if got is None else ('sweep',) + got
+        return None
+
     def _check_health(self):
         health = self.radio.health() if self.radio else {}
         overload = health.get('overload', 0)
@@ -2281,17 +2310,46 @@ class MainWindow(Qt.QWidget):
             self._overload_until = time.monotonic() + 3.0
             self._clipped = 0.0
         self._last_overload = overload
-        if self.radio is not None and self.radio.clip_warn \
-                and self._mode == 'receive' and self.engine.rx is not None:
-            clipped = self.engine.rx.clip.take()
+        counts = self._clip_counts()
+        now = time.monotonic()
+        note = None                                  # (share, where)
+        if counts is None:
+            self._clip_smooth = None
+        elif counts[0] == 'sweep':
+            # Steady for a whole sweep: its worst step, not smoothed.
+            _, share, where = counts
+            self._clip_smooth = None
+            note = (share, where)
+            if share > CLIP_WARN:
+                self._overload_until = now + 3.0
+                self._clipped, self._clipped_at = share, where
+        elif counts[2]:
+            _, hit, n = counts
+            clipped = hit / n
             if clipped > CLIP_WARN:
-                self._overload_until = time.monotonic() + 3.0
-                self._clipped = clipped
+                self._overload_until = now + 3.0
+                self._clipped, self._clipped_at = clipped, None
+            k = 1.0 - math.exp(-(now - self._clip_t) / CLIP_TAU_S)
+            self._clip_smooth = clipped if self._clip_smooth is None \
+                else self._clip_smooth + k * (clipped - self._clip_smooth)
+        if self._clip_smooth is not None:
+            note = (self._clip_smooth, None)
+        self._clip_t = now
         text, token = self._running_text(), 'good'
-        if time.monotonic() < self._overload_until:
+        if note is not None:
+            share, where = note
+            text += f" - clipped {_share_text(share)}"
+            if where is not None and share > 0:
+                text += f" at worst, in the step centred on {_freq_text(where)}"
+            if share >= CLIP_NOTE:
+                token = 'warn'
+        if now < self._overload_until:
             text, token = "Input overloaded - turn the RF gain down", 'bad'
             if self._clipped:
-                text += f" ({self._clipped * 100:.1f}% of samples clipped)"
+                text += f" ({_share_text(self._clipped)} of samples clipped"
+                if self._clipped_at is not None:
+                    text += f" in the step centred on {_freq_text(self._clipped_at)}"
+                text += ")"
         elif health.get('dropped'):
             text += f" - {health['dropped']} buffers dropped"
             token = 'warn'

@@ -530,7 +530,7 @@ there is.
 
 ### Phase 1: the HackRF's clipping, always and in sweeps
 
-- [ ] **1. Show the clipped share at all times.** For a radio with
+- [x] **1. Show the clipped share at all times.** For a radio with
   `clip_warn` (the HackRF), the status line reads
   "HackRF One - Receiving at 2 MS/s - clipped 0.13%" in Receive and Sweep.
   - Full scale moves from `|I| or |Q| ≥ 0.98` to ble-scanner's 125/127
@@ -545,7 +545,7 @@ there is.
     best gain.
   - Code: `dsp.clip_probe` (the threshold, and returning `(hit, n)`), and
     `app._check_health` (the smoothing and the text).
-- [ ] **2. Count clipping in the LO-hopping sweep.** `sweep.sweep_sink`
+- [x] **2. Count clipping in the LO-hopping sweep.** `sweep.sweep_sink`
   counts full-scale samples in each step's frames, just before
   `power_spectrum`: only the samples that were measured, not the settle
   or the stale backlog. It exposes them through `take_clipped()` in the
@@ -565,6 +565,15 @@ there is.
 - Optional while the HackRF is here: the **LNA/VGA split** measurement
   (see *HackRF off air*), about 5 more minutes.
 
+**Shipped 2026-09-22**, with one change from the plan: a sweep reports the
+worst step of its last complete sweep, held for a sweep, rather than a
+share smoothed over time. The first off-air run showed why. The window's
+default sweep is the full range, which takes tens of seconds, and at the
+default 40% a UHF TV step (533.5 MHz) clipped 2.5%; an average over every
+step hides that, and a per-tick count made the warning come and go. Off
+air: 0.00% at 40% on the FM band, sweeping and receiving; at 60%, 50% in
+Receive and 95.6% in the step centred on 95 MHz.
+
 ### Phase 2: the BB60D's health
 
 - [ ] **4. Temperature, USB voltage and current** from
@@ -580,7 +589,7 @@ there is.
     sweep, or drop the item.
   - Read every 5 s from `_check_health`, in a `try`, and added to
     `BB60.health()` as `temp_c`, `usb_v` and `usb_a`.
-  - Shown as the status line's tooltip ("BB60D: 41.2 °C, USB 4.95 V,
+  - Shown (decided 2026-09-22) as the status line's tooltip ("BB60D: 41.2 °C, USB 4.95 V,
     0.52 A"), and in the status line itself only when something is wrong:
     below 4.4 V, "USB voltage low (4.31 V) - measurements may be off" in
     `warn`. A temperature limit only if Signal Hound's manual gives one.
@@ -594,14 +603,14 @@ there is.
   gain and attenuation on auto (`BB_AUTO_GAIN`, `BB_AUTO_ATTEN`, both
   -1), and the reference level about 5 dB above the strongest signal
   expected; the API then picks the gain and attenuation.
-  - **An Auto box beside the RF gain slider**, for the BB60D only. When
-    on, the slider greys out and the label reads "Auto".
-  - **The reference level: the strongest signal in the last sweep,
-    plus 5 dB**, rounded to 5 dB and changed only when it moves by 5 dB or
-    more, so the device isn't reconfigured every sweep. Starts at -20 dBm
-    (today's fixed value). The alternative is the view's Ref level knob,
-    as real time already does, but then turning a display knob changes
-    the hardware.
+  - **Decided 2026-09-22: an AGC box beside the RF gain slider** (the one
+    slider under the tabs, shared by Sweep and Receive), for the BB60D
+    only. When on, the slider greys out, the label reads "AGC", and the
+    view's **Ref level knob is the reference level**: the app sets it to
+    the strongest signal in the last sweep plus 5 dB, rounded to 5 dB and
+    moved only when that changes by 5 dB or more, and **the knob visibly
+    moves** when it does. A hand turn of the knob sets the reference level
+    until the peak next moves by 5 dB.
   - **The device's own sweep** is certain: `bb60_sweeper._configure_now`
     already calls `bbConfigureRefLevel` and `bbConfigureGainAtten`.
   - **Receive is a probe**, because the IQ stream goes through the
@@ -609,7 +618,7 @@ there is.
     (`hasGainMode`), or a setting for the reference level
     (`getSettingInfo`)? If so, Auto works in Receive with the channel's
     peak plus 5 dB. If not, in Receive the Auto box keeps its tick but the
-    slider sets the gain, with a tooltip saying why.
+    slider sets the gain, with a tooltip saying why (decided 2026-09-22).
   - Saved per radio in the config (`gain_auto`), like the gain.
 - Tests: `test_sweep.py` for the reference-level rule (hysteresis,
   rounding, limits). The BB60D check runs its own sweep with Auto on, and

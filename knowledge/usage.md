@@ -147,7 +147,10 @@ Useful options (`./fm-receiver --help` lists them all):
     again. (Not a BB60D on a Mac: that stays held until the app quits - see
     *Setting up*.)
   - The **status line** shows what is running, or what went wrong, for
-    example "Input overloaded - turn the RF gain down".
+    example "Input overloaded - turn the RF gain down". On a HackRF it
+    always ends with the share of samples clipped ("clipped 0.13%"):
+    green under 0.3%, amber to 1%, and over that the overload warning. In
+    a sweep it is the worst step of the last sweep, and names that step.
   - The **Themes** disc, top right, is the theme in force: a click moves to
     the next (Slate, Reading Room, Walnut). Hover over the disc or the word
     Themes to see its name, even while another window has the focus.
@@ -554,7 +557,7 @@ To start fresh, delete the file. To use a different settings file, set
 | Ghost copies of signals in a sweep | Increase **Settle** (not on a BB60D, which sweeps itself). |
 | Part of the left column is hidden under the spectrum | Drag the divider right. The column resizes itself on a theme change, so this should not happen any more. |
 | No RDS on a strong station | It may not send RDS; check the MPX view for a hump at 57 kHz. On a weak station, try a narrower channel filter. |
-| *Input overloaded* | Turn the RF gain down. On a HackRF it also gives the share of samples clipped; turn down until the message goes. |
+| *Input overloaded* | Turn the RF gain down. On a HackRF it also gives the share of samples clipped; turn down until the message goes. In a sweep it names the step that clipped: over the whole range a strong TV transmitter can clip one step at a gain that suits FM, and then the FM band preset is the one to use. |
 | Another program can't open the radio | Press **Stop** (or close the app): Stop lets go of the device. On a Mac, a BB60D is let go only when the app quits. |
 | The tuner won't go any further | It is at the edge of the band around the Center: move the **Center**, or press **Center on tuner** and carry on. |
 | No sound | The **Audio** panel says if the sound card could not be opened. Check the **Mute** button. |

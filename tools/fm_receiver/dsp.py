@@ -67,6 +67,7 @@ from gnuradio.filter import firdes  # type: ignore
 from scipy import signal as sps  # type: ignore
 
 from .rds_core import RdsDemod, RdsProtocol
+from .sweep import full_scale_count
 
 MPX_RATE = 250e3
 #: The channel's rate: twice the MPX, so the filter can open to 400 kHz.
@@ -276,13 +277,11 @@ class vector_probe(gr.sync_block):
 
 
 class clip_probe(gr.sync_block):
-    """How much of the radio's IQ sits at full scale: the share of samples
-    with I or Q within 2% of +-1 since it was last asked. A HackRF's 8-bit
-    samples clip there, and it has no overload flag of its own, so this is
-    how the window knows the gain is too high. It is fed a few thousand
-    samples at a time, so it costs little at any rate."""
-
-    FULL = 0.98
+    """How much of the radio's IQ sits at full scale (``sweep.FULL_SCALE``,
+    I or Q) since it was last asked. A HackRF's 8-bit samples clip there,
+    and it has no overload flag of its own, so this is how the window knows
+    the gain is too high. It is fed a few thousand samples at a time, so it
+    costs little at any rate."""
 
     def __init__(self):
         gr.sync_block.__init__(self, name='clip_probe',
@@ -294,19 +293,18 @@ class clip_probe(gr.sync_block):
     def work(self, input_items, output_items):
         x = input_items[0]
         if len(x):
-            hit = int(np.count_nonzero((np.abs(x.real) >= self.FULL)
-                                       | (np.abs(x.imag) >= self.FULL)))
+            hit = full_scale_count(x)
             with self._lock:
                 self._n += len(x)
                 self._hit += hit
         return len(x)
 
     def take(self):
-        """The clipped share since the last call, 0-1."""
+        """(samples at full scale, samples seen) since the last call."""
         with self._lock:
-            n, hit = self._n, self._hit
+            out = self._hit, self._n
             self._n = self._hit = 0
-        return hit / n if n else 0.0
+        return out
 
 
 class stereo_phase_probe(gr.sync_block):

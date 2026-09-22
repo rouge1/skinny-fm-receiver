@@ -265,6 +265,50 @@ def knobs_and_fades(w):
     print("knobs, step, channel arrows and the marker fade: ok")
 
 
+def clipped_readout(w):
+    """The clipped share on the status line: smoothed, in the good colour
+    under 0.3%, amber to 1%, the overload warning over it - naming the
+    sweep's step when a sweep clipped."""
+    radio, counts = w.radio, w._clip_counts
+    theme = fmapp.theme.TOKENS
+
+    def show(*counts, ticks=12):
+        w._clip_counts = lambda: counts
+        for _ in range(ticks):
+            w._clip_t -= 0.4                     # a status tick apart
+            w._check_health()
+        return w.status.text()
+
+    try:
+        radio.clip_warn = True
+        w._overload_until = 0.0
+        w._clip_smooth = None
+        text = show('receive', 0, 1000)
+        assert 'clipped 0.00%' in text and theme['good'] in text, text
+        text = show('receive', 5, 1000)
+        assert 'clipped 0.50%' in text and theme['warn'] in text, text
+        # One tick of 5% after that: over the warning at once, and the
+        # smoothed share moves only part of the way.
+        text = show('receive', 50, 1000, ticks=1)
+        assert 'overloaded' in text and '5.00% of samples clipped)' in text, text
+        assert theme['bad'] in text, text
+        assert 0.005 < w._clip_smooth < 0.05, w._clip_smooth
+        # A sweep: its worst step, named.
+        w._overload_until = 0.0
+        text = show('sweep', 0.005, 533.5e6)
+        assert 'clipped 0.50% at worst, in the step centred on 533.5 MHz' in text, text
+        assert theme['warn'] in text, text
+        text = show('sweep', 0.025, 533.5e6)
+        assert 'overloaded' in text and theme['bad'] in text, text
+        assert '2.50% of samples clipped in the step centred on 533.5 MHz' in text, text
+    finally:
+        radio.clip_warn = False
+        w._clip_counts = counts
+        w._overload_until = 0.0
+        w._clip_smooth = None
+    print("clipped readout: good, amber, overloaded; a sweep names its worst step")
+
+
 def part1_file_receiver():
     path = signals.write_station(os.path.join(FOLDER, 'synth'), seconds=12.0)
     w = make_window(['--file', path])
@@ -335,6 +379,7 @@ def part1_file_receiver():
 
     spectrum_mouse(w)
     knobs_and_fades(w)
+    clipped_readout(w)
 
     # Record all three, retune part way, stop.
     w.rec_audio.setChecked(True)
