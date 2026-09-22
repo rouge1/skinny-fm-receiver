@@ -148,18 +148,34 @@ The BB60D's own sweep, for comparison (off air, 2026-09-22):
 | Any combination at once, one Record button (Ctrl+R) | 🧪 | |
 | SigMF metadata + toolkit `.json` sidecar | 🧪 | `.cfile` (cf32_le) data plus `.sigmf-meta` and `.json`, so the toolkit's `scripts/test_rds_core.py` reads them. |
 | Retune while recording IQ starts a new file (`-part2`, …) | 🧪 | Each file has one centre frequency and its own metadata. A band recording continues in the same file while only the channel moves. |
-| Recordings folder chooser | ⚠️ | Default: `recordings/` in the project. |
+| Recordings folder chooser | ⚠️ | Default: `recordings/` in the project. **Folder...** in the Record box or the Recordings tab. |
+| One name for one press of Record | 🧪 | Every kind is named from one base (`fm-98.70MHz-20260922-181500-audio.wav`, `...-iq-band.cfile`), `-2` after the time for a second recording in the same second. Before 2026-09-22 each kind took its own time, and could land a second apart. |
+| The station's RDS saved with the recording | 🧪 ✅ | `<name>-recording.json`: the files, start, length, retunes with their times, the station name, PI, call sign and PTY, and each RadioText and Now Playing with its time from the start. A RadioText is logged once it has held 2 s (it arrives a segment at a time); a name once it has held 8 s, since a station scrolling words through its PS names each fragment in turn. Off air, 90.1's PS scrolls ("Elevatio", then "n"...): the first try kept "n", now "Elevatio" is kept with its call sign WJOU. |
+
+## Recordings tab
+
+| Capability | Status | Notes |
+|---|---|---|
+| The folder's recordings, newest first (Ctrl+3) | 🧪 ✅ | One line for each press of Record: station, RDS name and call sign, date, length, kinds and size (`library.scan`). Older recordings whose kinds were named a second apart count as one. The list follows the folder as it changes. Listed the three BB60D recordings made on 2026-09-22 correctly. |
+| The radio closes while in Recordings | 🧪 | Free for other programs; going back to Sweep or Receive opens it again, tuned where it was. The tab is remembered like the others; opened in Recordings, the app opens no radio. |
+| IQ playback: spectrum, waterfall, multiplex, RDS and sound | 🧪 ✅ | Through Receive's chain, on the station it was made of; in a band recording, click any other station. The BB60D's 10 MS/s band recording (454 MB) and 500 kS/s channel recording played back headless with their spectra and RDS (WJOU, 0x6DEC). Nobody has listened yet. |
+| WAV playback: the sound's spectrum and waterfall | 🧪 | Left and right together, 0-24 kHz (`dsp.WavChain`). The sound card sets the pace; its buffers are held to about 20 ms each, so the spectrum stays with the sound (GNU Radio's default would put it a third of a second ahead). The RadioText and Now Playing come from the recording's log. The synthetic station's 1 kHz and 2.5 kHz tones show at their frequencies. |
+| Play, pause, loop, stop at the end | 🧪 | Pausing an IQ recording stops the flowgraph and starts it again as it stood, so RDS and the averages carry on and the file keeps its exact place; a WAV pauses on silence. The place is counted where samples leave the throttle, which runs at the real-time pace. |
+| The overview strip: the whole recording, click or drag to jump | 🧪 ✅ | Time along it, frequency up it, in the theme's waterfall colours. IQ max-pooled over the band; WAV on a log scale, 50 Hz to 16 kHz. It samples the file (four FFTs a column), so the 454 MB band recording took 0.05 s and a WAV 0.2 s, in the background. |
+| Choose which file plays | 🧪 | The whole band, then the channel, then the WAV; parts are listed with the station each was on. |
+| Names learnt on playback | 🧪 ✅ | Playing an older recording's IQ keeps what it decodes on the recorded station (the name once it has held 8 s, the PI and call sign) in a `-recording.json` made for it. Learnt "Elevatio" / WJOU from the 90.1 recording. |
+| Delete, Show in folder | 🧪 Delete, ⚠️ Show | Delete asks first, then removes every file of the recording, descriptions included. Show in folder opens the system's file manager, untested here. |
 
 ## App
 
 | Capability | Status | Notes |
 |---|---|---|
 | One launch script: `./fm-receiver` | ✅ | Activates the `gnu` conda environment (override with `FMRX_CONDA_ENV`). |
-| Settings remembered | 🧪 | `~/.config/fm-receiver/config.json`: radio, mode, frequency, gain and rates per radio, views, audio, recording, window layout. |
+| Settings remembered | 🧪 | `~/.config/fm-receiver/config.json`: radio, tab, frequency, gain and rates per radio, views, audio, recording, playback loop, window layout. |
 | Three themes: Slate, Reading Room, Walnut | 🧪 | From the toolkit's design tokens. Picked with the toolkit's theme disc in the header (its ground, rule and trace colours; a click moves to the next). |
 | Theme name as a tooltip | 🧪 | "Theme: Walnut" over the disc and over the word Themes. Tooltips now show while another window, such as the terminal, has the focus. Before, Qt showed them only in the active window, so this one never appeared then (seen on Xvfb). |
 | The left column fits every theme | 🧪 | It is measured again on each theme change. In Walnut, 46 px of the Receive tab had been cut off under the spectrum. Walnut's digit entries (Center, Tuner, Channel filter, sweep bounds) use Libre Caslon Text, its reading face. Limelight, its nameplate face, is 29% wider than Slate's digits. |
-| Keyboard shortcuts | ⚠️ | Ctrl+1/2 switch mode, Ctrl+Left/Right step, Ctrl+M mute, Ctrl+R record, Ctrl+Up/Down volume. The digit entries' own keys are tested. |
+| Keyboard shortcuts | ⚠️ | Ctrl+1/2/3 switch tab, Ctrl+Left/Right step, Ctrl+M mute, Ctrl+R record, Ctrl+Up/Down volume. The digit entries' own keys are tested. |
 | Fast Sweep ⇄ Receive switching | ✅ | 0.2-0.3 s on the BB60D with LO hopping. The device stays open across the switch; reopening it took 1.6 s. With its own sweep, it takes 19 ms from Receive and 198 ms back, on the one open device. The station came back at the same level (-44.6 dBFS against -44.5) with the same PI. The module sets gain and attenuation afresh each time its stream starts, so nothing from the sweep leaks into the stream. |
 | Clean shutdown on Ctrl+C / SIGTERM | ⚠️ | A Python timer keeps ticking so signals get through Qt's event loop (a toolkit rule). |
 | Runs on Linux and on a Mac (Apple Silicon) | ✅ Linux, 🧪 Mac | One conda environment for both, `environment.yml`: conda's solver gives the same versions for `linux-64` and `osx-arm64`. Where they differ, the code asks `sys.platform`: the BB60D library's name and place, where the SoapySDR module and libraries are found, and real time. On the Mac mini (M4, macOS 26.6, 2026-09-22): the environment made from `environment.yml` has the same versions as Linux; `run_all.py` passed 4/4; `./fm-receiver` found conda (Homebrew's Miniforge) and ran on its screen; the HackRF opened without root and `hw_hackrf_check.py` passed (RDS 302/304, stereo, record and play back, the clipping warning at 75%, the HackRF free after). The sound card played (silence, no underruns); not yet listened to. Two font fixes came from it: "Monospace" is a Linux alias (Qt picked American Typewriter on the Mac), so Menlo there; and the plot titles are in pixels, since 10 pt is 13 px on Linux but 10 on a Mac. |
@@ -173,6 +189,7 @@ The BB60D's own sweep, for comparison (off air, 2026-09-22):
 | `tools/tests/test_tuning.py` | The tuner's clamp (band edge, radio range, DC spike), the digit entry's carries, wheel and typing, and no ghost in the spectrum after the LO moves (with a check that it fails without the fix) | nothing (offscreen) |
 | `tools/tests/test_receive_chain.py` | Synthetic stereo+RDS station through the real engine in both 38 kHz conventions: RDS, 34 dB separation, mute, WAV and IQ recordings with metadata | nothing |
 | `tools/tests/test_gui.py` | The window driven like a user: RDS on screen, mute, volume, dials, channel filter, the wheel and middle-drag on the channel band, the tuner's digits and roller, recording across a retune, the theme disc, Stop/Start, settings saved; sweep with a simulated radio (full range first, then the FM preset, the bounds' digits) → station list → double-click → Receive → the Radio card (Center, edge, DC spike, peak hold); a radio that sweeps itself, as the BB60D does (9 kHz to 6 GHz, RBW row, dBm, FM-only station list, RBW raised, real time with its density map placed by Ref level and Range and refused over 27 MHz, back and forth to Receive); the same where the library has no real time, as on a Mac; the knob glow with real pointer moves; the left column in every theme; tooltips with the window inactive | nothing (offscreen) |
+| `tools/tests/test_recordings.py` | The recordings list from file names (an older recording's kinds a second apart, a WAV header cut short), the overview, the WAV source's seek, loop and end, the RDS log and its steady name; then the Recordings tab driven like a user on a recording the window made: the radio closed, the name listed, the band played with RDS, pause and resume keeping it, a jump on the strip, tuning in the band, stop at the end and loop, the WAV with its tones and logged RadioText, delete, back to Receive, reopened in Recordings | nothing (offscreen) |
 | `tools/tests/hw_bb60_check.py` | Off air: stitching against references, RDS on the strongest station that has it, record and play back, moving the Center, its own sweep (9 kHz to 6 GHz speed, stations, FM band at 10 kHz, real time with its frame rate and the density map's orientation, the gain slider, back to Receive with the same PI, both switches timed), and another program opening it after close. It receives at the lowest rate offered (2.5 MS/s; 5 on a Mac) on the first strong station whose RDS decodes cleanly. On a Mac: no real time, and in place of another program, a new radio in the same process gets the kept device back and decodes again | BB60D + antenna |
 | `tools/tests/hw_hackrf_check.py` | Off air: sweep ghosts at five settle times, RDS at four gains, the DC spike, record/Center/playback, mode switch, another program opening the HackRF after close and after the window's Stop, and the window's clipping warning (the gain raised until it clips: 60% on the Linux bench, 75% on the Mac mini) | HackRF + antenna, not in use elsewhere |
 | `tools/tests/run_all.py [--hw] [--hackrf]` | Runs all of the above | |
@@ -203,6 +220,7 @@ The BB60D's own sweep, for comparison (off air, 2026-09-22):
   has a signal to leave behind. The window no longer hops the BB60D's LO;
   it sweeps in the device.
 - IQ files are read as cf32 only (this app's own and the toolkit's captures).
+- A WAV plays at 48 kHz only (16-bit or float), which is what Record makes.
 - Sweep sample rates are limited by the radio and by Python. The BB60D at
   40 MS/s uses about a core, mostly in the vendor driver.
 - **A full-range sweep's waterfall is coarse when zoomed.** Each row is
@@ -224,5 +242,5 @@ Planned work, split into phases, is in [roadmap.md](roadmap.md).
 - 💡 A memory list of favourite stations with their RDS names.
 - 💡 Scheduled recordings, and splitting long recordings by size.
 - 💡 Decoding HD Radio (IBOC) - its sidebands are visible either side of 99.1.
-- 💡 An audio spectrum view, and an FM deviation / modulation meter.
+- 💡 An audio spectrum view while receiving (a WAV plays with one), and an FM deviation / modulation meter.
 - 💡 A sweep export (CSV of frequency and level) and saved sweep screenshots.

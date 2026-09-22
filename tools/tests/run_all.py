@@ -1,8 +1,8 @@
-"""Run the tests: the four that need no radio, with ``--hw`` the BB60D
+"""Run the tests: the five that need no radio, with ``--hw`` the BB60D
 check as well, and with ``--hackrf`` the HackRF check (other sessions may
 use the HackRF too: make sure it is yours before running it).
 
-    python tools/tests/run_all.py          # about two minutes
+    python tools/tests/run_all.py          # about three minutes
     python tools/tests/run_all.py --hw     # plus a BB60D off air
     python tools/tests/run_all.py --hackrf # plus a HackRF off air
 """
@@ -13,7 +13,8 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TESTS = ['test_sweep.py', 'test_tuning.py', 'test_receive_chain.py', 'test_gui.py']
+TESTS = ['test_sweep.py', 'test_tuning.py', 'test_receive_chain.py', 'test_gui.py',
+         'test_recordings.py']
 
 
 def main():

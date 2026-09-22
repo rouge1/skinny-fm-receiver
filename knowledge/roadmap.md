@@ -413,6 +413,34 @@ from 100 kHz to its suggested 200 kHz. Its other leads:
 - The API tunes up to 6.4 GHz, past the BB60D's specified 6 GHz. The
   sweep stops at 6 GHz, as asked.
 
+## Round 5: the Recordings tab (requested 2026-09-22)
+
+A tab that lists the recordings and plays them back, looking like the
+spectrum and waterfall, with the sound. The design was agreed before it
+was built, and every question was answered with the recommendation:
+
+- [x] **A third tab, Recordings** (Ctrl+3), one line per press of Record.
+  The radio closes while it is open, and opens again on the way out.
+- [x] **IQ plays as in Receive**: spectrum, waterfall, multiplex, RDS and
+  the sound made from it; in a band recording, click another station.
+- [x] **A WAV shows its sound's spectrum and waterfall** (question 1: the
+  spectrum, not a waveform).
+- [x] **Both kept: the IQ plays, the WAV is the second choice** (question 2).
+- [x] **Stop at the end, Loop as an option** (question 3). It had always
+  looped.
+- [x] **Record saves the RDS** (question 4): the name, PI, call sign, and the
+  RadioText and Now Playing with their times, in `-recording.json`. Playing
+  an older recording's IQ fills in what it decodes.
+- [x] **The overview strip** (question 5): the whole recording, time along it
+  and frequency up it, and the place to click to jump.
+
+Found on the way: a station that scrolls words through its PS has no one
+name. Its decoder's most common PS changes with each fragment, and the
+first build kept "n" for 90.1. Now a name must hold for 8 s to be kept.
+
+Still to do: listen to playback on a sound card, and try Show in folder on
+both systems.
+
 ## Linux and Mac (requested 2026-09-22)
 
 The app is to run on a Mac mini (M4, 24 GB) as well as on Linux, from the

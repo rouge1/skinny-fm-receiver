@@ -10,6 +10,12 @@ all, on the same open device; Receive starts its stream again. What
 must *not* rebuild - retuning, channel bandwidth, volume, mute, stereo,
 region, recording - is done on the running blocks.
 
+Recordings play through here too, with no radio open. An IQ recording is
+a radio (``radios.IQFile``) and goes through Receive; a WAV has a chain
+of its own (``dsp.WavChain``). **Pausing an IQ recording stops the
+flowgraph and starts it again as it stood** (:meth:`pause`, :meth:`resume`),
+so RDS and the averages carry on; the file keeps its place.
+
 Rules carried over from the RF bench toolkit:
 
 - **Receive gain goes on after** ``start()`` (:meth:`Engine._started`).
@@ -22,7 +28,7 @@ import sys
 
 from gnuradio import audio, gr  # type: ignore
 
-from .dsp import AUDIO_RATE, ReceiveChain
+from .dsp import AUDIO_RATE, ReceiveChain, WavChain
 from .sweep import sweep_sink
 
 
@@ -39,6 +45,7 @@ class Engine(gr.top_block):
         self.running = False
         self.rx = None
         self.sweeper = None
+        self.player = None
         self.rate = None
         self.lo_hz = None
         self.offset_hz = None
@@ -95,12 +102,13 @@ class Engine(gr.top_block):
         self.disconnect_all()
         if self.sweeper is not None:
             self.sweeper.detach()
-        for chain in (self.rx, self.sweeper):
+        for chain in (self.rx, self.sweeper, self.player):
             if chain is not None:
                 self._retired.append(chain)
         del self._retired[:-self.RETIRED_KEPT]
         self.rx = None
         self.sweeper = None
+        self.player = None
         self.mode = None
 
     def _started(self):
@@ -117,7 +125,30 @@ class Engine(gr.top_block):
             raise
         self.running = True
         # SoapyHackRF ignores the preamp if it is set before the stream runs.
-        self.radio.apply_gain()
+        if self.radio is not None:
+            self.radio.apply_gain()
+
+    # ---------------------------------------------------------- playback
+    def start_wav(self, source, volume=0.5, muted=False):
+        """Play a ``dsp.wav_source``. There is no radio: close it first."""
+        self.halt()
+        self._clear()
+        self.player = WavChain(self, source, volume=volume, muted=muted,
+                               audio_sink=self._audio())
+        self.rate = AUDIO_RATE
+        self.mode = 'wav'
+        self._started()
+
+    def pause(self):
+        """Stop the flowgraph and keep it as it is, to :meth:`resume`."""
+        self.halt()
+
+    def resume(self):
+        if self.running or self.mode is None:
+            return
+        if self.rx is not None:
+            self.rx.restarted()
+        self._started()
 
     def _audio(self):
         """The sound card's block, made once and reused across rebuilds - a

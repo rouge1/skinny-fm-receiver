@@ -390,6 +390,26 @@ def spectrum_frames_per_s(rate, size, target=30.0):
     return max(1, int(round(rate / (size * target))))
 
 
+def spectrum_tap(tb, keep, upstream, rate, size, complex_input):
+    """A :class:`vector_probe` of ``upstream``'s power spectrum, about 30
+    frames a second. Its blocks go into ``keep``, to stay referenced."""
+    item = gr.sizeof_gr_complex if complex_input else gr.sizeof_float
+    period = size * spectrum_frames_per_s(rate, size)
+    thin = blocks.keep_m_in_n(item, size, period, 0)
+    s2v = blocks.stream_to_vector(item, size)
+    win = window.blackmanharris(size)
+    if complex_input:
+        ft = fft.fft_vcc(size, True, win, True, 1)
+    else:
+        ft = fft.fft_vfc(size, True, win, False, 1)
+    mag = blocks.complex_to_mag_squared(size)
+    probe = vector_probe(size, scale=1.0 / (float(np.sum(win)) ** 2),
+                         period=period)
+    tb.connect(upstream, thin, s2v, ft, mag, probe)
+    keep.extend((thin, s2v, ft, mag))
+    return probe
+
+
 class ReceiveChain:
     """Builds and connects the receive chain into top block ``tb``.
 
@@ -534,21 +554,7 @@ class ReceiveChain:
 
     # -- building helpers
     def _spectrum_tap(self, upstream, rate, size, complex_input):
-        item = gr.sizeof_gr_complex if complex_input else gr.sizeof_float
-        period = size * spectrum_frames_per_s(rate, size)
-        keep = blocks.keep_m_in_n(item, size, period, 0)
-        s2v = blocks.stream_to_vector(item, size)
-        win = window.blackmanharris(size)
-        if complex_input:
-            ft = fft.fft_vcc(size, True, win, True, 1)
-        else:
-            ft = fft.fft_vfc(size, True, win, False, 1)
-        mag = blocks.complex_to_mag_squared(size)
-        probe = vector_probe(size, scale=1.0 / (float(np.sum(win)) ** 2),
-                             period=period)
-        self.tb.connect(upstream, keep, s2v, ft, mag, probe)
-        self._keep.extend((keep, s2v, ft, mag))
-        return probe
+        return spectrum_tap(self.tb, self._keep, upstream, rate, size, complex_input)
 
     @staticmethod
     def _closed_file_sink():
@@ -622,6 +628,15 @@ class ReceiveChain:
         self.mpx_probe.discard_until(mpx)
         self.rds.discard_until(mpx)
 
+    def restarted(self):
+        """The flowgraph is about to start again as it stood (a paused
+        playback resuming). Every block's counters start again from zero,
+        so a discard still pending, counted on the old ones, would drop
+        the next minutes: clear them."""
+        for probe in (self.rf_probe, self.mpx_probe):
+            probe.discard_until(0)
+        self.rds.discard_until(0)
+
     # -- polled by the window
     def pilot_level(self):
         return self.pilot_probe.level()
@@ -648,3 +663,135 @@ class ReceiveChain:
             self._blend = blend
             self.side_gain.set_k(2.0 * blend)
         return blend > 0, self.stereo_phase, coherence
+
+
+# ------------------------------------------------------- WAV playback
+
+class wav_source(gr.sync_block):
+    """A WAV recording as left and right, read from its memory-mapped
+    frames (``(n, channels)``, int16 or float32): it can jump to any frame,
+    loop, pause, and says when it has reached the end.
+
+    Paused or finished it sends silence rather than nothing, so the sound
+    card keeps running and never underruns; the window stops drawing.
+    ``position`` is the next frame to be read - ahead of the speaker by
+    what the buffers hold, which :class:`WavChain` keeps small.
+    """
+
+    def __init__(self, frames, loop=False):
+        gr.sync_block.__init__(self, name='wav_source', in_sig=None,
+                               out_sig=[np.float32, np.float32])
+        self.frames = frames
+        self.total = len(frames)
+        self.scale = 1.0 / 32768.0 if frames.dtype == np.int16 else 1.0
+        self.loop = bool(loop)
+        self.paused = False
+        self.finished = False
+        self.position = 0
+        self._lock = threading.Lock()
+
+    def seek(self, frame):
+        with self._lock:
+            self.position = int(min(max(frame, 0), max(0, self.total - 1)))
+            self.finished = False
+
+    def set_paused(self, paused):
+        with self._lock:
+            self.paused = bool(paused)
+
+    def work(self, input_items, output_items):
+        left, right = output_items[0], output_items[1]
+        n = len(left)
+        with self._lock:
+            if self.paused or self.finished or not self.total:
+                left[:] = 0.0
+                right[:] = 0.0
+                return n
+            take = min(n, self.total - self.position)
+            chunk = self.frames[self.position:self.position + take]
+            left[:take] = chunk[:, 0] * self.scale
+            right[:take] = chunk[:, -1] * self.scale      # mono: both sides
+            self.position += take
+            if self.position >= self.total:
+                if self.loop:
+                    self.position = 0
+                else:
+                    self.finished = True
+        # A short read at the loop point: the next call goes on from the
+        # start, with no gap. At the end, the rest is silence.
+        if take < n and self.finished:
+            left[take:] = 0.0
+            right[take:] = 0.0
+            return n
+        return take
+
+
+class WavChain:
+    """Plays a :class:`wav_source` to the sound card, with the same audio
+    tap (meters) and volume law as the receive chain, and the spectrum of
+    left plus right for the window.
+
+    The sound card sets the pace, and the source runs ahead of it by what
+    the buffers between them hold: GNU Radio's default, 8192 samples a
+    buffer, would put the spectrum a third of a second ahead of the sound,
+    so the audio path's buffers are held to about 20 ms each. With no sound
+    card, a throttle on each side sets the pace instead.
+    """
+
+    FFT = 2048
+    BUFFER = 1024
+
+    def __init__(self, tb, source, *, volume=0.5, muted=False, audio_sink=None):
+        self.tb = tb
+        self.source = source
+        self.rate = AUDIO_RATE
+        self.volume = float(volume)
+        self.muted = bool(muted)
+        self._keep = []
+
+        self.tap = audio_tap()
+        tb.connect((source, 0), (self.tap, 0))
+        tb.connect((source, 1), (self.tap, 1))
+        self.mid = blocks.add_ff(1)
+        self.half = blocks.multiply_const_ff(0.5)
+        tb.connect((source, 0), (self.mid, 0))
+        tb.connect((source, 1), (self.mid, 1))
+        tb.connect(self.mid, self.half)
+        self.probe = spectrum_tap(tb, self._keep, self.half, AUDIO_RATE, self.FFT,
+                                  complex_input=False)
+
+        self.vol_l = blocks.multiply_const_ff(self._gain())
+        self.vol_r = blocks.multiply_const_ff(self._gain())
+        tb.connect((source, 0), self.vol_l)
+        tb.connect((source, 1), self.vol_r)
+        for block in (source, self.vol_l, self.vol_r):
+            block.set_max_output_buffer(self.BUFFER)
+        if audio_sink is not None:
+            self.audio_sink = audio_sink
+            tb.connect(self.vol_l, (audio_sink, 0))
+            tb.connect(self.vol_r, (audio_sink, 1))
+        else:
+            self.audio_sink = None
+            self.pace_l = blocks.throttle(gr.sizeof_float, AUDIO_RATE, True)
+            self.pace_r = blocks.throttle(gr.sizeof_float, AUDIO_RATE, True)
+            self.null_l = blocks.null_sink(gr.sizeof_float)
+            self.null_r = blocks.null_sink(gr.sizeof_float)
+            tb.connect(self.vol_l, self.pace_l, self.null_l)
+            tb.connect(self.vol_r, self.pace_r, self.null_r)
+
+    def _gain(self):
+        return 0.0 if self.muted else 1.5 * self.volume ** 2
+
+    def set_volume(self, volume):
+        self.volume = min(max(float(volume), 0.0), 1.0)
+        self.vol_l.set_k(self._gain())
+        self.vol_r.set_k(self._gain())
+
+    def set_muted(self, muted):
+        self.muted = bool(muted)
+        self.vol_l.set_k(self._gain())
+        self.vol_r.set_k(self._gain())
+
+    def seeked(self):
+        """The source jumped: start the spectrum's average again."""
+        self.probe.reset()

@@ -121,7 +121,7 @@ Useful options (`./fm-receiver --help` lists them all):
 | `--usrp-address 192.168.10.2` | Connect to a USRP at this address |
 | `--file PATH` | Play back an IQ recording instead of a radio |
 | `--freq 95.1` | Tune to this station (MHz) |
-| `--mode sweep` / `receive` | Start in this mode |
+| `--mode sweep` / `receive` / `recordings` | Start in this tab |
 | `--sweep 87.5 108` | Set the sweep span (MHz) |
 | `--theme slate` / `reading-room` / `walnut` | Choose the colour theme |
 | `--no-audio` | Don't use the sound card (recording still works) |
@@ -131,7 +131,7 @@ Useful options (`./fm-receiver --help` lists them all):
 
 ```
 ┌ FM Receiver  Radio:[BB60D ▾] [Stop]   status line ................... Themes (●) ┐
-│┌ Sweep (FFT) | Receive (IQ) ┐ ┌ RF spectrum ─────────────────────────────────────┐ │
+│┌ Sweep | Receive | Recordings┐ ┌ RF spectrum ─────────────────────────────────────┐ │
 ││ controls for the mode      │ │                                                   │ │
 │└────────────────────────────┘ │ waterfall                                         │ │
 │┌ RF gain ───────────────────┐ ├ readout      Span Ref Range Avg □Peak □Waterfall ┤ │
@@ -150,8 +150,10 @@ Useful options (`./fm-receiver --help` lists them all):
   - The **Themes** disc, top right, is the theme in force: a click moves to
     the next (Slate, Reading Room, Walnut). Hover over the disc or the word
     Themes to see its name, even while another window has the focus.
-- **The two tabs are the two modes.** Switching tabs switches the radio
-  between them. On a BB60D the switch takes 0.02-0.3 s.
+- **The first two tabs are the radio's two modes.** Switching tabs switches
+  the radio between them. On a BB60D the switch takes 0.02-0.3 s.
+- **The third tab, Recordings,** plays back what you recorded. The radio is
+  closed while it is open, and opens again when you go back.
 - **RF gain** applies to the radio in both modes, and each radio remembers its
   own setting.
 
@@ -168,7 +170,8 @@ Useful options (`./fm-receiver --help` lists them all):
    the clock.
 4. **Record.** Tick what you want and press **Record** (Ctrl+R). Press it again
    to stop. The files are saved in `recordings/`.
-5. **Go back** to the Sweep tab (Ctrl+1) at any time.
+5. **Listen back** in the **Recordings** tab (Ctrl+3).
+6. **Go back** to the Sweep tab (Ctrl+1) at any time.
 
 ## Sweep (FFT)
 
@@ -414,7 +417,10 @@ Recording works in Receive only.
 - **Where files go:** `recordings/` in the project folder. Use **Folder...** to
   change it.
 - **File names** look like `fm-98.70MHz-20260921-181500-audio.wav`, with
-  `-iq-channel` or `-iq-band` for the IQ kinds.
+  `-iq-channel` or `-iq-band` for the IQ kinds. Every file of one recording
+  has the same name up to the kind, and
+  `fm-98.70MHz-20260921-181500-recording.json` beside them holds what the
+  station sent over RDS while it was recorded (see *Recordings* below).
 - **IQ file format:** each IQ recording is a `.cfile` of complex float32 data
   with two description files beside it. `.sigmf-meta` is SigMF, which other
   SDR tools read. `.json` is the RF bench toolkit's capture format, so its
@@ -427,11 +433,57 @@ Recording works in Receive only.
 - Changing mode or radio, or pressing Stop, ends the recording. The panel
   lists what was saved.
 
-## Playing an IQ recording back
+## Recordings: listening back
 
-Choose **IQ recording (playback)** in the Radio list and open the `.cfile`,
-`.sigmf-meta` or `.json` file. Or start the app with `./fm-receiver --file
-PATH`.
+The **Recordings** tab (Ctrl+3) lists everything in the recordings folder,
+newest first, and plays it. The radio is closed while you are in this tab,
+so other programs can use it (except a BB60D on a Mac, which stays open
+until the app quits). Going back to Sweep or Receive opens it again, tuned
+where it was.
+
+1. **Pick a recording.** Each line is one press of Record: the station, its
+   RDS name and call sign if they were heard, then the date, the length,
+   what was recorded and the size.
+2. **Choose what to play** in **Play**, if the recording has more than one
+   file. The IQ is chosen first (the whole band before the channel), and
+   the WAV is in the list too.
+3. **Press Play**, or double-click the line. Press it again to pause.
+4. **Jump** by clicking or dragging on the strip under the Play button.
+
+What you see and hear depends on the file:
+
+| File | On the right | Sound | RDS |
+|---|---|---|---|
+| **IQ – whole band** | The RF spectrum and waterfall of the whole band, and the multiplex, as in Receive | Made from the IQ, as in Receive | Decoded as it plays |
+| **IQ – channel** | The same, for the one station | The same | The same |
+| **WAV** | The sound's spectrum, left and right together (0-16 kHz shown; Span goes to 24), and its waterfall | The WAV as it was recorded | The RadioText and Now Playing logged while it was recorded |
+
+- **In a whole-band recording, click another station** in the spectrum or
+  the waterfall to listen to it. The Receive tab's controls (channel filter,
+  stereo, region, the RDS details) work on the recording too.
+- **The strip** is the whole recording at a glance: time from left to right,
+  frequency upwards, in the waterfall's colours. A station is a line along
+  it; music in a WAV shows its rhythm. The orange line is where you are.
+- **Loop** starts again from the beginning at the end. Without it, playback
+  stops and goes back to the start.
+- **Delete...** removes every file of the chosen recording, after asking.
+  **Show in folder** opens the folder in your file manager (Finder on a
+  Mac), and **Folder...** chooses another one; Record saves there too.
+- **Parts.** A recording that was retuned has parts (`-part2` and on). Each
+  is its own entry in **Play**, with the station it was on.
+- **Names.** Record saves the station's RDS name, PI and call sign, and each
+  RadioText and Now Playing with its time, in the `-recording.json` file.
+  Recordings made before this have none: playing their IQ back fills them
+  in. A name is kept only once it has held for 8 seconds, because some
+  stations scroll words through the name.
+- A WAV plays at 48 kHz only, which is what Record makes.
+
+## Playing other IQ files
+
+The Recordings tab plays this app's recordings. For any other IQ file, such
+as SigMF or the RF bench toolkit's captures, choose **IQ recording
+(playback)** in the Radio list and open the `.cfile`, `.sigmf-meta` or
+`.json` file. Or start the app with `./fm-receiver --file PATH`.
 
 The recording plays in real time on a loop, as if it were a radio, and it
 opens tuned to the station it was recorded on. Tuning moves the channel
@@ -452,7 +504,7 @@ On a Mac, Ctrl is the ⌘ Command key.
 
 | Keys | Action |
 |---|---|
-| Ctrl+1 / Ctrl+2 | Sweep / Receive |
+| Ctrl+1 / Ctrl+2 / Ctrl+3 | Sweep / Receive / Recordings |
 | Ctrl+Left / Ctrl+Right | Step the tuner down / up by the Step |
 | Up / Down (pointer on a digit) | That digit of the Tuner, Center or Channel filter up / down |
 | PageUp / PageDown | The same digit by ten |
@@ -468,9 +520,9 @@ Settings are saved to `~/.config/fm-receiver/config.json` when the window
 closes. They include:
 
 - the radio, and per radio its gain, rates and settle time;
-- the mode, the tuner and the Center;
+- the tab, the tuner and the Center;
 - the dials and audio settings;
-- the recording choices and folder;
+- the recording choices and folder, and whether playback loops;
 - the theme and the window layout.
 
 To start fresh, delete the file. To use a different settings file, set
@@ -494,6 +546,6 @@ To start fresh, delete the file. To use a different settings file, set
 
 ```sh
 conda activate gnu
-python tools/tests/run_all.py          # no radio needed, about a minute
+python tools/tests/run_all.py          # no radio needed, about a minute and a half
 python tools/tests/run_all.py --hw     # plus the BB60D check, off air
 ```

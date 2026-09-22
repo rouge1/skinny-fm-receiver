@@ -450,6 +450,13 @@ class IQFile(Radio):
 
     The LO is wherever the recording's was, so tuning moves only the channel
     within the recorded band. It cannot sweep.
+
+    **Where it is**, for the Recordings tab: the file source reads ahead,
+    so the place is counted where the samples leave the throttle - the
+    real-time pace - from where the file was put (:meth:`place`) or last
+    jumped to (:meth:`seek`). A block's counters start from zero each time
+    the flowgraph starts, and must not be read before it first has: hence
+    :meth:`counting`.
     """
     kind = 'file'
     name = 'IQ recording'
@@ -489,6 +496,9 @@ class IQFile(Radio):
                               self.center_hz + rate / 2 - 120e3)
         self.block = _file_source(self.meta['data'], rate, self.repeat,
                                   self.throttle)
+        self.total = max(1, os.path.getsize(self.meta['data']) // gr.sizeof_gr_complex)
+        self._base = 0
+        self._counting = False
 
     def set_rate(self, rate):
         pass                                   # fixed by the recording
@@ -502,6 +512,39 @@ class IQFile(Radio):
 
     def usable_fraction(self, rate):
         return 0.9
+
+    # -- the place in the file
+    def _count(self):
+        inner = self.block.throttle if self.throttle else self.block.file
+        return inner.nitems_written(0)
+
+    def place(self, sample):
+        """Put the file at ``sample``, while the flowgraph is stopped."""
+        self._base = int(min(max(sample, 0), self.total - 1))
+        self._counting = False
+        self.block.file.seek(self._base, 0)
+
+    def counting(self, running):
+        """The flowgraph has just started (True), or is about to stop."""
+        if not running:
+            self._base = self.position()
+        self._counting = bool(running)
+
+    def seek(self, sample):
+        """Jump to ``sample``, running or not."""
+        if not self._counting:
+            self.place(sample)
+            return
+        sample = int(min(max(sample, 0), self.total - 1))
+        self.block.file.seek(sample, 0)
+        self._base = sample - self._count()
+
+    def played(self):
+        """Samples played since the file's start, counting every loop."""
+        return self._base + (self._count() if self._counting else 0)
+
+    def position(self):
+        return self.played() % self.total
 
 
 RADIO_KINDS = {'hackrf': HackRF, 'usrp': USRP, 'bb60': BB60, 'file': IQFile}

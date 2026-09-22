@@ -1675,3 +1675,137 @@ class SpectrumView(Qt.QWidget):
     def _wf_toggled(self, on):
         if self.wf_plot is not None:
             self.wf_plot.setVisible(on)
+
+
+# ---------------------------------------------------------- timeline strip
+
+class TimelineStrip(Qt.QWidget):
+    """A recording from end to end, as a waterfall lying on its side - time
+    left to right, frequency up the strip, in the theme's waterfall colours
+    - with the playhead across it. It is the seek bar: click or drag, and
+    :attr:`seekRequested` (seconds) goes when the button comes up; the
+    playhead follows the pointer until then.
+
+    With no overview yet (it is worked out in the background) it is a plain
+    track that seeks all the same."""
+
+    seekRequested = pyqtSignal(float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(64)
+        self.setMinimumWidth(160)
+        self.setSizePolicy(Qt.QSizePolicy.Expanding, Qt.QSizePolicy.Fixed)
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setToolTip("The whole recording: time left to right, frequency "
+                        "upwards.\nClick or drag to jump.")
+        self.duration = 0.0
+        self.position = 0.0
+        self._index = None                  # (rows, cols) uint8, top row first
+        self._image = None
+        self._image_theme = None
+        self._drag_x = None
+        self.note = ''
+
+    def set_overview(self, img):
+        """``img``: (rows, columns) in dB, row 0 the lowest frequency. The
+        colours span the 5th to the 99.7th percentile, so the floor sinks
+        into the background and the strongest signals are the brightest."""
+        if img is None:
+            self._index = None
+        else:
+            img = np.asarray(img, dtype=np.float64)
+            low, high = np.percentile(img, 5), np.percentile(img, 99.7)
+            level = (img - low) / max(high - low, 1e-6)
+            self._index = np.ascontiguousarray(
+                np.round(np.clip(level, 0, 1) * 255).astype(np.uint8)[::-1])
+        self._image = None
+        self.update()
+
+    def set_duration(self, seconds):
+        self.duration = max(0.0, float(seconds))
+        self.update()
+
+    def set_position(self, seconds):
+        seconds = float(seconds)
+        if self.duration and self.width() and \
+                abs(seconds - self.position) * self.width() / self.duration < 0.5:
+            self.position = seconds                # under a pixel: no repaint
+            return
+        self.position = seconds
+        self.update()
+
+    def set_note(self, text):
+        self.note = text
+        self.update()
+
+    def _frame(self):
+        return QtCore.QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+
+    def _time_at(self, x):
+        frame = self._frame()
+        if frame.width() <= 0 or not self.duration:
+            return 0.0
+        return min(max((x - frame.left()) / frame.width(), 0.0), 1.0) * self.duration
+
+    # -- mouse
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton and self.duration:
+            self._drag_x = event.pos().x()
+            self.update()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_x is not None:
+            self._drag_x = event.pos().x()
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_x is not None and event.button() == QtCore.Qt.LeftButton:
+            seconds = self._time_at(event.pos().x())
+            self._drag_x = None
+            self.position = seconds
+            self.update()
+            self.seekRequested.emit(seconds)
+
+    # -- paint
+    def paintEvent(self, event):
+        try:
+            self._paint()
+        except Exception as exc:
+            print(f"timeline paint: {exc}")
+
+    def _colours(self):
+        """The overview in the theme's waterfall colours, made again only
+        when the theme changes."""
+        name = theme.current()
+        if self._image is None or self._image_theme != name:
+            lut = waterfall_lut(WATERFALL.get(name, WATERFALL['slate']))
+            rgb = np.ascontiguousarray(lut[self._index])
+            h, w = self._index.shape
+            self._image = Qt.QImage(rgb.data, w, h, 3 * w, Qt.QImage.Format_RGB888).copy()
+            self._image_theme = name
+        return self._image
+
+    def _paint(self):
+        frame = self._frame()
+        if frame.width() < 4 or frame.height() < 4:
+            return
+        t = theme.TOKENS
+        p = Qt.QPainter(self)
+        p.setRenderHint(Qt.QPainter.SmoothPixmapTransform, True)
+        p.fillRect(frame, colour('well'))
+        if self._index is not None and self._index.size:
+            p.drawImage(frame, self._colours())
+        elif self.note:
+            p.setPen(colour('ink_3'))
+            p.drawText(frame, QtCore.Qt.AlignCenter, self.note)
+        if self.duration:
+            x = (self._drag_x if self._drag_x is not None else
+                 frame.left() + frame.width() * min(self.position / self.duration, 1.0))
+            x = min(max(x, frame.left() + 1), frame.right() - 1)
+            p.setPen(Qt.QPen(_marker_colour('tuner'), 2))
+            p.drawLine(QtCore.QPointF(x, frame.top()), QtCore.QPointF(x, frame.bottom()))
+        p.setPen(Qt.QPen(Qt.QColor(t['rule']), 1))
+        p.setBrush(QtCore.Qt.NoBrush)
+        p.drawRect(frame)
+        p.end()

@@ -1,6 +1,7 @@
 """The FM receiver window - it opens straight onto the radio, no launcher.
 
-Two modes, one per tab, sharing the radio and the big spectrum view:
+Three tabs. The first two are the radio's two modes, sharing it and the big
+spectrum view:
 
 - **Sweep (FFT)** hops the radio across a span wider than it can see at
   once and stitches the FFTs (``sweep.py``). No demodulation, so it is
@@ -9,12 +10,19 @@ Two modes, one per tab, sharing the radio and the big spectrum view:
 - **Receive (IQ)** runs the radio at a narrow IQ bandwidth and demodulates
   one station: stereo audio, RDS, the multiplex spectrum (``dsp.py``).
 
+The third, **Recordings**, lists what Record made (``library.py``) and plays
+it back. The radio is closed meanwhile - free for other programs - and
+opens again on the way out. An IQ recording plays as a radio would, through
+Receive's chain, with a band recording's other stations a click away; a WAV
+plays as its sound and the sound's spectrum.
+
 Everything else - gain, the view's dials, volume and mute, recording -
 works on the running flowgraph without rebuilding it. The window's
 settings are saved when it closes (``config.py``).
 """
 
 import argparse
+import concurrent.futures
 import math
 import os
 import signal
@@ -24,20 +32,21 @@ import time
 import numpy as np  # type: ignore
 from PyQt5 import Qt, QtCore  # type: ignore
 
-from . import __version__, theme
+from . import __version__, library, theme
 from .config import default_recording_dir, load_config, update_config
-from . import bb60_sweep
+from . import bb60_source, bb60_sweep
 from .bb60_sweep import RBW_LADDER, RT_MAX_SPAN_HZ, NativeSweepPlan
-from .dsp import CHANNEL_MAX_BW, MPX_RATE
+from .dsp import AUDIO_RATE, CHANNEL_MAX_BW, MPX_RATE, wav_source
 from .engine import Engine
-from .radios import (RADIO_NAMES, RadioError, detect_radios, make_radio,
-                     rate_label)
+from .radios import (RADIO_NAMES, IQFile, RadioError, detect_radios,
+                     make_radio, rate_label)
 from .rds_core import clock_text
-from .recording import IqRecording, WavWriter, recording_base
+from .recording import (NAME_STEADY_S, IqRecording, RecordingInfo, WavWriter,
+                        session_base)
 from .style import apply_window_theme
 from .sweep import SweepPlan, find_stations, to_db
 from .widgets import (DigitEntry, Knob, LevelMeter, SpectrumView, StepRoller,
-                      ThemeDisc, on_raster)
+                      ThemeDisc, TimelineStrip, on_raster)
 
 #: (name, start MHz, stop MHz); 'full' is the whole of the radio's sweep
 #: range, whichever radio it is (9 kHz-6 GHz on the BB60D).
@@ -71,6 +80,10 @@ CHANNEL_STEP_HZ = 5e3
 #: clipped 0-0.4% with RDS at 99% - harmless, so no warning.
 CLIP_WARN = 1e-2
 RADIO_ORDER = ('hackrf', 'usrp', 'bb60', 'file')
+#: The tabs, in order.
+TAB_MODES = ('sweep', 'receive', 'recordings')
+#: The saved view (dials, span) of the RF spectrum in each mode that has one.
+VIEW_KEYS = {'receive': 'view_receive', 'playback': 'view_playback'}
 
 DEFAULTS = {
     'radio': None, 'usrp_address': '', 'iq_file': '', 'mode': 'receive',
@@ -86,6 +99,10 @@ DEFAULTS = {
     # A span wider than any sweep: the Span dial clamps it to the whole sweep.
     'view_sweep': {'span_hz': 1e12, 'ref_db': -10, 'range_db': 110, 'avg': 1},
     'view_mpx': {'ref_db': -10, 'range_db': 100, 'avg': 6},
+    # A recording's band, all of it; and a WAV's sound, to 16 kHz.
+    'view_playback': {'span_hz': 1e12, 'ref_db': -10, 'range_db': 110, 'avg': 4},
+    'view_audio': {'span_hz': 16e3, 'ref_db': -10, 'range_db': 90, 'avg': 2},
+    'play_loop': False,
     'theme': 'slate', 'geometry': None, 'splitters': {},
 }
 
@@ -134,6 +151,26 @@ def _coloured(text, token):
     return f"<span style='color:{theme.TOKENS[token]}'>{text}</span>"
 
 
+class Playback:
+    """What the Recordings tab has loaded: an IQ track on its file radio,
+    or a WAV track on its source block."""
+
+    def __init__(self, recording, track, radio=None, source=None):
+        self.recording = recording
+        self.track = track
+        self.radio = radio                  # radios.IQFile, for IQ
+        self.source = source                # dsp.wav_source, for a WAV
+        self.paused = False
+
+    @property
+    def is_iq(self):
+        return self.radio is not None
+
+    @property
+    def name(self):
+        return os.path.basename(self.track.path)
+
+
 def _freq_text(hz):
     """9 kHz, 87.5 MHz, 6 GHz - no more digits than it has."""
     for scale, unit in ((1e9, 'GHz'), (1e6, 'MHz'), (1e3, 'kHz')):
@@ -172,6 +209,19 @@ class MainWindow(Qt.QWidget):
         self._names = {}
         self._rx_sig = None
         self._starting = False
+        # Recording: its description (RDS and all), for the Recordings tab.
+        self._rec_info = None
+        # The Recordings tab: the live radio to go back to, what is listed,
+        # chosen and playing, and the overview being worked out.
+        self._live = None
+        self._recordings = []
+        self._rec_sel = None
+        self._track = None
+        self._play = None
+        self._start_at = 0.0
+        self._heard = ('', 0.0)
+        self._overview_job = None
+        self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
         self._edge_timer = Qt.QTimer(self)
         self._edge_timer.setSingleShot(True)
@@ -254,7 +304,9 @@ class MainWindow(Qt.QWidget):
         self.tabs = Qt.QTabWidget()
         self.tabs.addTab(self._build_sweep_tab(), "Sweep (FFT)")
         self.tabs.addTab(self._build_receive_tab(), "Receive (IQ)")
-        self.tabs.setCurrentIndex(0 if self.cfg['mode'] == 'sweep' else 1)
+        self.tabs.addTab(self._build_recordings_tab(), "Recordings")
+        self.tabs.setCurrentIndex(TAB_MODES.index(self.cfg['mode'])
+                                  if self.cfg['mode'] in TAB_MODES else 1)
         self.tabs.currentChanged.connect(self._tab_changed)
         box.addWidget(self.tabs)
         box.addWidget(self._build_gain())
@@ -589,6 +641,89 @@ class MainWindow(Qt.QWidget):
             form.addRow(caption, value(key, font))
         return box
 
+    def _build_recordings_tab(self):
+        """The recordings in the folder, newest first, and the player."""
+        page = Qt.QWidget()
+        box = Qt.QVBoxLayout(page)
+        box.setContentsMargins(6, 8, 6, 6)
+        box.setSpacing(8)
+        self.rec_list = Qt.QListWidget()
+        self.rec_list.setMinimumHeight(180)
+        self.rec_list.setWordWrap(True)
+        self.rec_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.rec_list.setToolTip("One line for each press of Record, newest first. "
+                                 "Double-click to play.")
+        self.rec_list.currentItemChanged.connect(self._recording_selected)
+        self.rec_list.itemDoubleClicked.connect(lambda _item: self.play_btn.setChecked(True))
+        box.addWidget(self.rec_list, 1)
+        self.lib_note = _wrapping(Qt.QLabel(""))
+        self.lib_note.setTextFormat(QtCore.Qt.RichText)
+        box.addWidget(self.lib_note)
+
+        player = Qt.QGroupBox("Player")
+        form = self._form(player)
+        self.track_combo = Qt.QComboBox()
+        self.track_combo.setToolTip(
+            "Which of the recording's files to play. The IQ is the radio signal: "
+            "the spectrum,\nwaterfall and RDS come from it, and the sound is made "
+            "from it again. The WAV\nis the sound as it was heard.")
+        self.track_combo.activated.connect(self._track_chosen)
+        form.addRow("Play:", self.track_combo)
+        row = Qt.QHBoxLayout()
+        self.play_btn = Qt.QPushButton("Play")
+        self.play_btn.setCheckable(True)
+        self.play_btn.setEnabled(False)
+        self.play_btn.toggled.connect(self._play_toggled)
+        row.addWidget(self.play_btn)
+        self.loop_check = Qt.QCheckBox("Loop")
+        self.loop_check.setToolTip("At the end, start again from the beginning "
+                                   "rather than stop.")
+        self.loop_check.setChecked(bool(self.cfg['play_loop']))
+        self.loop_check.toggled.connect(self._loop_toggled)
+        row.addWidget(self.loop_check)
+        row.addStretch(1)
+        self.time_label = Qt.QLabel("0:00 / 0:00")
+        self.time_label.setFont(_mono_font())
+        row.addWidget(self.time_label)
+        form.addRow(row)
+        self.timeline = TimelineStrip()
+        self.timeline.seekRequested.connect(self._seek_to)
+        form.addRow(self.timeline)
+        big = Qt.QFont()
+        big.setPixelSize(17)
+        big.setBold(True)
+        self.play_station = _wrapping(Qt.QLabel("-"))
+        self.play_station.setFont(big)
+        form.addRow("Station:", self.play_station)
+        self.play_text = _wrapping(Qt.QLabel("-"))
+        self.play_text.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        form.addRow("RDS:", self.play_text)
+        box.addWidget(player)
+
+        files = Qt.QHBoxLayout()
+        self.lib_folder_btn = Qt.QPushButton("Folder...")
+        self.lib_folder_btn.setToolTip("Choose the recordings folder (Record saves there too).")
+        self.lib_folder_btn.clicked.connect(self._choose_folder)
+        self.reveal_btn = Qt.QPushButton("Show in folder")
+        self.reveal_btn.clicked.connect(self._reveal_folder)
+        self.delete_btn = Qt.QPushButton("Delete...")
+        self.delete_btn.setToolTip("Delete every file of the chosen recording.")
+        self.delete_btn.clicked.connect(self._delete_clicked)
+        for button in (self.lib_folder_btn, self.reveal_btn, self.delete_btn):
+            files.addWidget(button)
+        files.addStretch(1)
+        box.addLayout(files)
+
+        # Record, or a file manager, changes the folder: list it again.
+        self._lib_timer = Qt.QTimer(self)
+        self._lib_timer.setSingleShot(True)
+        self._lib_timer.setInterval(400)
+        self._lib_timer.timeout.connect(
+            lambda: self._live is not None and self._refresh_library())
+        self._lib_watch = Qt.QFileSystemWatcher(self)
+        self._lib_watch.directoryChanged.connect(lambda _path: self._lib_timer.start())
+        return page
+
     def _build_gain(self):
         box = Qt.QGroupBox("RF gain")
         row = Qt.QHBoxLayout(box)
@@ -654,6 +789,8 @@ class MainWindow(Qt.QWidget):
     # --------------------------------------------------------------- right
     def _build_right(self):
         self.right_split = Qt.QSplitter(QtCore.Qt.Vertical)
+        # On top the RF spectrum, or a WAV's sound as it plays.
+        self.top_stack = Qt.QStackedWidget()
         self.rf_view = SpectrumView("RF spectrum", unit='MHz', waterfall=True,
                                     min_span_hz=50e3,
                                     snap_hz=self._step_hz() if self.cfg['snap'] else None)
@@ -667,7 +804,13 @@ class MainWindow(Qt.QWidget):
         # makes it from the Ref level down the Range.
         for knob in (self.rf_view.ref_knob, self.rf_view.range_knob):
             knob.valueChanged.connect(self._view_scale_changed)
-        self.right_split.addWidget(self.rf_view)
+        self.top_stack.addWidget(self.rf_view)
+        self.audio_view = SpectrumView("Audio - left and right together", unit='kHz',
+                                       waterfall=True, min_span_hz=1e3)
+        self.audio_view.averageChanged.connect(self._audio_average_changed)
+        self.audio_view.load_state(self.cfg['view_audio'])
+        self.top_stack.addWidget(self.audio_view)
+        self.right_split.addWidget(self.top_stack)
 
         self.bottom = Qt.QStackedWidget()
         # Sweep page: the stations found.
@@ -703,6 +846,7 @@ class MainWindow(Qt.QWidget):
         add("Ctrl+R", self.rec_btn.toggle)
         add("Ctrl+1", lambda: self.tabs.setCurrentIndex(0))
         add("Ctrl+2", lambda: self.tabs.setCurrentIndex(1))
+        add("Ctrl+3", lambda: self.tabs.setCurrentIndex(2))
         add("Ctrl+Left", lambda: self._step(-1))
         add("Ctrl+Right", lambda: self._step(1))
         add("Ctrl+Up", lambda: self.volume_knob.setValue(self.volume_knob.value() + 5))
@@ -723,10 +867,18 @@ class MainWindow(Qt.QWidget):
             self.tuner.setValue(self.args.freq * 1e6)
         if self.args.sweep:
             self._set_sweep_span(*self.args.sweep)
-        if self.args.mode:
+        mode = self.args.mode or ('receive' if self.args.file else None)
+        if mode:
             self.tabs.blockSignals(True)
-            self.tabs.setCurrentIndex(0 if self.args.mode == 'sweep' else 1)
+            self.tabs.setCurrentIndex(TAB_MODES.index(mode))
             self.tabs.blockSignals(False)
+        if self._tab_mode() == 'recordings':
+            # The radio waits, closed, for Sweep or Receive.
+            self.radio_combo.setCurrentIndex(max(0, self.radio_combo.findData(kind)))
+            self.usrp_edit.setVisible(kind == 'usrp')
+            self.file_btn.setVisible(kind == 'file')
+            self._enter_recordings()
+            return
         self._use_radio(kind)
 
     # ============================================================== radio
@@ -880,10 +1032,16 @@ class MainWindow(Qt.QWidget):
 
     # =============================================================== modes
     def _tab_mode(self):
-        return 'sweep' if self.tabs.currentIndex() == 0 else 'receive'
+        return TAB_MODES[max(0, self.tabs.currentIndex())]
 
     def _tab_changed(self, _index):
-        self._start_mode(self._tab_mode())
+        mode = self._tab_mode()
+        if mode == 'recordings':
+            self._enter_recordings()
+        elif self._live is not None:
+            self._leave_recordings()
+        else:
+            self._start_mode(mode)
 
     def _start_mode(self, mode):
         if self.radio is None or self._starting:
@@ -907,6 +1065,11 @@ class MainWindow(Qt.QWidget):
             self.cfg['view_receive'] = self.rf_view.state()
         elif self._mode == 'sweep':
             self.cfg['view_sweep'] = self.rf_view.state()
+        elif self._mode == 'playback' and self._play is not None:
+            if self._play.is_iq:
+                self.cfg['view_playback'] = self.rf_view.state()
+            else:
+                self.cfg['view_audio'] = self.audio_view.state()
 
     # ---- receive
     def _receive_rate(self):
@@ -914,16 +1077,23 @@ class MainWindow(Qt.QWidget):
         return float(data) if data else self.radio.default_receive_rate
 
     def _start_receive(self):
+        self._run_receive('receive', self.tuner.value(), self._receive_rate(),
+                          self.center_entry.value())
+        self.rec_btn.setEnabled(True)
+        self._set_status(self._running_text(), 'good')
+
+    def _run_receive(self, mode, station_hz, rate, center_hz):
+        """Build the receive chain and show it: for the radio (``mode``
+        'receive'), or for an IQ recording ('playback')."""
         self._save_view()
-        self._mode = 'receive'
-        self.rf_view.load_state(self.cfg['view_receive'])
+        self._mode = mode
+        self.rf_view.load_state(self.cfg[VIEW_KEYS[mode]])
         self.rf_view.set_level_unit('dBFS')
         self.rf_view.clear_density()
         # Receiving, the view is the band the radio streams: no limits.
         self.rf_view.set_pan_limits(None, None)
         self.engine.start_receive(
-            self.tuner.value(), self._receive_rate(),
-            center_hz=self.center_entry.value(),
+            station_hz, rate, center_hz=center_hz,
             channel_bw=self.chan_entry.value(),
             region=self.region_combo.currentData(),
             stereo=self.stereo_check.isChecked(),
@@ -937,9 +1107,7 @@ class MainWindow(Qt.QWidget):
         rx.mpx_probe.set_alpha(1.0 / max(1, self.mpx_view.avg_knob.value()))
         self._place_receive_view()
         self.bottom.setCurrentWidget(self.rx_page)
-        self.rec_btn.setEnabled(True)
         self._clear_rds_labels()
-        self._set_status(self._running_text(), 'good')
         self._show_audio_note()
 
     def _place_receive_view(self, recentre=True):
@@ -980,6 +1148,8 @@ class MainWindow(Qt.QWidget):
 
     def _running_text(self):
         e = self.engine
+        if self._mode == 'playback' and self._play is not None:
+            return f"{'Paused' if self._play.paused else 'Playing'} {self._play.name}"
         if e.mode == 'sweep' and getattr(e.sweeper, 'native', False):
             plan = e.sweeper.plan
             what = ("Watching {} to {} in real time" if getattr(plan, 'realtime', False)
@@ -1171,7 +1341,7 @@ class MainWindow(Qt.QWidget):
         # To the tuner's last digit, 1 kHz: a drag or a click lands anywhere.
         hz = round(float(hz) / self.tuner.resolution) * self.tuner.resolution
         hz = min(max(hz, self.tuner.minimum()), self.tuner.maximum())
-        if self._mode == 'receive' and self.engine.rx is not None:
+        if self._mode in ('receive', 'playback') and self.engine.rx is not None:
             moved = self.engine.tune(hz, follow=follow)
             self._after_retune(moved, hz, recentre, final)
             self.rf_view.tuner_moving()
@@ -1209,6 +1379,8 @@ class MainWindow(Qt.QWidget):
 
     def _recordings_retuned(self):
         e = self.engine
+        if self._rec_info is not None:
+            self._rec_info.note_tune(e.station_hz)
         for rec in self._iq_recs:
             centre = e.station_hz if rec.kind == 'channel' else e.lo_hz
             try:
@@ -1283,17 +1455,23 @@ class MainWindow(Qt.QWidget):
 
     def _mute_toggled(self, muted):
         self.mute_btn.setText("Muted" if muted else "Mute")
-        if self.engine.rx is not None:
-            self.engine.rx.set_muted(muted)
+        for chain in (self.engine.rx, self.engine.player):
+            if chain is not None:
+                chain.set_muted(muted)
 
     def _volume_changed(self, value):
-        if self.engine.rx is not None:
-            self.engine.rx.set_volume(value / 100.0)
+        for chain in (self.engine.rx, self.engine.player):
+            if chain is not None:
+                chain.set_volume(value / 100.0)
 
     def _rf_average_changed(self, n):
-        if self._mode == 'receive' and self.engine.rx is not None:
+        if self._mode in ('receive', 'playback') and self.engine.rx is not None:
             self.engine.rx.rf_probe.set_alpha(1.0 / max(1, n))
         self._sweep_avg = None
+
+    def _audio_average_changed(self, n):
+        if self.engine.player is not None:
+            self.engine.player.probe.set_alpha(1.0 / max(1, n))
 
     def _mpx_average_changed(self, n):
         if self.engine.rx is not None:
@@ -1314,10 +1492,11 @@ class MainWindow(Qt.QWidget):
     def set_theme(self, name):
         self.cfg['theme'] = theme.valid(name)
         apply_window_theme(self, self.cfg['theme'])
-        for view in (self.rf_view, self.mpx_view):
+        for view in (self.rf_view, self.mpx_view, self.audio_view):
             view.restyle()
         for entry in (self.tuner, self.center_entry, self.chan_entry):
             entry.restyle()
+        self.timeline.update()
         self.theme_disc.describe()
         self.theme_word.setToolTip(self.theme_disc.toolTip())
         self._refit_left()
@@ -1339,6 +1518,9 @@ class MainWindow(Qt.QWidget):
         if folder:
             self.cfg['recording_dir'] = folder
             self._update_folder_tip()
+            if self._live is not None:
+                self._rec_sel = None
+                self._refresh_library()
 
     def _record_toggled(self, on):
         if on:
@@ -1364,20 +1546,26 @@ class MainWindow(Qt.QWidget):
         folder = self._recording_dir()
         e = self.engine
         name = self.radio.describe()
+        kinds = [kind for kind, box in (('audio', self.rec_audio),
+                                        ('iq-channel', self.rec_channel),
+                                        ('iq-band', self.rec_band)) if box.isChecked()]
         try:
             os.makedirs(folder, exist_ok=True)
+            # Every file of this recording is named from one base.
+            session = session_base(folder, e.station_hz)
+            self._rec_info = RecordingInfo(session, e.station_hz, name, kinds)
             if self.rec_audio.isChecked():
-                path = recording_base(folder, e.station_hz, 'audio') + '.wav'
-                self._wav = WavWriter(path)
+                self._wav = WavWriter(session + '-audio.wav')
                 rx.tap.set_writer(self._wav)
             if self.rec_channel.isChecked():
                 rec = IqRecording(rx.channel_sink, 'channel', folder, rx.channel_rate,
-                                  e.station_hz, e.station_hz, name)
+                                  e.station_hz, e.station_hz, name,
+                                  base=session + '-iq-channel')
                 rec.start()
                 self._iq_recs.append(rec)
             if self.rec_band.isChecked():
                 rec = IqRecording(rx.band_sink, 'band', folder, e.rate, e.lo_hz,
-                                  e.station_hz, name)
+                                  e.station_hz, name, base=session + '-iq-band')
                 rec.start()
                 self._iq_recs.append(rec)
         except Exception as exc:
@@ -1390,23 +1578,31 @@ class MainWindow(Qt.QWidget):
             box.setEnabled(False)
 
     def _stop_recording(self, reason=''):
-        if self._wav is None and not self._iq_recs:
+        if self._wav is None and not self._iq_recs and self._rec_info is None:
             return
-        saved = []
+        saved, files = [], []
         if self._wav is not None:
             if self.engine.rx is not None:
                 self.engine.rx.tap.set_writer(None)
             path = self._wav.close()
             note = f" ({self._wav.error})" if self._wav.error else ''
             saved.append(os.path.basename(path) + note)
+            files.append(path)
             self._wav = None
         for rec in self._iq_recs:
             try:
                 paths = rec.stop()
                 saved.extend(os.path.basename(p) for p in paths)
+                files.extend(paths)
             except Exception as exc:
                 saved.append(f"IQ error: {exc}")
         self._iq_recs = []
+        if self._rec_info is not None:
+            try:
+                self._rec_info.finish(files)
+            except Exception as exc:
+                saved.append(f"Description not saved: {exc}")
+            self._rec_info = None
         self._rec_t0 = None
         self.rec_btn.blockSignals(True)
         self.rec_btn.setChecked(False)
@@ -1431,13 +1627,470 @@ class MainWindow(Qt.QWidget):
             text += f" - {self._wav.dropped} audio samples dropped (disk too slow)"
         self.rec_label.setText(_coloured(text, 'live'))
 
+    # ========================================================== recordings
+    def _enter_recordings(self):
+        """Close the radio - free for other programs while you listen back -
+        and list the recordings."""
+        self._stop_recording("switched to Recordings")
+        self._live = {'kind': self.radio_combo.currentData(),
+                      'tuner': self.tuner.value(), 'center': self.center_entry.value()}
+        if self.radio is not None:
+            self._remember_radio_settings()
+            self._save_view()
+            self.engine.close()
+            self.radio = None
+        self._mode = None
+        for widget in (self.radio_combo, self.usrp_edit, self.file_btn, self.run_btn,
+                       self.gain_slider, self.rec_btn):
+            widget.setEnabled(False)
+        self._idle_views()
+        held = self._live['kind'] == 'bb60' and bb60_source.KEEP_OPEN
+        self._set_status("Recordings - the radio is stopped until you go back to "
+                         "Sweep or Receive" + (" (on a Mac a BB60D stays open)." if held
+                                               else ", and free for other programs."))
+        self.status.setToolTip('')
+        self._refresh_library()
+
+    def _leave_recordings(self):
+        """Back to Sweep or Receive: the radio opens again, tuned where it was."""
+        self._stop_playback()
+        live, self._live = self._live, None
+        self._show_audio_view(False)
+        for widget in (self.radio_combo, self.usrp_edit, self.file_btn, self.run_btn):
+            widget.setEnabled(True)
+        for entry, key in ((self.tuner, 'tuner'), (self.center_entry, 'center')):
+            entry.set_range(1e3, 6000e6)
+            entry.setValue(live[key])
+        self._use_radio(live['kind'] or self.radio_combo.currentData())
+
+    def _show_audio_view(self, audio):
+        """A WAV's sound on top, and nothing under it; else the RF spectrum
+        and the multiplex."""
+        self.top_stack.setCurrentWidget(self.audio_view if audio else self.rf_view)
+        self.bottom.setVisible(not audio)
+
+    def _idle_views(self):
+        self._show_audio_view(False)
+        view = self.rf_view
+        view.clear()
+        view.set_band(None, None)
+        view.set_center_line(None)
+        view.set_tuner_range(None, None)
+        view.set_marker(None)
+        view.clear_density()
+        view.set_message("Choose a recording and press Play")
+        self.mpx_view.clear()
+        self.bottom.setCurrentWidget(self.rx_page)
+        self.meter.set_levels((0.0, 0.0), (0.0, 0.0))
+
+    def _watch_folder(self, folder):
+        watched = self._lib_watch.directories()
+        if watched != [folder]:
+            if watched:
+                self._lib_watch.removePaths(watched)
+            if os.path.isdir(folder):
+                self._lib_watch.addPath(folder)
+
+    def _refresh_library(self):
+        """Read the folder again, keeping the one chosen."""
+        folder = self._recording_dir()
+        self._watch_folder(folder)
+        keep = self._rec_sel.key if self._rec_sel is not None else None
+        try:
+            self._recordings = library.scan(folder)
+        except Exception:
+            self._recordings = []
+            self._report('recordings')
+        self.rec_list.blockSignals(True)
+        self.rec_list.clear()
+        chosen = None
+        for rec in self._recordings:
+            item = Qt.QListWidgetItem(self._recording_text(rec))
+            item.setData(QtCore.Qt.UserRole, rec.key)
+            item.setToolTip("\n".join(os.path.basename(p) for p in rec.files()))
+            self.rec_list.addItem(item)
+            if rec.key == keep:
+                chosen = item
+        self.rec_list.blockSignals(False)
+        count = len(self._recordings)
+        if count:
+            self.lib_note.setText(f"{count} recording{'s' if count > 1 else ''} in {folder}")
+        else:
+            self.lib_note.setText(f"No recordings in {folder} yet. Record in the "
+                                  "Receive tab, then come back here.")
+        if self._play is not None and not any(r.key == self._play.recording.key
+                                              for r in self._recordings):
+            self._stop_playback()                   # deleted from outside
+        if chosen is None and self.rec_list.count():
+            chosen = self.rec_list.item(0)
+        if chosen is not None:
+            self.rec_list.blockSignals(True)
+            self.rec_list.setCurrentItem(chosen)
+            self.rec_list.blockSignals(False)
+        self._recording_selected(chosen)
+
+    @staticmethod
+    def _recording_text(rec):
+        head = f"{rec.station_hz / 1e6:.2f} MHz"
+        if rec.name:
+            head += f"   {rec.name.strip()}"
+        if rec.callsign:
+            head += f"   {rec.callsign}"
+        return head + "\n" + " · ".join((rec.started.strftime('%b %d %H:%M'),
+                                         library.clock(rec.seconds), rec.kinds_text(),
+                                         library.size_text(rec.bytes)))
+
+    def _recording_for(self, item):
+        key = item.data(QtCore.Qt.UserRole) if item is not None else None
+        return next((r for r in self._recordings if r.key == key), None)
+
+    def _recording_selected(self, item, _previous=None):
+        rec = self._recording_for(item)
+        if rec is not None and self._rec_sel is not None and rec.key == self._rec_sel.key:
+            self._rec_sel = rec                     # read again: same recording
+            if self._play is not None:
+                self._play.recording = rec
+            return
+        self._stop_playback()
+        self._rec_sel = rec
+        self.track_combo.clear()
+        if rec is None:
+            self._load_track(None)
+            return
+        for track in rec.tracks:
+            self.track_combo.addItem(track.label(), track.path)
+        best = rec.best_track()
+        self.track_combo.setCurrentIndex(rec.tracks.index(best))
+        self._load_track(best)
+
+    def _track_chosen(self, index):
+        if self._rec_sel is None or not 0 <= index < len(self._rec_sel.tracks):
+            return
+        track = self._rec_sel.tracks[index]
+        if self._track is not None and track.path == self._track.path:
+            return
+        playing = self._play is not None and not self._play.paused
+        self._stop_playback()
+        self._load_track(track)
+        if playing:
+            self.play_btn.setChecked(True)
+
+    def _load_track(self, track):
+        """Show ``track`` ready to play from its start, and have its overview
+        worked out."""
+        self._track = track
+        self._start_at = 0.0
+        self._heard = ('', 0.0)
+        self.timeline.set_overview(None)
+        self.timeline.set_duration(track.seconds if track else 0.0)
+        self.timeline.set_position(0.0)
+        self.timeline.set_note('')
+        self._show_time(0.0)
+        self.play_btn.setEnabled(track is not None and not track.error)
+        self.delete_btn.setEnabled(self._rec_sel is not None)
+        rec = self._rec_sel
+        if rec is None:
+            self.play_station.setText('-')
+            self.play_text.setText('-')
+            return
+        self._show_station(rec.station_hz, rec.name)
+        self._show_rds_text(*rec.rds_at(0.0))
+        if track.error:
+            self.timeline.set_note(f"Cannot play: {track.error}")
+            return
+        self.timeline.set_note("Working out the overview...")
+        self._overview_job = (track.path, self._pool.submit(library.overview, track))
+
+    def _collect_overview(self):
+        job = self._overview_job
+        if job is None or not job[1].done():
+            return
+        self._overview_job = None
+        path, future = job
+        if self._track is None or self._track.path != path:
+            return
+        try:
+            img, _ = future.result()
+            self.timeline.set_overview(img)
+            self.timeline.set_note('')
+        except Exception as exc:
+            self.timeline.set_note(f"No overview: {exc}")
+
+    def _show_station(self, hz, name):
+        name = (name or '').strip()
+        self.play_station.setText(f"{hz / 1e6:.2f} MHz" + (f"   {name}" if name else ""))
+
+    def _show_rds_text(self, radiotext, playing):
+        lines = [x.strip() for x in (playing, radiotext) if x and x.strip()]
+        self.play_text.setText("\n".join(lines) or '-')
+
+    def _show_time(self, seconds):
+        total = self._track.seconds if self._track is not None else 0.0
+        self.time_label.setText(f"{library.clock(seconds)} / {library.clock(total)}")
+        self.timeline.set_position(seconds)
+
+    # ---- the player
+    def _play_toggled(self, on):
+        try:
+            if on:
+                self._play_start()
+            else:
+                self._play_pause()
+        except Exception as exc:
+            name = os.path.basename(self._track.path) if self._track else 'it'
+            self._stop_playback()
+            self.play_btn.blockSignals(True)
+            self.play_btn.setChecked(False)
+            self.play_btn.blockSignals(False)
+            self.play_btn.setText("Play")
+            self._set_status(f"Could not play {name}: {str(exc).splitlines()[0]}", 'bad')
+            self.status.setToolTip(str(exc))
+
+    def _play_start(self):
+        track = self._track
+        if track is None:
+            self.play_btn.setChecked(False)
+            return
+        p = self._play
+        if p is not None and p.track.path == track.path:
+            self._resume()
+        else:
+            self._stop_playback()
+            if track.is_iq:
+                self._open_iq(track)
+            else:
+                self._open_wav(track)
+        self.play_btn.setText("Pause")
+        self._set_status(self._running_text(), 'good')
+
+    def _open_iq(self, track):
+        """Play an IQ recording as a radio: the file source, through the
+        receive chain, on the station it was made of."""
+        radio = IQFile(track.path, repeat=True, throttle=True)
+        self.engine.use_radio(radio)
+        self._play = Playback(self._rec_sel, track, radio=radio)
+        radio.place(int(self._start_at * radio.rate))
+        low, high = radio.freq_range_hz
+        self.tuner.set_range(low, high)
+        self.center_entry.set_range(radio.center_hz, radio.center_hz)
+        self._show_audio_view(False)
+        self._run_receive('playback', track.station_hz or radio.center_hz,
+                          radio.rate, radio.center_hz)
+        radio.counting(True)
+
+    def _open_wav(self, track):
+        if track.rate != AUDIO_RATE:
+            raise ValueError(f"it is sampled at {track.rate / 1e3:g} kHz; "
+                             f"only {AUDIO_RATE / 1e3:g} kHz plays")
+        source = wav_source(library.wav_frames(track.path),
+                            loop=self.loop_check.isChecked())
+        source.seek(int(self._start_at * AUDIO_RATE))
+        self.engine.close()
+        self._play = Playback(self._rec_sel, track, source=source)
+        self._mode = 'playback'
+        self._show_audio_view(True)
+        view = self.audio_view
+        view.clear()
+        view.load_state(self.cfg['view_audio'])
+        view.set_extent(0.0, AUDIO_RATE / 2, center_hz=0.0)
+        view.set_level_unit('dBFS')
+        self.engine.start_wav(source, volume=self.volume_knob.value() / 100.0,
+                              muted=self.mute_btn.isChecked())
+        self.engine.player.probe.set_alpha(1.0 / max(1, view.avg_knob.value()))
+        self._show_audio_note()
+
+    def _play_pause(self):
+        p = self._play
+        if p is None or p.paused:
+            return
+        if p.is_iq:
+            p.radio.counting(False)
+            self.engine.pause()
+        else:
+            p.source.set_paused(True)
+        p.paused = True
+        self.play_btn.setText("Play")
+        self._set_status(self._running_text())
+
+    def _resume(self):
+        p = self._play
+        if p.is_iq:
+            p.radio.place(p.radio.position())    # exactly where it stopped
+            self.engine.resume()
+            p.radio.counting(True)
+        else:
+            p.source.set_paused(False)
+        p.paused = False
+
+    def _stop_playback(self):
+        """Unload whatever is playing; the radio stays closed."""
+        if self._play is None:
+            return
+        self._save_view()
+        self._play = None
+        self.engine.close()
+        self._mode = None
+        self.audio_view.clear()
+        self._idle_views()
+        self._clear_rds_labels()
+        self.play_btn.blockSignals(True)
+        self.play_btn.setChecked(False)
+        self.play_btn.blockSignals(False)
+        self.play_btn.setText("Play")
+        self._start_at = 0.0
+        self._show_time(0.0)
+
+    def _loop_toggled(self, on):
+        self.cfg['play_loop'] = bool(on)
+        if self._play is not None and not self._play.is_iq:
+            self._play.source.loop = bool(on)
+
+    def _seek_to(self, seconds):
+        """Jump to ``seconds`` into the track - before it plays, too."""
+        p = self._play
+        if p is None:
+            self._start_at = seconds
+        elif p.is_iq:
+            p.radio.seek(int(seconds * p.radio.rate))
+            rx = self.engine.rx
+            if rx is not None:
+                rx.reset_decoders()
+                if self.engine.running:
+                    rx.discard_stale(p.radio.block, True, 0.0)
+            self.rf_view.clear_peak()
+            self.mpx_view.clear_peak()
+            self._clear_rds_labels()
+            self._heard = ('', 0.0)
+        else:
+            p.source.seek(int(seconds * AUDIO_RATE))
+            if self.engine.player is not None:
+                self.engine.player.seeked()
+            self.audio_view.clear_peak()
+        self._show_time(seconds)
+
+    def _follow_playback(self):
+        """The playhead and the time; at the end, stop, or go round."""
+        p = self._play
+        if p.paused:
+            return
+        if p.is_iq:
+            if not self.engine.running:
+                return
+            played, total = p.radio.played(), p.radio.total
+            if played >= total and not self.loop_check.isChecked():
+                self._play_ended()
+                return
+            seconds = (played % total) / p.radio.rate
+        else:
+            if p.source.finished:
+                self._play_ended()
+                return
+            seconds = p.source.position / AUDIO_RATE
+        self._show_time(seconds)
+
+    def _play_ended(self):
+        name = self._play.name
+        self.play_btn.setChecked(False)          # pauses
+        self._seek_to(0.0)
+        self._set_status(f"Finished {name}")
+
+    def _draw_wav(self):
+        player = self.engine.player
+        spectrum = player.probe.snapshot()
+        if spectrum is not None:
+            n = len(spectrum)
+            half = n // 2 + 1
+            self.audio_view.set_data(np.arange(half) * AUDIO_RATE / n,
+                                     to_db(spectrum[:half]))
+        peak, rms = player.tap.levels()
+        self.meter.set_levels(peak, rms)
+
+    def _refresh_wav(self):
+        """A WAV has no RDS: show what the recording logged at this time."""
+        p = self._play
+        rec = p.recording
+        self._show_station(rec.station_hz, rec.name)
+        self._show_rds_text(*rec.rds_at(p.source.position / AUDIO_RATE))
+
+    def _show_playing_rds(self, name, snap):
+        """An IQ recording's RDS, decoded as it plays. What is heard on the
+        station it was made of goes into the list, and is kept: the PI and
+        call sign at once, a name once it has held for ``NAME_STEADY_S``
+        (a station scrolling words through its PS names each in turn)."""
+        p = self._play
+        if not p.is_iq:
+            return
+        station = self.engine.station_hz
+        self._show_station(station, name)
+        title, artist = snap['title'], snap['artist']
+        self._show_rds_text(snap['radiotext'], ' - '.join(x for x in (artist, title) if x))
+        rec = p.recording
+        if abs(station - rec.station_hz) >= 50e3:
+            return
+        now = time.monotonic()
+        if name != self._heard[0]:
+            self._heard = (name, now)
+        steady = name if now - self._heard[1] >= NAME_STEADY_S else ''
+        heard = {'station_name': steady, 'pi': snap['pi_hex'],
+                 'callsign': snap['callsign_confirmed']}
+        new = {k: v for k, v in heard.items() if v and rec.info.get(k) != v}
+        if not new:
+            return
+        try:
+            library.learn(rec, **new)
+        except OSError as exc:
+            self._report(f'keeping what was heard: {exc}')
+            return
+        if 'station_name' in new or 'callsign' in new:
+            for i in range(self.rec_list.count()):
+                item = self.rec_list.item(i)
+                if item.data(QtCore.Qt.UserRole) == rec.key:
+                    item.setText(self._recording_text(rec))
+
+    def _reveal_folder(self):
+        folder = self._recording_dir()
+        if not os.path.isdir(folder):
+            self.lib_note.setText(_coloured(f"{folder} does not exist yet.", 'warn'))
+            return
+        Qt.QDesktopServices.openUrl(Qt.QUrl.fromLocalFile(folder))
+
+    def _delete_clicked(self):
+        rec = self._rec_sel
+        if rec is None:
+            return
+        files = rec.files()
+        answer = Qt.QMessageBox.question(
+            self, "Delete recording",
+            f"Delete the recording of {rec.station_hz / 1e6:.2f} MHz from "
+            f"{rec.started.strftime('%b %d %H:%M')}?\n\n{len(files)} files, "
+            f"{library.size_text(rec.bytes)}, in {os.path.dirname(rec.key)}.\n"
+            "This cannot be undone.",
+            Qt.QMessageBox.Yes | Qt.QMessageBox.Cancel, Qt.QMessageBox.Cancel)
+        if answer == Qt.QMessageBox.Yes:
+            self._delete_recording(rec)
+
+    def _delete_recording(self, rec):
+        if self._play is not None and self._play.recording.key == rec.key:
+            self._stop_playback()
+        failed = library.delete(rec)
+        self._rec_sel = None
+        self._refresh_library()
+        if failed:
+            self.lib_note.setText(_coloured("Could not delete " + "; ".join(failed), 'bad'))
+
     # ============================================================== timers
     def _tick_fast(self):
         try:
-            if self.engine.running and self._mode == 'receive' and self.engine.rx:
+            running = self.engine.running
+            if running and self._mode in ('receive', 'playback') and self.engine.rx:
                 self._draw_receive()
-            elif self.engine.running and self._mode == 'sweep' and self.engine.sweeper:
+            elif running and self._mode == 'playback' and self.engine.player:
+                if not self._play.paused:
+                    self._draw_wav()
+            elif running and self._mode == 'sweep' and self.engine.sweeper:
                 self._draw_sweep()
+            if self._play is not None:
+                self._follow_playback()
         except Exception:
             self._report('display')
 
@@ -1493,11 +2146,14 @@ class MainWindow(Qt.QWidget):
         try:
             if self._rec_t0 is not None:
                 self._recording_progress()
+            self._collect_overview()
             if not self.engine.running:
                 return
             self._check_health()
-            if self._mode == 'receive' and self.engine.rx is not None:
+            if self._mode in ('receive', 'playback') and self.engine.rx is not None:
                 self._refresh_receive()
+            elif self._mode == 'playback' and self.engine.player is not None:
+                self._refresh_wav()
             elif self._mode == 'sweep' and self.engine.sweeper is not None:
                 self._refresh_sweep()
         except Exception:
@@ -1655,6 +2311,10 @@ class MainWindow(Qt.QWidget):
                 f"{100 * (1 - (snap['block_error_rate'] or 0)):.0f}% blocks good")
         else:
             self.lbl['quality'].setText('searching...')
+        if self._rec_info is not None:
+            self._rec_info.note_rds(snap)
+        if self._mode == 'playback' and self._play is not None:
+            self._show_playing_rds(name, snap)
 
     # ============================================================ closing
     def _restore_geometry(self):
@@ -1679,9 +2339,12 @@ class MainWindow(Qt.QWidget):
     def save_settings(self):
         self._remember_radio_settings()
         self._save_view()
+        # In Recordings the tuner shows the recording: keep the radio's own.
+        live = self._live or {}
         self.cfg.update({
-            'mode': self._tab_mode(), 'frequency_mhz': self.tuner.value() / 1e6,
-            'center_mhz': self.center_entry.value() / 1e6,
+            'mode': self._tab_mode(),
+            'frequency_mhz': live.get('tuner', self.tuner.value()) / 1e6,
+            'center_mhz': live.get('center', self.center_entry.value()) / 1e6,
             'step_khz': STEPS_KHZ[int(round(self.step_knob.value()))],
             'usrp_address': self.usrp_edit.text().strip(),
             'channel_bw_khz': int(round(self.chan_entry.value() / 1e3)),
@@ -1699,6 +2362,7 @@ class MainWindow(Qt.QWidget):
             'record_iq_channel': self.rec_channel.isChecked(),
             'record_iq_band': self.rec_band.isChecked(),
             'view_mpx': self.mpx_view.state(),
+            'play_loop': self.loop_check.isChecked(),
             'geometry': bytes(self.saveGeometry().toHex()).decode(),
             'splitters': {name: bytes(split.saveState().toHex()).decode()
                           for name, split in (('main', self.main_split),
@@ -1720,6 +2384,7 @@ class MainWindow(Qt.QWidget):
             self.engine.close()
         except Exception as exc:
             print(f"FM receiver: closing the radio: {exc}", file=sys.stderr)
+        self._pool.shutdown(wait=False)
         event.accept()
 
 
@@ -1736,7 +2401,7 @@ def parse_args(argv=None):
     ap.add_argument('--usrp-address', help="a USRP's IP address")
     ap.add_argument('--file', help="play an IQ recording (implies --radio file)")
     ap.add_argument('--freq', type=float, metavar='MHZ', help="station to tune")
-    ap.add_argument('--mode', choices=('sweep', 'receive'), help="mode to start in")
+    ap.add_argument('--mode', choices=TAB_MODES, help="tab to start in")
     ap.add_argument('--sweep', type=float, nargs=2, metavar=('START', 'STOP'),
                     help="sweep span in MHz")
     ap.add_argument('--theme', choices=list(theme.NAMES))
