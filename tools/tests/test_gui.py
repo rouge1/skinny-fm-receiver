@@ -13,7 +13,9 @@ double-clicking a station switches to Receive tuned to it.
 
 Part 3 puts a radio that sweeps itself (as the BB60D does) behind it: the
 full range, the RBW, real time and its density map. Part 4 does the same
-where the library has no real time, as on a Mac.
+where the library has no real time, as on a Mac. Part 5 lists a receive rate
+this computer can't use (the BB60D's 2.5 MS/s on a Mac): greyed out, with
+why, and out of reach of the keys, the wheel and a saved setting.
 
 Run:  python tools/tests/test_gui.py [--keep]     (about 40 s)
 """
@@ -722,6 +724,50 @@ def part4_no_realtime():
     print("part 4 passed")
 
 
+class MacRadio(SimRadio):
+    """A radio with a receive rate listed but not usable here, as the BB60D's
+    2.5 MS/s on a Mac."""
+    receive_rates = (1e6, 2e6)
+    unavailable_rates = {1e6: "Not on a Mac: the library gives unreliable IQ at 1 MS/s."}
+
+
+def part5_unavailable_rate():
+    """A rate this computer can't use is listed greyed out with why; the keys
+    and the wheel pass over it, and a saved choice of it gives the default.
+    And the BB60D declares its 2.5 MS/s so on a Mac, and only there."""
+    if sys.platform == 'darwin':
+        assert 2.5e6 in radios.BB60.receive_rates
+        assert 2.5e6 in radios.BB60.unavailable_rates
+        assert radios.BB60.usable_receive_rates() == (5e6, 10e6)
+    else:
+        assert radios.BB60.unavailable_rates == {}
+        assert radios.BB60.usable_receive_rates() == (2.5e6, 5e6, 10e6)
+    original = fmapp.make_radio
+    fmapp.make_radio = lambda kind, *a, **k: MacRadio()
+    try:
+        w = make_window(['--radio', 'hackrf', '--mode', 'receive'],
+                        {'recording_dir': FOLDER, 'receive_rate': {'hackrf': 1e6}})
+        combo = w.rx_rate_combo
+        assert w._mode == 'receive' and w.engine.running, w.status.text()
+        assert combo.count() == 2 and combo.itemText(0) == '1 MS/s', combo.itemText(0)
+        assert not combo.model().item(0).isEnabled() and combo.model().item(1).isEnabled()
+        assert 'Mac' in combo.itemData(0, QtCore.Qt.ToolTipRole)
+        # Saved at the unusable rate: the default instead.
+        assert combo.currentData() == 2e6 and w.engine.rate == 2e6, (combo.currentData(),
+                                                                     w.engine.rate)
+        combo.setFocus()
+        QtTest.QTest.keyClick(combo, QtCore.Qt.Key_Up)
+        QtTest.QTest.keyClick(combo, QtCore.Qt.Key_Home)
+        _wheel(combo, QtCore.QPoint(10, 10), 1)
+        _wheel(combo, QtCore.QPoint(10, 10), -1)
+        pump(0.3)
+        assert combo.currentData() == 2e6 and w.engine.rate == 2e6, combo.currentData()
+        w.close()
+    finally:
+        fmapp.make_radio = original
+    print("part 5 passed")
+
+
 if __name__ == '__main__':
     keep = '--keep' in sys.argv
     try:
@@ -729,6 +775,7 @@ if __name__ == '__main__':
         part2_sweep()
         part3_native_sweep()
         part4_no_realtime()
+        part5_unavailable_rate()
         print("GUI: all checks passed")
     finally:
         # A failed check must not leave a flowgraph running into interpreter

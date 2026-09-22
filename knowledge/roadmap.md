@@ -472,7 +472,9 @@ same checkout.
   it quits (`bb60_source.KEEP_OPEN`). Stop no longer frees it for other
   programs there.
 - [x] **No IQ below 5 MS/s from the BB60D on a Mac**: the Mac library's IQ
-  at 2.5 MS/s and below comes out wrong, differently each time.
+  at 2.5 MS/s and below comes out wrong, differently each time. 2.5 MS/s
+  is listed greyed out, with the reason as its tooltip
+  (`Radio.unavailable_rates`), rather than left out.
 - [ ] **Tell Signal Hound** (support@signalhound.com) about both faults in
   the Mac library, with the steps that show them: open then close; and
   IQ at 2.5, 1.25 and 0.625 MS/s against 5 and up. When a fixed library

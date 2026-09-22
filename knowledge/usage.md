@@ -42,8 +42,9 @@ the app uses the BB60D there:
   it until you quit. **Stop** leaves it held: another program (Spike, say)
   can have it only once the FM receiver has quit.
 - **Its IQ at 2.5 MS/s and below is unreliable**: sometimes fine,
-  sometimes a thousand times too loud, all NaN, or wild values. So the IQ
-  bandwidth offers only 5 and 10 MS/s on a Mac. Sweeps are unaffected.
+  sometimes a thousand times too loud, all NaN, or wild values. So on a
+  Mac the IQ bandwidth shows 2.5 MS/s greyed out, and its tooltip says
+  why. Sweeps are unaffected.
 
 Both are Signal Hound's to fix. When a fixed library comes out, the app
 can drop these limits (see `knowledge/roadmap.md`).
@@ -269,7 +270,7 @@ The multiplex (MPX) spectrum fills the bottom right.
 | **Center** | The radio's centre frequency (its LO), drawn as a **dashed line** on the spectrum and the waterfall: yellow in Slate and Reading Room, verdigris in Walnut. Moving it moves the band the tuner can reach. If the tuner is still inside the new band it stays where it is; if not, it is pulled in to the nearer edge. **While you move the Center the line fades away**, so you can see the spectrum under it, and it comes back once you stop. |
 | **Center on tuner** | Puts the Center 300 kHz below the tuner, so there is room to tune either way. |
 | **Tuner range** | The lowest and highest the tuner can go around this Center. It is about three quarters of the IQ bandwidth, less half a channel at each end. |
-| **IQ bandwidth** | The radio's sample rate in Receive: how much of the band the spectrum shows, and the tuner can reach (BB60D 2.5/5/10 MS/s, 5/10 on a Mac; HackRF 2-20 MS/s). Changing it rebuilds the receiver; the Center stays if the tuner still fits. |
+| **IQ bandwidth** | The radio's sample rate in Receive: how much of the band the spectrum shows, and the tuner can reach (BB60D 2.5/5/10 MS/s, 2.5 greyed out on a Mac; HackRF 2-20 MS/s). Changing it rebuilds the receiver; the Center stays if the tuner still fits. |
 
 **The tuner stops at the edge of the band.** Rolling, stepping, typing,
 clicking or dragging past it leaves the tuner at the edge, and **Tuner
@@ -291,7 +292,7 @@ An IQ recording's Center is where it was recorded, so it cannot be moved.
 well, and 10 MS/s shows about 7.5 MHz of the band instead of 1.9 MHz. The
 exception is a long **IQ – whole band** recording: at 10 MS/s that is
 80 MB/s (4.8 GB a minute), so choose 2.5 MS/s (20 MB/s) for those - or
-5 MS/s (40 MB/s) on a Mac, where 5 is the lowest the BB60D offers.
+5 MS/s (40 MB/s) on a Mac, where 2.5 is greyed out for the BB60D.
 
 ### Tuner
 
@@ -494,7 +495,7 @@ any station that was in the band. A playback can't sweep.
 
 | Radio | Notes |
 |---|---|
-| **Signal Hound BB60D** | IQ bandwidth 10 MS/s by default (see *Which IQ bandwidth?* above). RF gain 60% (attenuator fully open, no RF amplification) is the tested best for FM. More gain overloads the front end with every other station in the band; if the status line says *Input overloaded*, turn it down. It sweeps itself, 9 kHz to 6 GHz, and the RF gain applies to that sweep too. The device stays open across mode switches: 0.02 s to Sweep, 0.2 s back. A full-range sweep uses about one CPU core, nearly all of it Signal Hound's API. On a Mac it has no real time, no 2.5 MS/s, and stays open until the app quits (see *Setting up*). |
+| **Signal Hound BB60D** | IQ bandwidth 10 MS/s by default (see *Which IQ bandwidth?* above). RF gain 60% (attenuator fully open, no RF amplification) is the tested best for FM. More gain overloads the front end with every other station in the band; if the status line says *Input overloaded*, turn it down. It sweeps itself, 9 kHz to 6 GHz, and the RF gain applies to that sweep too. The device stays open across mode switches: 0.02 s to Sweep, 0.2 s back. A full-range sweep uses about one CPU core, nearly all of it Signal Hound's API. On a Mac it has no real time, no 2.5 MS/s (greyed out), and stays open until the app quits (see *Setting up*). |
 | **HackRF One** | Gain is spread over the preamp, LNA and VGA, with the toolkit's plan. **40% (the default) was best on the bench antenna**: 99% of RDS blocks good. At 47% and above the strong local stations drove its 8-bit ADC to full scale and RDS was lost. When that happens the status line says *Input overloaded – turn the RF gain down* with the share of samples clipped; turn the gain down until it goes. Wider IQ bandwidths let more stations in, so they need less gain: at 10 MS/s, 40% already clipped a little. A weak antenna may want more; too little shows as a pilot locking while RDS stays buried. Its sweep settle time is 20 ms, twice what was measured to be safe. |
 | **Ettus USRP** | Type the IP address in the box next to the Radio list, or leave it blank to use the first USRP found. |
 

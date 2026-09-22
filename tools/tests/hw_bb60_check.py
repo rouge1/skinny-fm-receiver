@@ -53,9 +53,9 @@ from fm_receiver.recording import IqRecording, WavWriter  # noqa: E402
 from fm_receiver.bb60_sweep import REALTIME_OK, NativeSweepPlan  # noqa: E402
 from fm_receiver.bb60_source import KEEP_OPEN  # noqa: E402
 
-#: Receive at the lowest rate the radio offers: 2.5 MS/s, or 5 on a Mac,
+#: Receive at the lowest rate that can be chosen: 2.5 MS/s, or 5 on a Mac,
 #: whose library streams garbage below that (see radios.BB60).
-RX_RATE = min(BB60.receive_rates)
+RX_RATE = min(BB60.usable_receive_rates())
 from fm_receiver.sweep import SweepPlan, find_stations, to_db  # noqa: E402
 
 

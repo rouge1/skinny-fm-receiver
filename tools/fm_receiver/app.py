@@ -935,18 +935,26 @@ class MainWindow(Qt.QWidget):
         radio = self.radio
         kind = radio.kind
 
-        def fill(combo, rates, saved, default):
+        def fill(combo, rates, saved, default, unavailable=None):
+            # Rates this computer can't use are listed, greyed out, with why.
+            unavailable = unavailable or {}
             combo.blockSignals(True)
             combo.clear()
             for rate in rates:
                 combo.addItem(rate_label(rate), float(rate))
-            pick = saved if saved in rates else default
-            if pick in rates:
+                why = unavailable.get(rate)
+                if why:
+                    combo.model().item(combo.count() - 1).setEnabled(False)
+                    combo.setItemData(combo.count() - 1, why, QtCore.Qt.ToolTipRole)
+            usable = [r for r in rates if r not in unavailable]
+            pick = saved if saved in usable else default
+            if pick in usable:
                 combo.setCurrentIndex(list(rates).index(pick))
             combo.blockSignals(False)
 
         fill(self.rx_rate_combo, radio.receive_rates,
-             self.cfg['receive_rate'].get(kind), radio.default_receive_rate)
+             self.cfg['receive_rate'].get(kind), radio.default_receive_rate,
+             radio.unavailable_rates)
         fill(self.sweep_rate_combo, radio.sweep_rates,
              self.cfg['sweep_rate'].get(kind), radio.default_sweep_rate)
         self.gain_slider.blockSignals(True)

@@ -74,6 +74,9 @@ class Radio:
     kind = ''
     name = ''
     receive_rates = (2e6,)
+    #: Receive rates listed but not usable on this computer, each with why:
+    #: the window shows them greyed out, with the reason as a tooltip.
+    unavailable_rates = {}
     sweep_rates = (20e6,)
     default_receive_rate = 2e6
     default_sweep_rate = 20e6
@@ -97,6 +100,11 @@ class Radio:
     #: Sweeps in the device itself (:meth:`native_sweeper`), rather than by
     #: hopping the IQ stream's LO.
     native_sweep = False
+
+    @classmethod
+    def usable_receive_rates(cls):
+        """The receive rates that can be chosen here."""
+        return tuple(r for r in cls.receive_rates if r not in cls.unavailable_rates)
 
     @property
     def sweep_range_hz(self):
@@ -279,7 +287,8 @@ class BB60(Radio):
         # decimation of 16 or more - 2.5 MS/s and below: on the Mac mini
         # (2026-09-22), levels a thousand times too high, runs of NaN, values
         # to 1e37, differently each time. 5 MS/s and up were sound every time.
-        receive_rates = (5e6, 10e6)
+        unavailable_rates = {2.5e6: "Not on a Mac: Signal Hound's library for it gives\n"
+                                    "unreliable IQ at 2.5 MS/s. 5 MS/s and up are fine."}
     sweep_rates = (10e6, 20e6, 40e6)
     #: 10 MS/s: CPU and reception measured the same at all three (see
     #: knowledge/roadmap.md, item 6), and it shows four times the band.
