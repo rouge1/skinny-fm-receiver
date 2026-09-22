@@ -1,0 +1,356 @@
+# FM Receiver: how to use it
+
+This guide covers how to run the app and how to use each part of the window.
+What the app can do, and how well each part has been tested, is in
+[capabilities.md](capabilities.md).
+
+## Start it
+
+```sh
+./fm-receiver
+```
+
+Run this from the project directory, or through a symlink to the script. It
+activates the `gnu` conda environment (set `FMRX_CONDA_ENV` to use a
+different one) and opens the window directly; there is no launcher and no
+setup dialog.
+
+- **First run:** the app opens whichever radio is plugged in, checking for the
+  BB60D first and then the HackRF, and starts in Receive on 98.7 MHz.
+- **After that:** it reopens with the same radio, mode, frequency and window
+  layout you last used.
+
+Useful options (`./fm-receiver --help` lists them all):
+
+| Option | What it does |
+|---|---|
+| `--radio bb60` / `hackrf` / `usrp` / `file` | Choose the radio for this run |
+| `--usrp-address 192.168.10.2` | Connect to a USRP at this address |
+| `--file PATH` | Play back an IQ recording instead of a radio |
+| `--freq 95.1` | Tune to this station (MHz) |
+| `--mode sweep` / `receive` | Start in this mode |
+| `--sweep 87.5 108` | Set the sweep span (MHz) |
+| `--theme slate` / `reading-room` / `walnut` | Choose the colour theme |
+| `--no-audio` | Don't use the sound card (recording still works) |
+| `--no-save` | Don't save settings when the window closes |
+
+## The window
+
+```
+┌ FM Receiver  Radio:[BB60D ▾] [Stop]   status line ................... Themes (●) ┐
+│┌ Sweep (FFT) | Receive (IQ) ┐ ┌ RF spectrum ─────────────────────────────────────┐ │
+││ controls for the mode      │ │                                                   │ │
+│└────────────────────────────┘ │ waterfall                                         │ │
+│┌ RF gain ───────────────────┐ ├ Span  Ref level  Range  Average  □Peak □Waterfall ┤ │
+│┌ Audio: Mute  Volume  L/R ──┐ ├───────────────────────────────────────────────────┤ │
+│┌ Record: □WAV □IQ ch □IQ band│ │ Sweep: stations found  /  Receive: MPX + RDS     │ │
+└────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+- **Header**
+  - **Radio** switches to another radio straight away.
+  - **Stop** closes the radio so other programs can use it; **Start** opens it
+    again.
+  - The **status line** shows what is running, or what went wrong, for
+    example "Input overloaded - turn the RF gain down".
+  - The **Themes** disc, top right, is the theme in force: a click moves to
+    the next (Slate, Reading Room, Walnut). Its tooltip names it.
+- **The two tabs are the two modes.** Switching tabs switches the radio
+  between them. On a BB60D the switch takes about 0.3 s.
+- **RF gain** applies to the radio in both modes, and each radio remembers its
+  own setting.
+
+## A typical session
+
+1. **Sweep the band.** Open the **Sweep (FFT)** tab and choose *FM broadcast
+   87.5-108*. The spectrum and waterfall show the whole band, and **Stations
+   found** lists every channel standing clear of the noise.
+2. **Pick a station.** Double-click it in the list, or double-click its peak
+   in the spectrum. The app switches to **Receive (IQ)** tuned to it.
+3. **Listen.** Audio starts at once. Stereo and RDS lock within a few seconds:
+   station name, PI and call sign, program type, RadioText, Now Playing and
+   the clock.
+4. **Record.** Tick what you want and press **Record** (Ctrl+R). Press it again
+   to stop. The files are saved in `recordings/`.
+5. **Go back** to the Sweep tab (Ctrl+1) at any time.
+
+## Sweep (FFT)
+
+A sweep covers more spectrum than the radio can see at once. The radio hops
+across the span and each step's FFT is stitched into one picture. Nothing is
+demodulated, so it uses little CPU.
+
+| Control | What it does |
+|---|---|
+| **Band** | Presets: FM 87.5-108, Japan 76-95, OIRT 65.8-74, VHF 30-300. **Custom** is selected automatically when you type your own span. |
+| **Span (MHz)** | Start and stop frequencies. Any span the radio can tune (up to 6 GHz). |
+| **Step bandwidth** | The radio's sample rate while sweeping, which sets how much each step sees. Wider means fewer steps. On a BB60D, 20 MS/s covers the FM band in 2 steps (the default, about half a core of CPU) and 40 MS/s covers it in 1 (about a core). Changing this restarts the radio. |
+| **FFT** | Bins per FFT. This sets the resolution bandwidth (RBW), shown under the buttons: 4096 bins at 20 MS/s gives 4.9 kHz. |
+| **Frames per step** | FFT frames averaged at each step. More gives a smoother trace and a slower sweep. |
+| **Settle** | How long to wait after each retune before trusting the samples. The BB60D needs about 1 ms. A HackRF needs about 10 ms and defaults to 20 ms. **If a signal appears twice, or shows where there is nothing, increase this.** |
+| **Pause / Resume** | Freezes the sweep, for example to study the trace. |
+| **Listen** | Receive the selected station, or wherever the marker is. |
+| **Station threshold** | How far above the noise floor a channel must be to go in the list (default 15 dB). |
+
+The line under the buttons shows the plan and the measured speed, for example
+"2 steps of 16.80 MHz, RBW 4.88 kHz – 90 ms per sweep (11/s, 230 MHz/s)".
+
+In the **station list**, one click moves the marker and a double-click starts
+listening. Once you have listened to a station, its RDS name appears next to
+it.
+
+## Receive (IQ)
+
+In Receive the radio runs at a narrow IQ bandwidth, and the app demodulates
+one station. The tab has three boxes, top to bottom: **Radio** sets the
+radio itself, **Tuner** picks the station inside the radio's band, and
+**RDS** shows the station as decoded.
+
+```
+┌ Radio ───────────────────────────────────────┐
+│       Center: [0098.400 MHz] [Center on tuner]│   the radio's own frequency
+│  Tuner range: 94.800 - 102.000 MHz            │   where the tuner can go
+│ IQ bandwidth: [10 MS/s ▾]                     │   how much band it takes in
+└───────────────────────────────────────────────┘
+┌ Tuner ───────────────────────────────────────┐
+│        Tuner: [0099.100 MHz] [▲▼]   (Step)    │   the station you hear
+│Channel filter: [200 kHz] [▲▼]                 │
+└───────────────────────────────────────────────┘
+┌ RDS ─────────────────────────────────────────┐
+│ Station, Standard, Stereo / Snap to step,     │
+│ Clear RDS, Signal, Audio, then the RDS itself │
+└───────────────────────────────────────────────┘
+```
+
+The multiplex (MPX) spectrum fills the bottom right.
+
+### Radio
+
+| Control | What it does |
+|---|---|
+| **Center** | The radio's centre frequency (its LO), drawn as a **dashed line** on the spectrum and the waterfall: yellow in Slate and Reading Room, verdigris in Walnut. Moving it moves the band the tuner can reach. If the tuner is still inside the new band it stays where it is; if not, it is pulled in to the nearer edge. **While you move the Center the line fades away**, so you can see the spectrum under it, and it comes back once you stop. |
+| **Center on tuner** | Puts the Center 300 kHz below the tuner, so there is room to tune either way. |
+| **Tuner range** | The lowest and highest the tuner can go around this Center. It is about three quarters of the IQ bandwidth, less half a channel at each end. |
+| **IQ bandwidth** | The radio's sample rate in Receive: how much of the band the spectrum shows, and the tuner can reach (BB60D 2.5/5/10 MS/s, HackRF 2-20 MS/s). Changing it rebuilds the receiver; the Center stays if the tuner still fits. |
+
+**The tuner stops at the edge of the band.** Rolling, stepping, typing,
+clicking or dragging past it leaves the tuner at the edge, and **Tuner
+range** says so. To go further, move the Center. The parts of the spectrum
+the tuner cannot reach are shaded, with a dotted line at each limit.
+
+There is one exception: a station picked from outside Receive (from the
+Sweep list, or with `--freq`) places the Center for you, because there is
+no band yet to stay inside.
+
+On a HackRF the tuner also keeps 100 kHz clear of the Center, where the
+radio's DC spike is: it jumps over that gap in the direction you are tuning.
+The BB60D has no spike, so there is no gap.
+
+An IQ recording's Center is where it was recorded, so it cannot be moved.
+
+**Which IQ bandwidth?** On the BB60D, 10 MS/s (the default). At 2.5, 5 and
+10 MS/s the app uses the same CPU (about half a core) and receives just as
+well, and 10 MS/s shows about 7.5 MHz of the band instead of 1.9 MHz. The
+exception is a long **IQ – whole band** recording: at 10 MS/s that is
+80 MB/s (4.8 GB a minute), so choose 2.5 MS/s (20 MB/s) for those.
+
+### Tuner
+
+| Control | What it does |
+|---|---|
+| **Tuner** | The station you hear, to 1 kHz. **Hover over a digit** and it lights up; **roll the mouse wheel** to move that digit up or down. It carries as arithmetic does: rolling up the tens digit of 90.000 gives 100.000, and so does rolling up the ones digit of 99.000. With the pointer over a digit, **Up/Down** do the same and **PageUp/PageDown** move it by ten. **Type a digit** (or press Enter, or double-click) to type a whole frequency in MHz; Enter sets it and Escape leaves it as it was. |
+| **▲ / ▼ beside the tuner** | Steps the tuner down or up by one **Step**. Click a half (hold it to repeat), or roll the wheel over it. Ctrl+Left and Ctrl+Right do the same from anywhere in the window. |
+| **Step** (knob) | Four settings: 10, 50, 100 and 200 kHz. It sets what the arrows and Ctrl+Left/Right move by, and what Snap rounds to. FM channels are 200 kHz apart in the Americas, on the odd tenths (88.1, 88.3 … 107.9), and a 200 kHz Step keeps to those; Europe's are 100 kHz apart. |
+| **Channel filter** | 60-400 kHz, applied live. Hover a digit and roll the wheel, use its **▲ / ▼** (5 kHz a click), or roll the wheel over the orange band on the spectrum. A narrower filter rejects a strong neighbour, but below about 180 kHz stereo and RDS start to suffer. Wider than about 250 kHz the audio takes in any neighbour that close; the widths up to 400 kHz are for the **IQ – channel** recording, which then holds an HD Radio station's digital sidebands (±200 kHz). |
+
+**The tuner's marker** (the thin orange line at the tuner, on the spectrum
+and the waterfall) is hidden while you are not tuning: the orange band
+shows where the station is. It fades in as soon as you tune, by any means,
+and fades out again a moment after you stop. Pressing the middle button on
+the orange band - grabbing the tuner - shows it too, for as long as you
+hold it. In Sweep the marker is always shown, since it is your pick.
+
+### Tuning with the mouse on the spectrum
+
+The **orange band** on the RF spectrum is the channel filter, centred on the
+tuner. It brightens under the pointer.
+
+- **Middle-button drag on the orange band:** tunes. The band and the tuner
+  follow the pointer, and the audio follows as you drag. The drag stays
+  inside the tuner range, so the radio itself never moves.
+- **Mouse wheel over the orange band:** makes the channel filter wider or
+  narrower, 5 kHz a notch (1 kHz with Shift).
+- **Click the spectrum or the waterfall:** tunes there, within the range.
+- Everywhere else the wheel zooms and a left or middle drag pans the view,
+  as before.
+
+Peak hold starts again whenever the Center moves. The MPX view's peak hold
+starts again on every tune, so nothing from the previous station stays on
+screen.
+
+### RDS
+
+Top to bottom:
+
+| Row | What it shows or does |
+|---|---|
+| **Station** | The most consistent PS name, or the RT+ station name. |
+| **Standard** | RBDS with 75 µs de-emphasis for the Americas, or RDS with 50 µs for Europe and elsewhere. |
+| **Stereo** | Turn it off for mono, which is quieter on a weak station. With no pilot, the audio is mono anyway. |
+| **Snap to step** | Clicks and middle-drags on the spectrum tune to the nearest multiple of the Step. Off, they tune to where the pointer is, to the kHz. |
+| **Clear RDS** | Clears the decoded data and starts decoding again. |
+| **Signal** | The power in the channel and how far the station stands above the floor: green above 30 dB, amber above 15 dB, red below that. |
+| **Audio** | *Stereo – pilot locked (standard phase)*, or *Mono – no stereo pilot*. *Standard phase* is what broadcasters send; *cosine phase* is what the RF bench toolkit's own transmitter sends. The app detects which by itself. |
+| **Station ID (PI)** | With the call sign, if the station's own text confirms it; otherwise it says "maybe". |
+| **Program type**, **Now showing (PS)**, **Now playing**, **RadioText** | As they arrive. Now playing is the RT+ artist and title. |
+| **Flags**, **Station clock**, **Decode quality** | TP, TA and TMC; the station's clock; how many groups, and how many blocks were good. |
+
+Not every station sends RDS. If the PI stays at "-" for 20 s on a strong
+station, it probably has none. In testing, 102.1 was one of these.
+
+The **MPX view** (bottom right) is the demodulated multiplex from 0 to
+125 kHz: mono audio, the 19 kHz pilot, stereo around 38 kHz and RDS at
+57 kHz.
+
+## Views: bandwidth and amplitude
+
+Each spectrum has its own dials. **Hover over a dial and roll the mouse
+wheel** to turn it, or drag it up or down; hold Shift for fine steps. A ring
+lights round a dial under the pointer. Double-click a dial to reset it. The
+same goes for the Volume and Step knobs.
+
+| Dial | One wheel notch |
+|---|---|
+| Span | ×1.25 wider or narrower |
+| Ref level | 2 dB |
+| Range | 5 dB |
+| Average | 1 |
+| Volume | 2% |
+| Step | the next setting |
+
+| Dial / control | What it sets |
+|---|---|
+| **Span** | How much frequency is shown. In Receive it is centred on the station; in Sweep, on the middle of the view. |
+| **Ref level** | The level at the top of the scale. |
+| **Range** | dB from the top of the scale to the bottom, i.e. the amplitude scale. The waterfall colours follow Ref level and Range. |
+| **Average** | Frames averaged in Receive, or sweeps averaged in Sweep. |
+| **Peak hold** | Draws a dashed trace of the highest level seen. Untick it to clear. |
+| **Waterfall** | Shows or hides the waterfall. |
+| **Full span** | Zooms out to everything available. |
+
+You can also use the mouse on the plot: the wheel zooms, dragging pans, and
+the Span dial follows. Hovering shows the frequency and level under the
+pointer. In Receive, the wheel and the middle button over the orange channel
+band work on the channel instead; see *Tuning with the mouse on the
+spectrum* above.
+
+The waterfall's colours are the theme's own: pale ice on slate in Slate,
+ink on paper in Reading Room, and the tan and cream of a radio dial in
+Walnut. The noise floor sinks into the plot's background.
+
+Sweep, Receive and the MPX view each remember their own dial settings.
+
+## Audio
+
+- **Mute** (Ctrl+M) turns red when on. It silences the speaker only; the level
+  meters and any recording carry on.
+- **Volume** (dial: roll the wheel over it, or Ctrl+Up/Down) follows a square
+  law, so the middle of the dial sounds like the middle.
+- The **L/R meters** show the level before the volume control. The bar is the
+  RMS level, the lighter bar the peak, and the tick the recent peak. It turns
+  amber above -6 dBFS and red above -1 dBFS.
+
+## Recording
+
+Tick any combination of the three kinds, then press **Record** (Ctrl+R).
+Recording works in Receive only.
+
+| Kind | Contents | Size |
+|---|---|---|
+| **Audio (WAV)** | The station as heard: stereo, 48 kHz, 16-bit, after de-emphasis and before the volume control. Mute and volume don't affect it. | about 0.2 MB/s |
+| **IQ – channel** | Just the tuned station, through the channel filter, 500 kS/s complex, with the station at 0 Hz. Open the filter to 400 kHz to keep an HD Radio station's sidebands. | 4 MB/s |
+| **IQ – whole band** | Everything the radio receives at its IQ bandwidth. The size is shown next to the checkbox. | 8 bytes per sample: 20 MB/s at 2.5 MS/s, 80 MB/s at 10 MS/s |
+
+- **Where files go:** `recordings/` in the project folder. Use **Folder...** to
+  change it.
+- **File names** look like `fm-98.70MHz-20260921-181500-audio.wav`, with
+  `-iq-channel` or `-iq-band` for the IQ kinds.
+- **IQ file format:** each IQ recording is a `.cfile` of complex float32 data
+  with two description files beside it. `.sigmf-meta` is SigMF, which other
+  SDR tools read. `.json` is the RF bench toolkit's capture format, so its
+  `scripts/test_rds_core.py` can decode the recording.
+- **Retuning while recording IQ** closes the file and continues in a new one
+  (`-part2`, `-part3`, …), so each file has one centre frequency. A
+  whole-band recording stays in the same file if only the tuner moves within
+  the band; moving the Center starts a new part. During a middle-drag the
+  new part starts when you let go, not at every step of the drag.
+- Changing mode or radio, or pressing Stop, ends the recording. The panel
+  lists what was saved.
+
+## Playing an IQ recording back
+
+Choose **IQ recording (playback)** in the Radio list and open the `.cfile`,
+`.sigmf-meta` or `.json` file. Or start the app with `./fm-receiver --file
+PATH`.
+
+The recording plays in real time on a loop, as if it were a radio, and it
+opens tuned to the station it was recorded on. Tuning moves the channel
+within the recorded band. A whole-band recording therefore lets you listen to
+any station that was in the band. A playback can't sweep.
+
+## Radios
+
+| Radio | Notes |
+|---|---|
+| **Signal Hound BB60D** | IQ bandwidth 10 MS/s by default (see *Which IQ bandwidth?* above). RF gain 60% (attenuator fully open, no RF amplification) is the tested best for FM. More gain overloads the front end with every other station in the band; if the status line says *Input overloaded*, turn it down. The device stays open across mode switches. |
+| **HackRF One** | Gain is spread over the preamp, LNA and VGA, with the toolkit's plan. **40% (the default) was best on the bench antenna**: 99% of RDS blocks good. At 47% and above the strong local stations drove its 8-bit ADC to full scale and RDS was lost. When that happens the status line says *Input overloaded – turn the RF gain down* with the share of samples clipped; turn the gain down until it goes. Wider IQ bandwidths let more stations in, so they need less gain: at 10 MS/s, 40% already clipped a little. A weak antenna may want more; too little shows as a pilot locking while RDS stays buried. Its sweep settle time is 20 ms, twice what was measured to be safe. |
+| **Ettus USRP** | Type the IP address in the box next to the Radio list, or leave it blank to use the first USRP found. |
+
+## Keyboard shortcuts
+
+| Keys | Action |
+|---|---|
+| Ctrl+1 / Ctrl+2 | Sweep / Receive |
+| Ctrl+Left / Ctrl+Right | Step the tuner down / up by the Step |
+| Up / Down (pointer on a digit) | That digit of the Tuner, Center or Channel filter up / down |
+| PageUp / PageDown | The same digit by ten |
+| Left / Right (entry focused) | Choose the digit Up/Down change |
+| 0-9 or Enter (entry focused) | Type a value; Enter sets it, Escape cancels |
+| Ctrl+M | Mute |
+| Ctrl+Up / Ctrl+Down | Volume ±5 |
+| Ctrl+R | Start/stop recording |
+
+## Settings
+
+Settings are saved to `~/.config/fm-receiver/config.json` when the window
+closes. They include:
+
+- the radio, and per radio its gain, rates and settle time;
+- the mode, the tuner and the Center;
+- the dials and audio settings;
+- the recording choices and folder;
+- the theme and the window layout.
+
+To start fresh, delete the file. To use a different settings file, set
+`FMRX_CONFIG=/path/to.json`.
+
+## Troubleshooting
+
+| Symptom | What to do |
+|---|---|
+| "No … was found" in the status line | Check the cable, and close anything else using the radio (Spike, GQRX, hackrf_transfer, another copy of this app). Then choose the radio again or press Start. |
+| Ghost copies of signals in a sweep | Increase **Settle**. |
+| No RDS on a strong station | It may not send RDS; check the MPX view for a hump at 57 kHz. On a weak station, try a narrower channel filter. |
+| *Input overloaded* | Turn the RF gain down. On a HackRF it also gives the share of samples clipped; turn down until the message goes. |
+| Another program can't open the radio | Press **Stop** (or close the app): Stop lets go of the device. |
+| The tuner won't go any further | It is at the edge of the band around the Center: move the **Center**, or press **Center on tuner** and carry on. |
+| No sound | The **Audio** panel says if the sound card could not be opened. Check the **Mute** button. |
+| Stereo sounds noisy | Untick **Stereo**. A weak station sounds cleaner in mono. |
+
+## Tests
+
+```sh
+source ~/miniconda3/bin/activate gnu
+python tools/tests/run_all.py          # no radio needed, about a minute
+python tools/tests/run_all.py --hw     # plus the BB60D check, off air
+```

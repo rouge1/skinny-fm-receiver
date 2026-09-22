@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Launch the FM receiver window.
+#
+#   ./fm-receiver                     the last radio and mode used
+#   ./fm-receiver --radio bb60 --mode sweep
+#   ./fm-receiver --file recordings/fm-98.70MHz-...-iq-channel.cfile
+#   ./fm-receiver --help              every option
+#
+# Runs in the "gnu" conda environment (GNU Radio 3.10, PyQt5, pyqtgraph,
+# SoapySDR). FMRX_CONDA_ENV names another; if a suitable environment is
+# already active it is used as it is.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+ENV_NAME="${FMRX_CONDA_ENV:-gnu}"
+
+if [ "${CONDA_DEFAULT_ENV:-}" != "$ENV_NAME" ]; then
+    CONDA_BASE=""
+    if command -v conda >/dev/null 2>&1; then
+        CONDA_BASE="$(conda info --base 2>/dev/null || true)"
+    fi
+    for base in "$CONDA_BASE" "$HOME/miniconda3" "$HOME/anaconda3" "$HOME/miniforge3"; do
+        if [ -n "$base" ] && [ -f "$base/bin/activate" ]; then
+            # shellcheck disable=SC1091
+            source "$base/bin/activate" "$ENV_NAME" && break
+        fi
+    done
+    if [ "${CONDA_DEFAULT_ENV:-}" != "$ENV_NAME" ]; then
+        echo "fm-receiver: could not activate the conda environment '$ENV_NAME'" >&2
+        exit 1
+    fi
+fi
+
+export PYTHONPATH="$HERE/tools${PYTHONPATH:+:$PYTHONPATH}"
+exec python -m fm_receiver "$@"

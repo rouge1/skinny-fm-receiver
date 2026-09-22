@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+# Recordings made with the app (the default folder) - large, and not code.
+recordings/
