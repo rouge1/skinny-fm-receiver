@@ -28,6 +28,11 @@ the scale and the last row the reference level. The reference level places
 the map even with the gain set by hand, without changing a level. It cost
 36-56% of a core on the FM band.
 
+**On a Mac** (Apple Silicon) Signal Hound's library, 5.0.11 on, sweeps and
+streams IQ but has no real time (``README_macos.txt`` in its SDK), and its
+sweep takes RBWs down to 1 kHz - the least ``RBW_LADDER`` offers anyway.
+:data:`REALTIME_OK` says which; the window greys Real time out without it.
+
 The constants and calls below were written from the device's behaviour, and
 then checked against Signal Hound's API reference (``bb_api.h`` and the
 measurement modes, linked from ``knowledge/google_bb60d.md``): every value
@@ -38,6 +43,7 @@ minimum span, though 20 Hz is the absolute one.
 """
 
 import ctypes
+import sys
 import threading
 import time
 from ctypes import POINTER, byref, c_double, c_float, c_int, c_uint32
@@ -80,11 +86,33 @@ RT_MAX_SPAN_HZ = 27e6
 RT_MIN_RBW, RT_MAX_RBW = 2465.820313, 631250.0
 RT_AUTO_RBW = 10e3
 RT_FRAME_RATE = 30
+#: Whether this platform's library does real time: not the Mac's.
+REALTIME_OK = sys.platform != 'darwin'
 #: The reference level the API takes, and the density map's height.
 REF_RANGE_DB = (-130.0, 20.0)
 SCALE_RANGE_DB = (10.0, 200.0)
 
+#: The API's library by the name the SoapySDR module links it under - its
+#: soname on Linux, its install name on a Mac - and, on a Mac, where it is
+#: installed (see ``knowledge/usage.md``) if the plain name is not found.
+if sys.platform == 'darwin':
+    API_LIBRARY = 'libbb_api.5.dylib'
+    API_PATHS = ('/usr/local/lib/libbb_api.5.dylib', '/opt/homebrew/lib/libbb_api.5.dylib')
+else:
+    API_LIBRARY = 'libbb_api.so.5'
+    API_PATHS = ()
+
 _LIB = None
+
+
+def load_api():
+    """The API's library, by name, then by path."""
+    for name in (API_LIBRARY,) + API_PATHS:
+        try:
+            return ctypes.CDLL(name)
+        except OSError as exc:
+            error = exc
+    raise error
 
 
 def _lib():
@@ -93,7 +121,7 @@ def _lib():
     would see the device as not open."""
     global _LIB
     if _LIB is None:
-        lib = ctypes.CDLL('libbb_api.so.5')
+        lib = load_api()
         lib.bbGetErrorString.restype = ctypes.c_char_p
         lib.bbGetErrorString.argtypes = [c_int]
         for name, args in (
@@ -184,9 +212,10 @@ class NativeSweepPlan:
         self.start_hz, self.stop_hz = start_hz, stop_hz
         span = stop_hz - start_hz
         self.asked_rbw = rbw_hz
-        self.realtime = bool(realtime) and span <= RT_MAX_SPAN_HZ
+        asked = bool(realtime) and REALTIME_OK
+        self.realtime = asked and span <= RT_MAX_SPAN_HZ
         #: Real time was asked for, but the span is too wide for it.
-        self.too_wide = bool(realtime) and not self.realtime
+        self.too_wide = asked and not self.realtime
         if self.realtime:
             rbw = RT_AUTO_RBW if not rbw_hz else float(rbw_hz)
             self.rbw = min(max(rbw, RT_MIN_RBW), RT_MAX_RBW)

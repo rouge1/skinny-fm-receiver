@@ -3,11 +3,12 @@
 """Signal Hound BB60D as a live GNU Radio source.
 
 Copied from the RF bench toolkit (``/data/python/SDR/apps/bb60_source.py``,
-commit 20c76e4). Four changes for this app, all marked "FM receiver": the
+commit 20c76e4). Five changes for this app, all marked "FM receiver": the
 analog bandwidth is set with every rate (see :data:`IQ_BANDWIDTH`),
 ``start()`` drops settings left pending from before it,
 :attr:`bb60_source.hold_open` keeps the device open across a stop and start,
-and :meth:`bb60_source.hold` opens it with no stream, for ``bb60_sweep``.
+:meth:`bb60_source.hold` opens it with no stream, for ``bb60_sweep``, and
+it finds the module and the SoapySDR libraries on a Mac as well.
 
 The BB60D is a SoapySDR device, but it cannot be driven through
 ``gr-soapy``: ``soapy.source(...)`` constructs, and then *every* setter -
@@ -28,7 +29,9 @@ Four things about this device that are not like the others:
 - **Its module is a system one.** It lives in ``/usr/local/lib/SoapySDR``
   rather than inside the conda environment, so ``SOAPY_SDR_PLUGIN_PATH``
   has to point at it. The ABI matches (both 0.8), so the conda binding
-  loads the system module quite happily once it can find it.
+  loads the system module quite happily once it can find it. (FM
+  receiver: on a Mac it is built into the conda environment instead, where
+  SoapySDR looks anyway - see ``knowledge/usage.md``.)
 - **Its rates are a ladder**: 40, 20, 10, 5, 2.5 MS/s and on down in
   halves. Nothing in between, so a flowgraph picks one off the ladder and
   resamples. At 10 MS/s the analog filter is 8 MHz, which is what makes it
@@ -110,22 +113,41 @@ def _soapy_libraries():
     There is normally more than one. The BB60 module is a *system* module
     and links against the system ``libSoapySDR``; the Python binding here
     is conda's and carries its own. Both end up in the process.
+
+    FM receiver: a Mac has no ``/proc``; there dyld lists what it loaded.
     """
     paths = []
     try:
-        with open('/proc/self/maps') as fh:
-            for line in fh:
-                path = line.rstrip().rpartition(' ')[2]
-                if 'libSoapySDR.so' in path and path not in paths:
-                    paths.append(path)
+        for path in _mapped_files():
+            if _SOAPY_LIB.match(os.path.basename(path)) and path not in paths:
+                paths.append(path)
     except Exception:
         pass
     for path in ('/lib/x86_64-linux-gnu/libSoapySDR.so.0.8',
                  '/usr/lib/x86_64-linux-gnu/libSoapySDR.so.0.8',
-                 '/usr/local/lib/libSoapySDR.so.0.8'):
+                 '/usr/local/lib/libSoapySDR.so.0.8',
+                 '/opt/homebrew/lib/libSoapySDR.0.8.dylib',
+                 '/usr/local/lib/libSoapySDR.0.8.dylib'):
         if os.path.exists(path) and path not in paths:
             paths.append(path)
     return paths
+
+
+#: FM receiver: libSoapySDR.so.0.8 on Linux, libSoapySDR.0.8.dylib on a Mac.
+_SOAPY_LIB = re.compile(r'libSoapySDR\.(so|[\d.]*dylib$)')
+
+
+def _mapped_files():
+    """FM receiver: the files this process has loaded, on Linux or a Mac."""
+    if sys.platform == 'darwin':
+        dyld = ctypes.CDLL(None)
+        dyld._dyld_image_count.restype = ctypes.c_uint32
+        dyld._dyld_get_image_name.argtypes = [ctypes.c_uint32]
+        dyld._dyld_get_image_name.restype = ctypes.c_char_p
+        names = (dyld._dyld_get_image_name(i) for i in range(dyld._dyld_image_count()))
+        return [n.decode('utf-8', 'replace') for n in names if n]
+    with open('/proc/self/maps') as fh:
+        return [line.rstrip().rpartition(' ')[2] for line in fh]
 
 
 def install_log_handler():
@@ -314,6 +336,8 @@ _MODULE_DIRS = [
     '/usr/lib/x86_64-linux-gnu/SoapySDR/modules0.8',
     '/usr/local/lib/SoapySDR/modules*',
     '/usr/lib/*/SoapySDR/modules*',
+    # FM receiver: Homebrew's, on a Mac.
+    '/opt/homebrew/lib/SoapySDR/modules0.8',
 ]
 
 

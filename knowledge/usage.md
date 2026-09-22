@@ -4,6 +4,67 @@ This guide covers how to run the app and how to use each part of the window.
 What the app can do, and how well each part has been tested, is in
 [capabilities.md](capabilities.md).
 
+## Setting up
+
+The app runs on Linux (x86-64) and on a Mac with Apple Silicon. Both use
+the same conda environment, made from `environment.yml` in the project:
+
+```sh
+conda env create -f environment.yml      # makes the "gnu" environment
+```
+
+On a Mac, get conda from Miniforge first (`brew install miniforge`). That is
+everything the HackRF, a USRP and IQ playback need. The BB60D needs two
+more things that conda doesn't have: Signal Hound's library
+(`libbb_api`) and their SoapySDR module. They are not in this repository.
+Signal Hound's licence lets their library be copied only to people who own
+the hardware, and this repository is public.
+
+### The BB60D on Linux
+
+Install the library in `/usr/local/lib`, and build and install
+[Signal Hound's SoapySDR module](https://github.com/SignalHound/soapy-bb60),
+as their READMEs describe. The app finds the module in
+`/usr/local/lib/SoapySDR`.
+
+### The BB60D on a Mac
+
+Not yet tried with the device. Signal Hound's Mac library does sweeps and
+IQ, but not real time, so the **Real time** box is greyed out on a Mac.
+
+1. Install libusb and CMake. The library loads Homebrew's libusb.
+   ```sh
+   brew install libusb cmake
+   ```
+2. Download the [Signal Hound SDK](https://signalhound.com/software/signal-hound-software-development-kit-sdk/).
+   The Mac library is in version 5.0.11 and later, from the 2026-09-14 SDK
+   on. Install it under the name it links by:
+   ```sh
+   cd signal_hound_sdk/device_apis/bb_series
+   sudo mkdir -p /usr/local/lib
+   sudo cp lib/macos_arm/libbb_api.5.0.11.dylib /usr/local/lib/libbb_api.5.dylib
+   ```
+   If the SDK came through a web browser, macOS may refuse to load the
+   library. Clear the download flag:
+   `sudo xattr -d com.apple.quarantine /usr/local/lib/libbb_api.5.dylib`.
+3. Build the SoapySDR module into the conda environment, so it uses the
+   environment's own SoapySDR. Run this from the folder that holds
+   `signal_hound_sdk`:
+   ```sh
+   conda activate gnu
+   git clone https://github.com/SignalHound/soapy-bb60
+   cmake -S soapy-bb60 -B soapy-bb60/build \
+       -DCMAKE_PREFIX_PATH="$CONDA_PREFIX" \
+       -DCMAKE_INSTALL_PREFIX="$CONDA_PREFIX" \
+       -DCMAKE_INSTALL_RPATH="$CONDA_PREFIX/lib" \
+       -DSignalHoundBB60_INCLUDE_DIRS="$PWD/signal_hound_sdk/device_apis/bb_series/include" \
+       -DSignalHoundBB60_LIBRARIES=/usr/local/lib/libbb_api.5.dylib
+   cmake --build soapy-bb60/build && cmake --install soapy-bb60/build
+   ```
+4. Plug the BB60D in and check it is found:
+   `SoapySDRUtil --find="driver=SignalHoundBB60"`. Then run
+   `python tools/tests/run_all.py --hw` with an antenna attached.
+
 ## Start it
 
 ```sh
@@ -91,7 +152,7 @@ demodulated. There are two kinds:
 |---|---|
 | **Band** | Presets: **Full range of the radio** (the default, 9 kHz to 6 GHz on a BB60D), FM 87.5-108, Japan 76-95, OIRT 65.8-74, VHF 30-300. **Custom** is selected automatically when you set your own bounds. |
 | **Start** / **Stop** | The sweep's lower and upper bounds, in MHz to the kHz (9 kHz is 0000.009). Hover a digit and roll the wheel, or type a frequency. They stay inside the radio's range and at least 200 kHz apart. The sweep changes as soon as the digits come to rest. |
-| **Real time** *(BB60D)* | Watch the span in real time instead of sweeping it. Only for spans up to 27 MHz, which includes the FM band; wider, the box greys out and the span is swept. See *Sweep, real time and IQ* below. |
+| **Real time** *(BB60D)* | Watch the span in real time instead of sweeping it. Only for spans up to 27 MHz, which includes the FM band; wider, the box greys out and the span is swept. Not on a Mac, whose Signal Hound library has no real time. See *Sweep, real time and IQ* below. |
 | **RBW** *(BB60D)* | Resolution bandwidth. **Auto** keeps a sweep near 80,000 points: 300 kHz over the full range, 1 kHz over the FM band. Narrower shows more detail and a lower noise floor. If you pick one too fine for the span, it is raised, and the line under the buttons says so. |
 | **Step bandwidth** *(other radios)* | The radio's sample rate while sweeping, which sets how much each step sees. Wider means fewer steps. Changing this restarts the radio. |
 | **FFT** *(other radios)* | Bins per FFT. This sets the RBW: 4096 bins at 20 MS/s gives 4.9 kHz. |
@@ -346,11 +407,13 @@ any station that was in the band. A playback can't sweep.
 
 | Radio | Notes |
 |---|---|
-| **Signal Hound BB60D** | IQ bandwidth 10 MS/s by default (see *Which IQ bandwidth?* above). RF gain 60% (attenuator fully open, no RF amplification) is the tested best for FM. More gain overloads the front end with every other station in the band; if the status line says *Input overloaded*, turn it down. It sweeps itself, 9 kHz to 6 GHz, and the RF gain applies to that sweep too. The device stays open across mode switches: 0.02 s to Sweep, 0.2 s back. A full-range sweep uses about one CPU core, nearly all of it Signal Hound's API. |
+| **Signal Hound BB60D** | IQ bandwidth 10 MS/s by default (see *Which IQ bandwidth?* above). RF gain 60% (attenuator fully open, no RF amplification) is the tested best for FM. More gain overloads the front end with every other station in the band; if the status line says *Input overloaded*, turn it down. It sweeps itself, 9 kHz to 6 GHz, and the RF gain applies to that sweep too. The device stays open across mode switches: 0.02 s to Sweep, 0.2 s back. A full-range sweep uses about one CPU core, nearly all of it Signal Hound's API. On a Mac it has no real time (see *Setting up*). |
 | **HackRF One** | Gain is spread over the preamp, LNA and VGA, with the toolkit's plan. **40% (the default) was best on the bench antenna**: 99% of RDS blocks good. At 47% and above the strong local stations drove its 8-bit ADC to full scale and RDS was lost. When that happens the status line says *Input overloaded – turn the RF gain down* with the share of samples clipped; turn the gain down until it goes. Wider IQ bandwidths let more stations in, so they need less gain: at 10 MS/s, 40% already clipped a little. A weak antenna may want more; too little shows as a pilot locking while RDS stays buried. Its sweep settle time is 20 ms, twice what was measured to be safe. |
 | **Ettus USRP** | Type the IP address in the box next to the Radio list, or leave it blank to use the first USRP found. |
 
 ## Keyboard shortcuts
+
+On a Mac, Ctrl is the ⌘ Command key.
 
 | Keys | Action |
 |---|---|
@@ -395,7 +458,7 @@ To start fresh, delete the file. To use a different settings file, set
 ## Tests
 
 ```sh
-source ~/miniconda3/bin/activate gnu
+conda activate gnu
 python tools/tests/run_all.py          # no radio needed, about a minute
 python tools/tests/run_all.py --hw     # plus the BB60D check, off air
 ```

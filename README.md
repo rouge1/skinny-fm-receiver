@@ -25,6 +25,9 @@ back as if they were a radio.
 - `tools/fm_receiver/`: the code
 - `tools/tests/`: tests (`python tools/tests/run_all.py`)
 
-Needs the `gnu` conda environment (GNU Radio 3.10, PyQt5, pyqtgraph,
-SoapySDR). Parts of it are adapted from the RF bench toolkit at
-`/data/python/SDR`; the files that were copied say so at the top.
+Runs on Linux and on a Mac with Apple Silicon, in the `gnu` conda
+environment (GNU Radio 3.10, PyQt5, pyqtgraph, SoapySDR):
+`conda env create -f environment.yml`. The BB60D needs Signal Hound's
+library as well; see *Setting up* in [usage.md](knowledge/usage.md). Parts
+of it are adapted from the RF bench toolkit at `/data/python/SDR`; the
+files that were copied say so at the top.

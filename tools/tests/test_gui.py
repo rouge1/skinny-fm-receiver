@@ -11,6 +11,10 @@ frequencies, slow to retune) and checks the sweep finds them, the station
 list fills, Pause holds it, a span edit re-plans it without a restart, and
 double-clicking a station switches to Receive tuned to it.
 
+Part 3 puts a radio that sweeps itself (as the BB60D does) behind it: the
+full range, the RBW, real time and its density map. Part 4 does the same
+where the library has no real time, as on a Mac.
+
 Run:  python tools/tests/test_gui.py [--keep]     (about 40 s)
 """
 
@@ -32,6 +36,7 @@ FOLDER = tempfile.mkdtemp(prefix='fmrx-gui-')
 os.environ['FMRX_CONFIG'] = os.path.join(FOLDER, 'config.json')
 
 from fm_receiver import app as fmapp  # noqa: E402
+from fm_receiver import bb60_sweep  # noqa: E402
 from fm_receiver import radios  # noqa: E402
 from tests import signals  # noqa: E402
 from tests.test_sweep import slow_radio  # noqa: E402
@@ -588,8 +593,9 @@ def part3_native_sweep():
     """A radio that sweeps itself: the whole range from 9 kHz, an RBW in
     place of the LO-hopping settings, levels in dBm, and stations listed
     only in the FM band."""
-    original = fmapp.make_radio
+    original = fmapp.make_radio, bb60_sweep.REALTIME_OK
     fmapp.make_radio = lambda kind, *a, **k: NativeRadio()
+    bb60_sweep.REALTIME_OK = True            # as on Linux, wherever this runs
     try:
         w = make_window(['--radio', 'bb60', '--mode', 'sweep'], {'recording_dir': FOLDER})
         e = w.engine
@@ -659,8 +665,36 @@ def part3_native_sweep():
         assert saved['sweep_rbw_khz'] == 10 and saved['sweep_band'] == 'preset', saved
         assert saved['sweep_realtime'] is True, saved
     finally:
-        fmapp.make_radio = original
+        fmapp.make_radio, bb60_sweep.REALTIME_OK = original
     print("part 3 passed")
+
+
+def part4_no_realtime():
+    """Where Signal Hound's library has no real time (its Mac build): the
+    box is clear and greyed even on the FM band with real time saved, says
+    why, and the device sweeps instead."""
+    original = fmapp.make_radio, bb60_sweep.REALTIME_OK
+    fmapp.make_radio = lambda kind, *a, **k: NativeRadio()
+    bb60_sweep.REALTIME_OK = False
+    try:
+        w = make_window(['--radio', 'bb60', '--mode', 'sweep'],
+                        {'recording_dir': FOLDER, 'sweep_realtime': True})
+        e = w.engine
+        assert w._mode == 'sweep' and e.running and e.sweeper.native, w.status.text()
+        w._preset_chosen(1)
+        assert e.sweeper.plan.start_hz == 87.5e6
+        assert not w.rt_check.isEnabled() and not w.rt_check.isChecked()
+        assert 'Mac' in w.rt_check.toolTip(), w.rt_check.toolTip()
+        w.rt_check.setChecked(True)              # even if something ticks it
+        plan = e.sweeper.plan
+        assert not plan.realtime and not plan.too_wide, plan.describe()
+        pump(0.6)
+        assert 'own sweep' in w.sweep_info.text(), w.sweep_info.text()
+        assert not w.rf_view.density_item.isVisible()
+        w.close()
+    finally:
+        fmapp.make_radio, bb60_sweep.REALTIME_OK = original
+    print("part 4 passed")
 
 
 if __name__ == '__main__':
@@ -669,6 +703,7 @@ if __name__ == '__main__':
         part1_file_receiver()
         part2_sweep()
         part3_native_sweep()
+        part4_no_realtime()
         print("GUI: all checks passed")
     finally:
         # A failed check must not leave a flowgraph running into interpreter

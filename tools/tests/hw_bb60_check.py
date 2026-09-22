@@ -21,9 +21,10 @@ Not part of the no-radio tests; run it when a BB60D is plugged in:
 5. **The BB60D's own sweep** (``bb60_sweep``), on the device the IQ stream
    opened: 9 kHz-6 GHz under half a second a sweep, finding the station;
    the FM band at 10 kHz RBW; the FM band in real time (30 frames a
-   second, the density map the right way up); the gain slider; then back to
-   Receive, which must decode the same PI - the sweep's settings must not
-   leak into the stream - with both switches timed.
+   second, the density map the right way up - not on a Mac, whose library
+   has no real time); the gain slider; then back to Receive, which must
+   decode the same PI - the sweep's settings must not leak into the
+   stream - with both switches timed.
 6. **Let go**: once the engine is closed, another program can open the
    BB60D.
 """
@@ -45,7 +46,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 from fm_receiver.engine import Engine  # noqa: E402
 from fm_receiver.radios import BB60, IQFile  # noqa: E402
 from fm_receiver.recording import IqRecording, WavWriter  # noqa: E402
-from fm_receiver.bb60_sweep import NativeSweepPlan  # noqa: E402
+from fm_receiver.bb60_sweep import REALTIME_OK, NativeSweepPlan  # noqa: E402
 from fm_receiver.sweep import SweepPlan, find_stations, to_db  # noqa: E402
 
 
@@ -211,7 +212,10 @@ def native_check(tb, radio, station, pi):
     print(f"  FM band at 10 kHz: {s.plan.points} points, {s.sweep_seconds * 1e3:.0f} ms a sweep, "
           f"{station / 1e6:.1f} at {db[k].max():.1f} dBm, floor {np.median(db):.1f} dBm")
     assert s.sweep_seconds < 0.1
-    realtime_check(tb, station)
+    if REALTIME_OK:
+        realtime_check(tb, station)
+    else:
+        print("real time: skipped - not in Signal Hound's Mac library")
     # The slider reaches the sweep: at 0% the attenuator is in and the floor rises.
     floors = {}
     for g in (0, radio.default_gain):
@@ -268,10 +272,12 @@ def realtime_check(tb, station):
 
 def free_check():
     """Another program can open the BB60D now."""
-    code = ("import ctypes; lib = ctypes.CDLL('libbb_api.so.5'); d = ctypes.c_int(-1); "
-            "r = lib.bbOpenDevice(ctypes.byref(d)); print(r); lib.bbCloseDevice(d)")
+    code = ("import ctypes; from fm_receiver.bb60_sweep import load_api; lib = load_api(); "
+            "d = ctypes.c_int(-1); r = lib.bbOpenDevice(ctypes.byref(d)); print(r); "
+            "lib.bbCloseDevice(d)")
+    env = dict(os.environ, LD_LIBRARY_PATH='/usr/local/lib', PYTHONPATH=os.path.dirname(HERE))
     out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
-                         timeout=60, env=dict(os.environ, LD_LIBRARY_PATH='/usr/local/lib'))
+                         timeout=60, env=env)
     ok = out.stdout.strip().splitlines()[-1:] == ['0']
     print(f"another program opening the BB60D after close: {'opened it' if ok else out.stdout + out.stderr}")
     return ok

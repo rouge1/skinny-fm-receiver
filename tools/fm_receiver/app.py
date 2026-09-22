@@ -26,6 +26,7 @@ from PyQt5 import Qt, QtCore  # type: ignore
 
 from . import __version__, theme
 from .config import default_recording_dir, load_config, update_config
+from . import bb60_sweep
 from .bb60_sweep import RBW_LADDER, RT_MAX_SPAN_HZ, NativeSweepPlan
 from .dsp import CHANNEL_MAX_BW, MPX_RATE
 from .engine import Engine
@@ -324,14 +325,16 @@ class MainWindow(Qt.QWidget):
         self.rbw_combo.activated.connect(lambda _: self._update_sweep_plan())
         form.addRow("RBW:", self.rbw_combo)
         self.rt_check = Qt.QCheckBox("Real time (27 MHz or less)")
-        self.rt_check.setChecked(bool(self.cfg['sweep_realtime']))
+        self.rt_check.setChecked(bool(self.cfg['sweep_realtime']) and bb60_sweep.REALTIME_OK)
         self.rt_check.setToolTip(
             "Watch the span in real time instead of sweeping it: every sample is\n"
             "FFT'd, so nothing is missed - a burst of 307 us or more at 10 kHz RBW\n"
             "- and a density map behind the trace shows how often each level\n"
             "was hit. 30 frames a second; the FM band fits. Its RBW runs from\n"
             "2.47 to 631 kHz (Auto: 10 kHz). No listening meanwhile: the radio\n"
-            "does one thing at a time.")
+            "does one thing at a time." if bb60_sweep.REALTIME_OK else
+            "Not on a Mac: Signal Hound's library for it sweeps and streams IQ,\n"
+            "but has no real time.")
         self.rt_check.toggled.connect(lambda _: self._update_sweep_plan())
         form.addRow(self.rt_check)
         self.sweep_rate_combo = Qt.QComboBox()
@@ -1005,10 +1008,14 @@ class MainWindow(Qt.QWidget):
                 if label is not None:
                     label.setVisible(shown)
 
+    def _enable_realtime(self, span):
+        """Real time is for spans the API takes, where its library has it."""
+        self.rt_check.setEnabled(bb60_sweep.REALTIME_OK and span <= RT_MAX_SPAN_HZ + 1)
+
     def _limit_sweep_bounds(self):
         """Each bound inside the radio's range, and short of the other."""
         span = self.sweep_stop.value() - self.sweep_start.value()
-        self.rt_check.setEnabled(span <= RT_MAX_SPAN_HZ + 1)
+        self._enable_realtime(span)
         if self.radio is None:
             return
         low, high = self.radio.sweep_range_hz
@@ -1017,7 +1024,7 @@ class MainWindow(Qt.QWidget):
         self.sweep_start.set_range(low, self.sweep_stop.value() - MIN_SWEEP_SPAN_HZ)
         self.sweep_stop.set_range(self.sweep_start.value() + MIN_SWEEP_SPAN_HZ, high)
         span = self.sweep_stop.value() - self.sweep_start.value()
-        self.rt_check.setEnabled(span <= RT_MAX_SPAN_HZ + 1)
+        self._enable_realtime(span)
 
     def _start_sweep(self):
         self._save_view()

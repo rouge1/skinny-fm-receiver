@@ -10,6 +10,12 @@ with no launcher.
   is attached, `--hackrf` for a HackRF. Other sessions on this machine (for
   example ble-scanner) use the HackRF too: agree who has it first, and make
   sure nothing of ours holds it afterwards (`hackrf_info` must open it).
+- Platforms: Linux (x86-64) and macOS (Apple Silicon), from the same
+  checkout, in the environment `environment.yml` makes. Anything
+  platform-specific (library names, paths, `/proc`) goes behind
+  `sys.platform`, with Linux's behaviour unchanged. Signal Hound's
+  library is never committed: the repo is public and their licence forbids
+  copies reaching people without the hardware.
 - Code: `tools/fm_receiver/`. `app.py` is the window, `engine.py` the
   flowgraph, `sweep.py` the FFT sweep, `dsp.py` the receive chain,
   `radios.py` the radios, `recording.py` IQ/WAV output, `widgets.py` the

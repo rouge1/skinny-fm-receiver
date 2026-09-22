@@ -412,3 +412,30 @@ from 100 kHz to its suggested 200 kHz. Its other leads:
 - 💡 **Spur rejection** (`BB_SPUR_REJECT`), for CW signals.
 - The API tunes up to 6.4 GHz, past the BB60D's specified 6 GHz. The
   sweep stops at 6 GHz, as asked.
+
+## Linux and Mac (requested 2026-09-22)
+
+The app is to run on a Mac mini (M4, 24 GB) as well as on Linux, from the
+same checkout.
+
+- [x] **One environment for both**: `environment.yml`, the tested
+  versions. conda's solver gives the same set for `linux-64` and
+  `osx-arm64`.
+- [x] **The BB60D's library by platform**: `libbb_api.so.5` on Linux,
+  `libbb_api.5.dylib` on a Mac (the install name of Signal Hound's Mac
+  build), in `bb60_sweep` and the hardware test.
+- [x] **The SoapySDR module and libraries on a Mac**: Homebrew's module
+  folder, and dyld's list of loaded libraries in place of `/proc` (for the
+  ADC overload count).
+- [x] **Real time greyed out on a Mac**: Signal Hound's Mac library does
+  sweeps and IQ only. Tested with the flag forced off (`test_gui.py`
+  part 4).
+- [x] **Signal Hound's library is not committed.** Their licence (the SDK's
+  `LICENSE.rtf`, section 1.C-E) allows copies to be distributed, but not to
+  people who don't own the hardware, and this repository is public. Setup
+  steps are in [usage.md](usage.md#setting-up) instead.
+- [ ] **Run it on the Mac**: `run_all.py`, then the HackRF (`--hackrf`),
+  then the BB60D steps in usage.md and `--hw`. Watch for the sound device,
+  the fonts' metrics on a Retina screen (the left column is measured, so
+  it should fit), and whether the BB60D opens without root. Signal Hound's
+  README says it may need root, but their text is copied from Linux.

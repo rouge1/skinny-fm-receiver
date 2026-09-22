@@ -1,0 +1,20 @@
+# The "gnu" conda environment the app runs in, on Linux (x86-64) or a Mac
+# (Apple Silicon):
+#
+#   conda env create -f environment.yml
+#
+# The versions are the ones it was tested with. The BB60D needs Signal
+# Hound's library and SoapySDR module as well, which are not conda
+# packages: see "Setting up" in knowledge/usage.md.
+name: gnu
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - gnuradio=3.10.12        # with gr-soapy, gr-uhd (USRP), gr-qtgui (PyQt5)
+  - pyqtgraph=0.13.7
+  - numpy=2.2
+  - scipy=1.15
+  - soapysdr=0.8
+  - soapysdr-module-hackrf
+  - hackrf                  # hackrf_info, used by the HackRF hardware test
