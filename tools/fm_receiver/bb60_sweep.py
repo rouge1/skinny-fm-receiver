@@ -43,6 +43,7 @@ minimum span, though 20 Hz is the absolute one.
 """
 
 import ctypes
+import math
 import os
 import sys
 import threading
@@ -175,6 +176,87 @@ def device_handle():
     return None
 
 
+#: Signal Hound's automatic gain and attenuation (``BB_AUTO_GAIN``,
+#: ``BB_AUTO_ATTEN``), which follow the reference level.
+BB_AUTO_GAIN = BB_AUTO_ATTEN = -1
+#: AGC keeps the reference level this far over the strongest input, as
+#: Signal Hound recommends, in steps of this size.
+AGC_HEADROOM_DB = 5.0
+AGC_STEP_DB = 5.0
+#: It rises as soon as a signal needs it, and falls only once the strongest
+#: signal has dropped this far, so a station fading doesn't retune it.
+AGC_FALL_DB = 10.0
+#: The strongest input is the most any sweep reached over this long, so a
+#: burst that comes and goes doesn't drop the reference level between.
+AGC_WINDOW_S = 3.0
+#: The input level is the power the front end takes in at once, the IF's
+#: width: 27 MHz, the widest real-time span. Measured on 2026-09-22, a
+#: sweep's peak is no measure of it: at 1 kHz RBW an FM station's peak
+#: swung from -54 to -39 dBm sweep to sweep (the carrier bunches up in
+#: quiet audio), and AGC following it climbed from -20 to -5 dBm. Power
+#: summed over a stretch held to +-0.2 dB at 1, 10 and 100 kHz RBW - an FM
+#: station's envelope is constant. One station's power (-36.8 dBm, so a
+#: reference of -30) wasn't enough either: at -30 and -35 dBm the device
+#: overloaded now and then (3 sweeps in 800), with the whole FM band
+#: reaching it; at -25 and -20, 5 dB over the band's power, it did not.
+AGC_INPUT_BW_HZ = RT_MAX_SPAN_HZ
+
+
+def strongest_input(db, bin_hz, rbw_hz):
+    """The strongest input in a sweep, in dBm: the most power found in any
+    :data:`AGC_INPUT_BW_HZ` of it (all of it, if narrower). Each point is
+    the power in one RBW, and the points are ``bin_hz`` apart, so a
+    stretch's power is its points' sum scaled by ``bin_hz / rbw_hz``;
+    never less than the sweep's peak."""
+    lin = 10.0 ** (np.asarray(db, dtype=np.float64) / 10.0)
+    n = max(1, int(round(AGC_INPUT_BW_HZ / bin_hz)))
+    if n >= len(lin):
+        total = lin.sum()
+    else:
+        c = np.concatenate(([0.0], np.cumsum(lin)))
+        total = (c[n:] - c[:-n]).max()
+    return max(10.0 * math.log10(total * bin_hz / rbw_hz), float(np.max(db)))
+
+
+def agc_ref(level_db, ref_db):
+    """The reference level AGC wants for a strongest input of ``level_db``
+    (:func:`strongest_input`), when it is ``ref_db`` now; None to leave
+    it."""
+    want = math.ceil((level_db + AGC_HEADROOM_DB) / AGC_STEP_DB) * AGC_STEP_DB
+    want = min(max(want, REF_RANGE_DB[0]), REF_RANGE_DB[1])
+    if want > ref_db or want <= ref_db - AGC_FALL_DB:
+        return want
+    return None
+
+
+#: Signal Hound's ``BB_MIN_USB_VOLTAGE``: below it, measurements may be out
+#: of specification (their API reference, bbGetDeviceDiagnostics).
+MIN_USB_VOLTAGE = 4.4
+
+
+def diagnostics():
+    """The open BB60's temperature (deg C), USB voltage (V) and current
+    (A), as a dict, or None when there is no device or no such call.
+
+    Measured on 2026-09-22 (by behaviour): it answers in about 10 us while
+    the IQ stream runs, in the device's own sweep and in real time, with
+    nothing dropped. The current comes back in mA - 1187.5 for a BB60D
+    drawing about 1.2 A - despite the argument's name, so it is scaled
+    here. The temperature is in steps of 1/8 degree."""
+    lib = _lib()
+    fn = getattr(lib, 'bbGetDeviceDiagnostics', None)
+    handle = device_handle()
+    if fn is None or handle is None:
+        return None
+    if fn.argtypes is None:
+        fn.argtypes = [c_int, POINTER(c_float), POINTER(c_float), POINTER(c_float)]
+        fn.restype = c_int
+    temp, volts, milliamps = c_float(), c_float(), c_float()
+    if fn(handle, byref(temp), byref(volts), byref(milliamps)) < 0:
+        return None
+    return {'temp_c': temp.value, 'usb_v': volts.value, 'usb_a': milliamps.value / 1e3}
+
+
 def gain_atten(percent):
     """The slider's 0-100% as the sweep's (gain, attenuation) indices, 0-3
     each, in the order :func:`bb60_source.gain_plan` opens them up: the
@@ -208,7 +290,7 @@ class NativeSweepPlan:
     native = True
 
     def __init__(self, start_hz, stop_hz, rbw_hz=None, realtime=False,
-                 ref_db=-20.0, scale_db=100.0):
+                 ref_db=-20.0, scale_db=100.0, auto_gain=False):
         start_hz = max(float(start_hz), MIN_HZ)
         stop_hz = min(float(stop_hz), MAX_HZ)
         if stop_hz - start_hz < MIN_SPAN_HZ:
@@ -229,6 +311,8 @@ class NativeSweepPlan:
         self.raised = bool(rbw_hz) and abs(self.rbw - float(rbw_hz)) > 1
         self.ref_db = min(max(float(ref_db), REF_RANGE_DB[0]), REF_RANGE_DB[1])
         self.scale_db = min(max(float(scale_db), SCALE_RANGE_DB[0]), SCALE_RANGE_DB[1])
+        #: Gain and attenuation left to the device, set by ``ref_db``.
+        self.auto_gain = bool(auto_gain)
         self.points = None
         self.bin_hz = None
         self.poi_s = None
@@ -261,9 +345,11 @@ class NativeSweepPlan:
         if self.realtime:
             poi = (f": nothing longer than {self.poi_s * 1e6:.0f} us is missed"
                    if self.poi_s else "")
-            return f"The BB60D in real time, {rbw}{poi}{points}"
+            agc = f", AGC to {self.ref_db:.0f} dBm" if self.auto_gain else ""
+            return f"The BB60D in real time, {rbw}{poi}{points}{agc}"
         wide = (" (real time takes 27 MHz at most)" if self.too_wide else "")
-        return f"The BB60D's own sweep{wide}, {rbw}{points}"
+        agc = f", AGC to {self.ref_db:.0f} dBm" if self.auto_gain else ""
+        return f"The BB60D's own sweep{wide}, {rbw}{points}{agc}"
 
 
 class bb60_sweeper:
@@ -373,11 +459,15 @@ class bb60_sweeper:
             plan, percent = self.plan, self.gain_percent
             self._configure = False
         lib.bbAbort(h)
-        gain, atten = gain_atten(percent)
         # With the gain set by hand the reference level changes no level; in
-        # real time it is the top of the density map.
-        _check(lib.bbConfigureRefLevel(h, plan.ref_db if plan.realtime else -20.0),
-               'reference level')
+        # real time it is the top of the density map. With AGC the device
+        # picks the gain and attenuation for it, band by band.
+        if plan.auto_gain:
+            gain, atten = BB_AUTO_GAIN, BB_AUTO_ATTEN
+        else:
+            gain, atten = gain_atten(percent)
+        _check(lib.bbConfigureRefLevel(h, plan.ref_db if plan.realtime or plan.auto_gain
+                                       else -20.0), 'reference level')
         _check(lib.bbConfigureGainAtten(h, gain, atten), 'gain')
         _check(lib.bbConfigureCenterSpan(h, (plan.start_hz + plan.stop_hz) / 2,
                                          plan.stop_hz - plan.start_hz), 'span')

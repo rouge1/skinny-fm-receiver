@@ -367,8 +367,14 @@ class BB60(Radio):
         if self.block is None:
             return {}
         swept = self.sweeper.overflows if self.sweeper is not None else 0
-        return {'dropped': self.block.overflows,
-                'overload': self.block.adc_overflows() + swept}
+        health = {'dropped': self.block.overflows,
+                  'overload': self.block.adc_overflows() + swept}
+        try:
+            from .bb60_sweep import diagnostics
+            health.update(diagnostics() or {})
+        except Exception:                        # a reading, never a failure
+            pass
+        return health
 
 
 def _load_bb60_module():

@@ -85,6 +85,8 @@ CLIP_NOTE = 3e-3
 #: The clipped readout is smoothed over about this long, as ble-scanner's is
 #: (0.95 old + 0.05 new per 16 ms).
 CLIP_TAU_S = 0.3
+#: Below any reference level AGC would pick: from here it always rises.
+REF_FLOOR_DB = -200.0
 RADIO_ORDER = ('hackrf', 'usrp', 'bb60', 'file')
 #: The tabs, in order.
 TAB_MODES = ('sweep', 'receive', 'recordings')
@@ -93,7 +95,8 @@ VIEW_KEYS = {'receive': 'view_receive', 'playback': 'view_playback'}
 
 DEFAULTS = {
     'radio': None, 'usrp_address': '', 'iq_file': '', 'mode': 'receive',
-    'frequency_mhz': 98.7, 'center_mhz': None, 'step_khz': 100, 'gain': {}, 'receive_rate': {},
+    'frequency_mhz': 98.7, 'center_mhz': None, 'step_khz': 100, 'gain': {}, 'gain_auto': {},
+    'receive_rate': {},
     'sweep_rate': {}, 'settle_ms': {}, 'channel_bw_khz': 200, 'region': 'RBDS',
     'stereo': True, 'volume': 60, 'muted': False, 'sweep_band': 'full',
     'sweep_start_mhz': 87.5, 'sweep_stop_mhz': 108.0, 'sweep_rbw_khz': 0,
@@ -225,6 +228,7 @@ class MainWindow(Qt.QWidget):
         self._clipped_at = None
         self._clip_smooth = None
         self._clip_t = time.monotonic()
+        self._agc_levels = []
         self._names = {}
         self._rx_sig = None
         self._starting = False
@@ -773,6 +777,16 @@ class MainWindow(Qt.QWidget):
     def _build_gain(self):
         box = Qt.QGroupBox("RF gain")
         row = Qt.QHBoxLayout(box)
+        # FM receiver: AGC, for a radio that sweeps itself (the BB60D).
+        self.agc_box = Qt.QCheckBox("AGC")
+        self.agc_box.setToolTip(
+            "Automatic gain in the radio's own sweep: the Ref level knob moves to\n"
+            "5 dB over the strongest signal, and the radio sets its gain and\n"
+            "attenuation for it, band by band. In Receive the slider sets the\n"
+            "gain, since the IQ stream has no automatic gain.")
+        self.agc_box.toggled.connect(self._agc_toggled)
+        self.agc_box.setVisible(False)
+        row.addWidget(self.agc_box)
         self.gain_slider = Qt.QSlider(QtCore.Qt.Horizontal)
         self.gain_slider.setRange(0, 100)
         self.gain_slider.valueChanged.connect(self._gain_changed)
@@ -972,6 +986,8 @@ class MainWindow(Qt.QWidget):
             return
         kind = self.radio.kind
         self.cfg['gain'][kind] = self.gain_slider.value()
+        if self.radio.native_sweep:
+            self.cfg['gain_auto'][kind] = self.agc_box.isChecked()
         if self.rx_rate_combo.count():
             self.cfg['receive_rate'][kind] = self.rx_rate_combo.currentData()
         if self.sweep_rate_combo.count():
@@ -1007,9 +1023,12 @@ class MainWindow(Qt.QWidget):
         self.gain_slider.blockSignals(True)
         self.gain_slider.setValue(int(self.cfg['gain'].get(kind, radio.default_gain)))
         self.gain_slider.blockSignals(False)
-        self.gain_label.setText(f"{self.gain_slider.value()}%")
         radio.gain_percent = float(self.gain_slider.value())
-        self.gain_slider.setEnabled(kind != 'file')
+        self.agc_box.blockSignals(True)
+        self.agc_box.setChecked(bool(radio.native_sweep
+                                     and self.cfg['gain_auto'].get(kind, False)))
+        self.agc_box.blockSignals(False)
+        self._show_gain()
         self.settle_spin.blockSignals(True)
         self.settle_spin.setValue(float(self.cfg['settle_ms'].get(kind, radio.settle_ms)))
         self.settle_spin.blockSignals(False)
@@ -1110,6 +1129,7 @@ class MainWindow(Qt.QWidget):
                 self._start_receive()
             self.run_btn.setText("Stop")
             self.status.setToolTip('')
+            self._show_gain()
         except Exception as exc:
             self._show_error(f"{self.radio.describe()} would not start: {exc}")
         finally:
@@ -1232,7 +1252,8 @@ class MainWindow(Qt.QWidget):
             return NativeSweepPlan(start, stop, self.rbw_combo.currentData() or None,
                                    realtime=self.rt_btn.isChecked(),
                                    ref_db=view.ref_knob.value(),
-                                   scale_db=view.range_knob.value())
+                                   scale_db=view.range_knob.value(),
+                                   auto_gain=self.agc_box.isChecked())
         rate = float(self.sweep_rate_combo.currentData() or self.radio.default_sweep_rate)
         return SweepPlan(start, stop, rate, int(self.fft_combo.currentData()),
                          self.radio.usable_fraction(rate), self.radio.dc_notch_hz)
@@ -1408,7 +1429,10 @@ class MainWindow(Qt.QWidget):
 
     def _view_scale_changed(self, _value):
         plan = getattr(self.engine.sweeper, 'plan', None)
-        if self._mode == 'sweep' and getattr(plan, 'realtime', False):
+        # The device uses the Ref level in real time (the density map's
+        # top) and under AGC (the gain it picks).
+        if self._mode == 'sweep' and (getattr(plan, 'realtime', False)
+                                      or getattr(plan, 'auto_gain', False)):
             self._bounds_timer.start()
 
     def _settle_changed(self, ms):
@@ -1541,8 +1565,60 @@ class MainWindow(Qt.QWidget):
         self.tabs.setCurrentIndex(1)
 
     # ========================================================= live controls
+    def _agc_on(self):
+        """AGC in force: ticked, on a radio sweeping itself, in Sweep."""
+        return (self.radio is not None and self.radio.native_sweep
+                and self.agc_box.isChecked() and self._mode == 'sweep')
+
+    def _show_gain(self):
+        """The slider and its label, for AGC or not."""
+        radio = self.radio
+        native = radio is not None and radio.native_sweep
+        self.agc_box.setVisible(native)
+        self.agc_box.setEnabled(native)
+        agc = self._agc_on()
+        self.gain_slider.setEnabled(radio is not None and radio.kind != 'file' and not agc)
+        self.gain_label.setText("AGC" if agc else f"{self.gain_slider.value()}%")
+        self.gain_slider.setToolTip(
+            "AGC sets the gain in Sweep. Here in Receive the slider sets it:\n"
+            "the IQ stream has no automatic gain."
+            if native and self.agc_box.isChecked() and not agc else "")
+
+    def _agc_toggled(self, on):
+        self._agc_levels = []
+        if self.radio is not None:
+            self.cfg['gain_auto'][self.radio.kind] = self.agc_box.isChecked()
+        self._show_gain()
+        sweeper = self.engine.sweeper
+        if self._mode == 'sweep' and getattr(sweeper, 'native', False):
+            done = sweeper.snapshot()[2]
+            if on and done is not None and sweeper.plan.bin_hz:
+                # The Ref level from the last sweep first: the knob may be
+                # anywhere, and the device's gain follows it at once.
+                level = bb60_sweep.strongest_input(done, sweeper.plan.bin_hz,
+                                                   sweeper.plan.rbw)
+                self.rf_view.ref_knob.setValue(bb60_sweep.agc_ref(level, REF_FLOOR_DB))
+            self._update_sweep_plan()
+
+    def _follow_agc(self, done):
+        """AGC: the Ref level knob to 5 dB over the strongest input (the
+        most power in 200 kHz, over the last few seconds' sweeps), when that
+        has risen past it or fallen well below; turning the knob re-plans
+        the sweep at the new reference level."""
+        plan = self.engine.sweeper.plan
+        if not plan.bin_hz:
+            return
+        knob = self.rf_view.ref_knob
+        now = time.monotonic()
+        self._agc_levels = [(t, v) for t, v in self._agc_levels
+                            if now - t < bb60_sweep.AGC_WINDOW_S]
+        self._agc_levels.append((now, bb60_sweep.strongest_input(done, plan.bin_hz, plan.rbw)))
+        ref = bb60_sweep.agc_ref(max(v for _, v in self._agc_levels), knob.value())
+        if ref is not None:
+            knob.setValue(ref)
+
     def _gain_changed(self, value):
-        self.gain_label.setText(f"{value}%")
+        self.gain_label.setText("AGC" if self._agc_on() else f"{value}%")
         if self.radio is not None:
             self.radio.gain_percent = float(value)
             if self.engine.running:
@@ -1760,7 +1836,7 @@ class MainWindow(Qt.QWidget):
             self.radio = None
         self._mode = None
         for widget in (self.radio_combo, self.usrp_edit, self.file_btn, self.run_btn,
-                       self.gain_slider, self.rec_btn):
+                       self.gain_slider, self.agc_box, self.rec_btn):
             widget.setEnabled(False)
         self._idle_views()
         held = self._live['kind'] == 'bb60' and bb60_source.KEEP_OPEN
@@ -2246,6 +2322,8 @@ class MainWindow(Qt.QWidget):
             else:
                 self._sweep_avg += (lin - self._sweep_avg) / avg
             self._sweep_db = to_db(self._sweep_avg)
+            if getattr(self.engine.sweeper.plan, 'auto_gain', False):
+                self._follow_agc(done)
         now = time.monotonic()
         row = new and now - self._last_wf > 0.1
         if row:
@@ -2350,10 +2428,21 @@ class MainWindow(Qt.QWidget):
                 if self._clipped_at is not None:
                     text += f" in the step centred on {_freq_text(self._clipped_at)}"
                 text += ")"
+        elif health.get('usb_v', bb60_sweep.MIN_USB_VOLTAGE) < bb60_sweep.MIN_USB_VOLTAGE:
+            text += (f" - USB voltage low ({health['usb_v']:.2f} V): "
+                     "measurements may be off")
+            token = 'warn'
         elif health.get('dropped'):
             text += f" - {health['dropped']} buffers dropped"
             token = 'warn'
         self._set_status(text, token)
+        # Only a radio that reports its health sets the tooltip: an error's
+        # tooltip stays, and starting a mode clears it.
+        if 'usb_v' in health:
+            tip = (f"{self.radio.name}: {health['temp_c']:.1f} °C, "
+                   f"USB {health['usb_v']:.2f} V, {health['usb_a']:.2f} A")
+            if self.status.toolTip() != tip:
+                self.status.setToolTip(tip)
 
     def _refresh_sweep(self):
         s = self.engine.sweeper

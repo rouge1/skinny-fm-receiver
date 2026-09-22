@@ -159,7 +159,16 @@ Useful options (`./fm-receiver --help` lists them all):
 - **The third tab, Recordings,** plays back what you recorded. The radio is
   closed while it is open, and opens again when you go back.
 - **RF gain** applies to the radio in both modes, and each radio remembers its
-  own setting.
+  own setting. On a BB60D the **AGC** box beside it hands the gain to the
+  device in its own sweep: the slider greys out, and the **Ref level** knob
+  moves to 5 dB over the strongest signal, which is how Signal Hound
+  recommends setting it. Turn the knob by hand to hold a higher level; AGC
+  takes over again when the signals rise past it or fall 10 dB below. In
+  Receive the slider sets the gain even with AGC ticked (the IQ stream has
+  no automatic gain), and says so when you hover over it.
+- On a BB60D, hover over the **status line** for its temperature, USB
+  voltage and current. Below 4.4 V the status line warns: measurements may
+  be off, so check the cable and the USB port.
 
 ## A typical session
 

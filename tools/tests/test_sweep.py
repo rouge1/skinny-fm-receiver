@@ -188,7 +188,49 @@ def test_clipping_is_counted():
     assert sink.clip_report() is None            # a new plan starts again
 
 
+def test_agc_reference_level():
+    """5 dB over the strongest input, rounded up to 5 dB; up at once, down
+    only once it has fallen 10 dB; within the device's reference range. The
+    input is the most power in any 27 MHz, whatever the RBW, and never less
+    than the peak."""
+    from fm_receiver.bb60_sweep import REF_RANGE_DB, agc_ref, strongest_input
+    assert agc_ref(-40.0, -90.0) == -35.0
+    assert agc_ref(-41.0, -90.0) == -35.0
+    assert agc_ref(-39.0, -35.0) == -30.0            # up as soon as needed
+    assert agc_ref(-44.0, -35.0) is None             # a little lower: held
+    assert agc_ref(-49.0, -35.0) is None
+    assert agc_ref(-50.0, -35.0) == -45.0            # 10 dB down: follows
+    assert agc_ref(30.0, 0.0) == REF_RANGE_DB[1]
+    assert agc_ref(-200.0, -20.0) == REF_RANGE_DB[0]
+
+    def station(rbw, bin_hz, dbm=-30.0, width=200e3, span=60e6):
+        # An FM station of ``dbm`` in all, spread over ``width``: each point
+        # holds the power in one RBW. Far off, a second, 30 MHz away.
+        n = int(span / bin_hz)
+        db = np.full(n, -130.0)
+        per = dbm - 10 * np.log10(width / rbw)
+        k = int(round(width / bin_hz))
+        db[1000:1000 + k] = per
+        far = 1000 + int(30e6 / bin_hz)
+        db[far:far + k] = per
+        return db
+
+    for rbw, bin_hz in ((1e3, 1e3), (10e3, 10e3), (10e3, 3.125e3)):
+        got = strongest_input(station(rbw, bin_hz), bin_hz, rbw)
+        assert abs(got - -30.0) < 0.3, (rbw, bin_hz, got)
+    # Two stations within 27 MHz add up: 3 dB more.
+    db = station(1e3, 1e3)
+    k = 1000 + int(10e6 / 1e3)
+    db[k:k + 200] = db[1000]
+    assert abs(strongest_input(db, 1e3, 1e3) - -27.0) < 0.3
+    # A carrier narrower than the RBW: its peak.
+    db = np.full(10000, -130.0)
+    db[5000:5003] = -20.0
+    assert strongest_input(db, 300.0, 1e3) == -20.0
+
+
 if __name__ == '__main__':
+    test_agc_reference_level()
     test_clipping_is_counted()
     test_plan_tiles_the_span()
     test_place_and_notch()

@@ -14,7 +14,8 @@ Not part of the no-radio tests; run it when a BB60D is plugged in:
    until one carries RDS - not all do: here 102.1, the strongest, sends a
    pilot and stereo but nothing at 57 kHz, and the RF bench toolkit's own
    offline decoder finds no RDS in it either. Requires the stereo pilot and
-   RDS (a PI code, blocks mostly good).
+   RDS (a PI code, blocks mostly good). The device's temperature, USB
+   voltage and current read while it streams, here and in its own sweep.
 3. **Record and play back.** Records audio and channel IQ from it, then plays
    the IQ recording back through the file source and requires the same PI.
 4. **Move the Center.** With the station still inside the band, moves the
@@ -24,7 +25,8 @@ Not part of the no-radio tests; run it when a BB60D is plugged in:
    opened: 9 kHz-6 GHz under half a second a sweep, finding the station;
    the FM band at 10 kHz RBW; the FM band in real time (30 frames a
    second, the density map the right way up - not on a Mac, whose library
-   has no real time); the gain slider; then back to Receive, which must
+   has no real time); the gain slider; AGC (the station's level as at the
+   slider's default, no overload); then back to Receive, which must
    decode the same PI - the sweep's settings must not leak into the
    stream - with both switches timed.
 6. **Let go**: once the engine is closed, another program can open the
@@ -52,7 +54,8 @@ sys.path.insert(0, os.path.dirname(HERE))
 from fm_receiver.engine import Engine  # noqa: E402
 from fm_receiver.radios import BB60, IQFile  # noqa: E402
 from fm_receiver.recording import IqRecording, WavWriter  # noqa: E402
-from fm_receiver.bb60_sweep import REALTIME_OK, NativeSweepPlan  # noqa: E402
+from fm_receiver.bb60_sweep import (REALTIME_OK, NativeSweepPlan, agc_ref,  # noqa: E402
+                                    strongest_input)
 from fm_receiver.bb60_source import KEEP_OPEN  # noqa: E402
 
 #: Receive at the lowest rate that can be chosen: 2.5 MS/s, or 5 on a Mac,
@@ -103,6 +106,7 @@ def receive_check(tb, radio, stations, folder, rate=RX_RATE):
         if snap['pi_hex'] and snap['block_error_rate'] < 0.2:
             break
     rx = tb.rx
+    health_check(radio, 'receiving')
     assert rx.pilot_locked(), 'no stereo pilot'
     assert snap['pi_hex'], 'no RDS on any of the strongest stations'
     assert snap['block_error_rate'] < 0.2, snap['block_error_rate']
@@ -205,6 +209,8 @@ def native_check(tb, radio, station, pi):
         floors[g] = float(np.median(db))
     print(f"  floor at 0% gain {floors[0]:.1f} dBm, at {radio.default_gain}% {floors[radio.default_gain]:.1f}")
     assert floors[0] > floors[radio.default_gain] + 10, floors
+    health_check(radio, 'in its own sweep')
+    serial = agc_check(tb, serial)
     # Back to Receive, on the same open device.
     t0 = time.time()
     tb.start_receive(station, RX_RATE, region='RBDS', stereo=True, volume=0.0)
@@ -220,6 +226,62 @@ def native_check(tb, radio, station, pi):
     print(f"  switches: Receive -> own sweep {to_sweep * 1e3:.0f} ms; "
           f"own sweep -> Receive {to_receive * 1e3:.0f} ms")
     assert snap['pi_hex'] == pi and rx.pilot_locked(), (snap['pi_hex'], pi)
+
+
+def health_check(radio, where):
+    """The device's temperature, USB voltage and current, read while it
+    works: in range, and Signal Hound's 4.4 V minimum met."""
+    h = radio.health()
+    print(f"  health {where}: {h.get('temp_c', float('nan')):.2f} C, "
+          f"USB {h.get('usb_v', float('nan')):.3f} V, {h.get('usb_a', float('nan')):.3f} A, "
+          f"dropped {h['dropped']}, overload {h['overload']}")
+    assert 0 < h['temp_c'] < 85, h
+    assert 4.4 <= h['usb_v'] < 5.6, h
+    assert 0.2 < h['usb_a'] < 3.0, h
+
+
+def agc_check(tb, serial):
+    """AGC: gain and attenuation left to the device for a reference level
+    5 dB over the strongest signal. On 2026-09-22 it read the stations 0-3
+    dB lower than the slider's default (60%), the same at every station -
+    the device's gain states differ that much. A reference 5 dB over one
+    station overloaded now and then; 5 dB over the band's power, as AGC
+    sets it (``strongest_input``), did not. So: the strongest stations
+    within 4 dB of the default on the median, the floor no worse, and no
+    overload."""
+    s = tb.sweeper
+
+    def average(serial, n=5):
+        # A station fades between sweeps: compare averages, not one sweep.
+        total = 0.0
+        for _ in range(n):
+            freqs, db, serial = _next_sweep(tb, serial)
+            total = total + 10 ** (db / 10)
+        return freqs, 10 * np.log10(total / n), serial
+
+    s.set_plan(NativeSweepPlan(87.5e6, 108e6, 10e3))
+    _, _, serial = _next_sweep(tb, serial)
+    freqs, manual, serial = average(serial)
+    stations = [f for f, _, _ in find_stations(freqs, manual, min_snr_db=20)[:5]]
+    ref = agc_ref(strongest_input(manual, s.plan.bin_hz, s.plan.rbw), -130.0)
+    over = s.overflows
+    s.set_plan(NativeSweepPlan(87.5e6, 108e6, 10e3, ref_db=ref, auto_gain=True))
+    _, _, serial = _next_sweep(tb, serial)
+    freqs, auto, serial = average(serial)
+
+    def level(db, f):
+        return float(db[np.abs(freqs - f) < 90e3].max())
+
+    diffs = [level(auto, f) - level(manual, f) for f in stations]
+    floor, auto_floor = float(np.median(manual)), float(np.median(auto))
+    print(f"  AGC to {ref:.0f} dBm: stations " + ", ".join(
+        f"{f / 1e6:.1f} {d:+.1f}" for f, d in zip(stations, diffs))
+        + f" dB against the slider's default; floor {auto_floor:.1f} dBm "
+        f"(default {floor:.1f}), overloads {s.overflows - over}")
+    assert abs(float(np.median(diffs))) < 4, diffs
+    assert auto_floor < floor + 3, (auto_floor, floor)
+    assert s.overflows == over, 'AGC overloaded'
+    return serial
 
 
 def realtime_check(tb, station):

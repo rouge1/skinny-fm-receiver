@@ -576,7 +576,7 @@ Receive and 95.6% in the step centred on 95 MHz.
 
 ### Phase 2: the BB60D's health
 
-- [ ] **4. Temperature, USB voltage and current** from
+- [x] **4. Temperature, USB voltage and current** from
   `bbGetDeviceDiagnostics(handle, &temp, &volts, &amps)`, on the handle
   `bb60_sweep.device_handle()` finds.
   - **Probe first** (a scratchpad script, by behaviour only): call it
@@ -599,7 +599,7 @@ Receive and 95.6% in the step centred on 95 MHz.
 
 ### Phase 3: auto gain on the BB60D
 
-- [ ] **3. Auto gain by reference level.** Signal Hound's recommendation:
+- [x] **3. Auto gain by reference level.** Signal Hound's recommendation:
   gain and attenuation on auto (`BB_AUTO_GAIN`, `BB_AUTO_ATTEN`, both
   -1), and the reference level about 5 dB above the strongest signal
   expected; the API then picks the gain and attenuation.
@@ -624,3 +624,34 @@ Receive and 95.6% in the step centred on 95 MHz.
   rounding, limits). The BB60D check runs its own sweep with Auto on, and
   expects the FM band's floor within a few dB of the 60% setting and no
   overload.
+
+**Phases 2 and 3 shipped 2026-09-22.** `run_all.py` 5/5; the BB60D check
+passed four times with its new health and AGC stages; the window was driven
+on the BB60D (the knob moved from -80 to -25 dBm as AGC was ticked and held
+there for 15 s, no overloads).
+
+- **Health**: the probe passed in every mode (10 us a call, nothing
+  dropped, RDS unharmed). The current comes back in mA, not A. Signal
+  Hound's reference gives no temperature limit, so only the voltage warns.
+  Still to try: the Mac's library.
+- **The SoapySDR module has no automatic gain**: `hasGainMode` is false,
+  its only gains are `RF` and `ATT`, and its settings are the two ports.
+  So AGC is for the device's own sweep, as decided.
+- **What AGC follows changed twice**, both times from off-air evidence:
+  - *A sweep's peak* (plus 5 dB, as planned) hunted: at 1 kHz RBW an FM
+    station's peak swings from -54 to -39 dBm sweep to sweep, and the knob
+    climbed from -20 to -5 dBm. Holding the highest peak for 3 s made it
+    ratchet up instead.
+  - *One station's power* (summed over 200 kHz) is steady, ±0.2 dB at any
+    RBW, since FM's envelope is constant, but at the -30 dBm it gave, the
+    device overloaded now and then (3 sweeps in 800).
+  - *The most power in any 27 MHz* - what the front end takes in at once -
+    is what it follows now: -33.6 dBm here, so -25 dBm, with no overloads
+    in 717 sweeps interleaved with the slider's 60% (none either).
+- On the FM band AGC lands where the tested 60% is (stations within 1.5 dB,
+  the same floor). Its use is elsewhere: the device sets each band on its
+  own in a full-range sweep, which one slider can't.
+- Ticking AGC sets the Ref level from the last sweep before the device
+  follows it, so it never runs a sweep at a knob left at -80 dBm.
+- 💡 Try AGC over the full range against the slider, band by band, and on
+  the Mac.

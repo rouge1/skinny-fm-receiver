@@ -664,6 +664,66 @@ class NativeRadio(SimRadio):
         return sweeper
 
 
+def device_health(w):
+    """A radio reporting its health: the numbers as the status line's
+    tooltip, and a warning below Signal Hound's 4.4 V."""
+    radio = w.radio
+    reading = {'dropped': 0, 'overload': 0, 'temp_c': 41.25, 'usb_v': 4.95, 'usb_a': 1.19}
+    radio.health = lambda: dict(reading)
+    try:
+        w._check_health()
+        assert w.status.toolTip() == f"{radio.name}: 41.2 °C, USB 4.95 V, 1.19 A", \
+            w.status.toolTip()
+        assert 'USB' not in w.status.text(), w.status.text()
+        reading['usb_v'] = 4.31
+        w._check_health()
+        text = w.status.text()
+        assert 'USB voltage low (4.31 V): measurements may be off' in text, text
+        assert fmapp.theme.TOKENS['warn'] in text, text
+    finally:
+        del radio.health
+    print("device health: tooltip, and the low USB voltage warning")
+
+
+def agc(w):
+    """AGC in the radio's own sweep: the slider greys and reads AGC, the plan
+    leaves the gain to the device, and the Ref level knob moves to 5 dB over
+    the strongest input, rounded up to 5 dB. In Receive the slider is back,
+    saying why."""
+    knob = w.rf_view.ref_knob
+    knob.setValue(-90.0)                         # far below the -40 dBm station
+    pump(0.3)
+    assert not w.agc_box.isChecked() and w.agc_box.isVisible()
+    assert w.gain_slider.isEnabled() and not w.engine.sweeper.plan.auto_gain
+    w.agc_box.setChecked(True)
+    assert not w.gain_slider.isEnabled() and w.gain_label.text() == 'AGC'
+    assert pump(3, lambda: knob.value() != -90.0), 'the Ref level knob should move'
+    plan = w.engine.sweeper.plan
+    freqs, db, _, _ = w.engine.sweeper.snapshot()
+    level = bb60_sweep.strongest_input(db, plan.bin_hz, plan.rbw)
+    assert pump(1, lambda: w.engine.sweeper.plan.ref_db == knob.value())
+    plan = w.engine.sweeper.plan
+    assert plan.auto_gain and knob.value() % 5 == 0, (plan.auto_gain, knob.value())
+    assert level + 4 < knob.value() < level + 12, (level, knob.value())
+    assert 'AGC to' in plan.describe(), plan.describe()
+    # A hand turn a little higher holds: nothing has risen past it.
+    held = knob.value() + 5
+    knob.setValue(held)
+    pump(1)
+    assert knob.value() == held, knob.value()
+    # Receive: the slider sets the gain there, and says so.
+    w.tabs.setCurrentIndex(1)
+    pump(0.3)
+    assert w._mode == 'receive' and w.gain_slider.isEnabled()
+    assert w.gain_label.text().endswith('%') and 'no automatic gain' in w.gain_slider.toolTip()
+    w.tabs.setCurrentIndex(0)
+    pump(0.3)
+    assert w._mode == 'sweep' and not w.gain_slider.isEnabled()
+    assert w.engine.sweeper.plan.auto_gain
+    print(f"AGC: the Ref level moved from -90 to {held - 5:.0f} dBm for an input of "
+          f"{level:.1f} dBm")
+
+
 def part3_native_sweep():
     """A radio that sweeps itself: the whole range from 9 kHz, an RBW in
     place of the LO-hopping settings, levels in dBm, and stations listed
@@ -800,11 +860,14 @@ def part3_native_sweep():
         w.tabs.setCurrentIndex(0)
         pump(0.3)
         assert w._mode == 'sweep' and e.sweeper is NativeRadio.made[-1] and e.sweeper.running
+        device_health(w)
+        agc(w)
         w.close()
         saved = json.load(open(os.environ['FMRX_CONFIG']))
         # Real time left its own window on the tuner, so the band is custom.
         assert saved['sweep_rbw_khz'] == 10 and saved['sweep_band'] == 'custom', saved
         assert saved['sweep_realtime'] is True, saved
+        assert saved['gain_auto'] == {NativeRadio.kind: True}, saved['gain_auto']
         assert abs(saved['sweep_stop_mhz'] - saved['sweep_start_mhz']
                    - RT_MAX_SPAN_HZ / 1e6) < 1e-3, saved
     finally:
