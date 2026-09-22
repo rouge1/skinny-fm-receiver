@@ -34,7 +34,7 @@ as their READMEs describe. The app finds the module in
 ### The BB60D on a Mac
 
 Signal Hound's Mac library (5.0.11) does sweeps and IQ, but not real time,
-so the **Real time** box is greyed out on a Mac. Two faults in it change how
+so the **Real time** button is greyed out on a Mac. Two faults in it change how
 the app uses the BB60D there:
 
 - **It can't close the device.** `bbCloseDevice` crashes the program, even
@@ -189,14 +189,15 @@ demodulated. There are two kinds:
 |---|---|
 | **Band** | Presets: **Full range of the radio** (the default, 9 kHz to 6 GHz on a BB60D), FM 87.5-108, Japan 76-95, OIRT 65.8-74, VHF 30-300. **Custom** is selected automatically when you set your own bounds. |
 | **Start** / **Stop** | The sweep's lower and upper bounds, in MHz to the kHz (9 kHz is 0000.009). Hover a digit and roll the wheel, or type a frequency. They stay inside the radio's range and at least 200 kHz apart. The sweep changes as soon as the digits come to rest. |
-| **Real time** *(BB60D)* | Watch the span in real time instead of sweeping it. Only for spans up to 27 MHz, which includes the FM band; wider, the box greys out and the span is swept. Not on a Mac, whose Signal Hound library has no real time. See *Sweep, real time and IQ* below. |
+| **Tuner** | The same tuner the Receive tab has, here so you can place it while you sweep: it is the marker on the spectrum, it is what **Listen** tunes to, and it is what **Real time** watches around. Hover a digit and roll the wheel, type a frequency, or use the ▲/▼ beside it; a click on the spectrum moves it too, and so does a middle-drag of the orange channel band (see below). |
+| **Real time** *(BB60D)* | A button that stays down. Pressing it drops the sweep to the 27 MHz it can watch, centred on the **Tuner**, and watches that instead of sweeping; letting it out gives back the span that was there. Put the tuner outside the window afterwards and the window moves to it. Widen the bounds past 27 MHz and it sweeps instead, saying so in the line under the buttons. Not on a Mac, whose Signal Hound library has no real time. See *Sweep, real time and IQ* below. |
 | **RBW** *(BB60D)* | Resolution bandwidth. **Auto** keeps a sweep near 80,000 points: 300 kHz over the full range, 1 kHz over the FM band. Narrower shows more detail and a lower noise floor. If you pick one too fine for the span, it is raised, and the line under the buttons says so. |
 | **Step bandwidth** *(other radios)* | The radio's sample rate while sweeping, which sets how much each step sees. Wider means fewer steps. Changing this restarts the radio. |
 | **FFT** *(other radios)* | Bins per FFT. This sets the RBW: 4096 bins at 20 MS/s gives 4.9 kHz. |
 | **Frames per step** *(other radios)* | FFT frames averaged at each step. More gives a smoother trace and a slower sweep. |
 | **Settle** *(other radios)* | How long to wait after each retune before trusting the samples. A HackRF needs about 10 ms and defaults to 20 ms. **If a signal appears twice, or shows where there is nothing, increase this.** |
 | **Pause / Resume** | Freezes the sweep, for example to study the trace. |
-| **Listen** | Receive the selected station, or wherever the marker is. |
+| **Listen** | Receive the station the **Tuner** is on - the selected station, or wherever the marker is. |
 | **Station threshold** | How far above the noise floor a channel must be to go in the list (default 15 dB). |
 
 The line under the buttons shows the plan and the measured speed, for example
@@ -205,6 +206,16 @@ The line under the buttons shows the plan and the measured speed, for example
 
 Stations are listed only where FM broadcasting is (65.8 to 108 MHz), however
 wide the sweep.
+
+The **orange band** on the sweep is the channel the receiver would take, on
+the tuner: grab it with the **middle button** and drag it to where you want
+to listen (snapped to the Step if **Snap to step** is on), or roll the wheel
+over it to change how wide the channel is. Nothing is retuned while you drag:
+the radio is sweeping, and does one thing at a time. What the band picks is
+where **Listen** and the **Receive** tab start from, and what **Real time**
+centres its window on. Zoomed right out a 200 kHz channel would be thinner
+than a pixel, so the band is drawn a little wider than it is - enough to stay
+a handle.
 
 ### Sweep, real time and IQ
 

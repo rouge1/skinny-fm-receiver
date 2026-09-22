@@ -390,6 +390,14 @@ from 100 kHz to its suggested 200 kHz. Its other leads:
   and about 46% of a core for the whole window. The density map is drawn
   behind the trace, and checked the right way up: its highest hit at
   89.3 MHz matched the trace's peak to 0.1 dB.
+  - [x] It became a **button** that stays down, beside the tuner the Sweep
+    tab now shows: pressing it drops the sweep to its 27 MHz window on the
+    tuner, and letting it out gives the span back. Placing the tuner is
+    how you say where to watch, so a span too wide to watch is no longer
+    a dead end. The orange channel band is drawn on the sweep as well, so
+    the tuner can be placed by middle-dragging it to a station - nothing
+    is retuned there, it only says where Listen, Receive and Real time
+    will start.
   - Found by probing: row 0 of the map is the bottom of the scale, and the
     reference level places the map even with the gain set by hand.
   - 💡 The persistence frame (`alphaFrame`, hits fading from 1 to 0) is

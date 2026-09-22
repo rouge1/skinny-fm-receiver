@@ -202,6 +202,10 @@ class MainWindow(Qt.QWidget):
         self._list_serial = -1
         self._sweep_avg = None
         self._sweep_db = None
+        #: The sweep's bounds before Real time took them, and the window it
+        #: put there - so letting the button out can give the span back.
+        self._before_rt = None
+        self._rt_span = None
         self._last_wf = 0.0
         self._last_overload = 0
         self._overload_until = 0.0
@@ -392,19 +396,46 @@ class MainWindow(Qt.QWidget):
             "floor. Too narrow for the span is raised, to 1.5 million points.")
         self.rbw_combo.activated.connect(lambda _: self._update_sweep_plan())
         form.addRow("RBW:", self.rbw_combo)
-        self.rt_check = Qt.QCheckBox("Real time (27 MHz or less)")
-        self.rt_check.setChecked(bool(self.cfg['sweep_realtime']) and bb60_sweep.REALTIME_OK)
-        self.rt_check.setToolTip(
-            "Watch the span in real time instead of sweeping it: every sample is\n"
-            "FFT'd, so nothing is missed - a burst of 307 us or more at 10 kHz RBW\n"
-            "- and a density map behind the trace shows how often each level\n"
-            "was hit. 30 frames a second; the FM band fits. Its RBW runs from\n"
-            "2.47 to 631 kHz (Auto: 10 kHz). No listening meanwhile: the radio\n"
-            "does one thing at a time." if bb60_sweep.REALTIME_OK else
+        # The tuner, here as well as in Receive: the marker on the spectrum,
+        # what Listen tunes to, and what Real time watches around.
+        tune = Qt.QHBoxLayout()
+        tune.setSpacing(6)
+        self.sweep_tuner = DigitEntry('MHz', 1e6, 4, 3,
+                                      value_hz=self.cfg['frequency_mhz'] * 1e6,
+                                      pixel_size=20, default_place=2, caption='Tuner')
+        self.sweep_tuner.setToolTip(
+            "Where the receiver will tune - the marker on the sweep, and the\n"
+            "same tuner Receive shows. Hover a digit and roll the wheel, or\n"
+            "type a frequency; a click on the spectrum moves it too. Real time\n"
+            "watches the band around it.")
+        self.sweep_tuner.valueChanged.connect(self.tune)
+        self.sweep_roller = StepRoller(height=self.sweep_tuner.sizeHint().height())
+        self.sweep_roller.setToolTip("Move the tuner down or up by the Step: click "
+                                     "(hold to repeat), or roll the wheel over it.")
+        self.sweep_roller.stepped.connect(self._step)
+        tune.addWidget(self.sweep_tuner, 0, QtCore.Qt.AlignVCenter)
+        tune.addWidget(self.sweep_roller, 0, QtCore.Qt.AlignVCenter)
+        tune.addStretch(1)
+        form.addRow("Tuner:", tune)
+        self.rt_btn = Qt.QPushButton("Real time")
+        self.rt_btn.setCheckable(True)
+        self.rt_btn.setEnabled(bb60_sweep.REALTIME_OK)
+        self.rt_btn.setToolTip(
+            f"Watch {RT_MAX_SPAN_HZ / 1e6:g} MHz around the tuner in real time instead of\n"
+            "sweeping: every sample is FFT'd, so nothing is missed - a burst of\n"
+            "307 us or more at 10 kHz RBW - and a density map behind the trace\n"
+            "shows how often each level was hit. 30 frames a second; the FM band\n"
+            "fits. Its RBW runs from 2.47 to 631 kHz (Auto: 10 kHz). Pressing it\n"
+            "drops the sweep to that window; letting it out gives back the span\n"
+            "that was there. No listening meanwhile: the radio does one thing at\n"
+            "a time." if bb60_sweep.REALTIME_OK else
             "Not on a Mac: Signal Hound's library for it sweeps and streams IQ,\n"
             "but has no real time.")
-        self.rt_check.toggled.connect(lambda _: self._update_sweep_plan())
-        form.addRow(self.rt_check)
+        self.rt_btn.setChecked(bool(self.cfg['sweep_realtime']) and bb60_sweep.REALTIME_OK)
+        # Connected after the saved state is set: pressing it moves the
+        # sweep's bounds, which the window is not built enough for yet.
+        self.rt_btn.toggled.connect(self._realtime_toggled)
+        form.addRow(self.rt_btn)
         self.sweep_rate_combo = Qt.QComboBox()
         self.sweep_rate_combo.setToolTip(
             "The radio's sample rate while sweeping: how much spectrum each "
@@ -435,7 +466,7 @@ class MainWindow(Qt.QWidget):
         self.settle_spin.valueChanged.connect(self._settle_changed)
         form.addRow("Settle:", self.settle_spin)
         # Rows only one kind of sweep has: the radio's own, or LO hopping.
-        self._native_rows = (self.rbw_combo, self.rt_check)
+        self._native_rows = (self.rbw_combo, self.rt_btn)
         self._hop_rows = (self.sweep_rate_combo, self.fft_combo, self.frames_spin,
                           self.settle_spin)
         buttons = Qt.QHBoxLayout()
@@ -864,7 +895,7 @@ class MainWindow(Qt.QWidget):
             found = detect_radios()
             kind = found[0] if found else 'hackrf'
         if self.args.freq:
-            self.tuner.setValue(self.args.freq * 1e6)
+            self._set_tuner(self.args.freq * 1e6)
         if self.args.sweep:
             self._set_sweep_span(*self.args.sweep)
         mode = self.args.mode or ('receive' if self.args.file else None)
@@ -967,7 +998,7 @@ class MainWindow(Qt.QWidget):
         self.settle_spin.setValue(float(self.cfg['settle_ms'].get(kind, radio.settle_ms)))
         self.settle_spin.blockSignals(False)
         low, high = radio.freq_range_hz
-        self.tuner.set_range(low, high)
+        self._tuner_range(low, high)
         self.center_entry.set_range(low, high)
         self._show_sweep_rows(radio.native_sweep)
         if self.cfg['sweep_band'] == 'full':
@@ -979,7 +1010,7 @@ class MainWindow(Qt.QWidget):
                 and radio.path != getattr(self, '_opened_file', None):
             # A new recording opens on the station it was made of; the same
             # one again (Stop, Start) stays where it was tuned.
-            self.tuner.setValue(radio.meta['station_hz'])
+            self._set_tuner(radio.meta['station_hz'])
         if kind == 'file':
             self._opened_file = radio.path
             self.center_entry.set_range(radio.center_hz, radio.center_hz)
@@ -1132,7 +1163,7 @@ class MainWindow(Qt.QWidget):
         self.rf_view.set_tuner_range(*e.tuner_range())
         self.rf_view.set_message('')
         self.center_entry.setValue(e.lo_hz)
-        self.tuner.setValue(e.station_hz)
+        self._set_tuner(e.station_hz)
         self._show_range()
 
     def _show_range(self, at_edge=False):
@@ -1183,7 +1214,7 @@ class MainWindow(Qt.QWidget):
         if self.radio.native_sweep:
             view = self.rf_view
             return NativeSweepPlan(start, stop, self.rbw_combo.currentData() or None,
-                                   realtime=self.rt_check.isChecked(),
+                                   realtime=self.rt_btn.isChecked(),
                                    ref_db=view.ref_knob.value(),
                                    scale_db=view.range_knob.value())
         rate = float(self.sweep_rate_combo.currentData() or self.radio.default_sweep_rate)
@@ -1200,14 +1231,53 @@ class MainWindow(Qt.QWidget):
                 if label is not None:
                     label.setVisible(shown)
 
-    def _enable_realtime(self, span):
-        """Real time is for spans the API takes, where its library has it."""
-        self.rt_check.setEnabled(bb60_sweep.REALTIME_OK and span <= RT_MAX_SPAN_HZ + 1)
+    def _realtime_span(self):
+        """Real time's window - 27 MHz at most - on the tuner, slid inside
+        the radio's range rather than cut short at its edges."""
+        half = RT_MAX_SPAN_HZ / 2
+        centre = self.tuner.value()
+        start, stop = centre - half, centre + half
+        if self.radio is not None:
+            low, high = self.radio.sweep_range_hz
+            if start < low:
+                start, stop = low, min(high, low + RT_MAX_SPAN_HZ)
+            elif stop > high:
+                start, stop = max(low, high - RT_MAX_SPAN_HZ), high
+        return start, stop
+
+    def _put_realtime_window(self):
+        """Put that window where the tuner is, and remember where it landed:
+        letting the button out tells an untouched window from one the bounds
+        have been edited under."""
+        self._set_sweep_span(*self._realtime_span())
+        self._rt_span = (self.sweep_start.value(), self.sweep_stop.value())
+
+    def _realtime_toggled(self, on):
+        """Pressed, real time drops the sweep to its window on the tuner;
+        let out, it gives back the span that was there."""
+        if on:
+            self._before_rt = (self.sweep_start.value(), self.sweep_stop.value())
+            self._put_realtime_window()
+            return
+        before, self._before_rt = self._before_rt, None
+        here = (self.sweep_start.value(), self.sweep_stop.value())
+        if before is not None and self._rt_span == here:
+            self._set_sweep_span(*before)
+        else:
+            self._update_sweep_plan()
+
+    def _follow_realtime(self, hz):
+        """The tuner put outside the window real time is watching moves the
+        window, not the tuner: it is the tuner that says where to watch."""
+        if not (self._mode == 'sweep' and self.rt_btn.isChecked()
+                and getattr(self.radio, 'native_sweep', False)):
+            return
+        if self.sweep_start.value() <= hz <= self.sweep_stop.value():
+            return
+        self._put_realtime_window()
 
     def _limit_sweep_bounds(self):
         """Each bound inside the radio's range, and short of the other."""
-        span = self.sweep_stop.value() - self.sweep_start.value()
-        self._enable_realtime(span)
         if self.radio is None:
             return
         low, high = self.radio.sweep_range_hz
@@ -1215,8 +1285,6 @@ class MainWindow(Qt.QWidget):
         self.sweep_stop.set_range(low + MIN_SWEEP_SPAN_HZ, high)
         self.sweep_start.set_range(low, self.sweep_stop.value() - MIN_SWEEP_SPAN_HZ)
         self.sweep_stop.set_range(self.sweep_start.value() + MIN_SWEEP_SPAN_HZ, high)
-        span = self.sweep_stop.value() - self.sweep_start.value()
-        self._enable_realtime(span)
 
     def _start_sweep(self):
         self._save_view()
@@ -1239,7 +1307,7 @@ class MainWindow(Qt.QWidget):
         self._list_serial = -1
         self.rf_view.set_pan_limits(*SWEEP_VIEW_HZ)
         self.rf_view.set_extent(plan.start_hz, plan.stop_hz, keep_span=not full_span)
-        self.rf_view.set_band(None, None)
+        self._show_sweep_band()
         self.rf_view.set_center_line(None)
         self.rf_view.set_tuner_range(None, None)
         self.rf_view.set_marker_auto(False)           # sweeping, the marker is the pick
@@ -1250,6 +1318,15 @@ class MainWindow(Qt.QWidget):
         self.rf_view.set_level_unit('dBm' if getattr(plan, 'native', False) else 'dBFS')
         self.rf_view.clear_density()
         self.sweep_info.setText(plan.describe())
+
+    def _show_sweep_band(self):
+        """The channel the receiver would take, drawn on the sweep: the
+        orange bar says where Listen, the Receive tab and Real time will
+        start from, and middle-dragging it moves them. Nothing is retuned
+        meanwhile - the radio is sweeping."""
+        bw = self.chan_entry.value()
+        hz = self.tuner.value()
+        self.rf_view.set_band(hz - bw / 2, hz + bw / 2)
 
     def _restart_sweep(self):
         if self._mode == 'sweep' and self.radio is not None:
@@ -1328,6 +1405,17 @@ class MainWindow(Qt.QWidget):
             self.engine.sweeper.set_paused(paused)
 
     # ============================================================= tuning
+    def _set_tuner(self, hz, emit=False):
+        """One frequency, both faces of the tuner: Receive's digits and
+        Sweep's. Only the one the window asks for emits."""
+        changed = self.tuner.setValue(hz, emit=emit)
+        self.sweep_tuner.setValue(hz)
+        return changed
+
+    def _tuner_range(self, low, high):
+        for entry in (self.tuner, self.sweep_tuner):
+            entry.set_range(low, high)
+
     def _step_hz(self):
         return float(STEPS_KHZ[int(round(self.step_knob.value()))]) * 1e3
 
@@ -1355,8 +1443,11 @@ class MainWindow(Qt.QWidget):
             self.rf_view.tuner_moving()
         else:
             self.engine.tune(hz)
-            self.tuner.setValue(hz)
+            self._set_tuner(hz)
             self.rf_view.set_marker(hz)
+            self._show_sweep_band()
+            if final:                 # mid-drag, the window waits for the end
+                self._follow_realtime(hz)
 
     def _center_edited(self, hz):
         if self._mode == 'receive' and self.engine.rx is not None:
@@ -1417,6 +1508,7 @@ class MainWindow(Qt.QWidget):
 
     def _band_drag_finished(self):
         self._recordings_retuned()
+        self._follow_realtime(self.tuner.value())
 
     def _listen_selected(self):
         item = self.station_list.currentItem()
@@ -1444,7 +1536,9 @@ class MainWindow(Qt.QWidget):
                     self._set_status(f"Could not set gain: {exc}", 'warn')
 
     def _chan_bw_changed(self, hz):
-        if self.engine.rx is not None:
+        if self._mode == 'sweep':
+            self._show_sweep_band()
+        elif self.engine.rx is not None:
             self.engine.rx.set_channel_bw(hz)
             e = self.engine
             self.rf_view.set_band(e.station_hz - hz / 2, e.station_hz + hz / 2)
@@ -1502,7 +1596,8 @@ class MainWindow(Qt.QWidget):
         apply_window_theme(self, self.cfg['theme'])
         for view in (self.rf_view, self.mpx_view, self.audio_view):
             view.restyle()
-        for entry in (self.tuner, self.center_entry, self.chan_entry):
+        for entry in (self.tuner, self.sweep_tuner, self.center_entry,
+                      self.chan_entry):
             entry.restyle()
         self.timeline.update()
         self.theme_disc.describe()
@@ -1666,9 +1761,10 @@ class MainWindow(Qt.QWidget):
         self._show_audio_view(False)
         for widget in (self.radio_combo, self.usrp_edit, self.file_btn, self.run_btn):
             widget.setEnabled(True)
-        for entry, key in ((self.tuner, 'tuner'), (self.center_entry, 'center')):
-            entry.set_range(1e3, 6000e6)
-            entry.setValue(live[key])
+        self._tuner_range(1e3, 6000e6)
+        self._set_tuner(live['tuner'])
+        self.center_entry.set_range(1e3, 6000e6)
+        self.center_entry.setValue(live['center'])
         self._use_radio(live['kind'] or self.radio_combo.currentData())
 
     def _show_audio_view(self, audio):
@@ -1879,7 +1975,7 @@ class MainWindow(Qt.QWidget):
         self._play = Playback(self._rec_sel, track, radio=radio)
         radio.place(int(self._start_at * radio.rate))
         low, high = radio.freq_range_hz
-        self.tuner.set_range(low, high)
+        self._tuner_range(low, high)
         self.center_entry.set_range(radio.center_hz, radio.center_hz)
         self._show_audio_view(False)
         self._run_receive('playback', track.station_hz or radio.center_hz,
@@ -2362,7 +2458,7 @@ class MainWindow(Qt.QWidget):
             'sweep_start_mhz': self.sweep_start.value() / 1e6,
             'sweep_stop_mhz': self.sweep_stop.value() / 1e6,
             'sweep_rbw_khz': (self.rbw_combo.currentData() or 0.0) / 1e3,
-            'sweep_realtime': self.rt_check.isChecked(),
+            'sweep_realtime': self.rt_btn.isChecked(),
             'sweep_fft': self.fft_combo.currentData(),
             'sweep_frames': self.frames_spin.value(),
             'min_snr_db': self.snr_spin.value(), 'snap': self.snap_check.isChecked(),

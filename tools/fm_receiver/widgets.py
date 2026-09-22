@@ -1032,8 +1032,10 @@ class ChannelBand(pg.LinearRegionItem):
         self._drag = None
         self._wheel = 0
         self.hovered = False
-        self.setToolTip("Channel filter. Wheel: wider or narrower (Shift: fine).\n"
-                        "Middle-drag: tune within the band.")
+        self.setToolTip("The channel the receiver takes. Wheel: wider or narrower\n"
+                        "(Shift: fine). Middle-drag: move the tuner - within the\n"
+                        "band around the Center in Receive; anywhere on a sweep,\n"
+                        "where it says what Listen and Real time will start from.")
 
     def hoverEvent(self, ev):
         # Claiming the middle button on hover is how pyqtgraph gives this
@@ -1096,6 +1098,10 @@ class SpectrumView(Qt.QWidget):
 
     WF_ROWS = 220
     WF_COLS = 4096
+    #: The channel band is a handle as well as a picture: it is drawn at
+    #: least this many pixels wide, so a narrow channel on a wide sweep can
+    #: still be grabbed.
+    BAND_MIN_PX = 7
     #: The fades, in ms: out and in, and how long after the last move each
     #: line decides the tuner or centre has settled.
     FADE_FAST_MS = 120
@@ -1149,6 +1155,8 @@ class SpectrumView(Qt.QWidget):
         self.band.setVisible(False)
         self.band.setZValue(-10)
         self.plot.addItem(self.band, ignoreBounds=True)
+        #: Where the band really is, before it is widened to stay grabbable.
+        self._band_hz = None
         # The radio's centre frequency, and the parts of the band the tuner
         # cannot reach, shaded.
         self.center_line = pg.InfiniteLine(angle=90, movable=False)
@@ -1469,11 +1477,30 @@ class SpectrumView(Qt.QWidget):
             self.wf_marker.setVisible(True)
 
     def set_band(self, low_hz, high_hz):
-        if low_hz is None:
+        """The channel band, in hertz; None hides it."""
+        self._band_hz = None if low_hz is None else (float(low_hz), float(high_hz))
+        self._place_band()
+
+    def _place_band(self):
+        """Draw the band where it is - but never thinner than
+        :attr:`BAND_MIN_PX`, since it is a handle as well as a picture: a
+        200 kHz channel on a 6 GHz sweep is a hundredth of a pixel, and
+        nothing the pointer could find."""
+        if self._band_hz is None:
             self.band.setVisible(False)
             return
-        self.band.setRegion((low_hz / self.scale, high_hz / self.scale))
+        low, high = self._band_hz
+        least = self.BAND_MIN_PX * self._hz_per_pixel()
+        if high - low < least:
+            middle = (low + high) / 2
+            low, high = middle - least / 2, middle + least / 2
+        self.band.setRegion((low / self.scale, high / self.scale))
         self.band.setVisible(True)
+
+    def _hz_per_pixel(self):
+        vb = self.plot.getPlotItem().getViewBox()
+        (x0, x1), _ = vb.viewRange()
+        return (x1 - x0) * self.scale / max(1.0, vb.width())
 
     def eventFilter(self, obj, event):
         try:
@@ -1626,6 +1653,8 @@ class SpectrumView(Qt.QWidget):
             self._syncing = False
 
     def _range_changed(self, _vb, rng):
+        # Zoomed out, the band may now be thinner than it is drawn.
+        self._place_band()
         if self._syncing:
             return
         x0, x1 = rng

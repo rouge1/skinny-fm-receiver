@@ -39,6 +39,7 @@ os.environ['FMRX_CONFIG'] = os.path.join(FOLDER, 'config.json')
 
 from fm_receiver import app as fmapp  # noqa: E402
 from fm_receiver import bb60_sweep  # noqa: E402
+from fm_receiver.bb60_sweep import RT_MAX_SPAN_HZ  # noqa: E402
 from fm_receiver import radios  # noqa: E402
 from tests import signals  # noqa: E402
 from tests.test_sweep import slow_radio  # noqa: E402
@@ -440,6 +441,8 @@ def radio_card(w):
     assert abs(e.lo_hz - 97.0e6) < 1 and abs(w.radio.center_hz - 97.0e6) < 1
     assert abs(e.station_hz - 96.4e6) < 1, e.station_hz
     assert abs(w.tuner.value() - 96.4e6) < 1
+    # Sweep's tuner is the same tuner: it follows one moved here.
+    assert w.sweep_tuner.value() == w.tuner.value()
     assert abs(view.center_line.value() - 97.0) < 1e-6
     assert view._peak is None, 'peak hold must start again when the LO moves'
     w._center_on_tuner()
@@ -649,10 +652,40 @@ def part3_native_sweep():
         assert sweeper.plan.rbw == 30e3 and sweeper.plan.raised, sweeper.plan.describe()
         w._preset_chosen(1)
         assert sweeper.plan.start_hz == 87.5e6 and sweeper.plan.rbw == 10e3
-        # Real time, which the FM band fits: a density map behind the trace,
-        # placed by the view's Ref level and Range.
-        assert w.rt_check.isEnabled() and not sweeper.plan.realtime
-        w.rt_check.setChecked(True)
+        # The channel band shows on the sweep too, on the tuner: a
+        # middle-drag moves it, and that is where Listen and Real time will
+        # start from. Nothing is retuned meanwhile - the radio is sweeping.
+        view, port = w.rf_view, w.rf_view.plot.viewport()
+        assert view.band.isVisible(), 'the channel band shows on a sweep'
+        w.tune(98.7e6)
+        low, high = view._band_hz
+        assert abs((low + high) / 2 - 98.7e6) < 1, (low, high)
+        assert abs(high - low - w.chan_entry.value()) < 1, (low, high)
+        view.span_knob.setValue(4e6)
+        view.set_center(98.7e6)
+        pump(0.3)
+        _middle_drag(port, _plot_point(view, 98.7e6), _plot_point(view, 99.21e6))
+        assert abs(w.tuner.value() - 99.2e6) < 1, w.tuner.value()
+        assert abs(w.sweep_tuner.value() - 99.2e6) < 1, w.sweep_tuner.value()
+        assert e.mode == 'sweep' and e.rx is None, 'the radio is sweeping, not receiving'
+        assert abs(e.station_hz - 99.2e6) < 1, 'but Receive starts there'
+        # Zoomed out, a 200 kHz channel is thinner than a pixel: it is drawn
+        # wide enough to stay a handle, without moving.
+        view.span_knob.setValue(view.span_knob._max)
+        pump(0.3)
+        band_low, band_high = view.band.getRegion()
+        assert band_high - band_low > 0.2, (band_low, band_high)
+        assert abs((band_low + band_high) / 2 - 99.2) < 0.01, (band_low, band_high)
+        assert view._band_hz == (99.2e6 - 100e3, 99.2e6 + 100e3), view._band_hz
+        # Real time: the button drops the sweep to its 27 MHz window on the
+        # tuner, with a density map behind the trace, placed by the view's
+        # Ref level and Range.
+        assert w.rt_btn.isEnabled() and not sweeper.plan.realtime
+        w.tune(98.7e6)
+        w.rt_btn.setChecked(True)
+        span = (w.sweep_start.value(), w.sweep_stop.value())
+        assert abs(span[1] - span[0] - RT_MAX_SPAN_HZ) < 1e3, span
+        assert abs((span[0] + span[1]) / 2 - 98.7e6) < 1e3, span
         assert sweeper.plan.realtime and sweeper.plan.rbw == 10e3
         assert pump(3, lambda: w.rf_view.density_item.isVisible())
         pump(0.6)
@@ -667,13 +700,30 @@ def part3_native_sweep():
             return r.y(), r.y() + r.height()             # dB at its bottom and top
         assert pump(1, lambda: abs(map_db()[1] + 30) < 0.5), map_db()
         assert abs(map_db()[0] - (-30 - w.rf_view.range_knob.value())) < 0.5, map_db()
-        # Too wide for real time: it sweeps, the box greyed but still ticked.
+        # The tuner put outside the window moves the window, not the tuner.
+        w.tune(200e6)
+        span = (w.sweep_start.value(), w.sweep_stop.value())
+        assert abs((span[0] + span[1]) / 2 - 200e6) < 1e3, span
+        assert sweeper.plan.realtime and w.sweep_tuner.value() == 200e6
+        # Widened past what real time takes, it sweeps instead and says so;
+        # the button stays down, and letting it out keeps the wider span.
         w._preset_chosen(0)
-        assert not w.rt_check.isEnabled() and w.rt_check.isChecked()
+        assert w.rt_btn.isEnabled() and w.rt_btn.isChecked()
         assert not sweeper.plan.realtime and sweeper.plan.too_wide
         assert not w.rf_view.density_item.isVisible()
+        w.rt_btn.setChecked(False)
+        assert (w.sweep_start.value(), w.sweep_stop.value()) == (9e3, 6000e6)
+        # Pressed and let out again, the span it took comes back.
         w._preset_chosen(1)
-        assert w.rt_check.isEnabled() and sweeper.plan.realtime
+        before = (w.sweep_start.value(), w.sweep_stop.value())
+        w.rt_btn.setChecked(True)
+        assert (w.sweep_start.value(), w.sweep_stop.value()) != before
+        w.rt_btn.setChecked(False)
+        assert (w.sweep_start.value(), w.sweep_stop.value()) == before
+        assert not sweeper.plan.realtime
+        w.tune(95.1e6)
+        w.rt_btn.setChecked(True)
+        assert sweeper.plan.realtime
         # To Receive: the sweep stops, levels are dBFS again; and back.
         def listed(hz):
             return [w.station_list.item(i) for i in range(w.station_list.count())
@@ -689,8 +739,11 @@ def part3_native_sweep():
         assert w._mode == 'sweep' and e.sweeper is NativeRadio.made[-1] and e.sweeper.running
         w.close()
         saved = json.load(open(os.environ['FMRX_CONFIG']))
-        assert saved['sweep_rbw_khz'] == 10 and saved['sweep_band'] == 'preset', saved
+        # Real time left its own window on the tuner, so the band is custom.
+        assert saved['sweep_rbw_khz'] == 10 and saved['sweep_band'] == 'custom', saved
         assert saved['sweep_realtime'] is True, saved
+        assert abs(saved['sweep_stop_mhz'] - saved['sweep_start_mhz']
+                   - RT_MAX_SPAN_HZ / 1e6) < 1e-3, saved
     finally:
         fmapp.make_radio, bb60_sweep.REALTIME_OK = original
     print("part 3 passed")
@@ -710,9 +763,9 @@ def part4_no_realtime():
         assert w._mode == 'sweep' and e.running and e.sweeper.native, w.status.text()
         w._preset_chosen(1)
         assert e.sweeper.plan.start_hz == 87.5e6
-        assert not w.rt_check.isEnabled() and not w.rt_check.isChecked()
-        assert 'Mac' in w.rt_check.toolTip(), w.rt_check.toolTip()
-        w.rt_check.setChecked(True)              # even if something ticks it
+        assert not w.rt_btn.isEnabled() and not w.rt_btn.isChecked()
+        assert 'Mac' in w.rt_btn.toolTip(), w.rt_btn.toolTip()
+        w.rt_btn.setChecked(True)                # even if something presses it
         plan = e.sweeper.plan
         assert not plan.realtime and not plan.too_wide, plan.describe()
         pump(0.6)
