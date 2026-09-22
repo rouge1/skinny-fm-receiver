@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 # Recordings made with the app (the default folder) - large, and not code.
 recordings/
+# Finder's folder settings, on a Mac.
+.DS_Store
