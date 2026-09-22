@@ -823,9 +823,10 @@ class MainWindow(Qt.QWidget):
         # On top the RF spectrum, or a WAV's sound as it plays.
         self.top_stack = Qt.QStackedWidget()
         self.rf_view = SpectrumView("RF spectrum", unit='MHz', waterfall=True,
-                                    min_span_hz=50e3,
+                                    min_span_hz=50e3, tuner_menu=True,
                                     snap_hz=self._step_hz() if self.cfg['snap'] else None)
         self.rf_view.clicked.connect(self._rf_clicked)
+        self.rf_view.tunerRequested.connect(self._rf_clicked)
         self.rf_view.activated.connect(self._rf_activated)
         self.rf_view.bandWheel.connect(self._band_wheel)
         self.rf_view.bandDragged.connect(self._band_dragged)

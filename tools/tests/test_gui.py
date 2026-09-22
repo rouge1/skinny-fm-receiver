@@ -677,6 +677,24 @@ def part3_native_sweep():
         assert band_high - band_low > 0.2, (band_low, band_high)
         assert abs((band_low + band_high) / 2 - 99.2) < 0.01, (band_low, band_high)
         assert view._band_hz == (99.2e6 - 100e3, 99.2e6 + 100e3), view._band_hz
+        # Right click: the menu offers the tuner where the pointer is, at
+        # the frequency Snap rounds to, and choosing it puts it there.
+        at = _plot_point(view, 96.34e6)
+        _move(port, at)
+        _press(port, at, QtCore.Qt.RightButton, True)
+        _press(port, at, QtCore.Qt.RightButton, False)
+        pump(0.2)
+        assert view._menu.isVisible(), 'the right button should offer the tuner'
+        assert view._tune_action.text() == 'Tuner to 96.300 MHz', view._tune_action.text()
+        assert abs(w.tuner.value() - 99.2e6) < 1, 'the menu alone moves nothing'
+        view._tune_action.trigger()
+        view._menu.close()
+        pump(0.2)
+        assert abs(w.tuner.value() - 96.3e6) < 1, w.tuner.value()
+        assert abs(w.sweep_tuner.value() - 96.3e6) < 1, w.sweep_tuner.value()
+        low, high = view._band_hz
+        assert abs((low + high) / 2 - 96.3e6) < 1, 'the band goes with it'
+        assert e.mode == 'sweep' and e.rx is None, 'still only sweeping'
         # Real time: the button drops the sweep to its 27 MHz window on the
         # tuner, with a density map behind the trace, placed by the view's
         # Ref level and Range.

@@ -1086,7 +1086,9 @@ class SpectrumView(Qt.QWidget):
     hertz. The mouse wheel zooms and dragging pans, along frequency only;
     the Span dial follows. Over the channel band the wheel emits
     :attr:`bandWheel` (notches, fine) and a middle-button drag
-    :attr:`bandDragged` (hertz) then :attr:`bandDragFinished`.
+    :attr:`bandDragged` (hertz) then :attr:`bandDragFinished`. With
+    ``tuner_menu``, a right click offers to put the tuner where the pointer
+    is, and :attr:`tunerRequested` carries it (hertz).
     """
 
     clicked = pyqtSignal(float)
@@ -1095,6 +1097,7 @@ class SpectrumView(Qt.QWidget):
     bandWheel = pyqtSignal(int, bool)
     bandDragged = pyqtSignal(float)
     bandDragFinished = pyqtSignal()
+    tunerRequested = pyqtSignal(float)
 
     WF_ROWS = 220
     WF_COLS = 4096
@@ -1112,7 +1115,7 @@ class SpectrumView(Qt.QWidget):
 
     def __init__(self, title, unit='MHz', waterfall=True, min_span_hz=20e3,
                  ref_db=-20.0, range_db=100.0, avg=4, snap_hz=None,
-                 parent=None):
+                 tuner_menu=False, parent=None):
         super().__init__(parent)
         self.unit = unit
         self.scale = 1e6 if unit == 'MHz' else 1e3
@@ -1126,6 +1129,13 @@ class SpectrumView(Qt.QWidget):
         self._syncing = False
         self._wanted_span = None
         self.snap_hz = snap_hz
+        # One menu for the view's life, its text rewritten at each click:
+        # a new one per click would pile up under the view, which owns it.
+        self._menu = self._tune_action = self._menu_hz = None
+        if tuner_menu:
+            self._menu = Qt.QMenu(self)
+            self._tune_action = self._menu.addAction('')
+            self._tune_action.triggered.connect(self._tuner_chosen)
         self.title = title
 
         self.plot = pg.PlotWidget()
@@ -1676,17 +1686,36 @@ class SpectrumView(Qt.QWidget):
         return None
 
     def _scene_clicked(self, event):
-        if event.button() != QtCore.Qt.LeftButton:
+        if event.button() not in (QtCore.Qt.LeftButton, QtCore.Qt.RightButton):
             return
         hz = self._to_hz(event.scenePos())
         if hz is None:
             return
         if self.snap_hz:
             hz = on_raster(hz, self.snap_hz)
+        if event.button() == QtCore.Qt.RightButton:
+            self._offer_tuner(hz, event.screenPos())
+            return
         if event.double():
             self.activated.emit(hz)
         else:
             self.clicked.emit(hz)
+
+    def _offer_tuner(self, hz, screen_pos):
+        """Right click: offer to put the tuner where the pointer is. The
+        frequency is on the item, so it is plain where it would land - the
+        one Snap would round to, if Snap is on."""
+        if self._menu is None:
+            return
+        self._menu_hz = hz
+        self._tune_action.setText(f"Tuner to {hz / self.scale:.3f} {self.unit}")
+        self._menu.popup(QtCore.QPoint(int(screen_pos.x()), int(screen_pos.y())))
+
+    def _tuner_chosen(self):
+        # Nothing to go on if the item is somehow reached without the menu
+        # having been offered over the plot.
+        if self._menu_hz is not None:
+            self.tunerRequested.emit(self._menu_hz)
 
     def _mouse_moved(self, scene_pos):
         hz = self._to_hz(scene_pos)

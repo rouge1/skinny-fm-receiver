@@ -332,6 +332,12 @@ tuner. It brightens under the pointer.
 - **Mouse wheel over the orange band:** makes the channel filter wider or
   narrower, 5 kHz a notch (1 kHz with Shift).
 - **Click the spectrum or the waterfall:** tunes there, within the range.
+- **Right-click the spectrum or the waterfall:** offers **Tuner to 99.100
+  MHz** - the frequency under the pointer, already rounded by **Snap to
+  step**, so you can see where it would land before anything moves. Choose
+  it and the tuner goes there; press Escape or click away and nothing
+  happens. Sweeping, that only says where **Listen**, the Receive tab and
+  **Real time** will start from; the radio goes on sweeping.
 - Everywhere else the wheel zooms and a left or middle drag pans the view,
   as before.
 
@@ -348,7 +354,7 @@ Top to bottom:
 | **Station** | The most consistent PS name, or the RT+ station name. |
 | **Standard** | RBDS with 75 µs de-emphasis for the Americas, or RDS with 50 µs for Europe and elsewhere. |
 | **Stereo** | Turn it off for mono, which is quieter on a weak station. With no pilot, the audio is mono anyway. |
-| **Snap to step** | Clicks and middle-drags on the spectrum tune to the nearest multiple of the Step. Off, they tune to where the pointer is, to the kHz. |
+| **Snap to step** | Clicks, right-click picks and middle-drags on the spectrum tune to the nearest multiple of the Step. Off, they tune to where the pointer is, to the kHz. |
 | **Clear RDS** | Clears the decoded data and starts decoding again. |
 | **Signal** | The power in the channel and how far the station stands above the floor: green above 30 dB, amber above 15 dB, red below that. |
 | **Audio** | *Stereo – pilot locked (standard phase)*, or *Mono – no stereo pilot*. Stereo needs a pilot that stands 10 dB over the noise beside it, so an empty channel, a mono station, or a station tuned slightly off reads *Mono*. *Standard phase* is what broadcasters send; *cosine phase* is what the RF bench toolkit's own transmitter sends. The app detects which by itself. |
