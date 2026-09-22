@@ -3,12 +3,13 @@
 """Signal Hound BB60D as a live GNU Radio source.
 
 Copied from the RF bench toolkit (``/data/python/SDR/apps/bb60_source.py``,
-commit 20c76e4). Five changes for this app, all marked "FM receiver": the
+commit 20c76e4). Six changes for this app, all marked "FM receiver": the
 analog bandwidth is set with every rate (see :data:`IQ_BANDWIDTH`),
 ``start()`` drops settings left pending from before it,
 :attr:`bb60_source.hold_open` keeps the device open across a stop and start,
-:meth:`bb60_source.hold` opens it with no stream, for ``bb60_sweep``, and
-it finds the module and the SoapySDR libraries on a Mac as well.
+:meth:`bb60_source.hold` opens it with no stream, for ``bb60_sweep``, it
+finds the module and the SoapySDR libraries on a Mac as well, and on a Mac
+it never closes the device (:data:`KEEP_OPEN`).
 
 The BB60D is a SoapySDR device, but it cannot be driven through
 ``gr-soapy``: ``soapy.source(...)`` constructs, and then *every* setter -
@@ -52,6 +53,18 @@ import numpy as np
 from gnuradio import gr  # type: ignore
 
 DRIVER = 'SignalHoundBB60'
+
+#: FM receiver: on a Mac the device is never closed. Signal Hound's Mac
+#: library (5.0.11) crashes in ``bbCloseDevice`` - EXC_BREAKPOINT (SIGTRAP)
+#: in macOS's crash report - on every device it has opened, even straight
+#: after ``bbOpenDevice``, so the module's destructor, which calls it, must
+#: never run. The device is opened once, marked closed for
+#: SoapySDR's ``close()`` (which then leaves it alone), kept here for the
+#: life of the process, and handed to every later open; macOS lets it go
+#: when the app quits. Meanwhile ``enumerate()`` no longer lists it, so
+#: :func:`find_devices` adds it back.
+KEEP_OPEN = sys.platform == 'darwin'
+_kept = None            # (the SoapySDR device, what find_devices said of it)
 #: The rates the hardware actually has. Anything else is refused.
 SAMPLE_RATES = [40e6, 20e6, 10e6, 5e6, 2.5e6, 1.25e6, 625e3, 312.5e3]
 #: Gain elements, in the order the slider should open them up: take the
@@ -422,8 +435,11 @@ def find_devices():
         print(f"BB60: could not enumerate SoapySDR devices: {exc}",
               file=sys.stderr)
         return []
-    return [d for d in devices
-            if DRIVER.lower() in str(d.get('driver', '')).lower()]
+    found = [d for d in devices
+             if DRIVER.lower() in str(d.get('driver', '')).lower()]
+    if _kept is not None:                         # FM receiver: see KEEP_OPEN
+        found.append(_kept[1])
+    return found
 
 
 def is_available():
@@ -503,8 +519,12 @@ class bb60_source(gr.sync_block):
         return True
 
     def _open(self):
+        global _kept
         import SoapySDR  # type: ignore
-        if not find_devices():
+        if _kept is not None:                     # FM receiver: see KEEP_OPEN
+            return _kept[0]
+        found = find_devices()
+        if not found:
             raise RuntimeError(
                 "No Signal Hound BB60 was found on USB. Check it is "
                 "connected, and that no other application - Sceptre, or "
@@ -516,7 +536,11 @@ class bb60_source(gr.sync_block):
         # Opened by driver name alone: the arguments enumerate() returns
         # are refused, serial with "no match" and the whole dict with
         # "device_id is not a number".
-        return SoapySDR.Device(f"driver={DRIVER}")
+        sdr = SoapySDR.Device(f"driver={DRIVER}")
+        if KEEP_OPEN:
+            setattr(sdr, '__closed__', True)      # FM receiver: see KEEP_OPEN
+            _kept = (sdr, found[0])
+        return sdr
 
     def hold(self):
         """FM receiver: open the device with no stream, and keep it for

@@ -1179,6 +1179,10 @@ class SpectrumView(Qt.QWidget):
             self.wf_plot.setXLink(self.plot)
             self.wf_plot.setLabel('left', 'time')
             self.wf_plot.getAxis('left').setStyle(showValues=False)
+            # Linked views line up by where they are on screen, so the
+            # waterfall's plot must start where the spectrum's does: its
+            # axis, with no numbers, is kept as wide as the spectrum's.
+            self.plot.getAxis('left').geometryChanged.connect(self._match_axes)
             self.wf_image = pg.ImageItem()
             self.wf_plot.addItem(self.wf_image)
             self.wf_marker = pg.InfiniteLine(angle=90, movable=False)
@@ -1278,7 +1282,8 @@ class SpectrumView(Qt.QWidget):
                 axis = item.getAxis(name)
                 axis.setPen(pg.mkPen(t['rule']))
                 axis.setTextPen(pg.mkPen(t['ink_2']))
-        self.plot.getPlotItem().setTitle(self.title, color=t['ink'], size='10pt')
+        # In pixels: 10 pt is 13 px on Linux but 10 on a Mac (72 dpi).
+        self.plot.getPlotItem().setTitle(self.title, color=t['ink'], size='13px')
         self.plot.showGrid(x=True, y=True, alpha=0.18)
         self.curve.setPen(pg.mkPen(t['trace'], width=1))
         self.peak_curve.setPen(pg.mkPen(t['ink_3'], width=1,
@@ -1306,6 +1311,12 @@ class SpectrumView(Qt.QWidget):
             self.wf_center_line.setPen(centre)
             self.wf_image.setLookupTable(waterfall_lut(
                 WATERFALL.get(theme.current(), WATERFALL['slate'])))
+
+    def _match_axes(self):
+        try:
+            self.wf_plot.getAxis('left').setWidth(self.plot.getAxis('left').width())
+        except Exception as exc:                  # never abort the app
+            print(f"spectrum view: {exc}")
 
     def _paint_band(self):
         """The channel band, brighter with the pointer over it - it is a
@@ -1549,6 +1560,16 @@ class SpectrumView(Qt.QWidget):
         self.outside[1].setRegion((high_hz / self.scale, far))
         for region in self.outside:
             region.setVisible(True)
+
+    def set_pan_limits(self, low_hz, high_hz):
+        """How far the mouse may drag or zoom the view out: to ``low_hz`` and
+        ``high_hz``; None lets it go anywhere. The waterfall gets the same
+        limits - it is linked to the spectrum, and dragging it pans both."""
+        low = None if low_hz is None else low_hz / self.scale
+        high = None if high_hz is None else high_hz / self.scale
+        for plot in (self.plot, self.wf_plot):
+            if plot is not None:
+                plot.getPlotItem().getViewBox().setLimits(xMin=low, xMax=high)
 
     def set_message(self, text):
         self.message.setText(text)

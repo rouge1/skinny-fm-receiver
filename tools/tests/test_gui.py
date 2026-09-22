@@ -468,6 +468,29 @@ def part2_sweep():
         assert (w.sweep_start.value(), w.sweep_stop.value()) == (low, high)
         assert w.fft_combo.isVisible() and not w.rbw_combo.isVisible()
         assert w.rf_view.level_unit == 'dBFS'
+        # Dragged or zoomed out (what the mouse calls), the view stops at
+        # 0 Hz and 6 GHz - the waterfall's too, which pans both. The two
+        # plots are lined up on screen (linked views go by that), and the
+        # link rounds to a pixel.
+        lo_mhz, hi_mhz = (x / 1e6 for x in fmapp.SWEEP_VIEW_HZ)
+        view_boxes = [p.getPlotItem().getViewBox() for p in (w.rf_view.plot, w.rf_view.wf_plot)]
+        spec, fall = (vb.sceneBoundingRect() for vb in view_boxes)
+        assert (spec.left(), spec.width()) == (fall.left(), fall.width()), (spec, fall)
+        for vb in view_boxes:
+            vb.setXRange(90, 110, padding=0)
+            vb.translateBy(x=-1000)
+            for other in view_boxes:
+                (x0, x1), _ = other.viewRange()
+                assert abs(x0 - lo_mhz) < 1e-6 and abs(x1 - 20) < 0.1, (x0, x1)
+            vb.setXRange(5900, 5990, padding=0)
+            vb.translateBy(x=1000)
+            for other in view_boxes:
+                (x0, x1), _ = other.viewRange()
+                assert abs(x1 - hi_mhz) < 1e-6 and abs(x0 - 5910) < 0.2, (x0, x1)
+            vb.scaleBy(x=1000)
+            for other in view_boxes:
+                (x0, x1), _ = other.viewRange()
+                assert x0 >= lo_mhz - 1e-6 and x1 <= hi_mhz + 1e-6, (x0, x1)
         w.preset_combo.setCurrentIndex(1)
         w._preset_chosen(1)                              # FM broadcast 87.5-108
         assert w.engine.sweeper.plan.steps == 3, w.engine.sweeper.plan.describe()
@@ -508,6 +531,8 @@ def part2_sweep():
         assert w._mode == 'receive' and w.tabs.currentIndex() == 1
         assert abs(w.engine.station_hz - 95.1e6) < 1, w.engine.station_hz
         assert abs(w.engine.lo_hz - (95.1e6 - 300e3)) < 1
+        for vb in view_boxes:                            # receiving, no limits
+            assert vb.state['limits']['xLimits'] == [None, None], vb.state['limits']
         radio_card(w)
         w.close()
     finally:

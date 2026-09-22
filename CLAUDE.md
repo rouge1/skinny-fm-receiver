@@ -15,7 +15,9 @@ with no launcher.
   platform-specific (library names, paths, `/proc`) goes behind
   `sys.platform`, with Linux's behaviour unchanged. Signal Hound's
   library is never committed: the repo is public and their licence forbids
-  copies reaching people without the hardware.
+  copies reaching people without the hardware. The same licence forbids
+  reverse engineering, decompiling or disassembling it: debug it by what it
+  does (return codes, crash reports, the samples), never by its code.
 - Code: `tools/fm_receiver/`. `app.py` is the window, `engine.py` the
   flowgraph, `sweep.py` the FFT sweep, `dsp.py` the receive chain,
   `radios.py` the radios, `recording.py` IQ/WAV output, `widgets.py` the

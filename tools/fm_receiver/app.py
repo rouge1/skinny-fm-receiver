@@ -47,6 +47,9 @@ SWEEP_PRESETS = [('Full range of the radio', 'full', None),
                  ('FM OIRT 65.8-74', 65.8, 74.0),
                  ('VHF 30-300', 30.0, 300.0),
                  ('Custom', None, None)]
+#: The sweep view stops here when dragged or zoomed out: below 0 Hz there is
+#: nothing, and no radio here sweeps above 6 GHz.
+SWEEP_VIEW_HZ = (0.0, 6e9)
 FFT_SIZES = (1024, 2048, 4096, 8192, 16384)
 #: The sweep's bounds are kept at least this far apart: Signal Hound's
 #: suggested minimum span for the BB60D's own sweep, and ample for the rest.
@@ -112,6 +115,19 @@ def _wrapping(label):
     label.setSizePolicy(Qt.QSizePolicy.Ignored, Qt.QSizePolicy.Preferred)
     label.setMinimumWidth(1)
     return label
+
+
+def _mono_font(pixels=None):
+    """A fixed-pitch face, for text where a gap or a stray character must
+    show. Linux has the "Monospace" alias; a Mac has none, and Qt picked
+    American Typewriter for it, so Menlo there, at 16 px unless told - the
+    size Linux's default 12 pt comes out at."""
+    mac = sys.platform == 'darwin'
+    font = Qt.QFont('Menlo' if mac else 'Monospace')
+    font.setStyleHint(Qt.QFont.TypeWriter)
+    if pixels or mac:
+        font.setPixelSize(pixels or 16)
+    return font
 
 
 def _coloured(text, token):
@@ -521,9 +537,7 @@ class MainWindow(Qt.QWidget):
         big = Qt.QFont()
         big.setPixelSize(19)
         big.setBold(True)
-        mono = Qt.QFont("Monospace")
-        mono.setStyleHint(Qt.QFont.TypeWriter)
-        mono.setPixelSize(15)
+        mono = _mono_font(15)
         self.lbl = {}
 
         def value(key, font=None):
@@ -660,9 +674,7 @@ class MainWindow(Qt.QWidget):
         stations = Qt.QGroupBox("Stations found (double-click to listen)")
         sbox = Qt.QVBoxLayout(stations)
         self.station_list = Qt.QListWidget()
-        mono = Qt.QFont("Monospace")
-        mono.setStyleHint(Qt.QFont.TypeWriter)
-        self.station_list.setFont(mono)
+        self.station_list.setFont(_mono_font())
         self.station_list.itemDoubleClicked.connect(self._station_activated)
         self.station_list.currentItemChanged.connect(self._station_selected)
         sbox.addWidget(self.station_list)
@@ -907,6 +919,8 @@ class MainWindow(Qt.QWidget):
         self.rf_view.load_state(self.cfg['view_receive'])
         self.rf_view.set_level_unit('dBFS')
         self.rf_view.clear_density()
+        # Receiving, the view is the band the radio streams: no limits.
+        self.rf_view.set_pan_limits(None, None)
         self.engine.start_receive(
             self.tuner.value(), self._receive_rate(),
             center_hz=self.center_entry.value(),
@@ -1045,6 +1059,7 @@ class MainWindow(Qt.QWidget):
         self._sweep_db = None
         self._last_serial = -1
         self._list_serial = -1
+        self.rf_view.set_pan_limits(*SWEEP_VIEW_HZ)
         self.rf_view.set_extent(plan.start_hz, plan.stop_hz, keep_span=not full_span)
         self.rf_view.set_band(None, None)
         self.rf_view.set_center_line(None)

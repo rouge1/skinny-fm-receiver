@@ -13,8 +13,12 @@ the same conda environment, made from `environment.yml` in the project:
 conda env create -f environment.yml      # makes the "gnu" environment
 ```
 
-On a Mac, get conda from Miniforge first (`brew install miniforge`). That is
-everything the HackRF, a USRP and IQ playback need. The BB60D needs two
+On a Mac, get conda from Miniforge first (`brew install --cask miniforge`).
+`./fm-receiver` finds it by itself. For `conda activate` in Terminal, run
+`conda init zsh` once and open a new window.
+
+The environment is everything the HackRF, a USRP and IQ playback need. The
+BB60D needs two
 more things that conda doesn't have: Signal Hound's library
 (`libbb_api`) and their SoapySDR module. They are not in this repository.
 Signal Hound's licence lets their library be copied only to people who own
@@ -29,40 +33,68 @@ as their READMEs describe. The app finds the module in
 
 ### The BB60D on a Mac
 
-Not yet tried with the device. Signal Hound's Mac library does sweeps and
-IQ, but not real time, so the **Real time** box is greyed out on a Mac.
+Signal Hound's Mac library (5.0.11) does sweeps and IQ, but not real time,
+so the **Real time** box is greyed out on a Mac. Two faults in it change how
+the app uses the BB60D there:
+
+- **It can't close the device.** `bbCloseDevice` crashes the program, even
+  straight after opening. So on a Mac the app opens the BB60D once and keeps
+  it until you quit. **Stop** leaves it held: another program (Spike, say)
+  can have it only once the FM receiver has quit.
+- **Its IQ at 2.5 MS/s and below is unreliable**: sometimes fine,
+  sometimes a thousand times too loud, all NaN, or wild values. So the IQ
+  bandwidth offers only 5 and 10 MS/s on a Mac. Sweeps are unaffected.
+
+Both are Signal Hound's to fix. When a fixed library comes out, the app
+can drop these limits (see `knowledge/roadmap.md`).
+
+Everything here goes into the conda environment: the module and Signal
+Hound's library, side by side. No `sudo` is needed. `/usr/local/lib` won't
+work: the library calls itself plain `libbb_api.5.dylib`, and on macOS 26
+dyld looks for a plain name only in the current folder. Remaking the
+environment removes both, so do steps 2-4 again after that.
+
+Run these from the folder that holds `signal_hound_sdk`:
 
 1. Install libusb and CMake. The library loads Homebrew's libusb.
    ```sh
    brew install libusb cmake
    ```
-2. Download the [Signal Hound SDK](https://signalhound.com/software/signal-hound-software-development-kit-sdk/).
-   The Mac library is in version 5.0.11 and later, from the 2026-09-14 SDK
-   on. Install it under the name it links by:
+2. Download the [Signal Hound SDK](https://signalhound.com/software/signal-hound-software-development-kit-sdk/)
+   and unzip it. The Mac library is in version 5.0.11 and later, from the
+   2026-09-14 SDK on. Copy it, unaltered, into the environment under the
+   name it links by:
    ```sh
-   cd signal_hound_sdk/device_apis/bb_series
-   sudo mkdir -p /usr/local/lib
-   sudo cp lib/macos_arm/libbb_api.5.0.11.dylib /usr/local/lib/libbb_api.5.dylib
+   conda activate gnu
+   cp signal_hound_sdk/device_apis/bb_series/lib/macos_arm/libbb_api.5.0.11.dylib \
+      "$CONDA_PREFIX/lib/libbb_api.5.dylib"
    ```
    If the SDK came through a web browser, macOS may refuse to load the
    library. Clear the download flag:
-   `sudo xattr -d com.apple.quarantine /usr/local/lib/libbb_api.5.dylib`.
-3. Build the SoapySDR module into the conda environment, so it uses the
-   environment's own SoapySDR. Run this from the folder that holds
-   `signal_hound_sdk`:
+   `xattr -d com.apple.quarantine "$CONDA_PREFIX/lib/libbb_api.5.dylib"`.
+3. Build the SoapySDR module into the environment, so it uses the
+   environment's own SoapySDR:
    ```sh
-   conda activate gnu
    git clone https://github.com/SignalHound/soapy-bb60
    cmake -S soapy-bb60 -B soapy-bb60/build \
        -DCMAKE_PREFIX_PATH="$CONDA_PREFIX" \
        -DCMAKE_INSTALL_PREFIX="$CONDA_PREFIX" \
        -DCMAKE_INSTALL_RPATH="$CONDA_PREFIX/lib" \
        -DSignalHoundBB60_INCLUDE_DIRS="$PWD/signal_hound_sdk/device_apis/bb_series/include" \
-       -DSignalHoundBB60_LIBRARIES=/usr/local/lib/libbb_api.5.dylib
+       -DSignalHoundBB60_LIBRARIES="$CONDA_PREFIX/lib/libbb_api.5.dylib"
    cmake --build soapy-bb60/build && cmake --install soapy-bb60/build
    ```
-4. Plug the BB60D in and check it is found:
-   `SoapySDRUtil --find="driver=SignalHoundBB60"`. Then run
+4. Point the module at the library through its rpath, which is the
+   environment's `lib`. This changes the module you just built, not Signal
+   Hound's library, and re-signs it, as macOS requires:
+   ```sh
+   M="$CONDA_PREFIX/lib/SoapySDR/modules0.8/libSignalHoundBB60.so"
+   install_name_tool -change libbb_api.5.dylib @rpath/libbb_api.5.dylib "$M"
+   codesign -f -s - "$M"
+   ```
+5. Check. `SoapySDRUtil --info` should list `SignalHoundBB60` under
+   "Available factories". With the BB60D plugged in,
+   `SoapySDRUtil --find="driver=SignalHoundBB60"` should find it. Then run
    `python tools/tests/run_all.py --hw` with an antenna attached.
 
 ## Start it
@@ -233,7 +265,7 @@ The multiplex (MPX) spectrum fills the bottom right.
 | **Center** | The radio's centre frequency (its LO), drawn as a **dashed line** on the spectrum and the waterfall: yellow in Slate and Reading Room, verdigris in Walnut. Moving it moves the band the tuner can reach. If the tuner is still inside the new band it stays where it is; if not, it is pulled in to the nearer edge. **While you move the Center the line fades away**, so you can see the spectrum under it, and it comes back once you stop. |
 | **Center on tuner** | Puts the Center 300 kHz below the tuner, so there is room to tune either way. |
 | **Tuner range** | The lowest and highest the tuner can go around this Center. It is about three quarters of the IQ bandwidth, less half a channel at each end. |
-| **IQ bandwidth** | The radio's sample rate in Receive: how much of the band the spectrum shows, and the tuner can reach (BB60D 2.5/5/10 MS/s, HackRF 2-20 MS/s). Changing it rebuilds the receiver; the Center stays if the tuner still fits. |
+| **IQ bandwidth** | The radio's sample rate in Receive: how much of the band the spectrum shows, and the tuner can reach (BB60D 2.5/5/10 MS/s, 5/10 on a Mac; HackRF 2-20 MS/s). Changing it rebuilds the receiver; the Center stays if the tuner still fits. |
 
 **The tuner stops at the edge of the band.** Rolling, stepping, typing,
 clicking or dragging past it leaves the tuner at the edge, and **Tuner
@@ -344,7 +376,8 @@ same goes for the Volume and Step knobs.
 | **Full span** | Zooms out to everything available. |
 
 You can also use the mouse on the plot: the wheel zooms, dragging pans, and
-the Span dial follows. Hovering shows the frequency and level under the
+the Span dial follows. In Sweep the view stops at 0 Hz and 6 GHz, however far
+you drag or zoom out. Hovering shows the frequency and level under the
 pointer. In Receive, the wheel and the middle button over the orange channel
 band work on the channel instead; see *Tuning with the mouse on the
 spectrum* above.
@@ -407,7 +440,7 @@ any station that was in the band. A playback can't sweep.
 
 | Radio | Notes |
 |---|---|
-| **Signal Hound BB60D** | IQ bandwidth 10 MS/s by default (see *Which IQ bandwidth?* above). RF gain 60% (attenuator fully open, no RF amplification) is the tested best for FM. More gain overloads the front end with every other station in the band; if the status line says *Input overloaded*, turn it down. It sweeps itself, 9 kHz to 6 GHz, and the RF gain applies to that sweep too. The device stays open across mode switches: 0.02 s to Sweep, 0.2 s back. A full-range sweep uses about one CPU core, nearly all of it Signal Hound's API. On a Mac it has no real time (see *Setting up*). |
+| **Signal Hound BB60D** | IQ bandwidth 10 MS/s by default (see *Which IQ bandwidth?* above). RF gain 60% (attenuator fully open, no RF amplification) is the tested best for FM. More gain overloads the front end with every other station in the band; if the status line says *Input overloaded*, turn it down. It sweeps itself, 9 kHz to 6 GHz, and the RF gain applies to that sweep too. The device stays open across mode switches: 0.02 s to Sweep, 0.2 s back. A full-range sweep uses about one CPU core, nearly all of it Signal Hound's API. On a Mac it has no real time, no 2.5 MS/s, and stays open until the app quits (see *Setting up*). |
 | **HackRF One** | Gain is spread over the preamp, LNA and VGA, with the toolkit's plan. **40% (the default) was best on the bench antenna**: 99% of RDS blocks good. At 47% and above the strong local stations drove its 8-bit ADC to full scale and RDS was lost. When that happens the status line says *Input overloaded – turn the RF gain down* with the share of samples clipped; turn the gain down until it goes. Wider IQ bandwidths let more stations in, so they need less gain: at 10 MS/s, 40% already clipped a little. A weak antenna may want more; too little shows as a pilot locking while RDS stays buried. Its sweep settle time is 20 ms, twice what was measured to be safe. |
 | **Ettus USRP** | Type the IP address in the box next to the Radio list, or leave it blank to use the first USRP found. |
 

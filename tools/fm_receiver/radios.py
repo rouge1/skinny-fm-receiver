@@ -274,6 +274,12 @@ class BB60(Radio):
     kind = 'bb60'
     name = 'Signal Hound BB60D'
     receive_rates = (2.5e6, 5e6, 10e6)
+    if sys.platform == 'darwin':
+        # Signal Hound's Mac library (5.0.11) streams garbage at a
+        # decimation of 16 or more - 2.5 MS/s and below: on the Mac mini
+        # (2026-09-22), levels a thousand times too high, runs of NaN, values
+        # to 1e37, differently each time. 5 MS/s and up were sound every time.
+        receive_rates = (5e6, 10e6)
     sweep_rates = (10e6, 20e6, 40e6)
     #: 10 MS/s: CPU and reception measured the same at all three (see
     #: knowledge/roadmap.md, item 6), and it shows four times the band.

@@ -43,6 +43,7 @@ minimum span, though 20 Hz is the absolute one.
 """
 
 import ctypes
+import os
 import sys
 import threading
 import time
@@ -94,10 +95,13 @@ SCALE_RANGE_DB = (10.0, 200.0)
 
 #: The API's library by the name the SoapySDR module links it under - its
 #: soname on Linux, its install name on a Mac - and, on a Mac, where it is
-#: installed (see ``knowledge/usage.md``) if the plain name is not found.
+#: installed: in the conda environment, beside the module that loads it
+#: (see ``knowledge/usage.md``). dyld does not look in ``/usr/local/lib``
+#: for a plain name (macOS 26), and a second copy anywhere would be a
+#: second API, blind to the device the module opened.
 if sys.platform == 'darwin':
     API_LIBRARY = 'libbb_api.5.dylib'
-    API_PATHS = ('/usr/local/lib/libbb_api.5.dylib', '/opt/homebrew/lib/libbb_api.5.dylib')
+    API_PATHS = (os.path.join(sys.prefix, 'lib', API_LIBRARY),)
 else:
     API_LIBRARY = 'libbb_api.so.5'
     API_PATHS = ()

@@ -427,6 +427,9 @@ same checkout.
 - [x] **The SoapySDR module and libraries on a Mac**: Homebrew's module
   folder, and dyld's list of loaded libraries in place of `/proc` (for the
   ADC overload count).
+- [x] **Signal Hound's library in the environment on a Mac**, not
+  `/usr/local/lib`: dyld on macOS 26 doesn't look there for a plain name.
+  The module is pointed at it by rpath. No `sudo` needed.
 - [x] **Real time greyed out on a Mac**: Signal Hound's Mac library does
   sweeps and IQ only. Tested with the flag forced off (`test_gui.py`
   part 4).
@@ -434,8 +437,22 @@ same checkout.
   `LICENSE.rtf`, section 1.C-E) allows copies to be distributed, but not to
   people who don't own the hardware, and this repository is public. Setup
   steps are in [usage.md](usage.md#setting-up) instead.
-- [ ] **Run it on the Mac**: `run_all.py`, then the HackRF (`--hackrf`),
-  then the BB60D steps in usage.md and `--hw`. Watch for the sound device,
+- [x] **The BB60D kept open on a Mac**: Signal Hound's Mac library
+  (5.0.11) crashes in `bbCloseDevice` (SIGTRAP), even straight after
+  opening, so the app opens the device once, marks it closed for SoapySDR
+  (whose `close()` then skips the module's destructor), and reuses it until
+  it quits (`bb60_source.KEEP_OPEN`). Stop no longer frees it for other
+  programs there.
+- [x] **No IQ below 5 MS/s from the BB60D on a Mac**: the Mac library's IQ
+  at 2.5 MS/s and below comes out wrong, differently each time.
+- [ ] **Tell Signal Hound** (support@signalhound.com) about both faults in
+  the Mac library, with the steps that show them: open then close; and
+  IQ at 2.5, 1.25 and 0.625 MS/s against 5 and up. When a fixed library
+  comes out, drop `KEEP_OPEN` and the 5 MS/s floor for it.
+- [ ] **Run it on the Mac**: `run_all.py`, `--hackrf` and `--hw` all
+  passed on the Mac mini (2026-09-22), after the HackRF's clipping check
+  learned to raise the gain until it clips and the BB60D's to pick a
+  station with clean RDS. Left: listening to it there. Watch for the sound device,
   the fonts' metrics on a Retina screen (the left column is measured, so
   it should fit), and whether the BB60D opens without root. Signal Hound's
   README says it may need root, but their text is copied from Linux.

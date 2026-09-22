@@ -163,11 +163,16 @@ def window_check():
         assert w.gain_slider.value() == HackRF.default_gain
         pump(4)
         calm = w.status.text()
-        w.gain_slider.setValue(60)
-        pump(3, lambda: 'clipped' in w.status.text())
+        # Enough gain clips: 60% did on the Linux bench. Where the signal is
+        # weaker it takes more - on the Mac mini (2026-09-22) 54% put the
+        # strongest station at -12 dBFS.
+        for loud_gain in (60, 75, 90):
+            w.gain_slider.setValue(loud_gain)
+            if pump(3, lambda: 'clipped' in w.status.text()):
+                break
         loud = w.status.text()
         print(f"window: at {HackRF.default_gain}% gain the status reads {calm!r}")
-        print(f"window: at 60% gain it reads {loud!r}")
+        print(f"window: at {loud_gain}% gain it reads {loud!r}")
         assert 'overloaded' not in calm and 'clipped' in loud
         w.gain_slider.setValue(HackRF.default_gain)
         w.run_btn.click()                              # Stop

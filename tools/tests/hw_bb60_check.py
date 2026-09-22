@@ -26,7 +26,11 @@ Not part of the no-radio tests; run it when a BB60D is plugged in:
    decode the same PI - the sweep's settings must not leak into the
    stream - with both switches timed.
 6. **Let go**: once the engine is closed, another program can open the
-   BB60D.
+   BB60D. Not on a Mac, where the app keeps the device until it quits
+   (``bb60_source.KEEP_OPEN``: Signal Hound's Mac library traps in
+   ``bbCloseDevice``). There a new radio in the same process must get the
+   device back and decode the station again - the window's Stop, then
+   Start.
 """
 
 import subprocess
@@ -47,6 +51,11 @@ from fm_receiver.engine import Engine  # noqa: E402
 from fm_receiver.radios import BB60, IQFile  # noqa: E402
 from fm_receiver.recording import IqRecording, WavWriter  # noqa: E402
 from fm_receiver.bb60_sweep import REALTIME_OK, NativeSweepPlan  # noqa: E402
+from fm_receiver.bb60_source import KEEP_OPEN  # noqa: E402
+
+#: Receive at the lowest rate the radio offers: 2.5 MS/s, or 5 on a Mac,
+#: whose library streams garbage below that (see radios.BB60).
+RX_RATE = min(BB60.receive_rates)
 from fm_receiver.sweep import SweepPlan, find_stations, to_db  # noqa: E402
 
 
@@ -99,7 +108,7 @@ def sweep_check(tb, radio, rate=20e6):
     return plan.freqs(), s_db
 
 
-def tune_for_rds(tb, radio, station, wait_s=15, rate=2.5e6):
+def tune_for_rds(tb, radio, station, wait_s=15, rate=RX_RATE):
     tb.start_receive(station, rate, region='RBDS', stereo=True, volume=0.0)
     rx = tb.rx
     t0 = time.time()
@@ -117,10 +126,12 @@ def tune_for_rds(tb, radio, station, wait_s=15, rate=2.5e6):
     return snap
 
 
-def receive_check(tb, radio, stations, folder, rate=2.5e6):
+def receive_check(tb, radio, stations, folder, rate=RX_RATE):
+    # The first station whose RDS decodes cleanly - which that is depends
+    # on where the antenna is (the Mac mini's first pick, 90.1, lost 23%).
     for station in stations:
         snap = tune_for_rds(tb, radio, station, rate=rate)
-        if snap['pi_hex']:
+        if snap['pi_hex'] and snap['block_error_rate'] < 0.2:
             break
     rx = tb.rx
     assert rx.pilot_locked(), 'no stereo pilot'
@@ -227,7 +238,7 @@ def native_check(tb, radio, station, pi):
     assert floors[0] > floors[radio.default_gain] + 10, floors
     # Back to Receive, on the same open device.
     t0 = time.time()
-    tb.start_receive(station, 2.5e6, region='RBDS', stereo=True, volume=0.0)
+    tb.start_receive(station, RX_RATE, region='RBDS', stereo=True, volume=0.0)
     to_receive = time.time() - t0
     rx = tb.rx
     snap = rx.rds.snapshot()
@@ -275,12 +286,29 @@ def free_check():
     code = ("import ctypes; from fm_receiver.bb60_sweep import load_api; lib = load_api(); "
             "d = ctypes.c_int(-1); r = lib.bbOpenDevice(ctypes.byref(d)); print(r); "
             "lib.bbCloseDevice(d)")
+    if KEEP_OPEN:
+        # A Mac: bbCloseDevice would trap, and the output with it; the
+        # process ending lets the device go.
+        code = code.replace("print(r); lib.bbCloseDevice(d)", "print(r, flush=True)")
     env = dict(os.environ, LD_LIBRARY_PATH='/usr/local/lib', PYTHONPATH=os.path.dirname(HERE))
     out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
                          timeout=60, env=env)
     ok = out.stdout.strip().splitlines()[-1:] == ['0']
     print(f"another program opening the BB60D after close: {'opened it' if ok else out.stdout + out.stderr}")
     return ok
+
+
+def reopen_check(station, pi):
+    """A Mac: the engine closed, a new radio gets the kept device back."""
+    radio = BB60()
+    tb = Engine(want_audio=False)
+    tb.use_radio(radio)
+    try:
+        snap = tune_for_rds(tb, radio, station)
+    finally:
+        tb.close()
+    print(f"reopened in this process (the device kept): PI {snap['pi_hex']}")
+    assert snap['pi_hex'] == pi, (snap['pi_hex'], pi)
 
 
 def playback_check(path, pi):
@@ -314,7 +342,12 @@ def main():
         native_check(tb, radio, station, pi)
     finally:
         tb.close()
-    free = free_check()
+    if KEEP_OPEN:
+        print("let go: not on a Mac - the app keeps the BB60D until it quits")
+        reopen_check(station, pi)
+        free = True
+    else:
+        free = free_check()
     playback_check(iq_path, pi)
     assert free, 'the BB60D should be free once closed'
     print("BB60D hardware check passed")
