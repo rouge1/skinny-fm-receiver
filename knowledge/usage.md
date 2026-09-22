@@ -143,7 +143,8 @@ Useful options (`./fm-receiver --help` lists them all):
 - **Header**
   - **Radio** switches to another radio straight away.
   - **Stop** closes the radio so other programs can use it; **Start** opens it
-    again.
+    again. (Not a BB60D on a Mac: that stays held until the app quits - see
+    *Setting up*.)
   - The **status line** shows what is running, or what went wrong, for
     example "Input overloaded - turn the RF gain down".
   - The **Themes** disc, top right, is the theme in force: a click moves to
@@ -286,7 +287,8 @@ An IQ recording's Center is where it was recorded, so it cannot be moved.
 10 MS/s the app uses the same CPU (about half a core) and receives just as
 well, and 10 MS/s shows about 7.5 MHz of the band instead of 1.9 MHz. The
 exception is a long **IQ – whole band** recording: at 10 MS/s that is
-80 MB/s (4.8 GB a minute), so choose 2.5 MS/s (20 MB/s) for those.
+80 MB/s (4.8 GB a minute), so choose 2.5 MS/s (20 MB/s) for those - or
+5 MS/s (40 MB/s) on a Mac, where 5 is the lowest the BB60D offers.
 
 ### Tuner
 
@@ -483,7 +485,7 @@ To start fresh, delete the file. To use a different settings file, set
 | Part of the left column is hidden under the spectrum | Drag the divider right. The column resizes itself on a theme change, so this should not happen any more. |
 | No RDS on a strong station | It may not send RDS; check the MPX view for a hump at 57 kHz. On a weak station, try a narrower channel filter. |
 | *Input overloaded* | Turn the RF gain down. On a HackRF it also gives the share of samples clipped; turn down until the message goes. |
-| Another program can't open the radio | Press **Stop** (or close the app): Stop lets go of the device. |
+| Another program can't open the radio | Press **Stop** (or close the app): Stop lets go of the device. On a Mac, a BB60D is let go only when the app quits. |
 | The tuner won't go any further | It is at the edge of the band around the Center: move the **Center**, or press **Center on tuner** and carry on. |
 | No sound | The **Audio** panel says if the sound card could not be opened. Check the **Mute** button. |
 | Stereo sounds noisy | Untick **Stereo**. A weak station sounds cleaner in mono. |
