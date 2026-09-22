@@ -202,6 +202,10 @@ class sweep_sink(gr.sync_block):
         self._buf = np.zeros((self.frames, n), dtype=np.complex64)
         self._fill = 0
         self._panorama = plan.new_panorama()
+        # The last whole sweep was of the old plan: its bins are not the new
+        # plan's, and paired with its frequencies they mislabelled the
+        # station list (and could not be masked, being another length).
+        self._completed = None
         self._step = 0
         self._skip = self._settle_samples() + self.GUARD
         self._retune_pending = False

@@ -41,7 +41,7 @@ Useful options (`./fm-receiver --help` lists them all):
 │┌ Sweep (FFT) | Receive (IQ) ┐ ┌ RF spectrum ─────────────────────────────────────┐ │
 ││ controls for the mode      │ │                                                   │ │
 │└────────────────────────────┘ │ waterfall                                         │ │
-│┌ RF gain ───────────────────┐ ├ Span  Ref level  Range  Average  □Peak □Waterfall ┤ │
+│┌ RF gain ───────────────────┐ ├ readout      Span Ref Range Avg □Peak □Waterfall ┤ │
 │┌ Audio: Mute  Volume  L/R ──┐ ├───────────────────────────────────────────────────┤ │
 │┌ Record: □WAV □IQ ch □IQ band│ │ Sweep: stations found  /  Receive: MPX + RDS     │ │
 └────────────────────────────────────────────────────────────────────────────────────┘
@@ -54,17 +54,19 @@ Useful options (`./fm-receiver --help` lists them all):
   - The **status line** shows what is running, or what went wrong, for
     example "Input overloaded - turn the RF gain down".
   - The **Themes** disc, top right, is the theme in force: a click moves to
-    the next (Slate, Reading Room, Walnut). Its tooltip names it.
+    the next (Slate, Reading Room, Walnut). Hover over the disc or the word
+    Themes to see its name, even while another window has the focus.
 - **The two tabs are the two modes.** Switching tabs switches the radio
-  between them. On a BB60D the switch takes about 0.3 s.
+  between them. On a BB60D the switch takes 0.02-0.3 s.
 - **RF gain** applies to the radio in both modes, and each radio remembers its
   own setting.
 
 ## A typical session
 
-1. **Sweep the band.** Open the **Sweep (FFT)** tab and choose *FM broadcast
-   87.5-108*. The spectrum and waterfall show the whole band, and **Stations
-   found** lists every channel standing clear of the noise.
+1. **Sweep the band.** Open the **Sweep (FFT)** tab. It starts on *Full
+   range of the radio*: 9 kHz to 6 GHz on a BB60D, about four times a second.
+   **Stations found** lists every FM station standing clear of the noise.
+   Choose *FM broadcast 87.5-108* for a closer look at the band.
 2. **Pick a station.** Double-click it in the list, or double-click its peak
    in the spectrum. The app switches to **Receive (IQ)** tuned to it.
 3. **Listen.** Audio starts at once. Stereo and RDS lock within a few seconds:
@@ -76,24 +78,63 @@ Useful options (`./fm-receiver --help` lists them all):
 
 ## Sweep (FFT)
 
-A sweep covers more spectrum than the radio can see at once. The radio hops
-across the span and each step's FFT is stitched into one picture. Nothing is
-demodulated, so it uses little CPU.
+A sweep covers more spectrum than the radio can see at once. Nothing is
+demodulated. There are two kinds:
+
+- **The BB60D sweeps itself.** Signal Hound's API sweeps in the device, 9 kHz
+  to 6 GHz in about 230 ms (26 GHz/s), and the levels are in **dBm**, as the
+  device measures them.
+- **Every other radio hops its LO** across the span. Each step's FFT is
+  stitched into one picture, with levels in dBFS.
 
 | Control | What it does |
 |---|---|
-| **Band** | Presets: FM 87.5-108, Japan 76-95, OIRT 65.8-74, VHF 30-300. **Custom** is selected automatically when you type your own span. |
-| **Span (MHz)** | Start and stop frequencies. Any span the radio can tune (up to 6 GHz). |
-| **Step bandwidth** | The radio's sample rate while sweeping, which sets how much each step sees. Wider means fewer steps. On a BB60D, 20 MS/s covers the FM band in 2 steps (the default, about half a core of CPU) and 40 MS/s covers it in 1 (about a core). Changing this restarts the radio. |
-| **FFT** | Bins per FFT. This sets the resolution bandwidth (RBW), shown under the buttons: 4096 bins at 20 MS/s gives 4.9 kHz. |
-| **Frames per step** | FFT frames averaged at each step. More gives a smoother trace and a slower sweep. |
-| **Settle** | How long to wait after each retune before trusting the samples. The BB60D needs about 1 ms. A HackRF needs about 10 ms and defaults to 20 ms. **If a signal appears twice, or shows where there is nothing, increase this.** |
+| **Band** | Presets: **Full range of the radio** (the default, 9 kHz to 6 GHz on a BB60D), FM 87.5-108, Japan 76-95, OIRT 65.8-74, VHF 30-300. **Custom** is selected automatically when you set your own bounds. |
+| **Start** / **Stop** | The sweep's lower and upper bounds, in MHz to the kHz (9 kHz is 0000.009). Hover a digit and roll the wheel, or type a frequency. They stay inside the radio's range and at least 200 kHz apart. The sweep changes as soon as the digits come to rest. |
+| **Real time** *(BB60D)* | Watch the span in real time instead of sweeping it. Only for spans up to 27 MHz, which includes the FM band; wider, the box greys out and the span is swept. See *Sweep, real time and IQ* below. |
+| **RBW** *(BB60D)* | Resolution bandwidth. **Auto** keeps a sweep near 80,000 points: 300 kHz over the full range, 1 kHz over the FM band. Narrower shows more detail and a lower noise floor. If you pick one too fine for the span, it is raised, and the line under the buttons says so. |
+| **Step bandwidth** *(other radios)* | The radio's sample rate while sweeping, which sets how much each step sees. Wider means fewer steps. Changing this restarts the radio. |
+| **FFT** *(other radios)* | Bins per FFT. This sets the RBW: 4096 bins at 20 MS/s gives 4.9 kHz. |
+| **Frames per step** *(other radios)* | FFT frames averaged at each step. More gives a smoother trace and a slower sweep. |
+| **Settle** *(other radios)* | How long to wait after each retune before trusting the samples. A HackRF needs about 10 ms and defaults to 20 ms. **If a signal appears twice, or shows where there is nothing, increase this.** |
 | **Pause / Resume** | Freezes the sweep, for example to study the trace. |
 | **Listen** | Receive the selected station, or wherever the marker is. |
 | **Station threshold** | How far above the noise floor a channel must be to go in the list (default 15 dB). |
 
 The line under the buttons shows the plan and the measured speed, for example
-"2 steps of 16.80 MHz, RBW 4.88 kHz – 90 ms per sweep (11/s, 230 MHz/s)".
+"The BB60D's own sweep, RBW 300 kHz (auto), 76,801 points – 233 ms per sweep
+(4.3/s, 25.8 GHz/s)".
+
+Stations are listed only where FM broadcasting is (65.8 to 108 MHz), however
+wide the sweep.
+
+### Sweep, real time and IQ
+
+The BB60D can work three ways, one at a time. "Real time" is a spectrum
+analyser's word for *without gaps*, not for *live*: all three are live.
+
+| | Sweep | Real time | IQ (the Receive tab) |
+|---|---|---|---|
+| How much spectrum | Up to all of it, 9 kHz to 6 GHz | One chunk, up to 27 MHz | One chunk, up to 27 MHz |
+| How it covers it | Steps across, a moment at each frequency | Stays put and analyses every sample | Stays put and sends every sample here |
+| What comes back | A trace each pass | A trace every 33 ms, and a density map | The signal itself |
+| Listen or record | No | No | Yes |
+| A short burst | Missed if the sweep is elsewhere just then | Never missed if it lasts 307 us or more (at 10 kHz RBW) | The samples have it; the spectrum picture only glances at about 1% of them |
+
+Sweep is like a guard walking the building with a torch: every room, but
+each only for a moment. Real time is a camera fixed on one room, missing
+nothing that happens there. IQ is that camera's raw feed, which the app
+decodes to sound and RDS.
+
+In real time a **density map** is drawn behind the trace, in the waterfall's
+colours: brighter where a level is hit more often. A steady station shows
+as a bright band at its level. The noise is a cloud near the floor. A burst,
+or a signal hidden under a stronger one, shows as a fainter patch no single
+trace would keep. The map runs from the view's **Ref level** down its
+**Range**; turn those and it follows. The trace is the highest level each
+point reached in each 33 ms.
+ A HackRF's full range is about 400 hops, so a sweep takes tens
+of seconds; use the FM preset on it.
 
 In the **station list**, one click moves the marker and a double-click starts
 listening. Once you have listened to a station, its RDS name appears next to
@@ -214,9 +255,12 @@ The **MPX view** (bottom right) is the demodulated multiplex from 0 to
 
 ## Views: bandwidth and amplitude
 
-Each spectrum has its own dials. **Hover over a dial and roll the mouse
-wheel** to turn it, or drag it up or down; hold Shift for fine steps. A ring
-lights round a dial under the pointer. Double-click a dial to reset it. The
+Each spectrum has its own dials, at the right-hand end of the row under it;
+the readout of the frequency and level under the pointer is at the left.
+**Hover over a dial and roll the mouse wheel** to turn it, or drag it up or
+down; hold Shift for fine steps. A dial under the pointer lights orange, and
+glows in Slate and Walnut or lifts on a shadow in Reading Room, so you can
+see which one the wheel will turn. Double-click a dial to reset it. The
 same goes for the Volume and Step knobs.
 
 | Dial | One wheel notch |
@@ -302,7 +346,7 @@ any station that was in the band. A playback can't sweep.
 
 | Radio | Notes |
 |---|---|
-| **Signal Hound BB60D** | IQ bandwidth 10 MS/s by default (see *Which IQ bandwidth?* above). RF gain 60% (attenuator fully open, no RF amplification) is the tested best for FM. More gain overloads the front end with every other station in the band; if the status line says *Input overloaded*, turn it down. The device stays open across mode switches. |
+| **Signal Hound BB60D** | IQ bandwidth 10 MS/s by default (see *Which IQ bandwidth?* above). RF gain 60% (attenuator fully open, no RF amplification) is the tested best for FM. More gain overloads the front end with every other station in the band; if the status line says *Input overloaded*, turn it down. It sweeps itself, 9 kHz to 6 GHz, and the RF gain applies to that sweep too. The device stays open across mode switches: 0.02 s to Sweep, 0.2 s back. A full-range sweep uses about one CPU core, nearly all of it Signal Hound's API. |
 | **HackRF One** | Gain is spread over the preamp, LNA and VGA, with the toolkit's plan. **40% (the default) was best on the bench antenna**: 99% of RDS blocks good. At 47% and above the strong local stations drove its 8-bit ADC to full scale and RDS was lost. When that happens the status line says *Input overloaded – turn the RF gain down* with the share of samples clipped; turn the gain down until it goes. Wider IQ bandwidths let more stations in, so they need less gain: at 10 MS/s, 40% already clipped a little. A weak antenna may want more; too little shows as a pilot locking while RDS stays buried. Its sweep settle time is 20 ms, twice what was measured to be safe. |
 | **Ettus USRP** | Type the IP address in the box next to the Radio list, or leave it blank to use the first USRP found. |
 
@@ -339,7 +383,8 @@ To start fresh, delete the file. To use a different settings file, set
 | Symptom | What to do |
 |---|---|
 | "No … was found" in the status line | Check the cable, and close anything else using the radio (Spike, GQRX, hackrf_transfer, another copy of this app). Then choose the radio again or press Start. |
-| Ghost copies of signals in a sweep | Increase **Settle**. |
+| Ghost copies of signals in a sweep | Increase **Settle** (not on a BB60D, which sweeps itself). |
+| Part of the left column is hidden under the spectrum | Drag the divider right. The column resizes itself on a theme change, so this should not happen any more. |
 | No RDS on a strong station | It may not send RDS; check the MPX view for a hump at 57 kHz. On a weak station, try a narrower channel filter. |
 | *Input overloaded* | Turn the RF gain down. On a HackRF it also gives the share of samples clipped; turn down until the message goes. |
 | Another program can't open the radio | Press **Stop** (or close the app): Stop lets go of the device. |

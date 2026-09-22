@@ -4,7 +4,9 @@ Sweep and Receive want the radio at different rates and share nothing
 downstream of it, so switching mode stops the flowgraph, disconnects
 everything, sets the rate and builds the other chain onto the same source
 block. It takes 0.2-0.3 s on a BB60D (measured), which keeps its device
-open across the switch (``halt(hold=True)``) - reopening it was 1.6 s. What
+open across the switch (``halt(hold=True)``) - reopening it was 1.6 s. The
+BB60D sweeps in the device instead (``bb60_sweep``), with no flowgraph at
+all, on the same open device; Receive starts its stream again. What
 must *not* rebuild - retuning, channel bandwidth, volume, mute, stereo,
 region, recording - is done on the running blocks.
 
@@ -67,7 +69,13 @@ class Engine(gr.top_block):
     # ---------------------------------------------------------- lifecycle
     def halt(self, hold=False):
         """Stop the flowgraph. ``hold`` keeps a radio that can stay open
-        between a stop and a start (the BB60D) open, for a mode switch."""
+        between a stop and a start (the BB60D) open, for a mode switch. A
+        radio's own sweep has no flowgraph: it is stopped, and its device
+        stays open for the IQ stream."""
+        if self.running and getattr(self.sweeper, 'native', False):
+            self.sweeper.stop()
+            self.running = False
+            return
         if self.running:
             block = self.radio.block if self.radio is not None else None
             can_hold = hold and hasattr(block, 'hold_open')
@@ -189,9 +197,19 @@ class Engine(gr.top_block):
 
     # ---------------------------------------------------------- sweep
     def start_sweep(self, plan, frames=16, settle_ms=None):
+        """Sweep ``plan``: a :class:`sweep.SweepPlan`, which hops the IQ
+        stream's LO with a flowgraph, or a plan the radio sweeps itself
+        (``plan.native``, the BB60D), with none."""
         self.halt(hold=True)
         self._clear()
         radio = self.radio
+        if getattr(plan, 'native', False):
+            self.sweeper = radio.native_sweeper(plan)
+            self.rate = None
+            self.lo_hz = None
+            self.mode = 'sweep'
+            self.running = True
+            return
         radio.set_rate(plan.rate)
         self.rate = plan.rate
         radio.set_center(plan.center(0))

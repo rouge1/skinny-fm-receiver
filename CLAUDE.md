@@ -13,7 +13,9 @@ with no launcher.
 - Code: `tools/fm_receiver/`. `app.py` is the window, `engine.py` the
   flowgraph, `sweep.py` the FFT sweep, `dsp.py` the receive chain,
   `radios.py` the radios, `recording.py` IQ/WAV output, `widgets.py` the
-  knobs, digit entries, theme disc and spectrum view.
+  knobs, digit entries, theme disc and spectrum view, `bb60_sweep.py` the
+  BB60D's own sweep (Signal Hound's API through ctypes, on the device the
+  SoapySDR module opened).
 - Knowledge: `knowledge/capabilities.md` is the living capability list.
   Update it (and its status marks) when a feature is added or verified.
   `knowledge/usage.md` is the user guide. `knowledge/roadmap.md` holds

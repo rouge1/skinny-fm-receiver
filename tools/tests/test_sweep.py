@@ -143,9 +143,23 @@ def test_stale_samples_are_skipped():
     assert ghosts(freqs0, db0, tones), 'expected ghosts with no settle'
 
 
+def test_replan_drops_the_old_sweep():
+    """A new plan's snapshot never pairs its frequencies with a sweep of
+    the old one - the window listed stations from exactly that."""
+    plan = SweepPlan(87.5e6, 108e6, 10e6, 1024, 0.75)
+    sink = sweep_sink(plan, lambda hz: None, frames=1, settle_ms=0)
+    sink._completed = plan.new_panorama()
+    freqs, _, done, _ = sink.snapshot()
+    assert done is not None and len(done) == len(freqs)
+    sink.set_plan(SweepPlan(88.5e6, 108e6, 10e6, 1024, 0.75))
+    freqs, live, done, _ = sink.snapshot()
+    assert done is None and len(live) == len(freqs)
+
+
 if __name__ == '__main__':
     test_plan_tiles_the_span()
     test_place_and_notch()
     test_find_stations()
+    test_replan_drops_the_old_sweep()
     test_stale_samples_are_skipped()
     print('sweep: all checks passed')

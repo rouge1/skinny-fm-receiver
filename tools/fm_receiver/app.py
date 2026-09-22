@@ -26,6 +26,7 @@ from PyQt5 import Qt, QtCore  # type: ignore
 
 from . import __version__, theme
 from .config import default_recording_dir, load_config, update_config
+from .bb60_sweep import RBW_LADDER, RT_MAX_SPAN_HZ, NativeSweepPlan
 from .dsp import CHANNEL_MAX_BW, MPX_RATE
 from .engine import Engine
 from .radios import (RADIO_NAMES, RadioError, detect_radios, make_radio,
@@ -37,12 +38,21 @@ from .sweep import SweepPlan, find_stations, to_db
 from .widgets import (DigitEntry, Knob, LevelMeter, SpectrumView, StepRoller,
                       ThemeDisc, on_raster)
 
-SWEEP_PRESETS = [('FM broadcast 87.5-108', 87.5, 108.0),
+#: (name, start MHz, stop MHz); 'full' is the whole of the radio's sweep
+#: range, whichever radio it is (9 kHz-6 GHz on the BB60D).
+SWEEP_PRESETS = [('Full range of the radio', 'full', None),
+                 ('FM broadcast 87.5-108', 87.5, 108.0),
                  ('FM Japan 76-95', 76.0, 95.0),
                  ('FM OIRT 65.8-74', 65.8, 74.0),
                  ('VHF 30-300', 30.0, 300.0),
                  ('Custom', None, None)]
 FFT_SIZES = (1024, 2048, 4096, 8192, 16384)
+#: The sweep's bounds are kept at least this far apart: Signal Hound's
+#: suggested minimum span for the BB60D's own sweep, and ample for the rest.
+MIN_SWEEP_SPAN_HZ = 200e3
+#: Stations are listed only where FM broadcasting is - 65.8 MHz (OIRT) to
+#: 108 - however much more the sweep covers.
+FM_BROADCAST_HZ = (65.8e6, 108e6)
 STEPS_KHZ = (10, 50, 100, 200)
 #: The channel filter's range: below 60 kHz it cuts into the audio itself;
 #: 400 kHz takes in an HD Radio station's sidebands (see dsp.py).
@@ -62,8 +72,10 @@ DEFAULTS = {
     'radio': None, 'usrp_address': '', 'iq_file': '', 'mode': 'receive',
     'frequency_mhz': 98.7, 'center_mhz': None, 'step_khz': 100, 'gain': {}, 'receive_rate': {},
     'sweep_rate': {}, 'settle_ms': {}, 'channel_bw_khz': 200, 'region': 'RBDS',
-    'stereo': True, 'volume': 60, 'muted': False, 'sweep_start_mhz': 87.5,
-    'sweep_stop_mhz': 108.0, 'sweep_fft': 4096, 'sweep_frames': 16,
+    'stereo': True, 'volume': 60, 'muted': False, 'sweep_band': 'full',
+    'sweep_start_mhz': 87.5, 'sweep_stop_mhz': 108.0, 'sweep_rbw_khz': 0,
+    'sweep_realtime': False,
+    'sweep_fft': 4096, 'sweep_frames': 16,
     'min_snr_db': 15, 'snap': True, 'record_audio': True,
     'record_iq_channel': False, 'record_iq_band': False, 'recording_dir': '',
     'view_receive': {'span_hz': 1.2e6, 'ref_db': -10, 'range_db': 110, 'avg': 4},
@@ -105,6 +117,14 @@ def _coloured(text, token):
     return f"<span style='color:{theme.TOKENS[token]}'>{text}</span>"
 
 
+def _freq_text(hz):
+    """9 kHz, 87.5 MHz, 6 GHz - no more digits than it has."""
+    for scale, unit in ((1e9, 'GHz'), (1e6, 'MHz'), (1e3, 'kHz')):
+        if hz >= scale:
+            return f"{hz / scale:.6g} {unit}"
+    return f"{hz:.0f} Hz"
+
+
 class MainWindow(Qt.QWidget):
 
     def __init__(self, args, config):
@@ -114,6 +134,9 @@ class MainWindow(Qt.QWidget):
         if args.theme:
             self.cfg['theme'] = args.theme
         apply_window_theme(self, self.cfg['theme'])
+        # Tooltips while another window - the terminal - has the focus: Qt
+        # shows them only in the active window otherwise.
+        self.setAttribute(QtCore.Qt.WA_AlwaysShowToolTips, True)
         self.setWindowTitle(f"FM Receiver {__version__}")
         self.engine = Engine(want_audio=not args.no_audio)
         self.radio = None
@@ -196,10 +219,12 @@ class MainWindow(Qt.QWidget):
         # word, then the disc, held close as one control.
         picker = Qt.QHBoxLayout()
         picker.setSpacing(4)
-        picker.addWidget(Qt.QLabel("Themes"), 0, QtCore.Qt.AlignVCenter)
+        self.theme_word = Qt.QLabel("Themes")
+        picker.addWidget(self.theme_word, 0, QtCore.Qt.AlignVCenter)
         self.theme_disc = ThemeDisc()
         self.theme_disc.clicked.connect(self._next_theme)
         picker.addWidget(self.theme_disc)
+        self.theme_word.setToolTip(self.theme_disc.toolTip())
         row.addLayout(picker)
         return row
 
@@ -237,6 +262,16 @@ class MainWindow(Qt.QWidget):
         self._left_width = self.left_panel.sizeHint().width() + bar + 4
         self.left_scroll.setMinimumWidth(self._left_width)
 
+    def _refit_left(self):
+        """The theme changed, and its faces with it: size the left column to
+        its controls again - Walnut's wider type left them cut off under the
+        spectrum. A column dragged wider than it needs stays as it is."""
+        old = self._left_width
+        self._fit_left()
+        left, right = self.main_split.sizes()
+        if left < self._left_width or left == old:
+            self.main_split.setSizes([self._left_width, left + right - self._left_width])
+
     def showEvent(self, event):
         super().showEvent(event)
         if not getattr(self, '_fitted', False):
@@ -250,20 +285,55 @@ class MainWindow(Qt.QWidget):
         page = Qt.QWidget()
         form = Qt.QFormLayout(page)
         form.setLabelAlignment(QtCore.Qt.AlignRight)
+        self.sweep_form = form
         self.preset_combo = Qt.QComboBox()
         for name, _, _ in SWEEP_PRESETS:
             self.preset_combo.addItem(name)
         self.preset_combo.activated.connect(self._preset_chosen)
         form.addRow("Band:", self.preset_combo)
-        self.start_spin = self._mhz_spin(self.cfg['sweep_start_mhz'])
-        self.stop_spin = self._mhz_spin(self.cfg['sweep_stop_mhz'])
-        self.start_spin.valueChanged.connect(self._sweep_span_edited)
-        self.stop_spin.valueChanged.connect(self._sweep_span_edited)
-        span = Qt.QHBoxLayout()
-        span.addWidget(self.start_spin)
-        span.addWidget(Qt.QLabel("to"))
-        span.addWidget(self.stop_spin)
-        form.addRow("Span (MHz):", span)
+        # The bounds, as the Tuner's digits, to the kHz: 9 kHz is 0000.009.
+        self.sweep_start = DigitEntry('MHz', 1e6, 4, 3, minimum_hz=1e3,
+                                      value_hz=self.cfg['sweep_start_mhz'] * 1e6,
+                                      pixel_size=18, bold=False, default_place=3,
+                                      caption='Sweep start')
+        self.sweep_stop = DigitEntry('MHz', 1e6, 4, 3, minimum_hz=1e3,
+                                     value_hz=self.cfg['sweep_stop_mhz'] * 1e6,
+                                     pixel_size=18, bold=False, default_place=3,
+                                     caption='Sweep stop')
+        for entry, which in ((self.sweep_start, 'lowest'), (self.sweep_stop, 'highest')):
+            entry.setToolTip(f"The {which} frequency swept, within the radio's range.\n"
+                             "Hover a digit and roll the wheel, or type a frequency.")
+            entry.valueChanged.connect(self._sweep_bounds_edited)
+        form.addRow("Start:", self.sweep_start)
+        form.addRow("Stop:", self.sweep_stop)
+        # A turn of the wheel re-plans once the digits rest, not every notch.
+        self._bounds_timer = Qt.QTimer(self)
+        self._bounds_timer.setSingleShot(True)
+        self._bounds_timer.setInterval(150)
+        self._bounds_timer.timeout.connect(self._update_sweep_plan)
+        self.rbw_combo = Qt.QComboBox()
+        self.rbw_combo.addItem("Auto", 0.0)
+        for rbw in RBW_LADDER:
+            self.rbw_combo.addItem(f"{rbw / 1e3:g} kHz" if rbw < 1e6 else "1 MHz", float(rbw))
+        saved = float(self.cfg['sweep_rbw_khz']) * 1e3
+        self.rbw_combo.setCurrentIndex(max(0, self.rbw_combo.findData(saved)))
+        self.rbw_combo.setToolTip(
+            "Resolution bandwidth of the radio's own sweep. Auto keeps a sweep\n"
+            "near 80,000 points; narrower shows more detail and a lower noise\n"
+            "floor. Too narrow for the span is raised, to 1.5 million points.")
+        self.rbw_combo.activated.connect(lambda _: self._update_sweep_plan())
+        form.addRow("RBW:", self.rbw_combo)
+        self.rt_check = Qt.QCheckBox("Real time (27 MHz or less)")
+        self.rt_check.setChecked(bool(self.cfg['sweep_realtime']))
+        self.rt_check.setToolTip(
+            "Watch the span in real time instead of sweeping it: every sample is\n"
+            "FFT'd, so nothing is missed - a burst of 307 us or more at 10 kHz RBW\n"
+            "- and a density map behind the trace shows how often each level\n"
+            "was hit. 30 frames a second; the FM band fits. Its RBW runs from\n"
+            "2.47 to 631 kHz (Auto: 10 kHz). No listening meanwhile: the radio\n"
+            "does one thing at a time.")
+        self.rt_check.toggled.connect(lambda _: self._update_sweep_plan())
+        form.addRow(self.rt_check)
         self.sweep_rate_combo = Qt.QComboBox()
         self.sweep_rate_combo.setToolTip(
             "The radio's sample rate while sweeping: how much spectrum each "
@@ -293,6 +363,10 @@ class MainWindow(Qt.QWidget):
             "Too little shows ghosts of the previous step's signals.")
         self.settle_spin.valueChanged.connect(self._settle_changed)
         form.addRow("Settle:", self.settle_spin)
+        # Rows only one kind of sweep has: the radio's own, or LO hopping.
+        self._native_rows = (self.rbw_combo, self.rt_check)
+        self._hop_rows = (self.sweep_rate_combo, self.fft_combo, self.frames_spin,
+                          self.settle_spin)
         buttons = Qt.QHBoxLayout()
         self.pause_btn = Qt.QPushButton("Pause")
         self.pause_btn.setCheckable(True)
@@ -313,7 +387,12 @@ class MainWindow(Qt.QWidget):
                                  "stand to be listed as a station.")
         self.snr_spin.valueChanged.connect(lambda _: self._force_station_list())
         form.addRow("Station threshold:", self.snr_spin)
-        self._select_preset()
+        # With no radio yet, only the saved band says whether it is the full
+        # range; the radio's own range comes with it (_load_radio_settings).
+        if self.cfg['sweep_band'] == 'full':
+            self.preset_combo.setCurrentIndex(0)
+        else:
+            self._select_preset(remember=False)
         return page
 
     def _build_receive_tab(self):
@@ -567,6 +646,10 @@ class MainWindow(Qt.QWidget):
         self.rf_view.bandDragged.connect(self._band_dragged)
         self.rf_view.bandDragFinished.connect(self._band_drag_finished)
         self.rf_view.averageChanged.connect(self._rf_average_changed)
+        # In real time the density map spans the view's scale: the device
+        # makes it from the Ref level down the Range.
+        for knob in (self.rf_view.ref_knob, self.rf_view.range_knob):
+            knob.valueChanged.connect(self._view_scale_changed)
         self.right_split.addWidget(self.rf_view)
 
         self.bottom = Qt.QStackedWidget()
@@ -595,16 +678,6 @@ class MainWindow(Qt.QWidget):
         self.mpx_view.load_state(self.cfg['view_mpx'])
         self.mpx_view.set_extent(0, MPX_RATE / 2, keep_span=False)
         return self.right_split
-
-    @staticmethod
-    def _mhz_spin(value, decimals=2):
-        spin = Qt.QDoubleSpinBox()
-        spin.setDecimals(decimals)
-        spin.setRange(1.0, 6000.0)
-        spin.setSingleStep(0.1)
-        spin.setKeyboardTracking(False)       # act on Enter, not every digit
-        spin.setValue(float(value))
-        return spin
 
     def _shortcuts(self):
         def add(keys, action):
@@ -721,6 +794,12 @@ class MainWindow(Qt.QWidget):
         low, high = radio.freq_range_hz
         self.tuner.set_range(low, high)
         self.center_entry.set_range(low, high)
+        self._show_sweep_rows(radio.native_sweep)
+        if self.cfg['sweep_band'] == 'full':
+            self._set_sweep_span(*radio.sweep_range_hz, replan=False)
+        else:
+            self._limit_sweep_bounds()
+            self._select_preset()
         if kind == 'file' and radio.meta and radio.meta.get('station_hz') \
                 and radio.path != getattr(self, '_opened_file', None):
             # A new recording opens on the station it was made of; the same
@@ -823,6 +902,8 @@ class MainWindow(Qt.QWidget):
         self._save_view()
         self._mode = 'receive'
         self.rf_view.load_state(self.cfg['view_receive'])
+        self.rf_view.set_level_unit('dBFS')
+        self.rf_view.clear_density()
         self.engine.start_receive(
             self.tuner.value(), self._receive_rate(),
             center_hz=self.center_entry.value(),
@@ -882,6 +963,12 @@ class MainWindow(Qt.QWidget):
 
     def _running_text(self):
         e = self.engine
+        if e.mode == 'sweep' and getattr(e.sweeper, 'native', False):
+            plan = e.sweeper.plan
+            what = ("Watching {} to {} in real time" if getattr(plan, 'realtime', False)
+                    else "Sweeping {} to {} in the radio")
+            return (f"{self.radio.describe()} - "
+                    + what.format(_freq_text(plan.start_hz), _freq_text(plan.stop_hz)))
         what = 'Sweeping' if e.mode == 'sweep' else 'Receiving'
         return f"{self.radio.describe()} - {what} at {rate_label(e.rate)}"
 
@@ -897,10 +984,40 @@ class MainWindow(Qt.QWidget):
 
     # ---- sweep
     def _sweep_plan(self):
+        start, stop = self.sweep_start.value(), self.sweep_stop.value()
+        if self.radio.native_sweep:
+            view = self.rf_view
+            return NativeSweepPlan(start, stop, self.rbw_combo.currentData() or None,
+                                   realtime=self.rt_check.isChecked(),
+                                   ref_db=view.ref_knob.value(),
+                                   scale_db=view.range_knob.value())
         rate = float(self.sweep_rate_combo.currentData() or self.radio.default_sweep_rate)
-        return SweepPlan(self.start_spin.value() * 1e6, self.stop_spin.value() * 1e6,
-                         rate, int(self.fft_combo.currentData()),
+        return SweepPlan(start, stop, rate, int(self.fft_combo.currentData()),
                          self.radio.usable_fraction(rate), self.radio.dc_notch_hz)
+
+    def _show_sweep_rows(self, native):
+        """The RBW for a radio that sweeps itself; step bandwidth, FFT,
+        frames and settling for one whose LO is hopped."""
+        for rows, shown in ((self._native_rows, native), (self._hop_rows, not native)):
+            for field in rows:
+                field.setVisible(shown)
+                label = self.sweep_form.labelForField(field)
+                if label is not None:
+                    label.setVisible(shown)
+
+    def _limit_sweep_bounds(self):
+        """Each bound inside the radio's range, and short of the other."""
+        span = self.sweep_stop.value() - self.sweep_start.value()
+        self.rt_check.setEnabled(span <= RT_MAX_SPAN_HZ + 1)
+        if self.radio is None:
+            return
+        low, high = self.radio.sweep_range_hz
+        self.sweep_start.set_range(low, high - MIN_SWEEP_SPAN_HZ)
+        self.sweep_stop.set_range(low + MIN_SWEEP_SPAN_HZ, high)
+        self.sweep_start.set_range(low, self.sweep_stop.value() - MIN_SWEEP_SPAN_HZ)
+        self.sweep_stop.set_range(self.sweep_start.value() + MIN_SWEEP_SPAN_HZ, high)
+        span = self.sweep_stop.value() - self.sweep_start.value()
+        self.rt_check.setEnabled(span <= RT_MAX_SPAN_HZ + 1)
 
     def _start_sweep(self):
         self._save_view()
@@ -913,6 +1030,7 @@ class MainWindow(Qt.QWidget):
         self.bottom.setCurrentIndex(0)
         self.rec_btn.setEnabled(False)
         self.pause_btn.setChecked(False)
+        self.pause_btn.setText("Pause")
         self._set_status(self._running_text(), 'good')
 
     def _reset_sweep_display(self, plan, full_span=True):
@@ -929,6 +1047,8 @@ class MainWindow(Qt.QWidget):
         self.rf_view.set_marker(self.tuner.value())
         self.rf_view.set_message('')
         self.rf_view.clear_peak()
+        self.rf_view.set_level_unit('dBm' if getattr(plan, 'native', False) else 'dBFS')
+        self.rf_view.clear_density()
         self.sweep_info.setText(plan.describe())
 
     def _restart_sweep(self):
@@ -948,30 +1068,55 @@ class MainWindow(Qt.QWidget):
         self.engine.sweeper.set_plan(plan, frames=self.frames_spin.value())
         self._reset_sweep_display(plan)
 
-    def _sweep_span_edited(self, _value):
+    def _sweep_bounds_edited(self, _hz):
+        self._limit_sweep_bounds()
         self._select_preset()
-        self._update_sweep_plan()
+        self._bounds_timer.start()
 
-    def _set_sweep_span(self, start, stop):
-        for spin, v in ((self.start_spin, start), (self.stop_spin, stop)):
-            spin.blockSignals(True)
-            spin.setValue(v)
-            spin.blockSignals(False)
+    def _set_sweep_span(self, start_hz, stop_hz, replan=True):
+        if self.radio is not None:
+            low, high = self.radio.sweep_range_hz
+            start_hz, stop_hz = max(start_hz, low), min(stop_hz, high)
+        # Widest first, so neither bound is held back by the other's old value.
+        for entry in (self.sweep_start, self.sweep_stop):
+            entry.set_range(1e3, 6000e6)
+        self.sweep_start.setValue(start_hz)
+        self.sweep_stop.setValue(stop_hz)
+        self._limit_sweep_bounds()
         self._select_preset()
-        self._update_sweep_plan()
+        if replan:
+            self._update_sweep_plan()
 
     def _preset_chosen(self, index):
         _, start, stop = SWEEP_PRESETS[index]
-        if start is not None:
-            self._set_sweep_span(start, stop)
+        if start == 'full':
+            if self.radio is not None:
+                self._set_sweep_span(*self.radio.sweep_range_hz)
+        elif start is not None:
+            self._set_sweep_span(start * 1e6, stop * 1e6)
 
-    def _select_preset(self):
-        start, stop = self.start_spin.value(), self.stop_spin.value()
+    def _select_preset(self, remember=True):
+        """The preset the bounds are, or Custom; remembered as the band."""
+        start, stop = self.sweep_start.value(), self.sweep_stop.value()
+        full = self.radio.sweep_range_hz if self.radio is not None else None
         for i, (_, a, b) in enumerate(SWEEP_PRESETS):
-            if a is not None and abs(a - start) < 1e-6 and abs(b - stop) < 1e-6:
+            if a == 'full':
+                hit = full is not None and abs(full[0] - start) < 1 and abs(full[1] - stop) < 1
+            else:
+                hit = a is not None and abs(a * 1e6 - start) < 1 and abs(b * 1e6 - stop) < 1
+            if hit:
                 self.preset_combo.setCurrentIndex(i)
+                if remember:
+                    self.cfg['sweep_band'] = 'full' if a == 'full' else 'preset'
                 return
         self.preset_combo.setCurrentIndex(len(SWEEP_PRESETS) - 1)
+        if remember:
+            self.cfg['sweep_band'] = 'custom'
+
+    def _view_scale_changed(self, _value):
+        plan = getattr(self.engine.sweeper, 'plan', None)
+        if self._mode == 'sweep' and getattr(plan, 'realtime', False):
+            self._bounds_timer.start()
 
     def _settle_changed(self, ms):
         if self.engine.sweeper is not None:
@@ -1152,6 +1297,8 @@ class MainWindow(Qt.QWidget):
         for entry in (self.tuner, self.center_entry, self.chan_entry):
             entry.restyle()
         self.theme_disc.describe()
+        self.theme_word.setToolTip(self.theme_disc.toolTip())
+        self._refit_left()
         self.update()
 
     # ============================================================ recording
@@ -1292,6 +1439,8 @@ class MainWindow(Qt.QWidget):
 
     def _draw_sweep(self):
         freqs, live, done, serial = self.engine.sweeper.snapshot()
+        if len(live) != len(freqs) or (done is not None and len(done) != len(freqs)):
+            return                                  # caught mid re-plan
         avg = max(1, int(self.rf_view.avg_knob.value()))
         new = done is not None and serial != self._last_serial
         if new:
@@ -1312,6 +1461,11 @@ class MainWindow(Qt.QWidget):
                 self.rf_view.add_waterfall_row(freqs, done)
         elif self._sweep_db is not None and new:
             self.rf_view.set_data(freqs, self._sweep_db, waterfall_row=row)
+        density = getattr(self.engine.sweeper, 'density', None)
+        if new and density is not None:
+            frame = density()
+            if frame is not None:
+                self.rf_view.set_density(*frame)
 
     def _tick_slow(self):
         try:
@@ -1363,11 +1517,19 @@ class MainWindow(Qt.QWidget):
     def _refresh_sweep(self):
         s = self.engine.sweeper
         plan = s.plan
-        if s.sweep_seconds:
+        error = getattr(s, 'error', None)
+        if error:
+            self.sweep_info.setText(_coloured(f"{plan.describe()}<br>{error}", 'warn'))
+        elif s.sweep_seconds and getattr(plan, 'realtime', False):
+            self.sweep_info.setText(f"{plan.describe()}<br>"
+                                    f"{1.0 / s.sweep_seconds:.0f} frames a second")
+        elif s.sweep_seconds:
             rate = 1.0 / s.sweep_seconds if s.sweep_seconds > 0 else 0
+            speed = (plan.stop_hz - plan.start_hz) / s.sweep_seconds
+            speed = (f"{speed / 1e9:.1f} GHz/s" if speed >= 1e9 else f"{speed / 1e6:.0f} MHz/s")
             self.sweep_info.setText(
                 f"{plan.describe()}<br>{s.sweep_seconds * 1e3:.0f} ms per sweep "
-                f"({rate:.1f}/s, {(plan.stop_hz - plan.start_hz) / s.sweep_seconds / 1e6:.0f} MHz/s)")
+                f"({rate:.1f}/s, {speed})")
         if self._sweep_db is not None and self._last_serial != self._list_serial:
             self._list_serial = self._last_serial
             self._update_station_list(plan.freqs(), self._sweep_db)
@@ -1376,15 +1538,23 @@ class MainWindow(Qt.QWidget):
         self._list_serial = -1
 
     def _update_station_list(self, freqs, db):
-        found = find_stations(freqs, db, min_snr_db=self.snr_spin.value())
+        # Only where FM broadcasting is: the floor is measured there too, not
+        # over the gigahertz of a full-range sweep.
+        freqs, db = np.asarray(freqs), np.asarray(db)
+        if len(freqs) != len(db):
+            return                                  # a sweep of the last plan
+        fm = (freqs >= FM_BROADCAST_HZ[0]) & (freqs <= FM_BROADCAST_HZ[1])
+        found = find_stations(freqs[fm], db[fm], min_snr_db=self.snr_spin.value()) \
+            if fm.any() else []
         found.sort(key=lambda s: s[0])
+        unit = self.rf_view.level_unit
         current = self.station_list.currentItem()
         keep = current.data(QtCore.Qt.UserRole) if current else None
         self.station_list.blockSignals(True)
         self.station_list.clear()
         for f, snr, level in found:
             name = self._names.get(round(f / 1e5))
-            text = f"{f / 1e6:7.1f} MHz  {snr:5.1f} dB  {level:6.1f} dBFS"
+            text = f"{f / 1e6:7.1f} MHz  {snr:5.1f} dB  {level:6.1f} {unit}"
             if name:
                 text += f"  {name}"
             item = Qt.QListWidgetItem(text)
@@ -1496,8 +1666,10 @@ class MainWindow(Qt.QWidget):
             'region': self.region_combo.currentData(),
             'stereo': self.stereo_check.isChecked(),
             'volume': self.volume_knob.value(), 'muted': self.mute_btn.isChecked(),
-            'sweep_start_mhz': self.start_spin.value(),
-            'sweep_stop_mhz': self.stop_spin.value(),
+            'sweep_start_mhz': self.sweep_start.value() / 1e6,
+            'sweep_stop_mhz': self.sweep_stop.value() / 1e6,
+            'sweep_rbw_khz': (self.rbw_combo.currentData() or 0.0) / 1e3,
+            'sweep_realtime': self.rt_check.isChecked(),
             'sweep_fft': self.fft_combo.currentData(),
             'sweep_frames': self.frames_spin.value(),
             'min_snr_db': self.snr_spin.value(), 'snap': self.snap_check.isChecked(),

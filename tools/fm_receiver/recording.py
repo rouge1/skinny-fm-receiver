@@ -11,8 +11,8 @@ Two kinds:
 - **band** - everything the radio receives, at its rate, centred on its LO.
   Big, and it holds every station in the band: play it back and tune
   around in it.
-- **channel** - just the tuned station, filtered and decimated to 250 kS/s
-  complex with the station at 0 Hz. An eighth to an eightieth of the size.
+- **channel** - just the tuned station, filtered and decimated to 500 kS/s
+  complex with the station at 0 Hz. A quarter to a fortieth of the size.
 
 Each recording is ``<name>.cfile`` (complex float32, little-endian) with two
 descriptions beside it: ``<name>.sigmf-meta`` (SigMF 1.0, naming the

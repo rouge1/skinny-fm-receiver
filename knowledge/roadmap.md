@@ -289,3 +289,126 @@ done.
   clips just as well, so a sweep-side count would be the next step.
 - 💡 At 10 MS/s, 40% gain already clips 4%. A per-rate default gain for
   the HackRF, or a note in the Radio card, may be worth it.
+- 💡 **HackRF gain split: LNA before VGA?** ble-scanner measured this at
+  2.4 GHz for Bluetooth on 2026-09-22. It uses the same toolkit gain plan
+  (LNA share 0.45).
+  - With LNA + VGA fixed at 62 dB and the same clipping, moving 8 dB from
+    the VGA to the LNA (LNA 32 / VGA 30) raised the signals about 2-4 dB
+    over an unchanged noise floor, with +2.3 dB SNR, and decoded 27% more
+    packets.
+  - It now uses an LNA share of 0.55, with a default of 60% = AMP 14 /
+    LNA 32 / VGA 30.
+  - FM may differ: strong stations make LNA gain an intermodulation risk.
+    Here the 40% → 47% cliff is just the LNA stepping from 16 to 24 dB at
+    VGA 24. The ADC fills at about 48 dB of LNA + VGA, however it's split.
+  - To decide: on the HackRF, compare equal totals with more LNA and less
+    VGA, by RDS decode rate and SNR at the same clipped share (a few
+    minutes of radio time). Check with ble-scanner first, since it shares
+    the HackRF.
+- 💡 **Show the HackRF's clipped share at all times**, not only above 1%,
+  as ble-scanner does ("clipped 0.13%").
+  - Its method, for agreement: full scale is |I| or |Q| ≥ 125/127. It
+    tests every 4th sample, and smooths per 16 ms chunk with
+    0.95·old + 0.05·new, which covers about 0.3 s.
+  - Its guide is to keep it under about 1%. At 2.4 GHz it saw 0.1-0.6% at
+    its best gain and 2-8% where packets were lost, which agrees with our
+    1% warning.
+  - Ours tests 4096-sample frames 30 times a second (6% of samples at
+    2 MS/s, 1% at 10 MS/s). That is enough for FM's steady stations, but
+    might miss clipping in short bursts such as Wi-Fi.
+  - It also found the peak level useless as a guide: brief bursts put it
+    at +3 dBFS even at the best gain.
+
+## Round 4: knob glow, layout, full-range sweep (requested 2026-09-22)
+
+All shipped the same day. `run_all.py`: 4/4. The BB60D check passed off air
+with two new stages (its own sweep, and letting go of the device). On later
+runs its older stitching stage flagged 2-15 bins that came and went, at
+either settle time; stages 2-6 passed on the final code. See
+capabilities.md, *Known limitations*.
+
+- [x] **1. Knobs light orange under the pointer.**
+  - The arc, rim and pointer turn the on-air orange. Slate and Walnut add
+    an orange glow round the knob, as the toolkit's tiles are lit (a
+    `QGraphicsDropShadowEffect` with no offset). Reading Room lifts it on
+    a shadow (offset down, in `shade`), because a glow barely shows on
+    paper. It fades over 150 ms, the tiles' lift time.
+  - **Why Volume didn't light:** a clicked knob kept its light for as long
+    as it had focus, so hovering it again changed nothing, and Volume is
+    the knob most often clicked. On a real X server (Xvfb) its hover was
+    otherwise the same as the others'. The light now follows the pointer
+    and drags only; focus from Tab shows as a ring.
+- [x] **2. Walnut's digit entries in its reading face.** Limelight, 29%
+  wider than Slate's digits, had pushed 46 px of the Receive tab under the
+  spectrum. Center, Tuner, Channel filter and the sweep bounds now use Libre
+  Caslon Text (`widgets.DIGIT_FACE`). The left column is also measured again
+  on every theme change, so no theme can cut it off.
+- [x] **3. The theme's name as a tooltip.** The disc already had one, but
+  Qt shows tooltips only in the active window, and the terminal usually
+  has the focus. The window now shows them regardless
+  (`WA_AlwaysShowToolTips`), and the word Themes carries the tooltip too.
+- [x] **4-5. Plot controls at the right.** Under the RF spectrum and under
+  the multiplex, the knobs, Peak hold, Waterfall and Full span sit at the
+  right-hand end, with the pointer readout at the left. **Decision:** the
+  same row pushed right, picked over a column beside each plot.
+- [x] **6. Sweep the radio's full range; bounds as controls.**
+  - **The BB60D sweeps itself** (`bb60_sweep`, Signal Hound's API through
+    ctypes). It covers 9 kHz to 6 GHz in 229-233 ms, where LO hopping
+    manages 200-600 MHz/s. It borrows the device the SoapySDR module
+    opened; both share one `libbb_api` in the process. Switching takes
+    19 ms from Receive and 198 ms back, and nothing leaks into the IQ
+    stream: the same level and PI came back afterwards.
+  - Start and Stop as digit entries, to the kHz, kept inside the radio's
+    range. The first preset, *Full range of the radio*, is now the default
+    and follows the radio when you switch.
+  - An RBW choice (Auto, or 1 kHz to 1 MHz) replaces the step bandwidth,
+    FFT, frames and settle rows for the BB60D. Levels are in dBm there.
+  - Stations are listed only between 65.8 and 108 MHz.
+  - Its sweep is capped at 30 a second: the API's processing runs on this
+    computer, and the FM band uncapped used 87% of a core.
+  - Found on the way: re-planning the hopping sweep kept the old plan's
+    last sweep, and the Span dial clamped a saved span to the previous
+    view's limit. Both fixed.
+- 💡 **Native HackRF sweep** (`hackrf_sweep`'s firmware mode): its full
+  range by LO hopping is about 400 steps, tens of seconds a sweep.
+- 💡 **A waterfall at the zoomed view's resolution.** Over 6 GHz each
+  waterfall column is about 1.5 MHz, so zooming into a band shows blocks.
+  Rows could be pooled to the visible range, at the cost of history rows
+  not lining up after a zoom.
+- 💡 Station finding beyond FM (TV, airband, ISM) would need other
+  detectors and a way to listen to them; out of scope for an FM receiver.
+
+### From Signal Hound's API reference (2026-09-22)
+
+Read from the links in [google_bb60d.md](google_bb60d.md). Every constant
+`bb60_sweep` uses matched the header. The minimum sweep span was raised
+from 100 kHz to its suggested 200 kHz. Its other leads:
+
+- [x] **Real-time mode** (`BB_REAL_TIME`), shipped the same day as a
+  **Real time** box in the Sweep tab, for spans up to 27 MHz. Off air on the
+  FM band: 30 frames a second, nothing over 307 us missed at 10 kHz RBW,
+  and about 46% of a core for the whole window. The density map is drawn
+  behind the trace, and checked the right way up: its highest hit at
+  89.3 MHz matched the trace's peak to 0.1 dB.
+  - Found by probing: row 0 of the map is the bottom of the scale, and the
+    reference level places the map even with the gain set by hand.
+  - 💡 The persistence frame (`alphaFrame`, hits fading from 1 to 0) is
+    fetched but not drawn yet. Blending it in would show where a burst
+    just was.
+  - 💡 The waterfall could be drawn from real-time frames at full rate
+    too, so a burst leaves its mark there as well.
+- 💡 **Auto gain by reference level**, which Signal Hound recommends.
+  Gain and attenuation go on auto, with the reference level about 5 dB
+  above the strongest input expected. Now the RF gain slider sets them by
+  hand, as it does for the IQ stream, and the API then ignores the
+  reference level. It could be tied to the view's Ref level, or be an
+  Auto position on the slider.
+- 💡 **Device health** from `bbGetDeviceDiagnostics`: temperature, USB
+  voltage and current. Below 4.4 V the measurements may be off, which is
+  worth a warning. First check it can be called while the SoapySDR
+  module's stream runs.
+- 💡 **Sweep time** (0.001-0.1 s, fixed at 0.001 now). A longer dwell per
+  frequency catches intermittent signals, at the cost of sweep speed.
+- 💡 **Spur rejection** (`BB_SPUR_REJECT`), for CW signals.
+- The API tunes up to 6.4 GHz, past the BB60D's specified 6 GHz. The
+  sweep stops at 6 GHz, as asked.

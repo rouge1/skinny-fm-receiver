@@ -94,6 +94,15 @@ class Radio:
     #: No overload flag of its own: the window watches its samples for
     #: clipping instead (``dsp.clip_probe``).
     clip_warn = False
+    #: Sweeps in the device itself (:meth:`native_sweeper`), rather than by
+    #: hopping the IQ stream's LO.
+    native_sweep = False
+
+    @property
+    def sweep_range_hz(self):
+        """How far a sweep can go: the tuner's range, unless the radio
+        sweeps further than it streams."""
+        return self.freq_range_hz
 
     def __init__(self):
         self.block = None
@@ -280,6 +289,11 @@ class BB60(Radio):
     freq_range_hz = (FREQ_MIN_HZ, 6000e6)
     #: Measured flat to 0.5 dB - see bb60_source.IQ_BANDWIDTH.
     USABLE = {40e6: 0.60, 20e6: 0.84, 10e6: 0.75, 5e6: 0.75, 2.5e6: 0.75}
+    #: Sweeps in the device (``bb60_sweep``), over the whole of its range
+    #: from 9 kHz - the IQ stream is kept to the tuner's range.
+    native_sweep = True
+    sweep_range_hz = (9e3, 6000e6)
+    sweeper = None
 
     def open(self):
         from .bb60_source import bb60_source, find_devices
@@ -289,12 +303,36 @@ class BB60(Radio):
                 "No Signal Hound BB60 was found on USB. Check it is "
                 "connected, and that no other program - Spike, another "
                 "receiver - has it open.")
-        # The device itself is opened by the block's start().
+        # The device itself is opened by the block's start(), or hold().
         self.block = bb60_source(center_freq=100e6, sample_rate=2.5e6,
                                  gain_percent=self.gain_percent)
 
+    def close(self):
+        self.sweeper = None
+        super().close()
+
     def usable_fraction(self, rate):
         return self.USABLE.get(float(rate), 0.75)
+
+    def native_sweeper(self, plan):
+        """Start the device's own sweep of ``plan`` (a
+        ``bb60_sweep.NativeSweepPlan``) on the device the IQ stream opens,
+        which must be stopped; the sweep is returned, running."""
+        from .bb60_sweep import BB60Error, bb60_sweeper, device_handle
+        try:
+            self.block.hold()
+        except RuntimeError as exc:
+            raise RadioError(str(exc)) from exc
+        handle = device_handle()
+        if handle is None:
+            raise RadioError("The BB60 is open, but its handle could not be found.")
+        sweeper = bb60_sweeper(handle, plan, self.gain_percent)
+        try:
+            sweeper.start()
+        except BB60Error as exc:
+            raise RadioError(str(exc)) from exc
+        self.sweeper = sweeper
+        return sweeper
 
     def set_rate(self, rate):
         super().set_rate(rate)
@@ -307,12 +345,15 @@ class BB60(Radio):
     def apply_gain(self, percent=None):
         super().apply_gain(percent)
         self.block.set_gain_percent(self.gain_percent)
+        if self.sweeper is not None and self.sweeper.running:
+            self.sweeper.set_gain_percent(self.gain_percent)
 
     def health(self):
         if self.block is None:
             return {}
+        swept = self.sweeper.overflows if self.sweeper is not None else 0
         return {'dropped': self.block.overflows,
-                'overload': self.block.adc_overflows()}
+                'overload': self.block.adc_overflows() + swept}
 
 
 def _load_bb60_module():

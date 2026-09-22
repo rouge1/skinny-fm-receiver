@@ -20,17 +20,35 @@ pg.setConfigOptions(antialias=False, imageAxisOrder='row-major')
 
 # -------------------------------------------------------------------- knob
 
+def _mix(a, b, f):
+    """QColor ``f`` of the way from ``a`` to ``b``."""
+    a, b = Qt.QColor(a), Qt.QColor(b)
+    return Qt.QColor.fromRgbF(*(x + (y - x) * f for x, y in zip(a.getRgbF(), b.getRgbF())))
+
+
 class _Dial(Qt.QDial):
     """A QDial drawn as a knob in the theme, turned by dragging up and down.
 
     Qt's own dial follows the pointer round its centre, which on a small
     knob is fiddly; vertical drag is what knobs on instruments do. Double
     click puts it back to its default.
+
+    Under the pointer - where the wheel turns it - the knob lights: its rim
+    and pointer turn the on-air orange, and it glows orange round its edge
+    on the dark themes (Slate, Walnut), as the RF bench toolkit's tiles
+    are lit, or lifts on a shadow on the light one (Reading Room), where a
+    glow barely shows on the paper. It fades in and out over ``GLOW_MS``,
+    and stays while the knob is dragged. Clicked focus does not light it -
+    a clicked knob kept its light long after, and then showed no change
+    under the pointer; a ring marks focus that came by Tab.
     """
 
     reset = pyqtSignal()
     #: Whole wheel notches over the knob, and whether Shift was held.
     wheeled = pyqtSignal(int, bool)
+
+    #: The toolkit's tiles lift in 150 ms.
+    GLOW_MS = 150
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -39,11 +57,74 @@ class _Dial(Qt.QDial):
         self.setFixedSize(46, 46)
         self._press = None
         self._wheel = 0
-        # Repaint as the pointer comes and goes: the ring shows the wheel
-        # will turn this knob. The window's click-to-move guard, which
-        # holds the wheel back from an unclicked control, leaves it be.
-        self.setAttribute(QtCore.Qt.WA_Hover, True)
+        self._tab_focus = False
+        # The window's click-to-move guard, which holds the wheel back from
+        # an unclicked control, leaves a knob be.
         self.setProperty('wheel_on_hover', True)
+        self.glow = 0.0
+        self._glow_to = 0.0
+        self._effect = Qt.QGraphicsDropShadowEffect(self)
+        self._effect.setEnabled(False)
+        self.setGraphicsEffect(self._effect)
+        self._glow_anim = QtCore.QVariantAnimation(self)
+        self._glow_anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+        self._glow_anim.valueChanged.connect(self._set_glow)
+
+    # -- the light under the pointer
+    def _aim_glow(self):
+        on = self.isEnabled() and (self.underMouse() or self._press is not None)
+        target = 1.0 if on else 0.0
+        if target == self._glow_to:
+            return
+        self._glow_to = target
+        self._glow_anim.stop()
+        self._glow_anim.setStartValue(self.glow)
+        self._glow_anim.setEndValue(target)
+        self._glow_anim.setDuration(max(1, int(self.GLOW_MS * abs(target - self.glow))))
+        self._glow_anim.start()
+
+    def _set_glow(self, level):
+        self.glow = min(1.0, max(0.0, float(level)))
+        effect = self._effect
+        if self.glow <= 0.0:
+            effect.setEnabled(False)
+        else:
+            t = theme.TOKENS
+            if t['scheme'] == 'light':
+                tint = Qt.QColor(t['shade'])
+                tint.setAlphaF(0.7 * self.glow)
+                effect.setOffset(0, 1 + 2 * self.glow)
+                effect.setBlurRadius(4 + 12 * self.glow)
+            else:
+                tint = Qt.QColor(t['live'])
+                tint.setAlphaF(self.glow)
+                effect.setOffset(0, 0)
+                effect.setBlurRadius(6 + 16 * self.glow)
+            effect.setColor(tint)
+            effect.setEnabled(True)
+        self.update()
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self._aim_glow()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self._aim_glow()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QtCore.QEvent.EnabledChange:
+            self._aim_glow()
+
+    def focusInEvent(self, event):
+        self._tab_focus = event.reason() in (QtCore.Qt.TabFocusReason,
+                                             QtCore.Qt.BacktabFocusReason)
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event):
+        self._tab_focus = False
+        super().focusOutEvent(event)
 
     def wheelEvent(self, event):
         # QDial's own wheel moves a few of its thousand steps a notch - too
@@ -60,6 +141,7 @@ class _Dial(Qt.QDial):
             self.setFocus(QtCore.Qt.MouseFocusReason)
             self._press = (event.pos().y(), self.value())
             self.setSliderDown(True)
+            self._aim_glow()
             event.accept()
             return
         super().mousePressEvent(event)
@@ -78,6 +160,7 @@ class _Dial(Qt.QDial):
         if self._press is not None:
             self._press = None
             self.setSliderDown(False)
+            self._aim_glow()
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -102,22 +185,25 @@ class _Dial(Qt.QDial):
                              side, side)
         span = max(1, self.maximum() - self.minimum())
         frac = (self.value() - self.minimum()) / span
+        glow = self.glow if self.isEnabled() else 0.0
         pen = Qt.QPen(colour('rule'), 4)
         pen.setCapStyle(QtCore.Qt.RoundCap)
         p.setPen(pen)
         p.drawArc(rect, 225 * 16, -270 * 16)
-        pen.setColor(colour('trace' if self.isEnabled() else 'ink_3'))
+        pen.setColor(_mix(colour('trace' if self.isEnabled() else 'ink_3'),
+                          colour('live'), glow))
         p.setPen(pen)
         p.drawArc(rect, 225 * 16, int(-270 * 16 * frac))
         inner = rect.adjusted(8, 8, -8, -8)
-        lit = self.hasFocus() or (self.underMouse() and self.isEnabled())
-        p.setPen(Qt.QPen(colour('ink_2' if lit else 'ink_3'), 1.5 if lit else 1))
+        rim = _mix(colour('ink_2' if self._tab_focus and self.hasFocus() else 'ink_3'),
+                   colour('live'), glow)
+        p.setPen(Qt.QPen(rim, 1 + glow))
         p.setBrush(colour('panel_2'))
         p.drawEllipse(inner)
         angle = math.radians(225 - 270 * frac)
         c = inner.center()
         r = inner.width() / 2 - 3
-        pen = Qt.QPen(colour('ink'), 2)
+        pen = Qt.QPen(_mix(colour('ink'), colour('live'), glow), 2)
         pen.setCapStyle(QtCore.Qt.RoundCap)
         p.setPen(pen)
         p.drawLine(QtCore.QPointF(c.x() + 0.35 * r * math.cos(angle),
@@ -275,6 +361,13 @@ class _Editor(Qt.QLineEdit):
             event.accept()
 
 
+#: The face the digit entries are drawn in: the theme's number face, except
+#: Walnut's. Its Limelight is a nameplate's Art Deco, 29% wider than Slate's
+#: digits at the Tuner's 30 px, and it pushed the Receive tab's controls
+#: under the spectrum; Walnut's reading face, Libre Caslon Text, is 15%.
+DIGIT_FACE = {'walnut': 'f_ui'}
+
+
 class DigitEntry(Qt.QWidget):
     """A number drawn as digits, each one its own wheel.
 
@@ -359,7 +452,7 @@ class DigitEntry(Qt.QWidget):
 
     # -- geometry
     def _font(self, unit=False):
-        font = Qt.QFont(theme.TOKENS['f_num'])
+        font = Qt.QFont(theme.TOKENS[DIGIT_FACE.get(theme.current(), 'f_num')])
         if unit:
             font.setPixelSize(max(11, int(self.pixel_size * 0.5)))
         else:
@@ -853,6 +946,17 @@ MARKERS = {
 }
 
 
+def density_lut():
+    """RGBA for a density map: the theme's waterfall colours from a third of
+    the way up (the rest is the plot's own background), clear at zero and
+    more opaque the more often a level was hit."""
+    base = waterfall_lut(WATERFALL.get(theme.current(), WATERFALL['slate']))
+    t = np.linspace(0.0, 1.0, 256)
+    rgb = base[np.round((0.35 + 0.65 * t) * (len(base) - 1)).astype(int)]
+    alpha = np.where(t > 0, 80 + 175 * t, 0.0)
+    return np.column_stack([rgb, alpha]).astype(np.uint8)
+
+
 def _marker_colour(which):
     token = MARKERS.get(theme.current(), MARKERS['slate'])[which]
     return Qt.QColor(theme.TOKENS.get(token, token))
@@ -908,6 +1012,8 @@ def _mhz(hz):
 
 
 def _span_text(hz):
+    if hz >= 1e9:
+        return f"{hz / 1e9:.3g} GHz"
     if hz >= 1e6:
         return f"{hz / 1e6:.3g} MHz"
     return f"{hz / 1e3:.3g} kHz"
@@ -1012,6 +1118,7 @@ class SpectrumView(Qt.QWidget):
         self._wf = None
         self._wf_extent = None
         self._syncing = False
+        self._wanted_span = None
         self.snap_hz = snap_hz
         self.title = title
 
@@ -1021,7 +1128,8 @@ class SpectrumView(Qt.QWidget):
         self.plot.hideButtons()
         self.plot.setMouseEnabled(x=True, y=False)
         self.plot.setLabel('bottom', unit)
-        self.plot.setLabel('left', 'dBFS')
+        self.level_unit = 'dBFS'
+        self.plot.setLabel('left', self.level_unit)
         self.plot.getPlotItem().setTitle(title)
         self.curve = self.plot.plot([], [])
         self.curve.setDownsampling(auto=True, method='peak')
@@ -1032,6 +1140,11 @@ class SpectrumView(Qt.QWidget):
         self.marker = pg.InfiniteLine(angle=90, movable=False)
         self.marker.setVisible(False)
         self.plot.addItem(self.marker, ignoreBounds=True)
+        # A real-time density map (the BB60D's), behind the trace.
+        self.density_item = pg.ImageItem()
+        self.density_item.setZValue(-5)
+        self.density_item.setVisible(False)
+        self.plot.addItem(self.density_item, ignoreBounds=True)
         self.band = ChannelBand(self)
         self.band.setVisible(False)
         self.band.setZValue(-10)
@@ -1078,7 +1191,7 @@ class SpectrumView(Qt.QWidget):
             self.wf_plot.scene().sigMouseMoved.connect(self._mouse_moved)
 
         # The dials.
-        self.span_knob = Knob('Span', self.min_span_hz, 1e9, 1e9, _span_text,
+        self.span_knob = Knob('Span', self.min_span_hz, 6e9, 6e9, _span_text,
                               log=True, wheel=1.25,
                               tooltip='How much frequency the view shows, '
                               'centred on the station (or on the view).')
@@ -1123,8 +1236,12 @@ class SpectrumView(Qt.QWidget):
         # watched for it: the band itself is not sent the press.
         self.plot.scene().installEventFilter(self)
 
+        # Under the plot: the readout of the pointer on the left, the view's
+        # dials and switches at the right-hand end.
         controls = Qt.QHBoxLayout()
         controls.setSpacing(6)
+        controls.addWidget(self.readout, 0, QtCore.Qt.AlignBottom)
+        controls.addStretch(1)
         for knob in (self.span_knob, self.ref_knob, self.range_knob, self.avg_knob):
             controls.addWidget(knob)
         checks = Qt.QVBoxLayout()
@@ -1132,8 +1249,6 @@ class SpectrumView(Qt.QWidget):
         checks.addWidget(self.wf_check)
         checks.addWidget(self.full_btn)
         controls.addLayout(checks)
-        controls.addStretch(1)
-        controls.addWidget(self.readout, 0, QtCore.Qt.AlignBottom)
 
         layout = Qt.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1185,6 +1300,7 @@ class SpectrumView(Qt.QWidget):
             for line in region.lines:
                 line.setPen(edge)
         self.message.setColor(t['warn'])
+        self.density_item.setLookupTable(density_lut())
         if self.wf_plot is not None:
             self.wf_marker.setPen(tuner)
             self.wf_center_line.setPen(centre)
@@ -1215,7 +1331,14 @@ class SpectrumView(Qt.QWidget):
             self.center_hz = float(center_hz)
         elif not (low_hz <= self.center_hz <= high_hz):
             self.center_hz = (low_hz + high_hz) / 2
-        span = self.span_knob.value() if keep_span else high_hz - low_hz
+        if keep_span:
+            # A span just loaded (load_state) was clamped to the last extent's
+            # dial; what was asked for is kept until the extent is known - a
+            # sweep opened at 1 GHz of 6, the dial's first limit, before.
+            span = self._wanted_span or self.span_knob.value()
+        else:
+            span = high_hz - low_hz
+        self._wanted_span = None
         self.span_knob.set_range(min(self.min_span_hz, high_hz - low_hz), high_hz - low_hz)
         if changed:
             self._peak = None
@@ -1226,6 +1349,13 @@ class SpectrumView(Qt.QWidget):
     def set_center(self, hz):
         self.center_hz = float(hz)
         self._apply_span()
+
+    def set_level_unit(self, unit):
+        """What the levels are in: dBFS from an IQ stream, dBm from a radio
+        that measures them itself (the BB60D's own sweep)."""
+        if unit != self.level_unit:
+            self.level_unit = unit
+            self.plot.setLabel('left', unit)
 
     def set_data(self, freqs_hz, db, waterfall_row=True):
         freqs_hz = np.asarray(freqs_hz, dtype=np.float64)
@@ -1257,6 +1387,32 @@ class SpectrumView(Qt.QWidget):
     def clear_peak(self):
         self._peak = None
         self.peak_curve.setData([], [])
+
+    #: The density map's colours run, on a log scale, from one hit in ten
+    #: thousand to a quarter of a column's: the noise spreads a column's
+    #: hits over dozens of levels, and a steady carrier takes an eighth of
+    #: a column (525 columns over 4,200 points at 10 kHz RBW).
+    DENSITY_LOG_RANGE = (-4.0, -0.6)
+
+    def set_density(self, frame, extent):
+        """Draw a real-time density map behind the trace: ``frame`` rows
+        from bottom to top, over ``extent`` = (low Hz, high Hz, bottom dB,
+        top dB). Where nothing was hit stays clear."""
+        low_hz, high_hz, bottom, top = extent
+        lo, hi = self.DENSITY_LOG_RANGE
+        with np.errstate(divide='ignore'):
+            level = (np.log10(frame) - lo) / (hi - lo)
+        img = np.where(frame > 0, np.clip(level, 1.0 / 255, 1.0), 0.0).astype(np.float32)
+        self.density_item.setImage(img, autoLevels=False, levels=(0.0, 1.0),
+                                   rect=QtCore.QRectF(low_hz / self.scale, bottom,
+                                                      (high_hz - low_hz) / self.scale,
+                                                      top - bottom))
+        self.density_item.setVisible(True)
+
+    def clear_density(self):
+        if self.density_item.isVisible():
+            self.density_item.setVisible(False)
+            self.density_item.clear()
 
     def add_waterfall_row(self, freqs_hz, db):
         if self.wf_plot is not None and self.wf_check.isChecked():
@@ -1418,7 +1574,8 @@ class SpectrumView(Qt.QWidget):
             if 'avg' in state:
                 self.avg_knob.setValue(float(state['avg']))
             if 'span_hz' in state:
-                self.span_knob.setValue(float(state['span_hz']), emit=False)
+                self._wanted_span = float(state['span_hz'])
+                self.span_knob.setValue(self._wanted_span, emit=False)
             self.peak_check.setChecked(bool(state.get('peak_hold', False)))
             self.wf_check.setChecked(bool(state.get('waterfall', True)))
         except Exception as exc:
@@ -1433,6 +1590,7 @@ class SpectrumView(Qt.QWidget):
             self.wf_image.setLevels((bottom, top))
 
     def _span_changed(self, _value):
+        self._wanted_span = None                    # turned since: that stands
         self._apply_span()
 
     def _apply_span(self):
@@ -1487,7 +1645,7 @@ class SpectrumView(Qt.QWidget):
             return
         i = int(np.clip(np.searchsorted(self._x, hz / self.scale), 0, len(self._x) - 1))
         value = f"{hz / self.scale:.3f} {self.unit}"
-        self.readout.setText(f"{value}   {self._db[i]:.1f} dB")
+        self.readout.setText(f"{value}   {self._db[i]:.1f} {self.level_unit}")
 
     def _peak_toggled(self, on):
         if not on:

@@ -3,10 +3,11 @@
 """Signal Hound BB60D as a live GNU Radio source.
 
 Copied from the RF bench toolkit (``/data/python/SDR/apps/bb60_source.py``,
-commit 20c76e4). Three changes for this app, all marked "FM receiver": the
+commit 20c76e4). Four changes for this app, all marked "FM receiver": the
 analog bandwidth is set with every rate (see :data:`IQ_BANDWIDTH`),
-``start()`` drops settings left pending from before it, and
-:attr:`bb60_source.hold_open` keeps the device open across a stop and start.
+``start()`` drops settings left pending from before it,
+:attr:`bb60_source.hold_open` keeps the device open across a stop and start,
+and :meth:`bb60_source.hold` opens it with no stream, for ``bb60_sweep``.
 
 The BB60D is a SoapySDR device, but it cannot be driven through
 ``gr-soapy``: ``soapy.source(...)`` constructs, and then *every* setter -
@@ -463,19 +464,7 @@ class bb60_source(gr.sync_block):
             # FM receiver: the device kept open by hold_open.
             self._sdr, self._held = self._held, None
         else:
-            if not find_devices():
-                raise RuntimeError(
-                    "No Signal Hound BB60 was found on USB. Check it is "
-                    "connected, and that no other application - Sceptre, or "
-                    "another flowgraph - already has it open.")
-            # Enumerating is what loads the module, and with it the system
-            # libSoapySDR that the module logs into. Before this call that
-            # library may not have been in the process at all.
-            install_log_handler()
-            # Opened by driver name alone: the arguments enumerate() returns
-            # are refused, serial with "no match" and the whole dict with
-            # "device_id is not a number".
-            self._sdr = SoapySDR.Device(f"driver={DRIVER}")
+            self._sdr = self._open()
         # Before configuration, not after - see the module docstring.
         self._stream = self._sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
         # FM receiver: everything pending is about to be applied from the
@@ -488,6 +477,31 @@ class bb60_source(gr.sync_block):
                         gain_percent=self.gain_percent)
         self._sdr.activateStream(self._stream)
         return True
+
+    def _open(self):
+        import SoapySDR  # type: ignore
+        if not find_devices():
+            raise RuntimeError(
+                "No Signal Hound BB60 was found on USB. Check it is "
+                "connected, and that no other application - Sceptre, or "
+                "another flowgraph - already has it open.")
+        # Enumerating is what loads the module, and with it the system
+        # libSoapySDR that the module logs into. Before this call that
+        # library may not have been in the process at all.
+        install_log_handler()
+        # Opened by driver name alone: the arguments enumerate() returns
+        # are refused, serial with "no match" and the whole dict with
+        # "device_id is not a number".
+        return SoapySDR.Device(f"driver={DRIVER}")
+
+    def hold(self):
+        """FM receiver: open the device with no stream, and keep it for
+        :meth:`start` - the BB60D's own sweep (``bb60_sweep``) borrows it
+        meanwhile. Does nothing if it is open already."""
+        if self._sdr is None and self._held is None:
+            ensure_plugin_path()
+            install_log_handler()
+            self._held = self._open()
 
     def stop(self):
         sdr, stream, self._sdr, self._stream = self._sdr, self._stream, None, None
