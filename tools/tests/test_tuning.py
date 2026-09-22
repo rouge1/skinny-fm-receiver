@@ -225,7 +225,10 @@ _MODULES_AFTER_BB60_LOAD = r'''
 import SoapySDR
 from fm_receiver import radios
 radios._load_bb60_module()
-# "" is a module loaded only now: the BB60's load had left it out.
+# SoapySDR's own load, as the HackRF's open would do it. A driver no
+# module has, so no device is looked for.
+SoapySDR.Device.enumerate('driver=fmrx_no_such_driver')
+# "" is a module loaded only now: both loads had left it out.
 left_out = [p for p in SoapySDR.listModules() if SoapySDR.loadModule(p) == ""]
 print(left_out)
 sys.exit(1 if left_out else 0)
@@ -234,10 +237,16 @@ sys.exit(1 if left_out else 0)
 
 def test_bb60_load_keeps_the_other_drivers():
     """Loading the BB60 module, as opening a BB60D does, must leave every
-    other SoapySDR driver loaded: loading it by hand in a fresh process
+    other SoapySDR driver loadable: loading it by hand in a fresh process
     was once the only load there was, and a HackRF chosen after a BB60D
     that was not plugged in could not be found (2026-09-22). A fresh
-    process, because SoapySDR loads its modules once per process."""
+    process, because SoapySDR loads its modules once per process.
+
+    The check comes after an enumerate, the load the HackRF's open would
+    get, so it fails only where that fault was: on Linux, where the BB60
+    module is outside SoapySDR's own folder. On the Mac it is inside it,
+    the old code loaded nothing by hand, and SoapySDR's load found
+    everything."""
     import subprocess
     tools = os.path.dirname(HERE)
     proc = subprocess.run(
