@@ -12,6 +12,10 @@ tone and right a 2.5 kHz one, with RDS. Played through the real
 - write a WAV of the right length, and IQ recordings with their metadata;
 - go silent when muted, and keep recording while muted.
 
+And, on its own chain: stereo only for a pilot that stands out from the
+noise beside it - never on noise alone or a noisy mono station, which
+read a higher 19 kHz level than a real pilot does.
+
 Run:  python tools/tests/test_receive_chain.py [--keep]     (about 30 s)
 """
 
@@ -183,8 +187,62 @@ def test_volume_law():
     assert abs(ReceiveChain._gain(Chain()) - 1.5 * 0.49) < 1e-9
 
 
+def pilot_readings(iq, rate=2e6, offset_hz=300e3):
+    """``iq`` through a receive chain as fast as it goes; the pilot as the
+    window polls it, every few ms: (pilot_level, pilot_snr_db, locked) each
+    time, from half a second in (the averages settled)."""
+    from gnuradio import blocks, gr  # type: ignore
+    from fm_receiver.dsp import ReceiveChain
+    tb = gr.top_block()
+    src = blocks.vector_source_c(iq, False)
+    rx = ReceiveChain(tb, src, rate, offset_hz, audio_sink=None)
+    tb.start()
+    out = []
+    try:
+        while rx.mpx.nitems_written(0) < 0.5 * 250e3:
+            time.sleep(0.002)
+        while src.nitems_written(0) < len(iq) - rate * 0.05:
+            out.append((rx.pilot_level(), rx.pilot_snr_db(), rx.pilot_locked()))
+            time.sleep(0.005)
+    finally:
+        tb.stop()
+        tb.wait()
+    assert len(out) > 20, len(out)
+    return out
+
+
+def test_pilot_stands_out_from_noise():
+    """Stereo only for a pilot over the noise beside it (found off air,
+    2026-09-22: an empty channel read "Stereo - pilot locked")."""
+    seconds, rate = 3.0, 2e6
+    rng = np.random.default_rng(3)
+    n = int(seconds * rate)
+    noise = (1e-2 * (rng.standard_normal(n) + 1j * rng.standard_normal(n))).astype(np.complex64)
+    left, right = signals.tones(seconds)
+    stereo = signals.multiplex(seconds, left, right)
+    mono = signals.multiplex(seconds, left, right, pilot_level=0.0)
+    cases = [('noise alone', noise, False),
+             ('mono, SNR 5 dB', signals.fm_iq(mono, rate, 300e3, snr_db=5), False),
+             ('mono, SNR 35 dB', signals.fm_iq(mono, rate, 300e3, snr_db=35), False),
+             ('stereo, SNR 35 dB', signals.fm_iq(stereo, rate, 300e3, snr_db=35), True),
+             ('stereo, SNR 10 dB', signals.fm_iq(stereo, rate, 300e3, snr_db=10), True)]
+    for name, iq, want in cases:
+        got = pilot_readings(iq, rate)
+        levels = [g[0] for g in got]
+        snrs = [g[1] for g in got]
+        locked = sum(g[2] for g in got)
+        print(f"    {name:18s} pilot level {min(levels):.1e}-{max(levels):.1e}, "
+              f"{min(snrs):5.1f} to {max(snrs):5.1f} dB over the noise, "
+              f"locked {locked}/{len(got)}")
+        assert locked == (len(got) if want else 0), (name, locked, len(got))
+        if name == 'noise alone':
+            # The check has teeth: noise passes the old level test, easily.
+            assert min(levels) > 1e-3, min(levels)
+
+
 if __name__ == '__main__':
     test_volume_law()
+    test_pilot_stands_out_from_noise()
     folders = [check('standard', PHASE_STANDARD), check('cosine', PHASE_COSINE)]
     print("receive chain: all checks passed")
     if '--keep' not in sys.argv:

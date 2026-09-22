@@ -340,7 +340,7 @@ Top to bottom:
 | **Snap to step** | Clicks and middle-drags on the spectrum tune to the nearest multiple of the Step. Off, they tune to where the pointer is, to the kHz. |
 | **Clear RDS** | Clears the decoded data and starts decoding again. |
 | **Signal** | The power in the channel and how far the station stands above the floor: green above 30 dB, amber above 15 dB, red below that. |
-| **Audio** | *Stereo – pilot locked (standard phase)*, or *Mono – no stereo pilot*. *Standard phase* is what broadcasters send; *cosine phase* is what the RF bench toolkit's own transmitter sends. The app detects which by itself. |
+| **Audio** | *Stereo – pilot locked (standard phase)*, or *Mono – no stereo pilot*. Stereo needs a pilot that stands 10 dB over the noise beside it, so an empty channel, a mono station, or a station tuned slightly off reads *Mono*. *Standard phase* is what broadcasters send; *cosine phase* is what the RF bench toolkit's own transmitter sends. The app detects which by itself. |
 | **Station ID (PI)** | With the call sign, if the station's own text confirms it; otherwise it says "maybe". |
 | **Program type**, **Now showing (PS)**, **Now playing**, **RadioText** | As they arrive. Now playing is the RT+ artist and title. |
 | **Flags**, **Station clock**, **Decode quality** | TP, TA and TMC; the station's clock; how many groups, and how many blocks were good. |

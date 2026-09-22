@@ -9,6 +9,7 @@ RDS, spectra and levels.
                      ├─ RF spectrum tap ─ band IQ recorder
     MPX ─┬─ 19 kHz band-pass ─ PLL ─┬─ RDS decoder (rds_core)
          │                          └─ PLL² = 38 kHz ─ phase ─ x MPX ─ side (L-R)
+         ├─ 16-18 + 20-22 kHz band-pass: the noise beside the pilot
          ├─ mid (L+R) ─┐
          └─ MPX spectrum tap         mid ± side ─ de-emphasis ─ L, R ─ audio tap
                                      (levels, WAV) ─ volume/mute ─ sound card
@@ -34,6 +35,16 @@ itself. The PLL then locks to the pilot's own phase, and the 38 kHz carrier
 made by squaring it lines up with the MPX with no delay to match. (The RF
 bench toolkit's band-pass is centred, which is why its separation test had
 to fit a 144 degree offset.)
+
+**A pilot is a tone that stands out from the noise beside it**, not a level.
+With no station, the discriminator turns noise into a multiplex full of
+noise, and its 19 kHz band reads about 6e-3 - three times a real 9% pilot
+(2e-3). A fixed level (the toolkit's 1e-4) called every empty channel
+stereo. Nothing is broadcast from 15 to 23 kHz but the pilot, so the chain
+measures that guard band either side of it and :meth:`ReceiveChain.pilot_locked`
+asks for the pilot to stand ``PILOT_LOCK_DB`` over it, in the same
+bandwidth. Measured on a BB60D band recording (2026-09-22): 25 empty
+channels within 2 dB of 0, the five stations with a pilot 17 to 37 dB.
 
 **Which 38 kHz phase, found from the signal.** The broadcast standard puts
 the pilot and the subcarrier both as sines, crossing zero together, which is
@@ -65,6 +76,13 @@ CHANNEL_MAX_BW = 400e3
 AUDIO_RATE = 48000
 MAX_DEVIATION = 75e3
 PILOT_HZ = 19e3
+#: How far the pilot must stand over the noise beside it, in the same
+#: bandwidth, for stereo; it is let go only below the second. Noise reads
+#: within 2 dB of 0; off air, pilots 13 dB and up, and a weak station
+#: (RDS 72% good) 8-12 dB, which the second holds. A synthetic pilot still
+#: reads 9 dB at an SNR of 5 dB, where mono is better anyway.
+PILOT_LOCK_DB = 10.0
+PILOT_UNLOCK_DB = 6.0
 #: Taps of the audio low-pass-and-resample, 250 kHz -> 48 kHz (24/125).
 AUDIO_INTERP, AUDIO_DECIM = 24, 125
 #: The 38 kHz phase each convention needs, relative to twice the PLL's.
@@ -115,6 +133,21 @@ def pilot_taps(ntaps=1601, half_width=800.0):
     lp = sps.firwin(ntaps, half_width, fs=MPX_RATE)
     n = np.arange(ntaps)
     return (lp * np.exp(2j * np.pi * PILOT_HZ / MPX_RATE * n)).astype(np.complex64).tolist()
+
+
+def guard_taps(ntaps=1601, inner=1000.0, outer=3000.0):
+    """A complex band-pass either side of the pilot, 16-18 and 20-22 kHz:
+    the guard band, where nothing is broadcast, so what comes through is the
+    noise the pilot has to stand out from. Symmetric about 19 kHz, so the
+    discriminator's noise rising with frequency evens out."""
+    band = sps.firwin(ntaps, outer, fs=MPX_RATE) - sps.firwin(ntaps, inner, fs=MPX_RATE)
+    n = np.arange(ntaps)
+    return (band * np.exp(2j * np.pi * PILOT_HZ / MPX_RATE * n)).astype(np.complex64).tolist()
+
+
+def noise_bandwidth(taps):
+    """What a filter passes of flat noise, as a share of the rate."""
+    return float(np.sum(np.abs(np.asarray(taps)) ** 2))
 
 
 def audio_taps():
@@ -477,6 +510,17 @@ class ReceiveChain:
         self.pilot_probe = blocks.probe_signal_f()
         tb.connect(self.pilot_bpf, self.pilot_mag, self.pilot_avg,
                    self.pilot_probe)
+        # The guard band beside the pilot: the noise it must stand out from.
+        taps = guard_taps()
+        self.guard_bpf = filter.fft_filter_ccc(1, taps)
+        self.guard_mag = blocks.complex_to_mag_squared(1)
+        self.guard_avg = filter.single_pole_iir_filter_ff(1e-4)
+        self.guard_probe = blocks.probe_signal_f()
+        tb.connect(self.mpx_c, self.guard_bpf, self.guard_mag, self.guard_avg,
+                   self.guard_probe)
+        # Scales the guard's noise to the pilot band's width.
+        self._guard_to_pilot = noise_bandwidth(pilot_taps()) / noise_bandwidth(taps)
+        self._pilot_on = False
 
         # 38 kHz from the pilot, at the phase in use; and the probe that
         # finds that phase.
@@ -598,6 +642,7 @@ class ReceiveChain:
 
     def reset_decoders(self):
         self.rds.reset(MPX_RATE, self.region)
+        self._pilot_on = False                 # a new station earns its stereo
         self.est_probe.reset()
         self.rf_probe.reset()
         self.mpx_probe.reset()
@@ -641,9 +686,23 @@ class ReceiveChain:
     def pilot_level(self):
         return self.pilot_probe.level()
 
+    def pilot_snr_db(self):
+        """How far the 19 kHz band stands over the noise beside it, in the
+        same bandwidth: 0 dB is noise alone."""
+        pilot = self.pilot_probe.level()
+        noise = self.guard_probe.level() * self._guard_to_pilot
+        if pilot <= 0:
+            return -200.0
+        if noise <= 0:
+            return 200.0                       # a clean signal, no noise at all
+        return 10 * math.log10(pilot / noise)
+
     def pilot_locked(self):
-        # A 9% pilot reads ~2e-3 here; 1e-4 is about a 2% one.
-        return self.pilot_level() > 1e-4
+        """A pilot at 2% or more (a 9% one reads ~2e-3 here, 1e-4 is about
+        2%) standing out from the noise beside it - see the module notes."""
+        need = PILOT_UNLOCK_DB if self._pilot_on else PILOT_LOCK_DB
+        self._pilot_on = self.pilot_level() > 1e-4 and self.pilot_snr_db() > need
+        return self._pilot_on
 
     def channel_power_db(self):
         level = self.ch_probe.level()
