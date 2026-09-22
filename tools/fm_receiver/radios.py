@@ -372,22 +372,24 @@ class BB60(Radio):
 
 
 def _load_bb60_module():
-    """Load the BB60 SoapySDR module by hand, in case SoapySDR started without
-    it (something used SoapySDR before the plugin path was set).
+    """Load the BB60 SoapySDR module, in case SoapySDR started without it
+    (something used SoapySDR before the plugin path was set).
 
     ``SoapySDR.listModules()`` cannot tell: it lists the module *files* on the
     search path as it is now, not the modules loaded - measured, it names the
     BB60 module while enumerate still finds no BB60. So this always calls
-    ``loadModule``, which answers "already loaded" and does nothing when the
-    module is in, and loads it when it is not.
+    ``loadModules``, which loads every module on the search path as it is
+    now and passes over those already in.
+
+    Not ``loadModule`` on the BB60's file alone: in a process that had not
+    used SoapySDR yet, that was the only module ever loaded - SoapySDR's own
+    load on the first enumerate never came - so the HackRF chosen after a
+    BB60D that was not plugged in was "no match" (2026-09-22).
     """
     try:
-        import glob
         import SoapySDR  # type: ignore
-        for folder in _bb60.ensure_plugin_path():
-            for path in glob.glob(os.path.join(folder, '*BB60*')):
-                SoapySDR.loadModule(path)
-                return
+        _bb60.ensure_plugin_path()
+        SoapySDR.loadModules()
     except Exception as exc:
         print(f"FM receiver: could not load the BB60 module: {exc}", file=sys.stderr)
 

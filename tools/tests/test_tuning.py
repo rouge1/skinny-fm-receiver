@@ -5,6 +5,8 @@ and no ghost of the last band in the spectrum after the LO moves.
   radio's range, and passes over a HackRF's DC spike the way it is going;
   the BB60D has no spike to avoid.
 - ``on_raster``: a 200 kHz step lands on the Americas' odd-tenth channels.
+- The BB60 module's load, as opening a BB60D does it, leaves the other
+  SoapySDR drivers (the HackRF's) loaded.
 - ``DigitEntry``: the wheel over a digit carries (90 -> 100 MHz on the tens,
   99 -> 100 on the ones), stops at the range, and typing sets the value.
 - The ghost: a simulated radio that is slow to retune, a tone in the old
@@ -219,6 +221,32 @@ def test_retired_sweep_lets_go_of_the_radio():
     assert radio.block is None
 
 
+_MODULES_AFTER_BB60_LOAD = r'''
+import SoapySDR
+from fm_receiver import radios
+radios._load_bb60_module()
+# "" is a module loaded only now: the BB60's load had left it out.
+left_out = [p for p in SoapySDR.listModules() if SoapySDR.loadModule(p) == ""]
+print(left_out)
+sys.exit(1 if left_out else 0)
+'''
+
+
+def test_bb60_load_keeps_the_other_drivers():
+    """Loading the BB60 module, as opening a BB60D does, must leave every
+    other SoapySDR driver loaded: loading it by hand in a fresh process
+    was once the only load there was, and a HackRF chosen after a BB60D
+    that was not plugged in could not be found (2026-09-22). A fresh
+    process, because SoapySDR loads its modules once per process."""
+    import subprocess
+    tools = os.path.dirname(HERE)
+    proc = subprocess.run(
+        [sys.executable, '-c', 'import sys; sys.path.insert(0, sys.argv[1])\n'
+         + _MODULES_AFTER_BB60_LOAD, tools],
+        capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, f"SoapySDR modules left out: {proc.stdout.strip()} {proc.stderr[-500:]}"
+
+
 def test_no_ghost_after_lo_move():
     before, worst, floor = ghost_after_move(discard=True)
     assert before > floor + 60, (before, floor)
@@ -235,5 +263,6 @@ if __name__ == '__main__':
     test_raster()
     test_digit_entry()
     test_retired_sweep_lets_go_of_the_radio()
+    test_bb60_load_keeps_the_other_drivers()
     test_no_ghost_after_lo_move()
     print('tuning: all checks passed')
