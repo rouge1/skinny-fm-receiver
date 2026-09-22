@@ -512,3 +512,106 @@ same checkout.
     other step's reference has a signal at the same place in its step, and
     prints the rest apart. Its references now cover each step whole, past
     108 MHz.
+
+## Round 6: clipping, auto gain, device health (requested 2026-09-22)
+
+Four items, in two pairs by radio. Each pair ends with one hardware run, so
+the HackRF is borrowed from ble-scanner once.
+
+| Phase | Items | Radio time | Size |
+|---|---|---|---|
+| 1. HackRF clipping | 1, 2 | HackRF, ~5 min (+ the gain split, if wanted) | small |
+| 2. BB60D health | 4 | BB60D, a probe, then the check | small |
+| 3. BB60D auto gain | 3 | BB60D | medium |
+
+Health goes before auto gain because it starts with a yes/no probe, and
+because auto gain needs a probe of its own that decides how much of it
+there is.
+
+### Phase 1: the HackRF's clipping, always and in sweeps
+
+- [ ] **1. Show the clipped share at all times.** For a radio with
+  `clip_warn` (the HackRF), the status line reads
+  "HackRF One - Receiving at 2 MS/s - clipped 0.13%" in Receive and Sweep.
+  - Full scale moves from `|I| or |Q| ≥ 0.98` to ble-scanner's 125/127
+    (0.984), so the two apps agree.
+  - Smoothed as ble-scanner does, about 0.3 s: `0.95·old + 0.05·new` per
+    16 ms of samples becomes one exponential step per 400 ms status tick,
+    weighted by the samples the probe saw (`clip_probe.take()` returns
+    them too).
+  - Colours: `good` under 0.3%, `warn` from 0.3% to 1%, and over 1% the
+    existing "Input overloaded - turn the RF gain down (4.1% of samples
+    clipped)" in `bad`. The 0.3% comes from ble-scanner's 0.1-0.6% at its
+    best gain.
+  - Code: `dsp.clip_probe` (the threshold, and returning `(hit, n)`), and
+    `app._check_health` (the smoothing and the text).
+- [ ] **2. Count clipping in the LO-hopping sweep.** `sweep.sweep_sink`
+  counts full-scale samples in each step's frames, just before
+  `power_spectrum`: only the samples that were measured, not the settle
+  or the stale backlog. It exposes them through `take_clipped()` in the
+  same form as `clip_probe`, so `_check_health` reads whichever is running.
+  - Per step as well, so the warning can name where: "clipped 3.2% at
+    98.6 MHz" (the worst step's centre), since in a sweep one strong
+    station usually does it.
+  - The BB60D's own sweep is unchanged: it has an overload flag, already
+    counted (`sweeper.overflows`).
+- Tests: `test_tuning.py` or `test_sweep.py` feed a signal source with a
+  known share over full scale through `clip_probe` and `sweep_sink`, and
+  check the share and the step. `test_gui.py` checks the status text at
+  0, 0.5% and 5%.
+- Off air (`hw_hackrf_check.py`, stage 8 extended): the readout at the
+  default gain in Receive and Sweep, and the sweep's warning when the gain
+  is raised until it clips.
+- Optional while the HackRF is here: the **LNA/VGA split** measurement
+  (see *HackRF off air*), about 5 more minutes.
+
+### Phase 2: the BB60D's health
+
+- [ ] **4. Temperature, USB voltage and current** from
+  `bbGetDeviceDiagnostics(handle, &temp, &volts, &amps)`, on the handle
+  `bb60_sweep.device_handle()` finds.
+  - **Probe first** (a scratchpad script, by behaviour only): call it
+    with the IQ stream running, during the device's own sweep, and in
+    real time; check the return code, that the numbers are sensible, and
+    that the stream drops nothing (`health()['dropped']`) and the RDS
+    keeps decoding. On the Mac, whether the library exports it (a
+    `hasattr` on the loaded library) and the same calls. If it fails
+    while streaming, fall back to reading it only in the device's own
+    sweep, or drop the item.
+  - Read every 5 s from `_check_health`, in a `try`, and added to
+    `BB60.health()` as `temp_c`, `usb_v` and `usb_a`.
+  - Shown as the status line's tooltip ("BB60D: 41.2 °C, USB 4.95 V,
+    0.52 A"), and in the status line itself only when something is wrong:
+    below 4.4 V, "USB voltage low (4.31 V) - measurements may be off" in
+    `warn`. A temperature limit only if Signal Hound's manual gives one.
+- Tests: `test_gui.py` with a fake `health()` for the tooltip and the low
+  voltage warning. The BB60D check prints the readings and checks their
+  ranges.
+
+### Phase 3: auto gain on the BB60D
+
+- [ ] **3. Auto gain by reference level.** Signal Hound's recommendation:
+  gain and attenuation on auto (`BB_AUTO_GAIN`, `BB_AUTO_ATTEN`, both
+  -1), and the reference level about 5 dB above the strongest signal
+  expected; the API then picks the gain and attenuation.
+  - **An Auto box beside the RF gain slider**, for the BB60D only. When
+    on, the slider greys out and the label reads "Auto".
+  - **The reference level: the strongest signal in the last sweep,
+    plus 5 dB**, rounded to 5 dB and changed only when it moves by 5 dB or
+    more, so the device isn't reconfigured every sweep. Starts at -20 dBm
+    (today's fixed value). The alternative is the view's Ref level knob,
+    as real time already does, but then turning a display knob changes
+    the hardware.
+  - **The device's own sweep** is certain: `bb60_sweeper._configure_now`
+    already calls `bbConfigureRefLevel` and `bbConfigureGainAtten`.
+  - **Receive is a probe**, because the IQ stream goes through the
+    SoapySDR module: does it offer an automatic gain mode
+    (`hasGainMode`), or a setting for the reference level
+    (`getSettingInfo`)? If so, Auto works in Receive with the channel's
+    peak plus 5 dB. If not, in Receive the Auto box keeps its tick but the
+    slider sets the gain, with a tooltip saying why.
+  - Saved per radio in the config (`gain_auto`), like the gain.
+- Tests: `test_sweep.py` for the reference-level rule (hysteresis,
+  rounding, limits). The BB60D check runs its own sweep with Auto on, and
+  expects the FM band's floor within a few dB of the 60% setting and no
+  overload.
