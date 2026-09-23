@@ -940,15 +940,40 @@ def folding(w):
     """The Receive cards fold on their chevron; the Radio card keeps its
     Center in sight."""
     radio, tuner, rds = (w._cards[k] for k in ('radio', 'tuner', 'rds'))
-    radio.chevron.click()
-    assert radio.is_folded() and w.range_label.isHidden() and w.rx_rate_combo.isHidden()
+    w.tabs.setCurrentIndex(1)
+    pump(0.3)
+    full = radio.height()
+    radio.chevron.click()                        # slides shut over 0.2 s
+    pump(0.1)
+    assert radio.is_folded() and radio.maximumHeight() < full, (radio.maximumHeight(), full)
+    pump(0.4)
+    assert w.range_label.isHidden() and w.rx_rate_combo.isHidden()
+    assert radio.height() < full and radio.maximumHeight() > 10000, 'the limit is let go'
     assert not w.center_entry.isHidden() and not w.recenter_btn.isHidden()
-    tuner.set_folded(True)
-    assert w.tuner.isHidden() and w.chan_entry.isHidden()
+    tuner.set_folded(True)                       # just the tuner, no Step
+    assert not w.tuner.isHidden() and not w.roller.isHidden()
+    assert w.step_knob.isHidden() and w.chan_entry.isHidden()
     tuner.set_folded(False)
-    assert not w.tuner.isHidden() and not w.step_knob.isHidden()
-    rds.set_folded(True)
-    assert w.lbl['radiotext'].isHidden() and w.clear_btn.isHidden()
+    assert not w.step_knob.isHidden() and not w.chan_entry.isHidden()
+    rds.set_folded(True)                         # Now playing and RadioText
+    assert not w.lbl['radiotext'].isHidden() and not w.lbl['nowplaying'].isHidden()
+    assert w.lbl['pi'].isHidden() and w.clear_btn.isHidden()
+    # RF gain is in the Sweep tab while sweeping, under the tabs elsewhere;
+    # Audio and Record are hidden in Sweep. The tabs are as tall as the
+    # page on show.
+    w.tabs.setCurrentIndex(0)
+    pump(0.3)
+    assert w.tabs.widget(0).isAncestorOf(w.gain_box)
+    assert w.audio_box.isHidden() and w.record_box.isHidden()
+    w.tabs.setCurrentIndex(1)
+    pump(0.3)
+    assert w.gain_box.parent() is w.left_panel
+    assert not w.audio_box.isHidden() and not w.record_box.isHidden()
+    page = w.tabs.widget(1)
+    assert w.tabs.sizeHint().height() < page.sizeHint().height() + 80, \
+        (w.tabs.sizeHint(), page.sizeHint())
+    w.tabs.setCurrentIndex(0)
+    pump(0.3)
 
 
 def part4_no_realtime():

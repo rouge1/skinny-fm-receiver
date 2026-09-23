@@ -52,7 +52,9 @@ only makes sense under that model.
   | Reading Room | Ink on paper (ultramarine to ink) | Teal ink | Sepia and rust |
   | Walnut | Dial glow (tan to cream) | Valve (red-brown, orange, amber) | Amber |
 
-  **Kept on A** (2026-09-22). To switch later, name the letter. B and C are these stops, one line each in
+  **Kept on A** (2026-09-22), then **Slate switched to B**, Ice and ember
+  (2026-09-22); Reading Room and Walnut stay on A. To switch later, name
+  the letter. B and C are these stops, one line each in
   `WATERFALL`:
 
   ```python
@@ -755,3 +757,37 @@ Both on the HackRF, handed over from ble-scanner for the session.
   busy machine: the recording's clock started before 3 s of test files
   were written, pushing the first RadioText past the second it was checked
   at.
+
+## Round 8: the left column and the readout (requested 2026-09-22)
+
+- [x] **1. The pointer's readout at the top left** of the row under each
+  spectrum, level with the dials' names (it was at the bottom).
+- [x] **2. dBFS** answered: decibels relative to full scale - 0 is the
+  converter's largest value, so levels read below it. The BB60D's own
+  sweep is calibrated, in dBm.
+- [x] **3. Folded Tuner** shows the tuner and its ▲/▼, no Step or channel
+  filter.
+- [x] **4. Folded RDS** shows Now playing and RadioText.
+- [x] **5, 6. Audio and Record hidden in Sweep**: nothing to hear or record
+  while sweeping. They were under the tabs from before the modes split.
+- [x] **7. RF gain inside the Sweep tab**, in its own box under Sweep and
+  Tuner; under the tabs in Receive and Recordings.
+- [x] **8. Listen to the right of the Sweep tab's tuner.**
+- [x] Found on the way: the tabs were as tall as their tallest page (Qt 5
+  sizes a tab widget so, in its size hint and its height for width), which
+  left a gap under Receive's folded boxes. `widgets.PageTabs` sizes to the
+  page on show.
+
+## Round 9 (requested 2026-09-22)
+
+- [x] **The pointer's readout in the plot's bottom-left corner**, for every
+  spectrum (Round 8 had put it at the top of the row under the plot).
+- [x] **Stations found in the Sweep tab**, under the Sweep box; while
+  sweeping, the spectrum and waterfall take the whole right-hand side.
+- [x] **Folding slides**: 0.2 s, the chevron turning with it. Found on the
+  way: squeezed by the layout, the rows piled on top of each other
+  mid-slide, and the left column (sized to its minimums, and told of a
+  new size one event at a time through the tab widget) squeezed the boxes
+  above. The rows are now held and clipped, the height fixed per frame and
+  the column refitted at once.
+- [ ] **The Recordings tab's time scrubber colours**, in all three themes.

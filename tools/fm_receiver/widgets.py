@@ -898,9 +898,56 @@ def _widgets_in(thing):
     return found
 
 
+class PageTabs(Qt.QTabWidget):
+    """Tabs as tall as the page on show. Qt 5's are as tall as the tallest
+    page, whatever the others' size policies say, so Receive's folded boxes
+    sat over a gap the height of Sweep's page. As wide as the widest, still:
+    the left column is sized to fit every page."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Not Expanding (a tab widget's default): the room under the page on
+        # show goes to the boxes below it, not to empty tab.
+        self.setSizePolicy(Qt.QSizePolicy.Preferred, Qt.QSizePolicy.Preferred)
+        self.currentChanged.connect(lambda _: self.updateGeometry())
+
+    def _fit(self, size, page_size):
+        page = self.currentWidget()
+        pages = [self.widget(i) for i in range(self.count())]
+        if page is None or not pages:
+            return size
+        tallest = max(page_size(p).height() for p in pages)
+        size.setHeight(size.height() - tallest + page_size(page).height())
+        return size
+
+    def sizeHint(self):
+        return self._fit(super().sizeHint(), lambda p: p.sizeHint())
+
+    def hasHeightForWidth(self):
+        page = self.currentWidget()
+        return page is not None and page.hasHeightForWidth()
+
+    def heightForWidth(self, width):
+        """The page on show's, plus the tab bar and frame. (The left column
+        is laid out by height for width - it has text that wraps - and Qt's
+        answer here is the tallest page's too.)"""
+        page = self.currentWidget()
+        if page is None:
+            return super().heightForWidth(width)
+        pages = [self.widget(i) for i in range(self.count())]
+        base = super().sizeHint()
+        chrome_w = base.width() - max(p.sizeHint().width() for p in pages)
+        chrome_h = base.height() - max(p.sizeHint().height() for p in pages)
+        height = page.heightForWidth(width - chrome_w)
+        return (height if height >= 0 else page.sizeHint().height()) + chrome_h
+
+    def minimumSizeHint(self):
+        return self._fit(super().minimumSizeHint(), lambda p: p.minimumSizeHint())
+
+
 class _Chevron(Qt.QAbstractButton):
     """The fold on a :class:`Card`'s title: pointing down while the card is
-    open, right while it is folded."""
+    open, right while it is folded, turning between the two."""
 
     SIZE = 14
 
@@ -911,6 +958,25 @@ class _Chevron(Qt.QAbstractButton):
         self.setFixedSize(self.SIZE, self.SIZE)
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setFocusPolicy(QtCore.Qt.NoFocus)
+        self._turn = 0.0                      # 0 pointing down, 1 right
+        self.anim = QtCore.QVariantAnimation(self)
+        self.anim.valueChanged.connect(self._turned)
+
+    def _turned(self, value):
+        self._turn = float(value)
+        self.update()
+
+    def turn_to(self, folded, ms):
+        target = 1.0 if folded else 0.0
+        self.anim.stop()
+        if ms <= 0:
+            self._turned(target)
+            return
+        self.anim.setStartValue(self._turn)
+        self.anim.setEndValue(target)
+        self.anim.setDuration(max(1, int(ms * abs(target - self._turn))))
+        self.anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+        self.anim.start()
 
     def paintEvent(self, event):
         try:
@@ -920,10 +986,10 @@ class _Chevron(Qt.QAbstractButton):
             p.setPen(Qt.QPen(Qt.QColor(ink), 1.6, QtCore.Qt.SolidLine,
                              QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin))
             c, r = self.SIZE / 2, self.SIZE * 0.22
-            if self.isChecked():
-                points = [(c - r * 1.4, c - r * 0.7), (c, c + r * 0.7), (c + r * 1.4, c - r * 0.7)]
-            else:
-                points = [(c - r * 0.7, c - r * 1.4), (c + r * 0.7, c), (c - r * 0.7, c + r * 1.4)]
+            # A "v" about the centre, turned a quarter towards ">" as it folds.
+            p.translate(c, c)
+            p.rotate(-90.0 * self._turn)
+            points = [(-r * 1.4, -r * 0.7), (0.0, r * 0.7), (r * 1.4, -r * 0.7)]
             p.drawPolyline(Qt.QPolygonF([QtCore.QPointF(x, y) for x, y in points]))
             p.end()
         except Exception as exc:                  # never abort the app
@@ -933,24 +999,36 @@ class _Chevron(Qt.QAbstractButton):
 class Card(Qt.QGroupBox):
     """A group box that can fold: :meth:`foldable` puts a chevron at the
     right of its title, and it or a click on the title hides the rows of
-    its form - all but the ``keep`` rows, which stay in sight folded.
-    :attr:`folded` carries True when it folds, False when it opens."""
+    its form - all but the ``keep`` rows, which stay in sight folded, less
+    any ``also`` widgets in them. A click slides it shut or open over
+    :attr:`FOLD_MS`; :meth:`set_folded` does it at once. :attr:`folded`
+    carries True when it folds, False when it opens."""
 
     folded = pyqtSignal(bool)
+    FOLD_MS = 200
+    _NO_LIMIT = 16777215                      # QWIDGETSIZE_MAX
 
     def __init__(self, title, parent=None):
         super().__init__(title, parent)
         self._form = None
-        self._keep = ()
+        self._keep = self._also = ()
         self.chevron = None
+        # The height itself is slid, minimum and maximum: with only the
+        # maximum, the left column (sized to its minimums) squeezed the
+        # boxes above while one opened.
+        self._slide = QtCore.QVariantAnimation(self)
+        self._slide.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+        self._slide.valueChanged.connect(self._slide_to)
+        self._slide.finished.connect(self._slid)
 
-    def foldable(self, form, keep=(), folded=False):
+    def foldable(self, form, keep=(), also=(), folded=False):
         """``form`` is the card's :class:`Form`; ``keep``, widgets whose
-        rows stay shown when it is folded."""
-        self._form, self._keep = form, tuple(keep)
+        rows stay shown when it is folded; ``also``, widgets in those rows
+        that fold away all the same (the Tuner's Step knob)."""
+        self._form, self._keep, self._also = form, tuple(keep), tuple(also)
         self.chevron = _Chevron(self)
         self.chevron.setToolTip(f"Fold or open {self.title()}.")
-        self.chevron.toggled.connect(self._chevron_toggled)
+        self.chevron.clicked.connect(lambda opened: self._fold(not opened, self.FOLD_MS))
         self.set_folded(folded)
         return self
 
@@ -958,21 +1036,86 @@ class Card(Qt.QGroupBox):
         return self.chevron is not None and not self.chevron.isChecked()
 
     def set_folded(self, folded):
+        """Fold or open it now, with no slide."""
         if self.chevron is None:
             return
-        if self.chevron.isChecked() == (not folded):
-            self._show_rows(not folded)       # no toggle to do it
-        else:
-            self.chevron.setChecked(not folded)
+        changed = self.chevron.isChecked() == bool(folded)
+        self.chevron.setChecked(not folded)
+        self._fold(folded, 0, emit=changed)
 
-    def _chevron_toggled(self, opened):
-        self._show_rows(opened)
-        self.folded.emit(not opened)
+    def _fold(self, folded, ms, emit=True):
+        self._slide.stop()
+        self.layout().setEnabled(True)
+        self.chevron.turn_to(folded, ms)
+        start = self.height()
+        if ms <= 0 or not self.isVisible():
+            self._show_rows(not folded)
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(self._NO_LIMIT)
+        else:
+            # The height it will end at, measured with the rows as they
+            # will be. Then the rows are laid out open and the layout held
+            # still, so the card's edge slides over them - squeezed by the
+            # layout instead, they piled on top of each other. Closing, they
+            # are hidden once the slide is done.
+            self._show_rows(not folded)
+            end = self._natural_height()
+            self._show_rows(True)
+            self.resize(self.width(), max(start, end))
+            self.layout().setEnabled(True)
+            self.layout().activate()
+            self.layout().setEnabled(False)
+            self.setFixedHeight(start)
+            self._slide.setDuration(ms)
+            self._slide.setStartValue(start)
+            self._slide.setEndValue(end)
+            self._slide.start()
+        if emit:
+            self.folded.emit(bool(folded))
+
+    def _slide_to(self, height):
+        """One step of the slide. Qt passes a size change up to the
+        scroll area one event at a time, through the tab widget, and lagged
+        the slide by a frame or more - squeezing the boxes above as one
+        opened - so the column is refitted here, at once."""
+        try:
+            self.setFixedHeight(int(height))
+            parent = self.parentWidget()
+            while parent is not None and not isinstance(parent, Qt.QScrollArea):
+                if parent.layout() is not None:
+                    parent.layout().invalidate()
+                parent.updateGeometry()
+                parent = parent.parentWidget()
+            if parent is not None and parent.widgetResizable():
+                panel = parent.widget()
+                want = (panel.heightForWidth(panel.width()) if panel.hasHeightForWidth()
+                        else panel.sizeHint().height())
+                panel.resize(panel.width(), max(want, parent.viewport().height()))
+                panel.layout().activate()
+        except Exception as exc:                  # never abort the app
+            print(f"card: {exc}")
+
+    def _natural_height(self):
+        self.setMinimumHeight(0)
+        self.setMaximumHeight(self._NO_LIMIT)
+        self.layout().activate()
+        if self.hasHeightForWidth():
+            return max(self.heightForWidth(self.width()), self.minimumSizeHint().height())
+        return self.sizeHint().height()
+
+    def _slid(self):
+        if self.is_folded():
+            self._show_rows(False)
+        self.layout().setEnabled(True)
+        self.setMinimumHeight(0)
+        self.setMaximumHeight(self._NO_LIMIT)
+        self.layout().activate()
 
     def _show_rows(self, shown):
         for widgets in self._form.row_widgets():
-            if not any(w in self._keep for w in widgets):
-                for w in widgets:
+            kept = any(w in self._keep for w in widgets)
+            for w in widgets:
+                if not kept or w in self._also:
                     w.setVisible(shown)
 
     def _title_rect(self):
@@ -995,7 +1138,7 @@ class Card(Qt.QGroupBox):
         try:
             if (self.chevron is not None and event.button() == QtCore.Qt.LeftButton
                     and event.pos().y() <= self._title_rect().bottom()):
-                self.chevron.toggle()
+                self.chevron.click()
                 return
         except Exception as exc:                  # never abort the app
             print(f"card: {exc}")
@@ -1065,9 +1208,9 @@ class LevelMeter(Qt.QWidget):
 #: token name or '#rrggbb'). The floor is the plot's own ``well``, so the
 #: noise sinks into the background and only signals show.
 WATERFALL = {
-    # Ice: slate blue rising to the trace's pale ice, then white.
-    'slate': ((0.0, 'well'), (0.35, '#1d3444'), (0.7, '#6f9bb3'),
-              (0.9, 'trace'), (1.0, '#ffffff')),
+    # Ice and ember: slate blue rising to the trace's pale ice, then the
+    # tuner's orange for the strongest (option B, chosen 2026-09-22).
+    'slate': ((0.0, 'well'), (0.4, '#1d3a50'), (0.75, 'trace'), (1.0, 'live')),
     # Ink on paper: signals come out dark, through the pulse's ultramarine
     # to the iron-gall ink.
     'reading-room': ((0.0, 'well'), (0.3, 'rule_soft'), (0.65, 'pulse'),
@@ -1411,8 +1554,11 @@ class SpectrumView(Qt.QWidget):
         self.full_btn = Qt.QPushButton('Full span')
         self.full_btn.setToolTip('Show everything there is.')
         self.full_btn.clicked.connect(lambda: self.span_knob.setValue(self.span_knob._max))
-        self.readout = Qt.QLabel('')
-        self.readout.setMinimumWidth(170)
+        # The pointer's frequency and level, in the plot's bottom-left
+        # corner; clicks go through it to the plot.
+        self.readout = Qt.QLabel('', self.plot)
+        self.readout.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+        self.plot.getPlotItem().getViewBox().sigResized.connect(self._place_readout)
 
         # The lines are on the spectrum only: the waterfall is left clear.
         self._marker_fade = _Fade([self.marker], self)
@@ -1431,11 +1577,9 @@ class SpectrumView(Qt.QWidget):
         # watched for it: the band itself is not sent the press.
         self.plot.scene().installEventFilter(self)
 
-        # Under the plot: the readout of the pointer on the left, the view's
-        # dials and switches at the right-hand end.
+        # Under the plot: the dials and switches, at the right-hand end.
         controls = Qt.QHBoxLayout()
         controls.setSpacing(6)
-        controls.addWidget(self.readout, 0, QtCore.Qt.AlignBottom)
         controls.addStretch(1)
         for knob in (self.span_knob, self.ref_knob, self.range_knob, self.avg_knob):
             controls.addWidget(knob)
@@ -1496,6 +1640,7 @@ class SpectrumView(Qt.QWidget):
             for line in region.lines:
                 line.setPen(edge)
         self.message.setColor(t['warn'])
+        self.readout.setStyleSheet(f"background: transparent; color: {t['ink']};")
         if self._density_args is not None:
             self.set_density(*self._density_args)    # in the new theme's colours
         if self.wf_plot is not None:
@@ -1921,11 +2066,26 @@ class SpectrumView(Qt.QWidget):
     def _mouse_moved(self, scene_pos):
         hz = self._to_hz(scene_pos)
         if hz is None or self._x is None or not len(self._x):
-            self.readout.setText('')
+            self._set_readout('')
             return
         i = int(np.clip(np.searchsorted(self._x, hz / self.scale), 0, len(self._x) - 1))
         value = f"{hz / self.scale:.3f} {self.unit}"
-        self.readout.setText(f"{value}   {self._db[i]:.1f} {self.level_unit}")
+        self._set_readout(f"{value}   {self._db[i]:.1f} {self.level_unit}")
+
+    def _set_readout(self, text):
+        self.readout.setText(text)
+        self.readout.adjustSize()
+        self._place_readout()
+
+    def _place_readout(self, *_):
+        """Keep the readout in the bottom-left corner of the plot's box."""
+        try:
+            vb = self.plot.getPlotItem().getViewBox()
+            corner = self.plot.mapFromScene(vb.sceneBoundingRect().bottomLeft())
+            self.readout.move(corner.x() + 6, corner.y() - self.readout.height() - 4)
+            self.readout.raise_()
+        except Exception as exc:                  # never abort the app
+            print(f"spectrum view: {exc}")
 
     def _peak_toggled(self, on):
         if not on:

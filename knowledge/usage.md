@@ -160,7 +160,10 @@ Useful options (`./fm-receiver --help` lists them all):
 - **The third tab, Recordings,** plays back what you recorded. The radio is
   closed while it is open, and opens again when you go back.
 - **RF gain** applies to the radio in both modes, and each radio remembers its
-  own setting. On a BB60D the **AGC** box beside it hands the gain to the
+  own setting. In Sweep it sits inside the tab, under the Sweep and Tuner
+  boxes; elsewhere it is under the tabs, above **Audio** and **Record**,
+  which are hidden in Sweep since there is nothing to hear or record while
+  the radio sweeps. On a BB60D the **AGC** box beside it hands the gain to the
   device in its own sweep: the slider greys out, and the **Ref level** knob
   moves to 5 dB over the strongest signal, which is how Signal Hound
   recommends setting it. Turn the knob by hand to hold a higher level; AGC
@@ -200,8 +203,10 @@ demodulated. There are two kinds:
 - **A USRP hops its LO** across the span. Each step's FFT is stitched into
   one picture, with levels in dBFS.
 
-The tab has two boxes: **Sweep** (the band, how it is swept, Pause, the
-station threshold) and **Tuner** (where the receiver will tune, and Listen).
+The tab has four boxes: **Sweep** (the band, how it is swept, Pause, the
+station threshold), **Stations found**, **Tuner** (where the receiver will
+tune, with **Listen** to its right) and **RF gain**. While sweeping, the RF
+spectrum and waterfall take the whole right-hand side.
 
 | Control | What it does |
 |---|---|
@@ -282,9 +287,12 @@ radio itself, **Tuner** picks the station inside the radio's band, and
 **RDS** shows the station as decoded.
 
 Each box has a **chevron** at the right of its title: click it, or the
-title, to fold the box away and again to open it. A folded **Radio** box
-still shows its **Center** and **Center on tuner**; a folded Tuner or RDS
-box shows only its title. The app remembers which are folded.
+title, to fold the box away and again to open it; it slides shut or open,
+and the chevron turns. A folded **Radio** box
+still shows its **Center** and **Center on tuner**; a folded **Tuner** box
+its tuner (without the Step knob or the channel filter); a folded **RDS**
+box its **Now playing** and **RadioText**. The app remembers which are
+folded.
 
 ```
 ┌ Radio ───────────────────────────────────────┐
@@ -406,7 +414,8 @@ The **MPX view** (bottom right) is the demodulated multiplex from 0 to
 ## Views: bandwidth and amplitude
 
 Each spectrum has its own dials, at the right-hand end of the row under it;
-the readout of the frequency and level under the pointer is at the left.
+the readout of the frequency and level under the pointer is in the
+bottom-left corner of the plot.
 **Hover over a dial and roll the mouse wheel** to turn it, or drag it up or
 down; hold Shift for fine steps. A dial under the pointer lights orange, and
 glows in Slate and Walnut or lifts on a shadow in Reading Room, so you can

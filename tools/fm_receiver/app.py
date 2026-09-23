@@ -45,7 +45,7 @@ from .recording import (NAME_STEADY_S, IqRecording, RecordingInfo, WavWriter,
                         session_base)
 from .style import apply_window_theme
 from .sweep import SweepPlan, find_stations, to_db
-from .widgets import (Card, DigitEntry, Form, Knob, LevelMeter, SpectrumView, StepRoller,
+from .widgets import (Card, DigitEntry, Form, PageTabs, Knob, LevelMeter, SpectrumView, StepRoller,
                       ThemeDisc, TimelineStrip, on_raster)
 
 #: (name, start MHz, stop MHz); 'full' is the whole of the radio's sweep
@@ -327,7 +327,7 @@ class MainWindow(Qt.QWidget):
         box = Qt.QVBoxLayout(panel)
         box.setContentsMargins(0, 0, 6, 0)
         box.setSpacing(8)
-        self.tabs = Qt.QTabWidget()
+        self.tabs = PageTabs()
         self.tabs.addTab(self._build_sweep_tab(), "Sweep (FFT)")
         self.tabs.addTab(self._build_receive_tab(), "Receive (IQ)")
         self.tabs.addTab(self._build_recordings_tab(), "Recordings")
@@ -335,10 +335,15 @@ class MainWindow(Qt.QWidget):
                                   if self.cfg['mode'] in TAB_MODES else 1)
         self.tabs.currentChanged.connect(self._tab_changed)
         box.addWidget(self.tabs)
-        box.addWidget(self._build_gain())
-        box.addWidget(self._build_audio())
-        box.addWidget(self._build_record())
+        self.gain_box = self._build_gain()
+        self.audio_box = self._build_audio()
+        self.record_box = self._build_record()
+        box.addWidget(self.gain_box)
+        box.addWidget(self.audio_box)
+        box.addWidget(self.record_box)
         box.addStretch(1)
+        self._left_box = box
+        self._place_side_boxes()
         scroll = Qt.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameStyle(Qt.QFrame.NoFrame)
@@ -450,7 +455,6 @@ class MainWindow(Qt.QWidget):
         self.sweep_roller.stepped.connect(self._step)
         tune.addWidget(self.sweep_tuner, 0, QtCore.Qt.AlignVCenter)
         tune.addWidget(self.sweep_roller, 0, QtCore.Qt.AlignVCenter)
-        tune.addStretch(1)
         tuner_form.addRow("Tuner:", tune)
         self.rt_btn = Qt.QPushButton("Real time")
         self.rt_btn.setCheckable(True)
@@ -515,7 +519,7 @@ class MainWindow(Qt.QWidget):
         self.listen_btn = Qt.QPushButton("Listen")
         self.listen_btn.setToolTip("Receive the selected station (or the marker).")
         self.listen_btn.clicked.connect(self._listen_selected)
-        tuner_form.addRow(self.listen_btn)
+        tune.addWidget(self.listen_btn, 1, QtCore.Qt.AlignVCenter)   # beside it
         self.sweep_info = _wrapping(Qt.QLabel(""))
         form.addRow(self.sweep_info)
         self.snr_spin = Qt.QSpinBox()
@@ -532,9 +536,20 @@ class MainWindow(Qt.QWidget):
             self.preset_combo.setCurrentIndex(0)
         else:
             self._select_preset(remember=False)
+        # The stations found, under the sweep that found them.
+        stations = Qt.QGroupBox("Stations found (double-click to listen)")
+        sbox = Qt.QVBoxLayout(stations)
+        self.station_list = Qt.QListWidget()
+        self.station_list.setFont(_mono_font())
+        self.station_list.setMinimumHeight(160)
+        self.station_list.itemDoubleClicked.connect(self._station_activated)
+        self.station_list.currentItemChanged.connect(self._station_selected)
+        sbox.addWidget(self.station_list)
         outer.addWidget(sweep_card)
+        outer.addWidget(stations)
         outer.addWidget(tuner_card)
         outer.addStretch(1)
+        self._sweep_outer = outer       # RF gain joins it in Sweep
         return page
 
     def _build_receive_tab(self):
@@ -550,11 +565,11 @@ class MainWindow(Qt.QWidget):
         box.addStretch(1)
         return page
 
-    def _foldable(self, card, form, name, keep=()):
+    def _foldable(self, card, form, name, keep=(), also=()):
         """A Receive card with a chevron, folded as it was left."""
         self._cards = getattr(self, '_cards', {})
         self._cards[name] = card
-        card.foldable(form, keep, folded=bool(self.cfg['folded'].get(name)))
+        card.foldable(form, keep, also, folded=bool(self.cfg['folded'].get(name)))
         card.folded.connect(lambda folded: self.cfg['folded'].__setitem__(name, folded))
         return card
 
@@ -658,7 +673,7 @@ class MainWindow(Qt.QWidget):
         chan.addWidget(self.chan_roller)
         chan.addStretch(1)
         form.addRow("Channel filter:", chan)
-        return self._foldable(box, form, 'tuner')
+        return self._foldable(box, form, 'tuner', keep=(self.tuner,), also=(self.step_knob,))
 
     def _build_rds_card(self):
         """The station as decoded: its name, how it is decoded, how well it
@@ -718,7 +733,8 @@ class MainWindow(Qt.QWidget):
                                    ('clock', "Station clock:", None),
                                    ('quality', "Decode quality:", None)):
             form.addRow(caption, value(key, font))
-        return self._foldable(box, form, 'rds')
+        return self._foldable(box, form, 'rds',
+                              keep=(self.lbl['nowplaying'], self.lbl['radiotext']))
 
     def _build_recordings_tab(self):
         """The recordings in the folder, newest first, and the player."""
@@ -902,17 +918,10 @@ class MainWindow(Qt.QWidget):
         self.top_stack.addWidget(self.audio_view)
         self.right_split.addWidget(self.top_stack)
 
+        # Under the RF spectrum in Receive: the multiplex (RDS is in the
+        # Receive tab). Sweeping, it is hidden and the spectrum has the
+        # height: the stations found are in the Sweep tab.
         self.bottom = Qt.QStackedWidget()
-        # Sweep page: the stations found.
-        stations = Qt.QGroupBox("Stations found (double-click to listen)")
-        sbox = Qt.QVBoxLayout(stations)
-        self.station_list = Qt.QListWidget()
-        self.station_list.setFont(_mono_font())
-        self.station_list.itemDoubleClicked.connect(self._station_activated)
-        self.station_list.currentItemChanged.connect(self._station_selected)
-        sbox.addWidget(self.station_list)
-        self.bottom.addWidget(stations)
-        # Receive page: the multiplex (RDS is in the Receive tab).
         self.mpx_view = SpectrumView(
             "FM multiplex - mono, pilot 19k, stereo 38k, RDS 57k", unit='kHz',
             waterfall=False, min_span_hz=5e3)
@@ -973,6 +982,7 @@ class MainWindow(Qt.QWidget):
             self.tabs.blockSignals(True)
             self.tabs.setCurrentIndex(TAB_MODES.index(mode))
             self.tabs.blockSignals(False)
+            self._place_side_boxes()
         if self._tab_mode() == 'recordings':
             # The radio waits, closed, for Sweep or Receive.
             self.radio_combo.setCurrentIndex(max(0, self.radio_combo.findData(kind)))
@@ -1102,6 +1112,7 @@ class MainWindow(Qt.QWidget):
             self.tabs.blockSignals(True)
             self.tabs.setCurrentIndex(1)
             self.tabs.blockSignals(False)
+            self._place_side_boxes()
 
     def _radio_chosen(self, index):
         kind = self.radio_combo.itemData(index)
@@ -1150,7 +1161,20 @@ class MainWindow(Qt.QWidget):
     def _tab_mode(self):
         return TAB_MODES[max(0, self.tabs.currentIndex())]
 
+    def _place_side_boxes(self):
+        """In Sweep the RF gain goes into the tab, under its boxes, and
+        Audio and Record are hidden: there is nothing to hear or record
+        while the radio sweeps. Elsewhere all three sit under the tabs."""
+        sweep = self._tab_mode() == 'sweep'
+        if sweep:
+            self._sweep_outer.insertWidget(self._sweep_outer.count() - 1, self.gain_box)
+        else:
+            self._left_box.insertWidget(1, self.gain_box)
+        self.audio_box.setVisible(not sweep)
+        self.record_box.setVisible(not sweep)
+
     def _tab_changed(self, _index):
+        self._place_side_boxes()
         mode = self._tab_mode()
         if mode == 'recordings':
             self._enter_recordings()
@@ -1224,6 +1248,7 @@ class MainWindow(Qt.QWidget):
         rx.mpx_probe.set_alpha(1.0 / max(1, self.mpx_view.avg_knob.value()))
         self._place_receive_view()
         self.bottom.setCurrentWidget(self.rx_page)
+        self.bottom.setVisible(True)
         self._clear_rds_labels()
         self._show_audio_note()
 
@@ -1374,7 +1399,7 @@ class MainWindow(Qt.QWidget):
         self.engine.start_sweep(plan, frames=self.frames_spin.value(),
                                 settle_ms=self.settle_spin.value())
         self._reset_sweep_display(plan, full_span=False)
-        self.bottom.setCurrentIndex(0)
+        self.bottom.setVisible(False)          # the RF spectrum has the height
         self.rec_btn.setEnabled(False)
         self.pause_btn.setChecked(False)
         self.pause_btn.setText("Pause")
