@@ -8,8 +8,9 @@ with no launcher.
   `QT_QPA_PLATFORM=offscreen ./fm-receiver --no-audio --quit-after 10 --screenshot out.png`
 - Test: `python tools/tests/run_all.py` (no radio); add `--hw` when a BB60D
   is attached, `--hackrf` for a HackRF. Other sessions on this machine (for
-  example ble-scanner) use the HackRF too: agree who has it first, and make
-  sure nothing of ours holds it afterwards (`hackrf_info` must open it).
+  example ble-scanner) use the HackRF too: check whether it is in use
+  (`pgrep -af "blescan|hackrf_"`, and `hackrf_info` opens it) rather than
+  assuming, and make sure nothing of ours holds it afterwards.
 - Platforms: Linux (x86-64) and macOS (Apple Silicon), from the same
   checkout, in the environment `environment.yml` makes. Anything
   platform-specific (library names, paths, `/proc`) goes behind

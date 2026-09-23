@@ -1,18 +1,22 @@
 # FM Receiver
 
 An FM broadcast receiver for SDRs (Signal Hound BB60D, HackRF One, Ettus
-USRP) with two modes:
+USRP) in three tabs:
 
-- **Sweep (FFT)** hops the radio across a span wider than it can see at once
-  (the whole FM band, or anything up to 6 GHz) and stitches the FFTs into one
-  spectrum and waterfall. It lists the stations it finds.
+- **Sweep (FFT)** covers a span wider than the radio can see at once (the
+  whole FM band, or anything up to 6 GHz) as one spectrum and waterfall, and
+  lists the stations it finds. The BB60D and HackRF sweep in the device
+  (the BB60D in dBm, with AGC, and a real-time mode for spans up to 27 MHz);
+  a USRP's LO is hopped and the FFTs stitched.
 - **Receive (IQ)** runs the radio at a narrow IQ bandwidth and demodulates one
   station: stereo audio, RDS/RBDS, the multiplex spectrum.
+- **Recordings** lists what you recorded and plays it back.
 
-Both views have dials for span, reference level, amplitude range and
-averaging. The audio has mute and volume. You can record the audio (WAV) and
-the IQ (channel or whole band, with SigMF metadata), and play IQ recordings
-back as if they were a radio.
+The Sweep and Receive views have dials for span, reference level, amplitude
+range and averaging. The audio has mute and volume. You can record the audio
+(WAV) and the IQ (channel or whole band, with SigMF metadata), and play IQ
+recordings back as if they were a radio. The status line warns of overload
+(on a HackRF it always shows the share of samples clipped).
 
 ```sh
 ./fm-receiver                # opens straight into the window

@@ -4,3 +4,5 @@ __pycache__/
 recordings/
 # Finder's folder settings, on a Mac.
 .DS_Store
+# Claude Code's local settings for this checkout.
+.claude/
