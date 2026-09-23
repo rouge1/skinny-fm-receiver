@@ -155,6 +155,32 @@ def test_stream_and_commands():
     fake.close()
 
 
+def test_gain_at_open():
+    """Manual gain, at the default percentage, is sent as soon as the radio
+    opens - before set_rate/set_center or a flowgraph ever reads a sample.
+
+    rtl_tcp starts the dongle in automatic gain; gain applied only after the
+    flowgraph starts (as ``Engine._started()`` also does, for a mid-session
+    change) left the first samples of every Receive at the AGC's gain,
+    clipping 38-58% for ~200 ms on a real R820T (2026-09-23, 60% gain,
+    99.1 MHz). Sending it here instead gives it the rest of start_receive()
+    to reach the tuner before any sample is read.
+    """
+    fake = FakeRtlTcp()
+    radio = radios.make_radio('rtlsdr', rtl_address=f'127.0.0.1:{fake.port}')
+    radio.open()
+    deadline = time.monotonic() + 2.0
+    while len(fake.commands) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    cmds = dict(fake.commands)
+    assert cmds.get(rtl_tcp.CMD_GAIN_MODE) == 1, fake.commands
+    assert cmds.get(rtl_tcp.CMD_GAIN) in rtl_tcp.GAINS[5], fake.commands
+    assert rtl_tcp.CMD_RATE not in cmds and rtl_tcp.CMD_FREQ not in cmds, \
+        "rate/frequency were sent before open() returned"
+    radio.close()
+    fake.close()
+
+
 def test_not_rtl_tcp():
     fake = FakeRtlTcp(header=b'HTTP/1.1 200')
     radio = radios.make_radio('rtlsdr', rtl_address=f'127.0.0.1:{fake.port}')
@@ -234,6 +260,7 @@ def test_usb_detection():
 if __name__ == '__main__':
     test_parse_address()
     test_stream_and_commands()
+    test_gain_at_open()
     test_not_rtl_tcp()
     test_lost()
     test_usb_detection()
