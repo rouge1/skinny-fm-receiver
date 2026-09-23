@@ -716,6 +716,7 @@ Both on the HackRF, handed over from ble-scanner for the session.
   row before. Rows stay at 10 a second, so the waterfall keeps its 22 s.
   The HackRF's own sweep, at 30 sweeps a second on the FM band, does the
   same. Off air: 30.0 frames a second, 15.7 draws, each with all the frames
-  since the last.
+  since the last; the HackRF on the FM band 25 sweeps a second, 15.6 draws,
+  every one with a held maximum, and its hardware check passed.
 - With averaging on (Average above 1x), the trace is still the average of
   whole sweeps; the waterfall rows are held maxima either way.
