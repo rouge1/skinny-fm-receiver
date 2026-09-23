@@ -18,9 +18,11 @@ Not part of the no-radio tests; run it when a BB60D is plugged in:
    voltage and current read while it streams, here and in its own sweep.
 3. **Record and play back.** Records audio and channel IQ from it, then plays
    the IQ recording back through the file source and requires the same PI.
-4. **Move the Center.** With the station still inside the band, moves the
+4. **Move the Center**, then **the widest IQ bandwidth**. With the station still inside the band, moves the
    radio's centre past it: the station must stay put and decode the same PI
-   again. Moved far, the tuner must be pulled in to the band's edge.
+   again. Moved far, the tuner must be pulled in to the band's edge. At
+   40 MS/s (27 MHz on screen) the station must decode the same PI with no
+   samples lost.
 5. **The BB60D's own sweep** (``bb60_sweep``), on the device the IQ stream
    opened: 9 kHz-6 GHz under half a second a sweep, finding the station;
    the FM band at 10 kHz RBW; the FM band in real time (30 frames a
@@ -158,6 +160,21 @@ def center_check(tb, pi):
     tb.set_center(station + 3e6)                      # the station is out of reach now
     assert abs(tb.station_hz - (station + 3e6 - edge)) < 1, tb.station_hz
     print(f"centre moved 3 MHz: tuner pulled in to {tb.station_hz / 1e6:.3f} MHz (the edge)")
+
+
+def wide_check(tb, radio, station, pi):
+    """Receive at the widest IQ bandwidth, 40 MS/s (27 MHz on screen): no
+    samples lost, and the same PI with RDS mostly good."""
+    rate = max(radio.usable_receive_rates())
+    snap = tune_for_rds(tb, radio, station, rate=rate)
+    lost = radio.block.overflows
+    time.sleep(5)
+    lost = radio.block.overflows - lost
+    print(f"widest IQ bandwidth, {rate / 1e6:g} MS/s: PI {snap['pi_hex']}, "
+          f"{lost} lost-sample events in 5 s, tuner reaches "
+          f"+-{radio.max_offset(rate) / 1e6:.2f} MHz")
+    assert snap['pi_hex'] == pi and snap['block_error_rate'] < 0.2, snap
+    assert lost == 0, f'{lost} lost-sample events at {rate / 1e6:g} MS/s'
 
 
 def _next_sweep(tb, after, seconds=5.0):
@@ -384,6 +401,7 @@ def main():
         pi, iq_path = receive_check(tb, radio, [f for f, _, _ in found[:5]], folder)
         station = tb.station_hz
         center_check(tb, pi)
+        wide_check(tb, radio, station, pi)
         native_check(tb, radio, station, pi)
     finally:
         tb.close()

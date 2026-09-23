@@ -73,7 +73,6 @@ def part1_pieces():
     # One press of Record: a WAV, a channel in two parts, the band, and
     # the description - all named from one base.
     base = recording.session_base(folder, 98.7e6, stamp='20260922-101500')
-    info = recording.RecordingInfo(base, 98.7e6, 'Test radio', ['audio', 'iq-channel', 'iq-band'])
     write_wav(base + '-audio.wav', 3.0)
     signals.write_station(base + '-iq-channel', seconds=2.0, rate=500e3,
                           center_hz=98.7e6, station_hz=98.7e6)
@@ -81,6 +80,9 @@ def part1_pieces():
                           center_hz=98.9e6, station_hz=98.9e6)
     signals.write_station(base + '-iq-band', seconds=3.0, rate=2.5e6,
                           center_hz=98.4e6, station_hz=98.7e6)
+    # Its clock starts now, not before the files above: writing them took
+    # 1.2 s on a busy machine, and the log's first entry landed past 1 s.
+    info = recording.RecordingInfo(base, 98.7e6, 'Test radio', ['audio', 'iq-channel', 'iq-band'])
     # RadioText lands in the log once it has held for STEADY_S; a name only
     # once it has held for NAME_STEADY_S.
     snap = {'station_name': 'TEST FM ', 'pi_hex': '0x1234', 'callsign': 'KXYZ',

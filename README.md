@@ -6,14 +6,14 @@ USRP) in three tabs:
 - **Sweep (FFT)** covers a span wider than the radio can see at once (the
   whole FM band, or anything up to 6 GHz) as one spectrum and waterfall, and
   lists the stations it finds. The BB60D and HackRF sweep in the device
-  (the BB60D in dBm, with AGC, and a real-time mode for spans up to 27 MHz);
-  a USRP's LO is hopped and the FFTs stitched.
-- **Receive (IQ)** runs the radio at a narrow IQ bandwidth and demodulates one
-  station: stereo audio, RDS/RBDS, the multiplex spectrum.
+  (the BB60D in dBm, with AGC); a USRP's LO is hopped and the FFTs stitched.
+- **Receive (IQ)** runs the radio at an IQ bandwidth (up to 27 MHz on the
+  BB60D) and demodulates one station: stereo audio, RDS/RBDS, the multiplex
+  spectrum.
 - **Recordings** lists what you recorded and plays it back.
 
 The Sweep and Receive views have dials for span, reference level, amplitude
-range and averaging. The audio has mute and volume. You can record the audio
+range and averaging (A fits the scale to the trace). The audio has mute and volume. You can record the audio
 (WAV) and the IQ (channel or whole band, with SigMF metadata), and play IQ
 recordings back as if they were a radio. The status line warns of overload
 (on a HackRF it always shows the share of samples clipped).

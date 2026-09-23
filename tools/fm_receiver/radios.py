@@ -326,7 +326,10 @@ class USRP(Radio):
 class BB60(Radio):
     kind = 'bb60'
     name = 'Signal Hound BB60D'
-    receive_rates = (2.5e6, 5e6, 10e6)
+    #: 20 and 40 MS/s measured off air (2026-09-22, 89.3 MHz, 12 s each):
+    #: no samples lost, RDS 548/548 and 552/552, CPU 64% and 84% of a core
+    #: against 57% at 10. 40 shows 24 MHz of the band flat (27 MHz filter).
+    receive_rates = (2.5e6, 5e6, 10e6, 20e6, 40e6)
     if sys.platform == 'darwin':
         # Signal Hound's Mac library (5.0.11) streams garbage at a
         # decimation of 16 or more - 2.5 MS/s and below: on the Mac mini

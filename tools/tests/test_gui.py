@@ -772,7 +772,8 @@ def part3_native_sweep():
     fmapp.make_radio = lambda kind, *a, **k: NativeRadio()
     bb60_sweep.REALTIME_OK = True            # as on Linux, wherever this runs
     try:
-        w = make_window(['--radio', 'bb60', '--mode', 'sweep'], {'recording_dir': FOLDER})
+        w = make_window(['--radio', 'bb60', '--mode', 'sweep', '--realtime'],
+                        {'recording_dir': FOLDER})
         e = w.engine
         assert w._mode == 'sweep' and e.running and e.sweeper.native, w.status.text()
         assert (w.sweep_start.value(), w.sweep_stop.value()) == (9e3, 6000e6)
@@ -843,7 +844,7 @@ def part3_native_sweep():
         # Real time: the button drops the sweep to its 27 MHz window on the
         # tuner, with a density map behind the trace, placed by the view's
         # Ref level and Range.
-        assert w.rt_btn.isEnabled() and not sweeper.plan.realtime
+        assert w.rt_btn.isEnabled() and not w.rt_btn.isHidden() and not sweeper.plan.realtime
         w.tune(98.7e6)
         w.rt_btn.setChecked(True)
         span = (w.sweep_start.value(), w.sweep_stop.value())
@@ -903,17 +904,51 @@ def part3_native_sweep():
         device_health(w)
         agc(w)
         realtime_polish(w)
+        auto_scale(w)
+        folding(w)
         w.close()
         saved = json.load(open(os.environ['FMRX_CONFIG']))
         # Real time left its own window on the tuner, so the band is custom.
         assert saved['sweep_rbw_khz'] == 10 and saved['sweep_band'] == 'custom', saved
         assert saved['sweep_realtime'] is True, saved
+        assert saved['folded'] == {'radio': True, 'tuner': False, 'rds': True}, saved['folded']
         assert saved['gain_auto'] == {NativeRadio.kind: True}, saved['gain_auto']
         assert abs(saved['sweep_stop_mhz'] - saved['sweep_start_mhz']
                    - RT_MAX_SPAN_HZ / 1e6) < 1e-3, saved
     finally:
         fmapp.make_radio, bb60_sweep.REALTIME_OK = original
     print("part 3 passed")
+
+
+def auto_scale(w):
+    """A fits the scale to the trace on show: floor to peak, centred, with a
+    margin; under AGC only the Range, the Ref level being the radio's."""
+    view = w.rf_view
+    view.set_data(np.linspace(95e6, 100e6, 1000),
+                  np.where(np.arange(1000) == 500, -40.0, -100.0))
+    ref = view.ref_knob.value()
+    w._auto_scale()                              # AGC is on here
+    assert view.ref_knob.value() == ref and view.range_knob.value() == 5 * np.ceil(
+        max(2 * (ref + 70), 30) / 5), (ref, view.range_knob.value())
+    assert view.auto_scale()
+    top, span = view.ref_knob.value(), view.range_knob.value()
+    assert span == 80 and top == -30, (top, span)       # -100..-40, 10 dB either side
+    assert abs((top - span / 2) - (-70)) <= 0.5, 'the trace in the middle'
+
+
+def folding(w):
+    """The Receive cards fold on their chevron; the Radio card keeps its
+    Center in sight."""
+    radio, tuner, rds = (w._cards[k] for k in ('radio', 'tuner', 'rds'))
+    radio.chevron.click()
+    assert radio.is_folded() and w.range_label.isHidden() and w.rx_rate_combo.isHidden()
+    assert not w.center_entry.isHidden() and not w.recenter_btn.isHidden()
+    tuner.set_folded(True)
+    assert w.tuner.isHidden() and w.chan_entry.isHidden()
+    tuner.set_folded(False)
+    assert not w.tuner.isHidden() and not w.step_knob.isHidden()
+    rds.set_folded(True)
+    assert w.lbl['radiotext'].isHidden() and w.clear_btn.isHidden()
 
 
 def part4_no_realtime():
@@ -931,6 +966,7 @@ def part4_no_realtime():
         w._preset_chosen(1)
         assert e.sweeper.plan.start_hz == 87.5e6
         assert not w.rt_btn.isEnabled() and not w.rt_btn.isChecked()
+        assert w.rt_btn.isHidden(), 'hidden without --realtime'
         assert 'Mac' in w.rt_btn.toolTip(), w.rt_btn.toolTip()
         w.rt_btn.setChecked(True)                # even if something presses it
         plan = e.sweeper.plan
@@ -958,10 +994,10 @@ def part5_unavailable_rate():
     if sys.platform == 'darwin':
         assert 2.5e6 in radios.BB60.receive_rates
         assert 2.5e6 in radios.BB60.unavailable_rates
-        assert radios.BB60.usable_receive_rates() == (5e6, 10e6)
+        assert radios.BB60.usable_receive_rates() == (5e6, 10e6, 20e6, 40e6)
     else:
         assert radios.BB60.unavailable_rates == {}
-        assert radios.BB60.usable_receive_rates() == (2.5e6, 5e6, 10e6)
+        assert radios.BB60.usable_receive_rates() == (2.5e6, 5e6, 10e6, 20e6, 40e6)
     original = fmapp.make_radio
     fmapp.make_radio = lambda kind, *a, **k: MacRadio()
     try:

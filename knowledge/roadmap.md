@@ -720,3 +720,38 @@ Both on the HackRF, handed over from ble-scanner for the session.
   every one with a held maximum, and its hardware check passed.
 - With averaging on (Average above 1x), the trace is still the average of
   whole sweeps; the waterfall rows are held maxima either way.
+
+## Round 7: boxes, auto scale, the BB60D's widest IQ (requested 2026-09-22)
+
+- [x] **1. No lines on the waterfall.** The Center's dashed line and the
+  tuner's orange marker are drawn on the spectrum only, in Sweep and
+  Receive; the waterfall is left clear.
+- [x] **2. A wider IQ bandwidth on the BB60D.** 20 and 40 MS/s added to
+  Receive (the hardware has them; only 2.5-10 were offered). Off air on
+  89.3: 40 MS/s 84% of a core (10 MS/s 57%), no samples lost, RDS 552/552;
+  27 MHz on screen, the tuner ±11.85 MHz from the Center.
+  `hw_bb60_check.py` now receives there too. Default stays 10 MS/s. Not yet
+  on the Mac.
+- [x] **3. Channel filter to 500 kHz?** Not changed. It stops at 400 kHz
+  because the channel is sampled at 500 kS/s (the IQ – channel recording's
+  rate) and the filter needs room to roll off inside that. An FM station
+  with its HD Radio sidebands is ±200 kHz, which 400 kHz holds. Going wider
+  would mean a 1 MS/s channel - twice the work after the channelizer - for
+  nothing FM uses.
+- [x] **4. Folding boxes.** Tuner and RDS fold to their title on a chevron;
+  Radio folds to its Center row. Remembered (`folded` in the settings).
+  Rows are on a grid (`widgets.Form`): Qt 5's `QFormLayout` keeps the
+  spacing of hidden rows.
+- [x] **5. A: auto scale.** Ref level and Range fitted to the trace on
+  screen and centred on it; the span is left alone ("max bandwidth" is
+  still Full span). Under AGC only the Range moves.
+- [x] **6. A Sweep box.** The Sweep tab now has a Sweep box and a Tuner box
+  (the tuner and Listen), as Receive has.
+- [x] **7. Real time hidden.** Receive at 40 MS/s shows 27 MHz 30 times a
+  second and plays the station, so the button is hidden; `--realtime`
+  shows it, and everything behind it works as before.
+- [x] Found on the way: `--sweep START STOP` passed MHz as Hz, so
+  `--sweep 87.5 108` swept 9-209 kHz. And `test_recordings.py` failed on a
+  busy machine: the recording's clock started before 3 s of test files
+  were written, pushing the first RadioText past the second it was checked
+  at.

@@ -824,6 +824,184 @@ class ThemeDisc(Qt.QAbstractButton):
 
 # ------------------------------------------------------------- level meter
 
+class Form(Qt.QGridLayout):
+    """A form - labels right of a column, fields beside them - on a grid.
+    ``QFormLayout`` in Qt 5 keeps the spacing of a hidden row, so a form
+    with rows hidden (a radio's, or a folded :class:`Card`'s) opened gaps;
+    a grid closes them. The calls used of a form: :meth:`addRow`,
+    :meth:`setLabelAlignment`, :meth:`labelForField`."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setColumnStretch(1, 1)
+        self._align = QtCore.Qt.AlignRight
+        self._rows = []                       # (label or None, field)
+
+    def setLabelAlignment(self, align):
+        self._align = align
+        for label, field in self._rows:
+            if label is not None:
+                self.setAlignment(label, self._label_align(field))
+
+    def _label_align(self, field):
+        """As a form puts it: level with a one-line field, and with the
+        first line of text that wraps - unless told otherwise."""
+        if self._align & QtCore.Qt.AlignVertical_Mask:
+            return self._align
+        wraps = isinstance(field, Qt.QLabel) and field.wordWrap()
+        return self._align | (QtCore.Qt.AlignTop if wraps else QtCore.Qt.AlignVCenter)
+
+    def addRow(self, *args):
+        row = len(self._rows)
+        if len(args) == 1:
+            label, field = None, args[0]
+            self._put(field, row, 0, 2)
+        else:
+            label, field = args
+            if isinstance(label, str):
+                label = Qt.QLabel(label)
+            self.addWidget(label, row, 0, self._label_align(field))
+            self._put(field, row, 1, 1)
+        self._rows.append((label, field))
+
+    def _put(self, field, row, column, span):
+        if isinstance(field, Qt.QLayout):
+            self.addLayout(field, row, column, 1, span)
+        elif field.sizePolicy().horizontalPolicy() & Qt.QSizePolicy.GrowFlag:
+            self.addWidget(field, row, column, 1, span)
+        else:                                 # as a form keeps it: at the left
+            self.addWidget(field, row, column, 1, span, QtCore.Qt.AlignLeft)
+
+    def labelForField(self, field):
+        for label, f in self._rows:
+            if f is field:
+                return label
+        return None
+
+    def row_widgets(self):
+        """Each row's widgets, the label's and the field's (within its
+        layout, if it is one)."""
+        return [([label] if label is not None else []) + _widgets_in(field)
+                for label, field in self._rows]
+
+
+def _widgets_in(thing):
+    if isinstance(thing, Qt.QWidget):
+        return [thing]
+    found = []
+    for i in range(thing.count()):
+        item = thing.itemAt(i)
+        if item.widget() is not None:
+            found.append(item.widget())
+        elif item.layout() is not None:
+            found += _widgets_in(item.layout())
+    return found
+
+
+class _Chevron(Qt.QAbstractButton):
+    """The fold on a :class:`Card`'s title: pointing down while the card is
+    open, right while it is folded."""
+
+    SIZE = 14
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setChecked(True)
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setFocusPolicy(QtCore.Qt.NoFocus)
+
+    def paintEvent(self, event):
+        try:
+            p = Qt.QPainter(self)
+            p.setRenderHint(Qt.QPainter.Antialiasing)
+            ink = theme.TOKENS['ink' if self.underMouse() else 'ink_2']
+            p.setPen(Qt.QPen(Qt.QColor(ink), 1.6, QtCore.Qt.SolidLine,
+                             QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin))
+            c, r = self.SIZE / 2, self.SIZE * 0.22
+            if self.isChecked():
+                points = [(c - r * 1.4, c - r * 0.7), (c, c + r * 0.7), (c + r * 1.4, c - r * 0.7)]
+            else:
+                points = [(c - r * 0.7, c - r * 1.4), (c + r * 0.7, c), (c - r * 0.7, c + r * 1.4)]
+            p.drawPolyline(Qt.QPolygonF([QtCore.QPointF(x, y) for x, y in points]))
+            p.end()
+        except Exception as exc:                  # never abort the app
+            print(f"chevron: {exc}")
+
+
+class Card(Qt.QGroupBox):
+    """A group box that can fold: :meth:`foldable` puts a chevron at the
+    right of its title, and it or a click on the title hides the rows of
+    its form - all but the ``keep`` rows, which stay in sight folded.
+    :attr:`folded` carries True when it folds, False when it opens."""
+
+    folded = pyqtSignal(bool)
+
+    def __init__(self, title, parent=None):
+        super().__init__(title, parent)
+        self._form = None
+        self._keep = ()
+        self.chevron = None
+
+    def foldable(self, form, keep=(), folded=False):
+        """``form`` is the card's :class:`Form`; ``keep``, widgets whose
+        rows stay shown when it is folded."""
+        self._form, self._keep = form, tuple(keep)
+        self.chevron = _Chevron(self)
+        self.chevron.setToolTip(f"Fold or open {self.title()}.")
+        self.chevron.toggled.connect(self._chevron_toggled)
+        self.set_folded(folded)
+        return self
+
+    def is_folded(self):
+        return self.chevron is not None and not self.chevron.isChecked()
+
+    def set_folded(self, folded):
+        if self.chevron is None:
+            return
+        if self.chevron.isChecked() == (not folded):
+            self._show_rows(not folded)       # no toggle to do it
+        else:
+            self.chevron.setChecked(not folded)
+
+    def _chevron_toggled(self, opened):
+        self._show_rows(opened)
+        self.folded.emit(not opened)
+
+    def _show_rows(self, shown):
+        for widgets in self._form.row_widgets():
+            if not any(w in self._keep for w in widgets):
+                for w in widgets:
+                    w.setVisible(shown)
+
+    def _title_rect(self):
+        option = Qt.QStyleOptionGroupBox()
+        self.initStyleOption(option)
+        return self.style().subControlRect(Qt.QStyle.CC_GroupBox, option,
+                                           Qt.QStyle.SC_GroupBoxLabel, self)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        try:
+            if self.chevron is not None:
+                title = self._title_rect()
+                y = title.center().y() - self.chevron.height() // 2
+                self.chevron.move(self.width() - self.chevron.width() - 2, max(0, y))
+        except Exception as exc:                  # never abort the app
+            print(f"card: {exc}")
+
+    def mousePressEvent(self, event):
+        try:
+            if (self.chevron is not None and event.button() == QtCore.Qt.LeftButton
+                    and event.pos().y() <= self._title_rect().bottom()):
+                self.chevron.toggle()
+                return
+        except Exception as exc:                  # never abort the app
+            print(f"card: {exc}")
+        super().mousePressEvent(event)
+
+
 class LevelMeter(Qt.QWidget):
     """Left and right audio level, peak and RMS, -50 to 0 dBFS."""
 
@@ -963,8 +1141,7 @@ def _marker_colour(which):
 
 
 class _Fade(QtCore.QObject):
-    """Fades graphics items in and out together - a line on the spectrum
-    and its twin on the waterfall."""
+    """Fades graphics items in and out together."""
 
     def __init__(self, items, parent=None):
         super().__init__(parent)
@@ -1204,12 +1381,6 @@ class SpectrumView(Qt.QWidget):
             self.plot.getAxis('left').geometryChanged.connect(self._match_axes)
             self.wf_image = pg.ImageItem()
             self.wf_plot.addItem(self.wf_image)
-            self.wf_marker = pg.InfiniteLine(angle=90, movable=False)
-            self.wf_marker.setVisible(False)
-            self.wf_plot.addItem(self.wf_marker, ignoreBounds=True)
-            self.wf_center_line = pg.InfiniteLine(angle=90, movable=False)
-            self.wf_center_line.setVisible(False)
-            self.wf_plot.addItem(self.wf_center_line, ignoreBounds=True)
             self.wf_plot.scene().sigMouseClicked.connect(self._scene_clicked)
             self.wf_plot.scene().sigMouseMoved.connect(self._mouse_moved)
 
@@ -1219,7 +1390,8 @@ class SpectrumView(Qt.QWidget):
                               tooltip='How much frequency the view shows, '
                               'centred on the station (or on the view).')
         self.ref_knob = Knob('Ref level', -160, 20, ref_db, lambda v: f"{v:.0f} dB",
-                             step=1, wheel=2, tooltip='The level at the top of the scale.')
+                             step=1, wheel=2, tooltip='The level at the top of the scale.\n'
+                             'A fits the scale to the trace (auto scale).')
         self.range_knob = Knob('Range', 10, 180, range_db, lambda v: f"{v:.0f} dB",
                                step=1, wheel=5, tooltip='dB from the top of the scale to the '
                                'bottom: the amplitude scale. Also the waterfall colours.')
@@ -1242,9 +1414,9 @@ class SpectrumView(Qt.QWidget):
         self.readout = Qt.QLabel('')
         self.readout.setMinimumWidth(170)
 
-        wf = self.wf_plot is not None
-        self._marker_fade = _Fade([self.marker, self.wf_marker if wf else None], self)
-        self._center_fade = _Fade([self.center_line, self.wf_center_line if wf else None], self)
+        # The lines are on the spectrum only: the waterfall is left clear.
+        self._marker_fade = _Fade([self.marker], self)
+        self._center_fade = _Fade([self.center_line], self)
         self.marker_auto = False
         self._grabbed = False
         self._center_back = Qt.QTimer(self)
@@ -1327,8 +1499,6 @@ class SpectrumView(Qt.QWidget):
         if self._density_args is not None:
             self.set_density(*self._density_args)    # in the new theme's colours
         if self.wf_plot is not None:
-            self.wf_marker.setPen(tuner)
-            self.wf_center_line.setPen(centre)
             self.wf_image.setLookupTable(waterfall_lut(
                 WATERFALL.get(theme.current(), WATERFALL['slate'])))
 
@@ -1415,6 +1585,37 @@ class SpectrumView(Qt.QWidget):
         if self.wf_plot is not None:
             self.wf_image.clear()
 
+    #: Auto scale: the scale reaches this far past the trace, top and
+    #: bottom, and is never narrower than the least range.
+    AUTO_MARGIN_DB = 10.0
+    AUTO_MIN_RANGE_DB = 30.0
+
+    def auto_scale(self, keep_ref=False):
+        """Fit the scale to the trace on screen and centre it there: from
+        its noise floor (the 5th percentile) to its peak, with a margin
+        either side. ``keep_ref`` (AGC holds the Ref level) sets the Range
+        only, as near centred as that allows. The span is left alone.
+        True if there was a trace to fit."""
+        if self._x is None or not len(self._x):
+            return False
+        (x0, x1), _ = self.plot.getPlotItem().getViewBox().viewRange()
+        shown = self._db[(self._x >= x0) & (self._x <= x1)]
+        shown = shown[np.isfinite(shown)]
+        if not len(shown):
+            return False
+        floor, peak = float(np.percentile(shown, 5)), float(np.max(shown))
+        middle = (floor + peak) / 2
+        if keep_ref:
+            span = 2 * (self.ref_knob.value() - middle)
+        else:
+            span = peak - floor + 2 * self.AUTO_MARGIN_DB
+        span = 5 * math.ceil(max(span, self.AUTO_MIN_RANGE_DB) / 5)
+        self.range_knob.setValue(min(max(span, self.range_knob._min), self.range_knob._max))
+        if not keep_ref:
+            top = round(middle + self.range_knob.value() / 2)
+            self.ref_knob.setValue(min(max(top, self.ref_knob._min), self.ref_knob._max))
+        return True
+
     def clear_peak(self):
         self._peak = None
         self.peak_curve.setData([], [])
@@ -1486,14 +1687,9 @@ class SpectrumView(Qt.QWidget):
     def set_marker(self, hz):
         if hz is None:
             self.marker.setVisible(False)
-            if self.wf_plot is not None:
-                self.wf_marker.setVisible(False)
             return
         self.marker.setValue(hz / self.scale)
         self.marker.setVisible(True)
-        if self.wf_plot is not None:
-            self.wf_marker.setValue(hz / self.scale)
-            self.wf_marker.setVisible(True)
 
     def set_band(self, low_hz, high_hz):
         """The channel band, in hertz; None hides it."""
@@ -1586,13 +1782,9 @@ class SpectrumView(Qt.QWidget):
 
     def set_center_line(self, hz):
         """The radio's centre frequency, as a dashed line; None hides it."""
-        lines = [self.center_line]
-        if self.wf_plot is not None:
-            lines.append(self.wf_center_line)
-        for line in lines:
-            if hz is not None:
-                line.setValue(hz / self.scale)
-            line.setVisible(hz is not None)
+        if hz is not None:
+            self.center_line.setValue(hz / self.scale)
+        self.center_line.setVisible(hz is not None)
 
     def set_tuner_range(self, low_hz, high_hz):
         """Shade what lies outside ``low_hz``-``high_hz``, where the tuner

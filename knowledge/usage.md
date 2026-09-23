@@ -125,6 +125,7 @@ Useful options (`./fm-receiver --help` lists them all):
 | `--mode sweep` / `receive` / `recordings` | Start in this tab |
 | `--sweep 87.5 108` | Set the sweep span (MHz) |
 | `--theme slate` / `reading-room` / `walnut` | Choose the colour theme |
+| `--realtime` | Show the Sweep tab's **Real time** button (BB60D, not on a Mac); it is hidden otherwise |
 | `--no-audio` | Don't use the sound card (recording still works) |
 | `--no-save` | Don't save settings when the window closes |
 
@@ -199,12 +200,15 @@ demodulated. There are two kinds:
 - **A USRP hops its LO** across the span. Each step's FFT is stitched into
   one picture, with levels in dBFS.
 
+The tab has two boxes: **Sweep** (the band, how it is swept, Pause, the
+station threshold) and **Tuner** (where the receiver will tune, and Listen).
+
 | Control | What it does |
 |---|---|
 | **Band** | Presets: **Full range of the radio** (the default, 9 kHz to 6 GHz on a BB60D), FM 87.5-108, Japan 76-95, OIRT 65.8-74, VHF 30-300. **Custom** is selected automatically when you set your own bounds. |
 | **Start** / **Stop** | The sweep's lower and upper bounds, in MHz to the kHz (9 kHz is 0000.009). Hover a digit and roll the wheel, or type a frequency. They stay inside the radio's range and at least 200 kHz apart. The sweep changes as soon as the digits come to rest. |
 | **Tuner** | The same tuner the Receive tab has, here so you can place it while you sweep: it is the marker on the spectrum, it is what **Listen** tunes to, and it is what **Real time** watches around. Hover a digit and roll the wheel, type a frequency, or use the ▲/▼ beside it; a click on the spectrum moves it too, and so does a middle-drag of the orange channel band (see below). |
-| **Real time** *(BB60D)* | A button that stays down. Pressing it drops the sweep to the 27 MHz it can watch, centred on the **Tuner**, and watches that instead of sweeping; letting it out gives back the span that was there. Put the tuner outside the window afterwards and the window moves to it. Widen the bounds past 27 MHz and it sweeps instead, saying so in the line under the buttons. Not on a Mac, whose Signal Hound library has no real time. See *Sweep, real time and IQ* below. |
+| **Real time** *(BB60D, only with `--realtime`)* | Hidden unless the app is started with `--realtime`: Receive at 40 MS/s shows as much band (27 MHz), as often (30 times a second), and plays the station as well. A button that stays down. Pressing it drops the sweep to the 27 MHz it can watch, centred on the **Tuner**, and watches that instead of sweeping; letting it out gives back the span that was there. Put the tuner outside the window afterwards and the window moves to it. Widen the bounds past 27 MHz and it sweeps instead, saying so in the line under the buttons. Not on a Mac, whose Signal Hound library has no real time. See *Sweep, real time and IQ* below. |
 | **RBW** *(BB60D, HackRF)* | Resolution bandwidth. **Auto** keeps a sweep near 80,000 points: on a BB60D 300 kHz over the full range and 1 kHz over the FM band; on a HackRF it is the FFT's bin width, 76 kHz over the full range and 2.4 kHz (its finest) over the FM band. Narrower shows more detail and a lower noise floor. If you pick one too fine for the span, it is raised, and the line under the buttons says so. |
 | **Step bandwidth** *(USRP)* | The radio's sample rate while sweeping, which sets how much each step sees. Wider means fewer steps. Changing this restarts the radio. |
 | **FFT** *(USRP)* | Bins per FFT. This sets the RBW: 4096 bins at 20 MS/s gives 4.9 kHz. |
@@ -238,7 +242,7 @@ analyser's word for *without gaps*, not for *live*: all three are live.
 
 | | Sweep | Real time | IQ (the Receive tab) |
 |---|---|---|---|
-| How much spectrum | Up to all of it, 9 kHz to 6 GHz | One chunk, up to 27 MHz | One chunk, up to 27 MHz |
+| How much spectrum | Up to all of it, 9 kHz to 6 GHz | One chunk, up to 27 MHz | One chunk, up to 27 MHz (at 40 MS/s) |
 | How it covers it | Steps across, a moment at each frequency | Stays put and analyses every sample | Stays put and sends every sample here |
 | What comes back | A trace each pass | A trace every 33 ms, and a density map | The signal itself |
 | Listen or record | No | No | Yes |
@@ -277,6 +281,11 @@ one station. The tab has three boxes, top to bottom: **Radio** sets the
 radio itself, **Tuner** picks the station inside the radio's band, and
 **RDS** shows the station as decoded.
 
+Each box has a **chevron** at the right of its title: click it, or the
+title, to fold the box away and again to open it. A folded **Radio** box
+still shows its **Center** and **Center on tuner**; a folded Tuner or RDS
+box shows only its title. The app remembers which are folded.
+
 ```
 ┌ Radio ───────────────────────────────────────┐
 │       Center: [0098.400 MHz] [Center on tuner]│   the radio's own frequency
@@ -299,10 +308,10 @@ The multiplex (MPX) spectrum fills the bottom right.
 
 | Control | What it does |
 |---|---|
-| **Center** | The radio's centre frequency (its LO), drawn as a **dashed line** on the spectrum and the waterfall: yellow in Slate and Reading Room, verdigris in Walnut. Moving it moves the band the tuner can reach. If the tuner is still inside the new band it stays where it is; if not, it is pulled in to the nearer edge. **While you move the Center the line fades away**, so you can see the spectrum under it, and it comes back once you stop. |
+| **Center** | The radio's centre frequency (its LO), drawn as a **dashed line** on the spectrum (not the waterfall, which is left clear): yellow in Slate and Reading Room, verdigris in Walnut. Moving it moves the band the tuner can reach. If the tuner is still inside the new band it stays where it is; if not, it is pulled in to the nearer edge. **While you move the Center the line fades away**, so you can see the spectrum under it, and it comes back once you stop. |
 | **Center on tuner** | Puts the Center 300 kHz below the tuner, so there is room to tune either way. |
 | **Tuner range** | The lowest and highest the tuner can go around this Center. It is about three quarters of the IQ bandwidth, less half a channel at each end. |
-| **IQ bandwidth** | The radio's sample rate in Receive: how much of the band the spectrum shows, and the tuner can reach (BB60D 2.5/5/10 MS/s, 2.5 greyed out on a Mac; HackRF 2-20 MS/s). Changing it rebuilds the receiver; the Center stays if the tuner still fits. |
+| **IQ bandwidth** | The radio's sample rate in Receive: how much of the band the spectrum shows, and the tuner can reach (BB60D 2.5/5/10/20/40 MS/s, 2.5 greyed out on a Mac; HackRF 2-20 MS/s). Changing it rebuilds the receiver; the Center stays if the tuner still fits. |
 
 **The tuner stops at the edge of the band.** Rolling, stepping, typing,
 clicking or dragging past it leaves the tuner at the edge, and **Tuner
@@ -321,10 +330,14 @@ An IQ recording's Center is where it was recorded, so it cannot be moved.
 
 **Which IQ bandwidth?** On the BB60D, 10 MS/s (the default). At 2.5, 5 and
 10 MS/s the app uses the same CPU (about half a core) and receives just as
-well, and 10 MS/s shows about 7.5 MHz of the band instead of 1.9 MHz. The
-exception is a long **IQ – whole band** recording: at 10 MS/s that is
-80 MB/s (4.8 GB a minute), so choose 2.5 MS/s (20 MB/s) for those - or
-5 MS/s (40 MB/s) on a Mac, where 2.5 is greyed out for the BB60D.
+well, and 10 MS/s shows about 7.5 MHz of the band instead of 1.9 MHz.
+**40 MS/s shows 27 MHz** - the whole FM band and more, 30 times a second -
+and the tuner reaches ±11.85 MHz from the Center; it costs more CPU (84% of
+a core against 57% at 10) and receives just as well (no samples lost, RDS
+100%). 20 MS/s shows 17.8 MHz. The exception is a long **IQ – whole band**
+recording: at 10 MS/s that is 80 MB/s (4.8 GB a minute), and at 40 MS/s
+320 MB/s, more than most disks keep up with; choose 2.5 MS/s (20 MB/s) for
+those - or 5 MS/s (40 MB/s) on a Mac, where 2.5 is greyed out for the BB60D.
 
 ### Tuner
 
@@ -333,10 +346,10 @@ exception is a long **IQ – whole band** recording: at 10 MS/s that is
 | **Tuner** | The station you hear, to 1 kHz. **Hover over a digit** and it lights up; **roll the mouse wheel** to move that digit up or down. It carries as arithmetic does: rolling up the tens digit of 90.000 gives 100.000, and so does rolling up the ones digit of 99.000. With the pointer over a digit, **Up/Down** do the same and **PageUp/PageDown** move it by ten. **Type a digit** (or press Enter, or double-click) to type a whole frequency in MHz; Enter sets it and Escape leaves it as it was. |
 | **▲ / ▼ beside the tuner** | Steps the tuner down or up by one **Step**. Click a half (hold it to repeat), or roll the wheel over it. Ctrl+Left and Ctrl+Right do the same from anywhere in the window. |
 | **Step** (knob) | Four settings: 10, 50, 100 and 200 kHz. It sets what the arrows and Ctrl+Left/Right move by, and what Snap rounds to. FM channels are 200 kHz apart in the Americas, on the odd tenths (88.1, 88.3 … 107.9), and a 200 kHz Step keeps to those; Europe's are 100 kHz apart. |
-| **Channel filter** | 60-400 kHz, applied live. Hover a digit and roll the wheel, use its **▲ / ▼** (5 kHz a click), or roll the wheel over the orange band on the spectrum. A narrower filter rejects a strong neighbour, but below about 180 kHz stereo and RDS start to suffer. Wider than about 250 kHz the audio takes in any neighbour that close; the widths up to 400 kHz are for the **IQ – channel** recording, which then holds an HD Radio station's digital sidebands (±200 kHz). |
+| **Channel filter** | 60-400 kHz, applied live. (The **IQ – channel** recording is 500 kS/s; the filter stops at 400 kHz because the channel is sampled at 500 kS/s and the filter needs room to roll off inside it.) Hover a digit and roll the wheel, use its **▲ / ▼** (5 kHz a click), or roll the wheel over the orange band on the spectrum. A narrower filter rejects a strong neighbour, but below about 180 kHz stereo and RDS start to suffer. Wider than about 250 kHz the audio takes in any neighbour that close; the widths up to 400 kHz are for the **IQ – channel** recording, which then holds an HD Radio station's digital sidebands (±200 kHz). |
 
 **The tuner's marker** (the thin orange line at the tuner, on the spectrum
-and the waterfall) is hidden while you are not tuning: the orange band
+only - the waterfall is left clear) is hidden while you are not tuning: the orange band
 shows where the station is. It fades in as soon as you tune, by any means,
 and fades out again a moment after you stop. Pressing the middle button on
 the orange band - grabbing the tuner - shows it too, for as long as you
@@ -413,6 +426,7 @@ same goes for the Volume and Step knobs.
 |---|---|
 | **Span** | How much frequency is shown. In Receive it is centred on the station; in Sweep, on the middle of the view. |
 | **Ref level** | The level at the top of the scale. |
+| **A** (the key) | **Auto scale**: sets Ref level and Range so the trace on screen sits in the middle of the spectrum, from its noise floor to its highest peak with 10 dB to spare at either end (30 dB at least). The span is left as it is. Under **AGC** the Ref level is the radio's, so only the Range moves. |
 | **Range** | dB from the top of the scale to the bottom, i.e. the amplitude scale. The waterfall colours follow Ref level and Range. |
 | **Average** | Frames averaged in Receive, or sweeps averaged in Sweep. |
 | **Peak hold** | Draws a dashed trace of the highest level seen. Untick it to clear. |
@@ -552,6 +566,7 @@ On a Mac, Ctrl is the ⌘ Command key.
 | Ctrl+M | Mute |
 | Ctrl+Up / Ctrl+Down | Volume ±5 |
 | Ctrl+R | Start/stop recording |
+| A | Auto scale the spectrum on show (not while typing in a box) |
 
 ## Settings
 

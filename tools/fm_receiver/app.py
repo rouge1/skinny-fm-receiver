@@ -45,7 +45,7 @@ from .recording import (NAME_STEADY_S, IqRecording, RecordingInfo, WavWriter,
                         session_base)
 from .style import apply_window_theme
 from .sweep import SweepPlan, find_stations, to_db
-from .widgets import (DigitEntry, Knob, LevelMeter, SpectrumView, StepRoller,
+from .widgets import (Card, DigitEntry, Form, Knob, LevelMeter, SpectrumView, StepRoller,
                       ThemeDisc, TimelineStrip, on_raster)
 
 #: (name, start MHz, stop MHz); 'full' is the whole of the radio's sweep
@@ -101,6 +101,8 @@ DEFAULTS = {
     'stereo': True, 'volume': 60, 'muted': False, 'sweep_band': 'full',
     'sweep_start_mhz': 87.5, 'sweep_stop_mhz': 108.0, 'sweep_rbw_khz': 0,
     'sweep_realtime': False,
+    # The cards folded to their title (the Radio card to its Center).
+    'folded': {},
     'sweep_fft': 4096, 'sweep_frames': 16,
     'min_snr_db': 15, 'snap': True, 'record_audio': True,
     'record_iq_channel': False, 'record_iq_band': False, 'recording_dir': '',
@@ -350,9 +352,15 @@ class MainWindow(Qt.QWidget):
         """Make the left column wide enough for everything in it: it only
         scrolls up and down, so anything wider is cut off. Measured again
         once the window is shown, when the stylesheet has sized the controls."""
+        # Measured open: a card folded now may be opened later.
+        folded = [c for c in getattr(self, '_cards', {}).values() if c.is_folded()]
+        for card in folded:
+            card.set_folded(False)
         self.left_panel.adjustSize()
         bar = self.left_scroll.verticalScrollBar().sizeHint().width()
         self._left_width = self.left_panel.sizeHint().width() + bar + 4
+        for card in folded:
+            card.set_folded(True)
         self.left_scroll.setMinimumWidth(self._left_width)
 
     def _refit_left(self):
@@ -375,9 +383,13 @@ class MainWindow(Qt.QWidget):
                                           max(600, self.width() - self._left_width)])
 
     def _build_sweep_tab(self):
+        """Two boxes, as in Receive: the sweep, and the tuner on it."""
         page = Qt.QWidget()
-        form = Qt.QFormLayout(page)
-        form.setLabelAlignment(QtCore.Qt.AlignRight)
+        outer = Qt.QVBoxLayout(page)
+        outer.setContentsMargins(6, 8, 6, 6)
+        outer.setSpacing(10)
+        sweep_card = Card("Sweep")
+        form = self._form(sweep_card)
         self.sweep_form = form
         self.preset_combo = Qt.QComboBox()
         for name, _, _ in SWEEP_PRESETS:
@@ -417,7 +429,10 @@ class MainWindow(Qt.QWidget):
         self.rbw_combo.activated.connect(lambda _: self._update_sweep_plan())
         form.addRow("RBW:", self.rbw_combo)
         # The tuner, here as well as in Receive: the marker on the spectrum,
-        # what Listen tunes to, and what Real time watches around.
+        # what Listen tunes to, and what Real time watches around. Its own
+        # box, built here and placed under the sweep's.
+        tuner_card = Card("Tuner")
+        tuner_form = self._form(tuner_card)
         tune = Qt.QHBoxLayout()
         tune.setSpacing(6)
         self.sweep_tuner = DigitEntry('MHz', 1e6, 4, 3,
@@ -436,7 +451,7 @@ class MainWindow(Qt.QWidget):
         tune.addWidget(self.sweep_tuner, 0, QtCore.Qt.AlignVCenter)
         tune.addWidget(self.sweep_roller, 0, QtCore.Qt.AlignVCenter)
         tune.addStretch(1)
-        form.addRow("Tuner:", tune)
+        tuner_form.addRow("Tuner:", tune)
         self.rt_btn = Qt.QPushButton("Real time")
         self.rt_btn.setCheckable(True)
         self.rt_btn.setEnabled(bb60_sweep.REALTIME_OK)
@@ -451,11 +466,15 @@ class MainWindow(Qt.QWidget):
             "a time." if bb60_sweep.REALTIME_OK else
             "Not on a Mac: Signal Hound's library for it sweeps and streams IQ,\n"
             "but has no real time.")
-        self.rt_btn.setChecked(bool(self.cfg['sweep_realtime']) and bb60_sweep.REALTIME_OK)
+        # Hidden unless asked for (--realtime): Receive at the BB60D's widest
+        # IQ bandwidth shows as much, as often, and plays the station too.
+        self.rt_btn.setChecked(bool(self.cfg['sweep_realtime']) and bb60_sweep.REALTIME_OK
+                               and self.args.realtime)
         # Connected after the saved state is set: pressing it moves the
         # sweep's bounds, which the window is not built enough for yet.
         self.rt_btn.toggled.connect(self._realtime_toggled)
         form.addRow(self.rt_btn)
+        self.rt_btn.setVisible(False)            # until a radio that has it
         self.sweep_rate_combo = Qt.QComboBox()
         self.sweep_rate_combo.setToolTip(
             "The radio's sample rate while sweeping: how much spectrum each "
@@ -486,19 +505,17 @@ class MainWindow(Qt.QWidget):
         self.settle_spin.valueChanged.connect(self._settle_changed)
         form.addRow("Settle:", self.settle_spin)
         # Rows only one kind of sweep has: the radio's own, or LO hopping.
-        self._native_rows = (self.rbw_combo, self.rt_btn)
+        self._native_rows = (self.rbw_combo,)
         self._hop_rows = (self.sweep_rate_combo, self.fft_combo, self.frames_spin,
                           self.settle_spin)
-        buttons = Qt.QHBoxLayout()
         self.pause_btn = Qt.QPushButton("Pause")
         self.pause_btn.setCheckable(True)
         self.pause_btn.toggled.connect(self._pause_toggled)
-        buttons.addWidget(self.pause_btn)
+        form.addRow(self.pause_btn)
         self.listen_btn = Qt.QPushButton("Listen")
         self.listen_btn.setToolTip("Receive the selected station (or the marker).")
         self.listen_btn.clicked.connect(self._listen_selected)
-        buttons.addWidget(self.listen_btn)
-        form.addRow(buttons)
+        tuner_form.addRow(self.listen_btn)
         self.sweep_info = _wrapping(Qt.QLabel(""))
         form.addRow(self.sweep_info)
         self.snr_spin = Qt.QSpinBox()
@@ -515,6 +532,9 @@ class MainWindow(Qt.QWidget):
             self.preset_combo.setCurrentIndex(0)
         else:
             self._select_preset(remember=False)
+        outer.addWidget(sweep_card)
+        outer.addWidget(tuner_card)
+        outer.addStretch(1)
         return page
 
     def _build_receive_tab(self):
@@ -530,16 +550,24 @@ class MainWindow(Qt.QWidget):
         box.addStretch(1)
         return page
 
+    def _foldable(self, card, form, name, keep=()):
+        """A Receive card with a chevron, folded as it was left."""
+        self._cards = getattr(self, '_cards', {})
+        self._cards[name] = card
+        card.foldable(form, keep, folded=bool(self.cfg['folded'].get(name)))
+        card.folded.connect(lambda folded: self.cfg['folded'].__setitem__(name, folded))
+        return card
+
     @staticmethod
     def _form(box):
-        form = Qt.QFormLayout(box)
+        form = Form(box)
         form.setLabelAlignment(QtCore.Qt.AlignRight)
         return form
 
     def _build_radio_card(self):
         """The radio itself: where it is tuned and how much it takes in. The
         tuner moves inside that band."""
-        box = Qt.QGroupBox("Radio")
+        box = Card("Radio")
         form = self._form(box)
         row = Qt.QHBoxLayout()
         row.setSpacing(6)
@@ -571,11 +599,11 @@ class MainWindow(Qt.QWidget):
         self.rx_rate_combo.activated.connect(lambda _: (self._update_folder_tip(),
                                                         self._restart_receive()))
         form.addRow("IQ bandwidth:", self.rx_rate_combo)
-        return box
+        return self._foldable(box, form, 'radio', keep=(self.center_entry,))
 
     def _build_tuner_card(self):
         """The station you hear, its step, and its channel filter."""
-        box = Qt.QGroupBox("Tuner")
+        box = Card("Tuner")
         form = self._form(box)
         # The Step knob makes the tuner's row tall: its label sits mid-row.
         form.setLabelAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
@@ -630,12 +658,12 @@ class MainWindow(Qt.QWidget):
         chan.addWidget(self.chan_roller)
         chan.addStretch(1)
         form.addRow("Channel filter:", chan)
-        return box
+        return self._foldable(box, form, 'tuner')
 
     def _build_rds_card(self):
         """The station as decoded: its name, how it is decoded, how well it
         is received, and the RDS in full."""
-        box = Qt.QGroupBox("RDS")
+        box = Card("RDS")
         form = self._form(box)
         big = Qt.QFont()
         big.setPixelSize(19)
@@ -690,7 +718,7 @@ class MainWindow(Qt.QWidget):
                                    ('clock', "Station clock:", None),
                                    ('quality', "Decode quality:", None)):
             form.addRow(caption, value(key, font))
-        return box
+        return self._foldable(box, form, 'rds')
 
     def _build_recordings_tab(self):
         """The recordings in the folder, newest first, and the player."""
@@ -913,6 +941,17 @@ class MainWindow(Qt.QWidget):
         add("Ctrl+Right", lambda: self._step(1))
         add("Ctrl+Up", lambda: self.volume_knob.setValue(self.volume_knob.value() + 5))
         add("Ctrl+Down", lambda: self.volume_knob.setValue(self.volume_knob.value() - 5))
+        # Plain A: typed into a digit entry or a text box it is a letter
+        # there instead - Qt gives a key a text field takes to the field.
+        add("A", self._auto_scale)
+
+    def _auto_scale(self):
+        """Fit the Ref level and Range to the spectrum on show - the RF
+        spectrum, or a WAV's sound. Under AGC the Ref level is the radio's
+        reference, so only the Range moves."""
+        view = self.top_stack.currentWidget()
+        if not view.auto_scale(keep_ref=view is self.rf_view and self._agc_on()):
+            self._set_status("Auto scale: no spectrum on show yet.")
 
     # ============================================================ startup
     def start_initial(self):
@@ -928,7 +967,7 @@ class MainWindow(Qt.QWidget):
         if self.args.freq:
             self._set_tuner(self.args.freq * 1e6)
         if self.args.sweep:
-            self._set_sweep_span(*self.args.sweep)
+            self._set_sweep_span(*(mhz * 1e6 for mhz in self.args.sweep))
         mode = self.args.mode or ('receive' if self.args.file else None)
         if mode:
             self.tabs.blockSignals(True)
@@ -1037,7 +1076,8 @@ class MainWindow(Qt.QWidget):
         self._tuner_range(low, high)
         self.center_entry.set_range(low, high)
         self._show_sweep_rows(radio.native_sweep)
-        self.rt_btn.setVisible(radio.native_sweep and radio.has_realtime)
+        self.rt_btn.setVisible(radio.native_sweep and radio.has_realtime
+                               and self.args.realtime)
         if self.cfg['sweep_band'] == 'full':
             self._set_sweep_span(*radio.sweep_range_hz, replan=False)
         else:
@@ -2630,7 +2670,9 @@ class MainWindow(Qt.QWidget):
             'sweep_start_mhz': self.sweep_start.value() / 1e6,
             'sweep_stop_mhz': self.sweep_stop.value() / 1e6,
             'sweep_rbw_khz': (self.rbw_combo.currentData() or 0.0) / 1e3,
-            'sweep_realtime': self.rt_btn.isChecked(),
+            # Kept for --realtime while the button is hidden.
+            'sweep_realtime': (self.rt_btn.isChecked() if self.args.realtime
+                               else self.cfg['sweep_realtime']),
             'sweep_fft': self.fft_combo.currentData(),
             'sweep_frames': self.frames_spin.value(),
             'min_snr_db': self.snr_spin.value(), 'snap': self.snap_check.isChecked(),
@@ -2681,6 +2723,10 @@ def parse_args(argv=None):
     ap.add_argument('--sweep', type=float, nargs=2, metavar=('START', 'STOP'),
                     help="sweep span in MHz")
     ap.add_argument('--theme', choices=list(theme.NAMES))
+    ap.add_argument('--realtime', action='store_true',
+                    help="show the Sweep tab's Real time button (a BB60D, not "
+                         "on a Mac): 27 MHz with nothing missed, and a density "
+                         "map - Receive at 40 MS/s is otherwise much the same")
     ap.add_argument('--no-audio', action='store_true',
                     help="no sound output (recording still works)")
     ap.add_argument('--no-save', action='store_true',
