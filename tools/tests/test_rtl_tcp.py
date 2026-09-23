@@ -12,6 +12,9 @@ the commands it is sent.
 - Closing lets go of the socket, and a server that was already running is
   not stopped (it was not ours).
 - Something on the port that is not rtl_tcp is refused with a message.
+- A dongle is detected by its USB vendor and product (sysfs on Linux,
+  ioreg on a Mac), and Realtek's card readers and network adapters are not
+  taken for one.
 
 Run:  python tools/tests/test_rtl_tcp.py        (a few seconds)
 """
@@ -153,8 +156,42 @@ def test_not_rtl_tcp():
     fake.close()
 
 
+
+def test_usb_detection():
+    import tempfile
+    # Linux: a device directory has idVendor/idProduct; an interface has none.
+    with tempfile.TemporaryDirectory() as root:
+        for name, ids in (('3-1.2', ('1d50', '6089')), ('4-4', ('0bda', '0328')),
+                          ('1-2', ('0bda', '2838')), ('1-2:1.0', None)):
+            os.mkdir(os.path.join(root, name))
+            if ids:
+                for key, value in zip(('idVendor', 'idProduct'), ids):
+                    with open(os.path.join(root, name, key), 'w') as f:
+                        f.write(value + '\n')
+        ids = radios._sysfs_usb_ids(root)
+        assert sorted(ids) == [(0x0bda, 0x0328), (0x0bda, 0x2838), (0x1d50, 0x6089)], ids
+    assert radios._sysfs_usb_ids('/nonexistent') == []
+    # A Mac: keys in either order, a hub with none of the IDs in between.
+    text = """+-o Root  <class IORegistryEntry>
+  | +-o USB 10/100/1000 LAN@02221000  <class IOUSBHostDevice>
+  |       "USB Product Name" = "USB 10_100_1000 LAN"
+  |       "idVendor" = 3034
+  |       "idProduct" = 33107
+  |   +-o RTL2838UHIDIR@02124000  <class IOUSBHostDevice>
+  |         "idProduct" = 10296
+  |         "USB Product Name" = "RTL2838UHIDIR"
+  |         "idVendor" = 3034
+  +-o AppleT8132USBXHCI@01000000  <class AppleT8132USBXHCI>
+"""
+    ids = radios._ioreg_usb_ids(text)
+    assert ids == [(0x0bda, 0x8153), (0x0bda, 0x2838)], ids
+    assert radios.RTL_USB_IDS & set(ids)
+    assert not radios.RTL_USB_IDS & {(0x0bda, 0x0328), (0x0bda, 0x8153)}
+
+
 if __name__ == '__main__':
     test_parse_address()
     test_stream_and_commands()
     test_not_rtl_tcp()
+    test_usb_detection()
     print('rtl_tcp: all checks passed')

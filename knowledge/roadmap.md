@@ -843,4 +843,6 @@ is fine for FM. First step towards using several radios over a network.
   stereo and RDS, the LO-hopping sweep, settle measured.
 - [x] **Local on real hardware**: a dongle plugged into the machine the app
   runs on (Linux, 2026-09-23). Not yet on the Mac locally.
+- [x] **Found on the first run**, after the BB60D and HackRF: by its USB
+  IDs, which Realtek's other devices don't share.
 - [ ] **Several radios over the network**: the next step (to be planned).

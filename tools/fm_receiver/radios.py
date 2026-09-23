@@ -711,9 +711,68 @@ def make_radio(kind, usrp_address='', file_path='', rtl_address=''):
     return RADIO_KINDS.get(kind, HackRF)()
 
 
+#: USB (vendor, product) of RTL2832U dongles: the generic RTL2832U and the
+#: RTL2838 that RTL-SDR Blog, NooElec and most others are. Realtek also
+#: makes card readers and network adapters (0bda:0328, 0bda:8153 on the
+#: bench machines), so the vendor alone is not enough.
+RTL_USB_IDS = {(0x0bda, 0x2832), (0x0bda, 0x2838)}
+
+
+def _sysfs_usb_ids(root='/sys/bus/usb/devices'):
+    """(vendor, product) of each USB device Linux lists, none opened."""
+    ids = []
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return ids
+    for name in names:
+        try:
+            with open(os.path.join(root, name, 'idVendor')) as f:
+                vendor = int(f.read(), 16)
+            with open(os.path.join(root, name, 'idProduct')) as f:
+                product = int(f.read(), 16)
+        except (OSError, ValueError):
+            continue                              # interfaces have no IDs
+        ids.append((vendor, product))
+    return ids
+
+
+def _ioreg_usb_ids(text):
+    """(vendor, product) of each device in ``ioreg -p IOUSB -l`` output.
+    Each device starts at a ``+-o`` line, and its keys come in any order."""
+    ids, vendor, product = [], None, None
+    for line in text.splitlines():
+        if '+-o' in line:
+            if vendor is not None and product is not None:
+                ids.append((vendor, product))
+            vendor = product = None
+        elif '"idVendor" = ' in line:
+            vendor = int(line.rsplit('=', 1)[1])
+        elif '"idProduct" = ' in line:
+            product = int(line.rsplit('=', 1)[1])
+    if vendor is not None and product is not None:
+        ids.append((vendor, product))
+    return ids
+
+
+def usb_ids():
+    """(vendor, product) of every USB device plugged in, without opening
+    any: sysfs on Linux, ioreg on a Mac."""
+    if sys.platform == 'darwin':
+        import subprocess
+        try:
+            out = subprocess.run(['ioreg', '-p', 'IOUSB', '-l', '-w0'],
+                                 capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return []
+        return _ioreg_usb_ids(out)
+    return _sysfs_usb_ids()
+
+
 def detect_radios():
     """The radio kinds plugged in now, cheapest checks only (USB, SoapySDR).
-    A USRP on the network is not looked for: that takes seconds."""
+    A USRP on the network is not looked for: that takes seconds, and nor
+    is an RTL-SDR on another computer."""
     found = []
     try:
         from .bb60_source import find_devices
@@ -727,6 +786,8 @@ def detect_radios():
             found.append('hackrf')
     except Exception as exc:
         print(f"FM receiver: HackRF check failed: {exc}", file=sys.stderr)
+    if RTL_USB_IDS & set(usb_ids()):
+        found.append('rtlsdr')
     return found
 
 

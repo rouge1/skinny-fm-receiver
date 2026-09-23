@@ -110,7 +110,7 @@ different one) and opens the window directly; there is no launcher and no
 setup dialog.
 
 - **First run:** the app opens whichever radio is plugged in, checking for the
-  BB60D first and then the HackRF, and starts in Receive on 98.7 MHz.
+  BB60D first, then the HackRF, then an RTL-SDR plugged into this computer, and starts in Receive on 98.7 MHz.
 - **After that:** it reopens with the same radio, mode, frequency and window
   layout you last used.
 
