@@ -303,12 +303,29 @@ def clipped_readout(w):
         text = show('sweep', 0.025, 533.5e6)
         assert 'overloaded' in text and theme['bad'] in text, text
         assert '2.50% of samples clipped in the step centred on 533.5 MHz' in text, text
+        # Just opened: the clipped share is dropped, not shown - an RTL-SDR
+        # clips for its first 0.4 s after being plugged in.
+        w._clip_counts = counts
+        opened_at, taken = w._opened_at, []
+        if w._mode == 'receive' and w.engine.rx is not None:
+            clip = w.engine.rx.clip
+            real_take = clip.take
+            clip.take = lambda: taken.append(1) or real_take()
+            try:
+                w._opened_at = time.monotonic()
+                assert w._clip_counts() is None and taken, 'read and dropped'
+                w._opened_at = time.monotonic() - fmapp.OPEN_CLIP_GRACE_S - 0.1
+                assert w._clip_counts()[0] == 'receive'
+            finally:
+                del clip.take
+                w._opened_at = opened_at
     finally:
         radio.clip_warn = False
         w._clip_counts = counts
         w._overload_until = 0.0
         w._clip_smooth = None
-    print("clipped readout: good, amber, overloaded; a sweep names its worst step")
+    print("clipped readout: good, amber, overloaded; a sweep names its worst step; "
+          "none just after opening")
 
 
 def part1_file_receiver():

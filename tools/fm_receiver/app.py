@@ -85,6 +85,10 @@ CLIP_NOTE = 3e-3
 #: The clipped readout is smoothed over about this long, as ble-scanner's is
 #: (0.95 old + 0.05 new per 16 ms).
 CLIP_TAU_S = 0.3
+#: The clipped share is not read for this long after a radio opens: an
+#: RTL-SDR just plugged in clipped 1.5% for its first 0.4 s (its tuner
+#: settling), then nothing, which flashed "Input overloaded" for 3 s.
+OPEN_CLIP_GRACE_S = 1.0
 #: No samples from the radio for this long and the status line says it is
 #: lost: longer than any mode switch or retune takes. A radio's own sweep
 #: may take longer than this for one pass, so it gets three of those.
@@ -246,6 +250,7 @@ class MainWindow(Qt.QWidget):
         self._clipped_at = None
         self._clip_smooth = None
         self._clip_t = time.monotonic()
+        self._opened_at = None
         self._agc_levels = []
         self._names = {}
         self._rx_sig = None
@@ -1059,6 +1064,7 @@ class MainWindow(Qt.QWidget):
         self.cfg['radio'] = kind
         self._load_radio_settings()
         self._start_mode(self._tab_mode())
+        self._opened_at = time.monotonic()
 
     def _show_error(self, text):
         first = text.split('\n')[0]
@@ -2509,6 +2515,11 @@ class MainWindow(Qt.QWidget):
         samples) since the last call, ('sweep', worst step's share, its
         centre in Hz) for the last complete sweep, or None."""
         if self.radio is None or not self.radio.clip_warn:
+            return None
+        if self._opened_at is not None \
+                and time.monotonic() - self._opened_at < OPEN_CLIP_GRACE_S:
+            if self._mode == 'receive' and self.engine.rx is not None:
+                self.engine.rx.clip.take()           # dropped, not shown
             return None
         if self._mode == 'receive' and self.engine.rx is not None:
             return ('receive',) + self.engine.rx.clip.take()
