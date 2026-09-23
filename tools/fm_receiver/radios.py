@@ -432,6 +432,82 @@ class BB60(Radio):
         return health
 
 
+class RTLSDR(Radio):
+    """An RTL-SDR dongle through ``rtl_tcp`` (``rtl_tcp.py``): here, or on
+    another computer over ssh and the network. Sweeps by hopping its LO,
+    each retune a command over the socket, so its settle covers the samples
+    still in flight across the network as well as the tuner's."""
+    kind = 'rtlsdr'
+    name = 'RTL-SDR'
+    clip_warn = True
+    #: 2.4 MS/s is the most an RTL2832U delivers without dropping samples.
+    receive_rates = (2e6, 2.4e6)
+    sweep_rates = (2.4e6,)
+    default_receive_rate = 2.4e6
+    default_sweep_rate = 2.4e6
+    #: Measured over the network to a Mac mini (2026-09-23): the old
+    #: frequency still arrives for 30-70 ms after a retune command.
+    settle_ms = 100.0
+    dc_notch_hz = 10e3
+    usable = 0.8
+    default_gain = 60
+    freq_range_hz = (24e6, 1766e6)               # an R820T's
+
+    def __init__(self, address=''):
+        super().__init__()
+        self.address = address.strip()
+        self.server = None
+        self.tuner = 0
+
+    def describe(self):
+        from .rtl_tcp import TUNERS
+        where = self.address or 'this computer'
+        tuner = TUNERS.get(self.tuner)
+        return f"{self.name}{' ' + tuner if tuner else ''} ({where})"
+
+    def open(self):
+        from .rtl_tcp import RtlTcpError, open_client, rtl_tcp_source
+        try:
+            sock, self.tuner, self.server = open_client(self.address)
+        except (RtlTcpError, OSError) as exc:
+            raise RadioError(
+                f"No RTL-SDR could be reached on {self.address or 'this computer'}."
+                f"\n\n({exc})") from exc
+        self.block = rtl_tcp_source(sock, self.default_receive_rate)
+
+    def close(self):
+        super().close()
+        server, self.server = self.server, None
+        if server is not None:
+            server.stop()
+
+    def set_rate(self, rate):
+        from .rtl_tcp import CMD_RATE
+        super().set_rate(rate)
+        self.block.rate = self.rate
+        self.block.command(CMD_RATE, self.rate)
+        self.block.flush()
+
+    def set_center(self, hz):
+        from .rtl_tcp import CMD_FREQ
+        super().set_center(hz)
+        self.block.command(CMD_FREQ, self.center_hz)
+        self.block.flush()
+
+    def apply_gain(self, percent=None):
+        from .rtl_tcp import CMD_GAIN, CMD_GAIN_MODE, gain_steps
+        super().apply_gain(percent)
+        steps = gain_steps(self.tuner)
+        index = int(round(self.gain_percent / 100.0 * (len(steps) - 1)))
+        self.block.command(CMD_GAIN_MODE, 1)
+        self.block.command(CMD_GAIN, steps[index])
+
+    def health(self):
+        if self.block is None:
+            return {}
+        return {'dropped': self.block.overflows}
+
+
 def _load_bb60_module():
     """Load the BB60 SoapySDR module, in case SoapySDR started without it
     (something used SoapySDR before the plugin path was set).
@@ -619,14 +695,17 @@ class IQFile(Radio):
         return self.played() % self.total
 
 
-RADIO_KINDS = {'hackrf': HackRF, 'usrp': USRP, 'bb60': BB60, 'file': IQFile}
-RADIO_NAMES = {'hackrf': 'HackRF One', 'usrp': 'Ettus USRP',
+RADIO_KINDS = {'hackrf': HackRF, 'usrp': USRP, 'bb60': BB60, 'rtlsdr': RTLSDR,
+               'file': IQFile}
+RADIO_NAMES = {'hackrf': 'HackRF One', 'usrp': 'Ettus USRP', 'rtlsdr': 'RTL-SDR',
                'bb60': 'Signal Hound BB60D', 'file': 'IQ recording (playback)'}
 
 
-def make_radio(kind, usrp_address='', file_path=''):
+def make_radio(kind, usrp_address='', file_path='', rtl_address=''):
     if kind == 'usrp':
         return USRP(usrp_address)
+    if kind == 'rtlsdr':
+        return RTLSDR(rtl_address)
     if kind == 'file':
         return IQFile(file_path)
     return RADIO_KINDS.get(kind, HackRF)()

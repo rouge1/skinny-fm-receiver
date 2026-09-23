@@ -1,0 +1,160 @@
+"""The RTL-SDR's rtl_tcp client, with no radio: a fake rtl_tcp server in
+this process sends the header and a tone as unsigned 8-bit IQ, and notes
+the commands it is sent.
+
+- ``parse_address``: blank is this computer, a port after a colon.
+- The radio opens against it, sets rate, frequency and gain as rtl_tcp's
+  commands, and a flowgraph gets the tone back as complex float at the
+  right frequency and level.
+- A backlog is dropped, not delivered late: the block holds at most
+  ``HOLD_S`` of samples while nothing reads them, and a stopped flowgraph's
+  backlog is not reported as dropped.
+- Closing lets go of the socket, and a server that was already running is
+  not stopped (it was not ours).
+- Something on the port that is not rtl_tcp is refused with a message.
+
+Run:  python tools/tests/test_rtl_tcp.py        (a few seconds)
+"""
+
+import os
+import socket
+import struct
+import sys
+import threading
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+
+import numpy as np  # noqa: E402
+from gnuradio import blocks, gr  # noqa: E402
+
+from fm_receiver import radios, rtl_tcp  # noqa: E402
+
+RATE = 2.4e6
+TONE_HZ = 100e3
+
+
+class FakeRtlTcp:
+    """Serves one client: the header, then a tone at ``RATE`` pace."""
+
+    def __init__(self, header=b'RTL0' + struct.pack('>II', 5, 29)):
+        self.header = header
+        self.commands = []
+        self.listener = socket.socket()
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.listener.bind(('127.0.0.1', 0))
+        self.listener.listen(1)
+        self.port = self.listener.getsockname()[1]
+        self.done = threading.Event()
+        self.client_gone = threading.Event()
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self):
+        conn, _ = self.listener.accept()
+        conn.sendall(self.header)
+        threading.Thread(target=self._commands, args=(conn,), daemon=True).start()
+        n = np.arange(24000)
+        z = 0.5 * np.exp(2j * np.pi * TONE_HZ / RATE * n)
+        iq = np.empty(2 * len(n), dtype=np.uint8)
+        iq[0::2] = np.clip(np.round(z.real * 127.5 + 127.5), 0, 255)
+        iq[1::2] = np.clip(np.round(z.imag * 127.5 + 127.5), 0, 255)
+        chunk = iq.tobytes()                     # 10 ms, a whole number of cycles
+        try:
+            while not self.done.is_set():
+                conn.sendall(chunk)
+                time.sleep(0.01)
+        except OSError:
+            pass
+        self.client_gone.set()
+        conn.close()
+
+    def _commands(self, conn):
+        buf = b''
+        while True:
+            try:
+                data = conn.recv(64)
+            except OSError:
+                return
+            if not data:
+                self.client_gone.set()
+                return
+            buf += data
+            while len(buf) >= 5:
+                self.commands.append(struct.unpack('>BI', buf[:5]))
+                buf = buf[5:]
+
+    def close(self):
+        self.done.set()
+        self.listener.close()
+
+
+def test_parse_address():
+    assert rtl_tcp.parse_address('') == ('', 1234)
+    assert rtl_tcp.parse_address(' macmini ') == ('macmini', 1234)
+    assert rtl_tcp.parse_address('10.0.0.2:1300') == ('10.0.0.2', 1300)
+    assert rtl_tcp.is_local('') and rtl_tcp.is_local('localhost')
+    assert rtl_tcp.resolve_ssh_host('') == '127.0.0.1'
+
+
+def test_stream_and_commands():
+    fake = FakeRtlTcp()
+    radio = radios.make_radio('rtlsdr', rtl_address=f'127.0.0.1:{fake.port}')
+    radio.open()
+    assert radio.server is None, "a running rtl_tcp was used, not started"
+    assert 'R820T' in radio.describe()
+    radio.set_rate(RATE)
+    radio.set_center(98.7e6)
+    radio.apply_gain(50)
+
+    tb = gr.top_block()
+    head = blocks.head(gr.sizeof_gr_complex, int(RATE * 0.3))
+    sink = blocks.vector_sink_c()
+    tb.connect(radio.block, head, sink)
+    tb.start()
+    tb.wait()
+    tb.stop()
+    x = np.array(sink.data(), dtype=np.complex64)
+    assert len(x) == int(RATE * 0.3), len(x)
+    level = np.sqrt(np.mean(np.abs(x) ** 2))
+    assert abs(level - 0.5) < 0.02, level
+    spec = np.abs(np.fft.fft(x[:65536]))
+    peak = np.fft.fftfreq(65536, 1 / RATE)[np.argmax(spec)]
+    assert abs(peak - TONE_HZ) < 100, peak
+
+    cmds = dict(fake.commands)
+    assert cmds[rtl_tcp.CMD_RATE] == int(RATE), fake.commands
+    assert cmds[rtl_tcp.CMD_FREQ] == int(98.7e6), fake.commands
+    assert cmds[rtl_tcp.CMD_GAIN_MODE] == 1, fake.commands
+    assert cmds[rtl_tcp.CMD_GAIN] in rtl_tcp.GAINS[5], fake.commands
+
+    # Nothing reading: the block keeps the newest HOLD_S, drops the rest -
+    # and, the flowgraph stopped, does not count that as a loss.
+    time.sleep(0.6)
+    with radio.block._cond:
+        held = radio.block._queued
+    assert held <= RATE * radio.block.HOLD_S + 40000, held
+    assert radio.block.overflows == 0, radio.block.overflows
+
+    radio.close()
+    assert fake.client_gone.wait(2), "the socket was not closed"
+    fake.close()
+
+
+def test_not_rtl_tcp():
+    fake = FakeRtlTcp(header=b'HTTP/1.1 200')
+    radio = radios.make_radio('rtlsdr', rtl_address=f'127.0.0.1:{fake.port}')
+    try:
+        radio.open()
+    except radios.RadioError as exc:
+        assert 'not rtl_tcp' in str(exc), exc
+    else:
+        raise AssertionError("a server that is not rtl_tcp was accepted")
+    fake.close()
+
+
+if __name__ == '__main__':
+    test_parse_address()
+    test_stream_and_commands()
+    test_not_rtl_tcp()
+    print('rtl_tcp: all checks passed')

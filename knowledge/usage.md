@@ -17,7 +17,7 @@ On a Mac, get conda from Miniforge first (`brew install --cask miniforge`).
 `./fm-receiver` finds it by itself. For `conda activate` in Terminal, run
 `conda init zsh` once and open a new window.
 
-The environment is everything the HackRF, a USRP and IQ playback need. The
+The environment is everything the HackRF, an RTL-SDR, a USRP and IQ playback need. The
 BB60D needs two
 more things that conda doesn't have: Signal Hound's library
 (`libbb_api`) and their SoapySDR module. They are not in this repository.
@@ -118,8 +118,9 @@ Useful options (`./fm-receiver --help` lists them all):
 
 | Option | What it does |
 |---|---|
-| `--radio bb60` / `hackrf` / `usrp` / `file` | Choose the radio for this run |
+| `--radio bb60` / `hackrf` / `usrp` / `rtlsdr` / `file` | Choose the radio for this run |
 | `--usrp-address 192.168.10.2` | Connect to a USRP at this address |
+| `--rtl-address macmini` | Use an RTL-SDR on another computer (an ssh host), and show its address box. Without it the RTL-SDR is this computer's |
 | `--file PATH` | Play back an IQ recording instead of a radio |
 | `--freq 95.1` | Tune to this station (MHz) |
 | `--mode sweep` / `receive` / `recordings` | Start in this tab |
@@ -576,6 +577,7 @@ any station that was in the band. A playback can't sweep.
 |---|---|
 | **Signal Hound BB60D** | IQ bandwidth 10 MS/s by default (see *Which IQ bandwidth?* above). RF gain 60% (attenuator fully open, no RF amplification) is the tested best for FM. More gain overloads the front end with every other station in the band; if the status line says *Input overloaded*, turn it down. It sweeps itself, 9 kHz to 6 GHz, and the RF gain applies to that sweep too. The device stays open across mode switches: 0.02 s to Sweep, 0.2 s back. A full-range sweep uses about one CPU core, nearly all of it Signal Hound's API. On a Mac it has no real time, no 2.5 MS/s (greyed out), and stays open until the app quits (see *Setting up*). |
 | **HackRF One** | Gain is spread over the preamp, LNA and VGA, with the toolkit's plan. **40% (the default) was best on the bench antenna**: 99% of RDS blocks good. At 47% and above the strong local stations drove its 8-bit ADC to full scale and RDS was lost. When that happens the status line says *Input overloaded – turn the RF gain down* with the share of samples clipped; turn the gain down until it goes. Wider IQ bandwidths let more stations in, so they need less gain: at 10 MS/s, 40% already clipped a little. A weak antenna may want more; too little shows as a pilot locking while RDS stays buried. It sweeps with its firmware: the IQ stream's device is closed while it does, and opened again for Receive (about 0.1 s each way). Over the whole range a gain that suits FM clips in the TV and phone bands; the status line names the step. |
+| **RTL-SDR** | Through `rtl_tcp`, which the app starts and stops itself. A dongle plugged into this computer just works: choose RTL-SDR (it needs `rtl_tcp` installed: the environment's `rtl-sdr`, or Homebrew's `librtlsdr` on a Mac; on Linux the kernel's TV driver is detached by itself, and if rtl_tcp says *Kernel driver is active* anyway, `sudo rmmod dvb_usb_rtl28xxu`). **On another computer** (an advanced use): start the app with `--rtl-address HOST`, where HOST is an ssh host such as a name from `~/.ssh/config`, with `:port` if 1234 is taken. Only then does an address box appear next to the Radio list, to change it while the app runs (blank there is this computer). That computer needs `rtl_tcp` and key-based ssh login (no password prompt). If an rtl_tcp is already running there, the app uses it and leaves it running. 2.4 MS/s is its widest; it sweeps by hopping, about 3 s over the FM band. 60% gain (the default) is right for the FM band on an R820T; the status line shows the clipped share, as for a HackRF. |
 | **Ettus USRP** | Type the IP address in the box next to the Radio list, or leave it blank to use the first USRP found. |
 
 ## Keyboard shortcuts
@@ -614,7 +616,7 @@ To start fresh, delete the file. To use a different settings file, set
 | Symptom | What to do |
 |---|---|
 | "No … was found" in the status line | Check the cable, and close anything else using the radio (Spike, GQRX, hackrf_transfer, another copy of this app). Then choose the radio again or press Start. |
-| Ghost copies of signals in a sweep | On a USRP, increase **Settle**. (The BB60D and HackRF sweep themselves.) |
+| Ghost copies of signals in a sweep | On a USRP or an RTL-SDR, increase **Settle** (an RTL-SDR on a slower network may need more than its 100 ms). (The BB60D and HackRF sweep themselves.) |
 | Part of the left column is hidden under the spectrum | Drag the divider right. The column resizes itself on a theme change, so this should not happen any more. |
 | No RDS on a strong station | It may not send RDS; check the MPX view for a hump at 57 kHz. On a weak station, try a narrower channel filter. |
 | *Input overloaded* | Turn the RF gain down. On a HackRF it also gives the share of samples clipped; turn down until the message goes. In a sweep it names the step that clipped: over the whole range a strong TV transmitter can clip one step at a gain that suits FM, and then the FM band preset is the one to use. |

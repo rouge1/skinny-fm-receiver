@@ -18,3 +18,4 @@ dependencies:
   - soapysdr=0.8
   - soapysdr-module-hackrf
   - hackrf                  # hackrf_info, used by the HackRF hardware test
+  - rtl-sdr                 # rtl_tcp, for an RTL-SDR plugged in here

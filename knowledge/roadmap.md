@@ -829,3 +829,18 @@ kept whole:
   forth in time, to look at (and later play back) a stretch of the past.
   Needs the IQ kept as well as the picture - the history is only the
   waterfall's rows today.
+
+## Round 13: the RTL-SDR, here and over the network (requested 2026-09-23)
+
+Frees the BB60D and HackRF for ble-scanner: an RTL-SDR can't do BLE, but
+is fine for FM. First step towards using several radios over a network.
+
+- [x] **An RTL-SDR through rtl_tcp**, the app as its client: no new
+  packages on the far side, only rtl_tcp.
+- [x] **Here or on another computer**: blank address runs rtl_tcp
+  locally; an ssh host runs it there, started and stopped by the app.
+- [x] **Off air over the network** (the Mac mini's R820T): Receive with
+  stereo and RDS, the LO-hopping sweep, settle measured.
+- [x] **Local on real hardware**: a dongle plugged into the machine the app
+  runs on (Linux, 2026-09-23). Not yet on the Mac locally.
+- [ ] **Several radios over the network**: the next step (to be planned).

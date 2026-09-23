@@ -15,7 +15,9 @@ Part 3 puts a radio that sweeps itself (as the BB60D does) behind it: the
 full range, the RBW, real time and its density map. Part 4 does the same
 where the library has no real time, as on a Mac. Part 5 lists a receive rate
 this computer can't use (the BB60D's 2.5 MS/s on a Mac): greyed out, with
-why, and out of reach of the keys, the wheel and a saved setting.
+why, and out of reach of the keys, the wheel and a saved setting. Part 6:
+the RTL-SDR's network address box shows only with ``--rtl-address``, and
+without it the RTL-SDR is this computer's.
 
 Run:  python tools/tests/test_gui.py [--keep]     (about 40 s)
 """
@@ -1125,6 +1127,49 @@ def part5_unavailable_rate():
     print("part 5 passed")
 
 
+def part6_rtl_address():
+    """The RTL-SDR on another computer is an advanced use: its address box
+    is hidden unless the app was started with --rtl-address, and without the
+    flag the radio is this computer's (blank address), whatever the box or
+    the settings hold."""
+    opened = []
+
+    def fake_make_radio(kind, usrp_address='', file_path='', rtl_address=''):
+        opened.append(rtl_address)
+        radio = SimRadio()
+        radio.kind, radio.address = 'rtlsdr', rtl_address.strip()
+        return radio
+
+    original = fmapp.make_radio
+    fmapp.make_radio = fake_make_radio
+    try:
+        w = make_window(['--radio', 'rtlsdr', '--mode', 'receive'],
+                        {'recording_dir': FOLDER, 'rtl_address': 'macmini'})
+        assert w.radio_combo.currentData() == 'rtlsdr'
+        assert w.rtl_edit.isHidden(), 'no box without --rtl-address'
+        assert opened == [''], opened
+        w.close()
+
+        opened.clear()
+        w = make_window(['--radio', 'rtlsdr', '--mode', 'receive',
+                         '--rtl-address', 'macmini'])
+        assert not w.rtl_edit.isHidden(), 'the box with --rtl-address'
+        assert opened == ['macmini'], opened
+        w.rtl_edit.setText('otherhost:1300')
+        w.rtl_edit.editingFinished.emit()
+        pump(0.2)
+        assert opened[-1] == 'otherhost:1300', opened
+        w.rtl_edit.editingFinished.emit()      # unchanged: no reopen
+        pump(0.2)
+        assert len(opened) == 2, opened
+        w._use_radio('hackrf')
+        assert w.rtl_edit.isHidden(), 'hidden for another radio'
+        w.close()
+    finally:
+        fmapp.make_radio = original
+    print("part 6 passed")
+
+
 if __name__ == '__main__':
     keep = '--keep' in sys.argv
     try:
@@ -1133,6 +1178,7 @@ if __name__ == '__main__':
         part3_native_sweep()
         part4_no_realtime()
         part5_unavailable_rate()
+        part6_rtl_address()
         print("GUI: all checks passed")
     finally:
         # A failed check must not leave a flowgraph running into interpreter

@@ -87,7 +87,7 @@ CLIP_NOTE = 3e-3
 CLIP_TAU_S = 0.3
 #: Below any reference level AGC would pick: from here it always rises.
 REF_FLOOR_DB = -200.0
-RADIO_ORDER = ('hackrf', 'usrp', 'bb60', 'file')
+RADIO_ORDER = ('hackrf', 'usrp', 'bb60', 'rtlsdr', 'file')
 #: The tabs, in order.
 TAB_MODES = ('sweep', 'receive', 'recordings')
 #: The saved view (dials, span) of the RF spectrum in each mode that has one.
@@ -296,6 +296,22 @@ class MainWindow(Qt.QWidget):
         self.usrp_edit.setMaximumWidth(220)
         self.usrp_edit.editingFinished.connect(self._usrp_address_changed)
         row.addWidget(self.usrp_edit)
+        # An RTL-SDR on another computer is for those who ask for it: the
+        # box shows only when the app is started with --rtl-address.
+        # Without it the RTL-SDR is this computer's. Not saved: the flag
+        # says where, each run.
+        self._rtl_network = self.args.rtl_address is not None
+        self.rtl_edit = Qt.QLineEdit(self.args.rtl_address or '')
+        self.rtl_edit.setPlaceholderText("ssh host[:port] (blank: this computer)")
+        self.rtl_edit.setToolTip(
+            "Where the RTL-SDR is plugged in. Blank: this computer. Otherwise an "
+            "ssh host (as in ~/.ssh/config): rtl_tcp is started there over ssh "
+            "and the samples come over the network. If rtl_tcp is already "
+            "listening on the port (1234 unless given), it is used as it is.")
+        self.rtl_edit.setMaximumWidth(260)
+        self.rtl_edit.editingFinished.connect(self._rtl_address_changed)
+        self.rtl_edit.setVisible(False)
+        row.addWidget(self.rtl_edit)
         self.file_btn = Qt.QPushButton("Open IQ file...")
         self.file_btn.clicked.connect(self._choose_file)
         row.addWidget(self.file_btn)
@@ -990,6 +1006,7 @@ class MainWindow(Qt.QWidget):
             # The radio waits, closed, for Sweep or Receive.
             self.radio_combo.setCurrentIndex(max(0, self.radio_combo.findData(kind)))
             self.usrp_edit.setVisible(kind == 'usrp')
+            self.rtl_edit.setVisible(kind == 'rtlsdr' and self._rtl_network)
             self.file_btn.setVisible(kind == 'file')
             self._enter_recordings()
             return
@@ -1005,9 +1022,11 @@ class MainWindow(Qt.QWidget):
         index = self.radio_combo.findData(kind)
         self.radio_combo.setCurrentIndex(max(0, index))
         self.usrp_edit.setVisible(kind == 'usrp')
+        self.rtl_edit.setVisible(kind == 'rtlsdr' and self._rtl_network)
         self.file_btn.setVisible(kind == 'file')
         self._remember_radio_settings()
-        radio = make_radio(kind, self.usrp_edit.text(), self.cfg.get('iq_file', ''))
+        radio = make_radio(kind, self.usrp_edit.text(), self.cfg.get('iq_file', ''),
+                           self.rtl_edit.text() if self._rtl_network else '')
         self._set_status(f"Opening {radio.describe()}...")
         Qt.QApplication.processEvents()
         try:
@@ -1131,6 +1150,14 @@ class MainWindow(Qt.QWidget):
             self.cfg['usrp_address'] = self.usrp_edit.text().strip()
             if self.radio_combo.currentData() == 'usrp':
                 self._use_radio('usrp')
+
+    def _rtl_address_changed(self):
+        if self.radio_combo.currentData() != 'rtlsdr':
+            return
+        radio = self.radio
+        if (radio is None or radio.kind != 'rtlsdr'
+                or radio.address != self.rtl_edit.text().strip()):
+            self._use_radio('rtlsdr')
 
     def _choose_file(self, start=True):
         folder = (os.path.dirname(self.cfg.get('iq_file') or '')
@@ -1907,8 +1934,8 @@ class MainWindow(Qt.QWidget):
             self.engine.close()
             self.radio = None
         self._mode = None
-        for widget in (self.radio_combo, self.usrp_edit, self.file_btn, self.run_btn,
-                       self.gain_slider, self.agc_box, self.rec_btn):
+        for widget in (self.radio_combo, self.usrp_edit, self.rtl_edit, self.file_btn,
+                       self.run_btn, self.gain_slider, self.agc_box, self.rec_btn):
             widget.setEnabled(False)
         self._idle_views()
         held = self._live['kind'] == 'bb60' and bb60_source.KEEP_OPEN
@@ -1923,7 +1950,7 @@ class MainWindow(Qt.QWidget):
         self._stop_playback()
         live, self._live = self._live, None
         self._show_audio_view(False)
-        for widget in (self.radio_combo, self.usrp_edit, self.file_btn, self.run_btn):
+        for widget in (self.radio_combo, self.usrp_edit, self.rtl_edit, self.file_btn, self.run_btn):
             widget.setEnabled(True)
         self._tuner_range(1e3, 6000e6)
         self._set_tuner(live['tuner'])
@@ -2745,6 +2772,11 @@ def parse_args(argv=None):
                     help="radio to open (default: the last one used, else "
                          "whichever is plugged in)")
     ap.add_argument('--usrp-address', help="a USRP's IP address")
+    ap.add_argument('--rtl-address', metavar='HOST[:PORT]',
+                    help="use an RTL-SDR on another computer: an ssh host to "
+                         "start rtl_tcp on ('' for this computer). Also shows "
+                         "the address box next to the Radio list; without "
+                         "this flag the RTL-SDR is always this computer's")
     ap.add_argument('--file', help="play an IQ recording (implies --radio file)")
     ap.add_argument('--freq', type=float, metavar='MHZ', help="station to tune")
     ap.add_argument('--mode', choices=TAB_MODES, help="tab to start in")
