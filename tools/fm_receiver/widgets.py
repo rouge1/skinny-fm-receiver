@@ -1158,6 +1158,7 @@ class SpectrumView(Qt.QWidget):
         self.plot.addItem(self.marker, ignoreBounds=True)
         # A real-time density map (the BB60D's), behind the trace.
         self.density_item = pg.ImageItem()
+        self._density_args = None
         self.density_item.setZValue(-5)
         self.density_item.setVisible(False)
         self.plot.addItem(self.density_item, ignoreBounds=True)
@@ -1323,7 +1324,8 @@ class SpectrumView(Qt.QWidget):
             for line in region.lines:
                 line.setPen(edge)
         self.message.setColor(t['warn'])
-        self.density_item.setLookupTable(density_lut())
+        if self._density_args is not None:
+            self.set_density(*self._density_args)    # in the new theme's colours
         if self.wf_plot is not None:
             self.wf_marker.setPen(tuner)
             self.wf_center_line.setPen(centre)
@@ -1423,22 +1425,29 @@ class SpectrumView(Qt.QWidget):
     #: a column (525 columns over 4,200 points at 10 kHz RBW).
     DENSITY_LOG_RANGE = (-4.0, -0.6)
 
-    def set_density(self, frame, extent):
+    def set_density(self, frame, extent, alpha=None):
         """Draw a real-time density map behind the trace: ``frame`` rows
         from bottom to top, over ``extent`` = (low Hz, high Hz, bottom dB,
-        top dB). Where nothing was hit stays clear."""
+        top dB). Where nothing was hit stays clear. ``alpha``, the API's
+        persistence (1 just hit, fading to 0), scales each pixel's
+        opacity, so a burst fades out where it was."""
+        self._density_args = (frame, extent, alpha)
         low_hz, high_hz, bottom, top = extent
         lo, hi = self.DENSITY_LOG_RANGE
         with np.errstate(divide='ignore'):
             level = (np.log10(frame) - lo) / (hi - lo)
-        img = np.where(frame > 0, np.clip(level, 1.0 / 255, 1.0), 0.0).astype(np.float32)
-        self.density_item.setImage(img, autoLevels=False, levels=(0.0, 1.0),
+        index = np.where(frame > 0, np.clip(np.round(level * 255), 1, 255), 0).astype(np.intp)
+        rgba = density_lut()[index]              # the theme's, read now
+        if alpha is not None:
+            rgba[..., 3] = (rgba[..., 3] * np.clip(alpha, 0.0, 1.0)).astype(np.uint8)
+        self.density_item.setImage(rgba, autoLevels=False,
                                    rect=QtCore.QRectF(low_hz / self.scale, bottom,
                                                       (high_hz - low_hz) / self.scale,
                                                       top - bottom))
         self.density_item.setVisible(True)
 
     def clear_density(self):
+        self._density_args = None
         if self.density_item.isVisible():
             self.density_item.setVisible(False)
             self.density_item.clear()

@@ -217,6 +217,7 @@ class MainWindow(Qt.QWidget):
         self._list_serial = -1
         self._sweep_avg = None
         self._sweep_db = None
+        self._wf_hold = None
         #: The sweep's bounds before Real time took them, and the window it
         #: put there - so letting the button out can give the span back.
         self._before_rt = None
@@ -1342,6 +1343,7 @@ class MainWindow(Qt.QWidget):
     def _reset_sweep_display(self, plan, full_span=True):
         self._sweep_avg = None
         self._sweep_db = None
+        self._wf_hold = None
         self._last_serial = -1
         self._list_serial = -1
         self.rf_view.set_pan_limits(*SWEEP_VIEW_HZ)
@@ -2311,11 +2313,20 @@ class MainWindow(Qt.QWidget):
         self.meter.set_levels(peak, rms)
 
     def _draw_sweep(self):
-        freqs, live, done, serial = self.engine.sweeper.snapshot()
+        sweeper = self.engine.sweeper
+        freqs, live, done, serial = sweeper.snapshot()
         if len(live) != len(freqs) or (done is not None and len(done) != len(freqs)):
             return                                  # caught mid re-plan
         avg = max(1, int(self.rf_view.avg_knob.value()))
         new = done is not None and serial != self._last_serial
+        # A radio's own sweep can outrun the screen (real time: 30 frames a
+        # second, drawn 15): the most each point reached in all of them, so
+        # a burst in a frame between draws still reaches the trace, peak
+        # hold and waterfall.
+        take = getattr(sweeper, 'take_held', None)
+        held = take() if take is not None else None
+        if held is not None and len(held) != len(freqs):
+            held = None
         if new:
             self._last_serial = serial
             lin = 10 ** (done / 10)
@@ -2324,19 +2335,30 @@ class MainWindow(Qt.QWidget):
             else:
                 self._sweep_avg += (lin - self._sweep_avg) / avg
             self._sweep_db = to_db(self._sweep_avg)
-            if getattr(self.engine.sweeper.plan, 'auto_gain', False):
+            if getattr(sweeper.plan, 'auto_gain', False):
                 self._follow_agc(done)
+            # Every sweep reaches the waterfall: a row is the most of them
+            # since the last row.
+            got = held if held is not None else done
+            if self._wf_hold is None or len(self._wf_hold) != len(got):
+                self._wf_hold = got.copy()
+            else:
+                np.maximum(self._wf_hold, got, out=self._wf_hold)
         now = time.monotonic()
-        row = new and now - self._last_wf > 0.1
-        if row:
+        row = None
+        if new and now - self._last_wf > 0.1 and self._wf_hold is not None:
             self._last_wf = now
+            row, self._wf_hold = self._wf_hold, None
         if avg <= 1:
-            self.rf_view.set_data(freqs, live, waterfall_row=False)
-            if row:
-                self.rf_view.add_waterfall_row(freqs, done)
+            self.rf_view.set_data(freqs, held if held is not None else live,
+                                  waterfall_row=False)
+            if row is not None:
+                self.rf_view.add_waterfall_row(freqs, row)
         elif self._sweep_db is not None and new:
-            self.rf_view.set_data(freqs, self._sweep_db, waterfall_row=row)
-        density = getattr(self.engine.sweeper, 'density', None)
+            self.rf_view.set_data(freqs, self._sweep_db, waterfall_row=False)
+            if row is not None:
+                self.rf_view.add_waterfall_row(freqs, self._sweep_db)
+        density = getattr(sweeper, 'density', None)
         if new and density is not None:
             frame = density()
             if frame is not None:

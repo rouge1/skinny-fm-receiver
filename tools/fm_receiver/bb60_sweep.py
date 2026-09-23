@@ -387,6 +387,7 @@ class bb60_sweeper:
         self._completed = None
         self._completed_serial = 0
         self._density = None
+        self._held = None
 
     # -- control, from the Qt thread
     def start(self):
@@ -413,6 +414,7 @@ class bb60_sweeper:
             self.plan = plan
             self._completed = None
             self._density = None
+            self._held = None
             self._configure = True
 
     def set_gain_percent(self, percent):
@@ -446,11 +448,27 @@ class bb60_sweeper:
             return freqs, np.full(len(freqs), -200.0), None, serial
         return freqs, done, done, serial
 
+    def take_held(self):
+        """The most each point reached in every sweep or frame since the
+        last call, or None if none came. The window draws 15 times a second
+        and real time makes 30 frames: without this, every other frame -
+        and a burst in it - never reached the trace, peak hold or
+        waterfall."""
+        with self._lock:
+            held, self._held = self._held, None
+        return held
+
     def density(self):
         """In real time, the last frame's density map - rows bottom (the
-        reference level less the scale) to top (the reference level) - and
-        where it goes: (map, (low Hz, high Hz, bottom dB, top dB)). None
-        otherwise, or before the first frame."""
+        reference level less the scale) to top (the reference level) - where
+        it goes, and its persistence: (map, (low Hz, high Hz, bottom dB, top
+        dB), alpha). None otherwise, or before the first frame.
+
+        The API keeps a pixel in the map after its hits stop, and ``alpha``
+        says how recent they were: 1 when hit, falling by 0.92 a frame
+        (measured, 2026-09-22) - 0.4 s at 30 frames a second - to 0.042, then
+        gone, 1.3 s after. Drawn as the pixel's opacity, a burst fades out
+        where it was."""
         with self._lock:
             return self._density
 
@@ -536,11 +554,15 @@ class bb60_sweeper:
                         continue
                     plan = self.plan
                     self._completed = high[plan.keep].astype(np.float64)
+                    self._held = (self._completed.copy() if self._held is None
+                                  or len(self._held) != len(self._completed)
+                                  else np.maximum(self._held, self._completed))
                     if frame is not None:
                         low_hz, high_hz = plan.trace_span
                         self._density = (frame.reshape(self._frame_shape).copy(),
                                          (low_hz, high_hz, plan.ref_db - plan.scale_db,
-                                          plan.ref_db))
+                                          plan.ref_db),
+                                         self._alpha.reshape(self._frame_shape).copy())
                     self._completed_serial += 1
                     self.sweeps += 1
                     # Smoothed: one frame's time jitters by a few ms either way.

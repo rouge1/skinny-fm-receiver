@@ -213,6 +213,7 @@ class hackrf_sweeper:
         self._completed = None
         self._completed_serial = 0
         self._clip_last = None
+        self._held = None
         self._t_sweep = time.monotonic()
         self._reset()
 
@@ -258,6 +259,7 @@ class hackrf_sweeper:
         with self._lock:
             self.plan = plan
             self._completed = None
+            self._held = None
             self._clip_last = None
             self.sweep_seconds = None           # the old plan's pace
             self._t_sweep = time.monotonic()
@@ -296,6 +298,14 @@ class hackrf_sweeper:
         if done is None or len(done) != len(freqs):
             return freqs, np.full(len(freqs), -200.0), None, serial
         return freqs, done, done, serial
+
+    def take_held(self):
+        """As :meth:`bb60_sweep.bb60_sweeper.take_held`: the most each point
+        reached in every sweep since the last call - the FM band sweeps 30
+        times a second, the window draws 15."""
+        with self._lock:
+            held, self._held = self._held, None
+        return held
 
     def density(self):
         return None
@@ -423,6 +433,9 @@ class hackrf_sweeper:
             idx = np.arange(len(done))
             done = np.interp(idx, idx[good], done[good])
         self._completed = to_db(done)
+        self._held = (self._completed.copy() if self._held is None
+                      or len(self._held) != len(self._completed)
+                      else np.maximum(self._held, self._completed))
         if self._clip_steps:
             lo, share = max(self._clip_steps.items(), key=lambda kv: kv[1])
             self._clip_last = (float(share), float(lo))

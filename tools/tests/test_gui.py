@@ -690,6 +690,41 @@ def device_health(w):
     print("device health: tooltip, and the low USB voltage warning")
 
 
+def realtime_polish(w):
+    """Frames the window didn't draw still count: a burst only in the
+    sweeper's held maximum reaches the trace and the next waterfall row.
+    And the density map's persistence scales each pixel's opacity."""
+    sweeper, view = w.engine.sweeper, w.rf_view
+    freqs, db, _, _ = sweeper.snapshot()
+    burst = db.copy()
+    k = len(burst) // 3
+    burst[k - 2:k + 3] = 0.0                      # far over anything else
+    sweeper.take_held = lambda: burst
+    try:
+        w._last_wf = 0.0
+        w._last_serial = -1
+        w._draw_sweep()
+        assert view._db[k] == 0.0, view._db[k]
+        if view.wf_check.isChecked():
+            assert np.nanmax(view._wf[0]) == 0.0, np.nanmax(view._wf[0])
+    finally:
+        del sweeper.take_held
+    frame = np.zeros((256, 525), dtype=np.float32)
+    frame[100, :] = 0.1
+    alpha = np.zeros_like(frame)
+    alpha[100, :200] = 1.0
+    alpha[100, 200:] = 0.5
+    view.set_density(frame, (88e6, 108e6, -120.0, -20.0), alpha)
+    img = view.density_item.image
+    assert img.shape == (256, 525, 4), img.shape
+    full, half = int(img[100, 0, 3]), int(img[100, 300, 3])
+    assert full > 0 and abs(half - full / 2) <= 1, (full, half)
+    assert img[50, 0, 3] == 0                     # never hit: clear
+    view.clear_density()
+    print(f"real-time polish: a burst between draws reaches trace and waterfall; "
+          f"persistence 0.5 halves the opacity ({full} -> {half})")
+
+
 def agc(w):
     """AGC in the radio's own sweep: the slider greys and reads AGC, the plan
     leaves the gain to the device, and the Ref level knob moves to 5 dB over
@@ -867,6 +902,7 @@ def part3_native_sweep():
         assert w._mode == 'sweep' and e.sweeper is NativeRadio.made[-1] and e.sweeper.running
         device_health(w)
         agc(w)
+        realtime_polish(w)
         w.close()
         saved = json.load(open(os.environ['FMRX_CONFIG']))
         # Real time left its own window on the tuner, so the band is custom.

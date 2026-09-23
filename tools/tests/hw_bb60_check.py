@@ -297,7 +297,7 @@ def realtime_check(tb, station):
     for _ in range(30):
         freqs, db, serial = _next_sweep(tb, serial)
     fps = (s.sweeps - n0) / (time.time() - t0)
-    frame, (lo, hi, bottom, top) = s.density()
+    frame, (lo, hi, bottom, top), alpha = s.density()
     rows, cols = frame.shape
     col = int(round((station - lo) / (hi - lo) * (cols - 1)))
     near = frame[:, col - 2:col + 3].sum(axis=1)
@@ -305,12 +305,27 @@ def realtime_check(tb, station):
     f_lo = lo + (col - 2) / cols * (hi - lo)
     f_hi = lo + (col + 3) / cols * (hi - lo)
     peak = db[(freqs >= f_lo) & (freqs <= f_hi)].max()
+    # Persistence: 1 where just hit, falling 0.92 a frame; never off the map.
+    assert 0.0 <= alpha.min() and alpha.max() == 1.0, (alpha.min(), alpha.max())
+    assert not (alpha[frame == 0] > 0).any()
+    a0 = alpha.copy()
+    freqs, db, serial = _next_sweep(tb, serial)
+    a1 = s.density()[2]
+    fading = (a0 > 0.1) & (a0 < 0.9) & (a1 < a0)
+    decay = float(np.median(a1[fading] / a0[fading]))
+    # Every frame reaches the window: what it holds is at least the latest.
+    s.take_held()
+    freqs, db, serial = _next_sweep(tb, serial)
+    freqs, db, serial = _next_sweep(tb, serial)
+    held = s.take_held()
+    assert held is not None and (held >= db - 1e-6).all()
     print(f"  real time: {s.plan.describe()}, {fps:.1f} frames a second, map {cols} x {rows}; "
           f"at {station / 1e6:.1f} the map's highest hit {top_hit:.1f} dBm, the trace's peak "
-          f"{peak:.1f} dBm")
+          f"{peak:.1f} dBm; persistence falls {decay:.3f} a frame")
     assert 25 <= fps <= 35, fps
     assert s.plan.poi_s and s.plan.poi_s < 1e-3, s.plan.poi_s
     assert abs(top_hit - peak) < 3, (top_hit, peak)
+    assert abs(decay - 0.92) < 0.02, decay
 
 
 def free_check():

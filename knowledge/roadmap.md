@@ -402,11 +402,11 @@ from 100 kHz to its suggested 200 kHz. Its other leads:
     will start.
   - Found by probing: row 0 of the map is the bottom of the scale, and the
     reference level places the map even with the gain set by hand.
-  - 💡 The persistence frame (`alphaFrame`, hits fading from 1 to 0) is
+  - [x] The persistence frame (`alphaFrame`, hits fading from 1 to 0) is
     fetched but not drawn yet. Blending it in would show where a burst
-    just was.
-  - 💡 The waterfall could be drawn from real-time frames at full rate
-    too, so a burst leaves its mark there as well.
+    just was. **Shipped 2026-09-22**: see *Real-time polish*.
+  - [x] The waterfall could be drawn from real-time frames at full rate
+    too, so a burst leaves its mark there as well. **Shipped 2026-09-22**.
 - 💡 **Auto gain by reference level**, which Signal Hound recommends.
   Gain and attenuation go on auto, with the reference level about 5 dB
   above the strongest input expected. Now the RF gain slider sets them by
@@ -698,3 +698,24 @@ Both on the HackRF, handed over from ble-scanner for the session.
     settle-time stage on it.
   - 💡 Try it on the Mac (libhackrf by its name, then the environment's
     `lib`).
+
+## Real-time polish (requested 2026-09-22)
+
+- [x] **Persistence.** Measured on the BB60D: the density frame itself keeps
+  a pixel after its hits stop, and the alpha frame is how recent they were -
+  1 when hit, falling by exactly 0.920 a frame, to 0.042 and then 0: about
+  0.4 s as a time constant at 30 frames a second, gone 1.3 s after. No pixel
+  had alpha without being in the map. So the map is drawn with alpha as each
+  pixel's opacity (`SpectrumView.set_density`, RGBA in the theme's colours,
+  2.3 ms a draw): a burst fades out where it was.
+- [x] **Every frame reaches the window.** Real time makes 30 frames a second
+  and the window draws 15, so every other frame - and a burst in it - never
+  reached the trace, peak hold or waterfall. The sweepers now keep the most
+  each point reached since the window last looked (`take_held`), and the
+  window draws that; a waterfall row is the most of every frame since the
+  row before. Rows stay at 10 a second, so the waterfall keeps its 22 s.
+  The HackRF's own sweep, at 30 sweeps a second on the FM band, does the
+  same. Off air: 30.0 frames a second, 15.7 draws, each with all the frames
+  since the last.
+- With averaging on (Average above 1x), the trace is still the average of
+  whole sweeps; the waterfall rows are held maxima either way.

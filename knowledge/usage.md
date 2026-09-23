@@ -252,8 +252,11 @@ colours: brighter where a level is hit more often. A steady station shows
 as a bright band at its level. The noise is a cloud near the floor. A burst,
 or a signal hidden under a stronger one, shows as a fainter patch no single
 trace would keep. The map runs from the view's **Ref level** down its
-**Range**; turn those and it follows. The trace is the highest level each
-point reached in each 33 ms.
+**Range**; turn those and it follows. A pixel fades out over about a second
+after its last hit, so a burst leaves a fading patch where it was. The trace
+is the highest level each point reached since the screen was last drawn:
+every 33 ms frame counts, and so the peak hold and the waterfall catch a
+burst however short.
  A HackRF sweeps with its firmware too: its whole range, 1 MHz to 6 GHz,
 in about 0.75 s, and the FM band 30 times a second. Its levels are dBFS,
 not calibrated. The RBW list sets its bin width (2.4 kHz at the finest);
