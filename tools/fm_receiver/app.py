@@ -2572,8 +2572,8 @@ class MainWindow(Qt.QWidget):
 
     def _lost_text(self):
         """The status line for a radio that has stopped sending, or None.
-        A radio that can tell why (an RTL-SDR's closed connection) says so
-        at once; any other is noticed when its samples stop for a while."""
+        A radio that can tell why (``Engine.lost``) says so at once; any
+        other is noticed when its samples stop for a while."""
         if self._mode not in ('sweep', 'receive') or self.radio is None:
             return None
         e = self.engine
@@ -2581,8 +2581,9 @@ class MainWindow(Qt.QWidget):
         if age is None:
             return None
         again = "press Stop, then Start, to open it again"
-        if self.radio.lost():
-            return f"{self.radio.name} lost: {self.radio.lost()} - {again}"
+        lost = e.lost()
+        if lost:
+            return f"{self.radio.name} lost: {lost} - {again}"
         limit = STALL_S
         if e.mode == 'sweep' and getattr(e.sweeper, 'native', False):
             limit = max(limit, 3 * (e.sweeper.sweep_seconds or 0))

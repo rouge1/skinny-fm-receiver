@@ -155,12 +155,26 @@ class Engine(gr.top_block):
         since = self._since if self._since is not None else now
         return now - max(since, last if last is not None else since)
 
-    def lost_reason(self):
-        """Why the radio stopped sending, when it knows (the rtl_tcp
-        connection closed, a native sweep's error), else None."""
+    def lost(self):
+        """Why the radio is gone, when it knows for sure, else None: the
+        IQ stream's radio (``Radio.lost``: an RTL-SDR's closed connection,
+        the BB60D's driver reporting connection issues) or a radio's own
+        sweep (its ``lost()``: the HackRF's stream stopped). The window
+        says so at once."""
         if self.radio is None:
             return None
         reason = self.radio.lost()
+        s = self.sweeper
+        if reason is None and self.mode == 'sweep' and getattr(s, 'native', False):
+            lost = getattr(s, 'lost', None)
+            reason = lost() if lost is not None else None
+        return reason
+
+    def lost_reason(self):
+        """Why the radio stopped sending, as far as anything says: what
+        :meth:`lost` knows, else a native sweep's last error (which may be
+        one it recovers from, so it is only shown once the samples stop)."""
+        reason = self.lost()
         if reason is None and self.mode == 'sweep' and getattr(self.sweeper, 'native', False):
             reason = self.sweeper.error
         return reason

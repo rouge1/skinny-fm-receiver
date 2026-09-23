@@ -608,6 +608,7 @@ class FakeNativeSweeper:
         self.stopped = False
         self.paused = False
         self.silent = False                      # True: no data, as if unplugged
+        self.gone = None                         # lost()'s reason, as if unplugged
         self.last_data = time.monotonic()
         self.set_plan(plan)
 
@@ -640,6 +641,9 @@ class FakeNativeSweeper:
         if not self.silent:
             self.last_data = time.monotonic()
         return freqs, db, db, self.sweeps
+
+    def lost(self):
+        return self.gone
 
     def set_paused(self, paused):
         self.paused = bool(paused)
@@ -1229,6 +1233,12 @@ def part7_lost_radio():
         assert not sweeper.paused
         pump(1.5)
         assert not lost(w), w.status.text()
+        # A sweep that knows its device is gone says so at once.
+        sweeper.gone = "the USB stream stopped"
+        assert pump(1.5, lambda: 'Simulated radio lost: the USB stream stopped' in w.status.text()), \
+            w.status.text()
+        sweeper.gone = None
+        assert pump(1.5, lambda: 'lost' not in w.status.text()), w.status.text()
         w.close()
     finally:
         fmapp.make_radio, fmapp.STALL_S, bb60_sweep.REALTIME_OK = original
