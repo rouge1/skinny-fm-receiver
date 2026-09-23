@@ -12,6 +12,9 @@ with no launcher.
   example ble-scanner) use the HackRF too: check whether it is in use
   (`pgrep -af "blescan|hackrf_"`, and `hackrf_info` opens it) rather than
   assuming, and make sure nothing of ours holds it afterwards.
+- Project skill: `.agents/skills/fm-receiver/SKILL.md`. Claude Code reads
+  it through a local link in `.claude/skills/` (git-ignored); make the
+  link in each checkout (command in `.gitignore`).
 - Platforms: Linux (x86-64) and macOS (Apple Silicon), from the same
   checkout, in the environment `environment.yml` makes. Anything
   platform-specific (library names, paths, `/proc`) goes behind
