@@ -370,6 +370,10 @@ class bb60_sweeper:
     #: for a screen drawn 15 times. A narrow span waits out the rest of each
     #: 1/30 s; 9 kHz-6 GHz, at 4.3 a second, never does.
     MAX_SWEEPS_PER_S = 30.0
+    #: :meth:`lost`: the API's words for an unplugged device, and how many
+    #: failures in a row, with nothing fetched between, must carry them.
+    CONNECTION_LOST = 'connection issues'
+    LOST_AFTER_FAILURES = 2
 
     def __init__(self, handle, plan, gain_percent):
         self.handle = handle
@@ -382,6 +386,8 @@ class bb60_sweeper:
         self.error = None
         #: When a sweep or frame last came from the device (``Engine.data_age``).
         self.last_data = None
+        #: Failures in a row since the last sweep or frame (:meth:`lost`).
+        self.failures = 0
         self._lock = threading.Lock()
         self._configure = True
         self._stop = threading.Event()
@@ -473,6 +479,28 @@ class bb60_sweeper:
         where it was."""
         with self._lock:
             return self._density
+
+    def lost(self):
+        """Why the device has gone, or None: cheap, from any thread, never
+        raises.
+
+        Not just :attr:`error`, which is also set by failures the sweep
+        retries past. Unplugged (2026-09-23), within 0.1 s every fetch
+        failed with "BB60 sweep: Device connection issues detected" (the
+        API's error string), re-set at each retry, for good - 130 s,
+        plugged back in or not; running, :attr:`error` stayed None. So it
+        takes those words, on :data:`LOST_AFTER_FAILURES` failures in a row
+        (a retry's :data:`RETRY_S` apart, half a second) with no sweep
+        between: a single one that the next fetch gets past is not a loss."""
+        try:
+            error = self.error
+            if (error and self.failures >= self.LOST_AFTER_FAILURES
+                    and self.CONNECTION_LOST in error.lower()):
+                return ("the BB60D's USB connection was lost "
+                        "(its sweep reports connection issues)")
+        except Exception:
+            pass
+        return None
 
     # -- the device
     def _configure_now(self):
@@ -574,7 +602,9 @@ class bb60_sweeper:
                                           else 0.8 * self.sweep_seconds + 0.2 * took)
                     self._t_sweep = now
                     self.error = None
+                    self.failures = 0
             except Exception as exc:                  # keep trying; say why
                 self.error = str(exc)
+                self.failures += 1
                 self._configure = True
                 self._stop.wait(self.RETRY_S)
