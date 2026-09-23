@@ -4,6 +4,7 @@ the stale-sample skip against a simulated radio that is slow to retune.
 Run:  python tools/tests/test_sweep.py        (a few seconds)
 """
 
+import contextlib
 import os
 import sys
 import threading
@@ -277,6 +278,131 @@ def test_hackrf_blocks_are_placed():
     assert lo == 107e6 + OFFSET_HZ and share > 0.05, (share, lo)
 
 
+class _fake_hackrf_lib:
+    """Stands in for ``hackrf_sweep._lib()`` in :meth:`hackrf_sweeper.lost`'s
+    tests - only the two calls it makes."""
+
+    def __init__(self, status, name=b'error name', raise_is_streaming=False):
+        self.status = status
+        self.name = name
+        self.raise_is_streaming = raise_is_streaming
+        self.calls = 0
+
+    def hackrf_is_streaming(self, device):
+        self.calls += 1
+        if self.raise_is_streaming:
+            raise OSError('device handle closed underneath it')
+        return self.status
+
+    def hackrf_error_name(self, status):
+        return self.name
+
+
+@contextlib.contextmanager
+def _fake_lib_installed(fake):
+    from fm_receiver import hackrf_sweep as hs
+    original = hs._lib
+    hs._lib = lambda: fake
+    try:
+        yield
+    finally:
+        hs._lib = original
+
+
+def _lost_sweeper():
+    """A sweeper for ``lost()``'s decision logic alone: no real device, so
+    its only contact with libhackrf is through the monkeypatched ``_lib``."""
+    from fm_receiver.hackrf_sweep import HackRFSweepPlan, hackrf_sweeper
+    plan = HackRFSweepPlan(87.5e6, 108e6, 100e3)
+    return hackrf_sweeper(plan, lambda _percent: {'AMP': 0, 'LNA': 0, 'VGA': 0}, 40)
+
+
+def test_lost_no_device_is_not_lost():
+    """Before start: None, and libhackrf is not even asked. After stop()
+    leaves it as :meth:`hackrf_sweeper.stop` does - device None, not
+    streaming - it is still None, for the same reason."""
+    sw = _lost_sweeper()
+    assert sw._device is None
+    fake = _fake_hackrf_lib(status=-1003)
+    with _fake_lib_installed(fake):
+        assert sw.lost() is None
+    sw._device, sw._streaming, sw._streaming_since = None, False, None  # as stop() leaves it
+    with _fake_lib_installed(fake):
+        assert sw.lost() is None
+    assert fake.calls == 0
+
+
+def test_lost_none_while_streaming_ok():
+    sw = _lost_sweeper()
+    sw._device, sw._streaming = object(), True
+    sw._streaming_since = time.monotonic() - 1.0    # past the grace period
+    fake = _fake_hackrf_lib(status=1)               # HACKRF_TRUE
+    with _fake_lib_installed(fake):
+        assert sw.lost() is None
+    assert fake.calls == 1
+
+
+def test_lost_none_for_a_non_error_status():
+    """Only a negative status (an actual libhackrf error) counts - some
+    other non-HACKRF_TRUE, non-negative code is not treated as lost."""
+    sw = _lost_sweeper()
+    sw._device, sw._streaming = object(), True
+    sw._streaming_since = time.monotonic() - 1.0
+    fake = _fake_hackrf_lib(status=0)
+    with _fake_lib_installed(fake):
+        assert sw.lost() is None
+
+
+def test_lost_reports_streaming_stopped():
+    """Unplugging showed -1003 within 0.1 s (2026-09-23); the message uses
+    hackrf_error_name's own words for it."""
+    sw = _lost_sweeper()
+    sw._device, sw._streaming = object(), True
+    sw._streaming_since = time.monotonic() - 1.0
+    fake = _fake_hackrf_lib(status=-1003, name=b'streaming stopped')
+    with _fake_lib_installed(fake):
+        reason = sw.lost()
+    assert reason is not None and 'streaming stopped' in reason, reason
+
+
+def test_lost_none_in_the_grace_period_after_start_or_replan():
+    """hackrf_stop_rx/hackrf_start_rx_sweep briefly leave the device not
+    streaming right after a (re)start - not a lost radio, so lost() does
+    not even ask libhackrf until the grace period has passed."""
+    sw = _lost_sweeper()
+    sw._device, sw._streaming = object(), True
+    sw._streaming_since = time.monotonic()          # just (re)started
+    fake = _fake_hackrf_lib(status=-1003)
+    with _fake_lib_installed(fake):
+        assert sw.lost() is None
+    assert fake.calls == 0
+
+
+def test_lost_paused_does_not_mask_or_manufacture_a_loss():
+    """Pausing (set_paused) stops this class's use of the samples, not the
+    USB transfer: healthy while paused reads None, and an actual
+    disconnection while paused is still reported."""
+    sw = _lost_sweeper()
+    sw._device, sw._streaming, sw.paused = object(), True, True
+    sw._streaming_since = time.monotonic() - 1.0
+    with _fake_lib_installed(_fake_hackrf_lib(status=1)):
+        assert sw.lost() is None
+    with _fake_lib_installed(_fake_hackrf_lib(status=-1003, name=b'streaming stopped')):
+        assert sw.lost() is not None
+
+
+def test_lost_none_on_exception():
+    """A device handle closed under it - or anything else ctypes-shaped -
+    never raises out of lost(): it reads as 'don't know', which
+    Engine.data_age's stall timeout catches instead."""
+    sw = _lost_sweeper()
+    sw._device, sw._streaming = object(), True
+    sw._streaming_since = time.monotonic() - 1.0
+    fake = _fake_hackrf_lib(status=-1003, raise_is_streaming=True)
+    with _fake_lib_installed(fake):
+        assert sw.lost() is None
+
+
 if __name__ == '__main__':
     test_hackrf_blocks_are_placed()
     test_agc_reference_level()
@@ -286,4 +412,11 @@ if __name__ == '__main__':
     test_find_stations()
     test_replan_drops_the_old_sweep()
     test_stale_samples_are_skipped()
+    test_lost_no_device_is_not_lost()
+    test_lost_none_while_streaming_ok()
+    test_lost_none_for_a_non_error_status()
+    test_lost_reports_streaming_stopped()
+    test_lost_none_in_the_grace_period_after_start_or_replan()
+    test_lost_paused_does_not_mask_or_manufacture_a_loss()
+    test_lost_none_on_exception()
     print('sweep: all checks passed')

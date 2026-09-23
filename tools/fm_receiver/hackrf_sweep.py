@@ -52,6 +52,17 @@ OFFSET_HZ = 7_500_000
 #: The FFT's size: a multiple of 8, so the kept quarters fall on whole bins,
 #: and no more samples than a block holds after its header.
 MIN_FFT, MAX_FFT = 8, 8184
+#: hackrf_is_streaming's HACKRF_TRUE. Unplugging (2026-09-23, a HackRF One,
+#: firmware 2026.01.3) turned it -1003 (HACKRF_ERROR_STREAMING_STOPPED,
+#: named by ``hackrf_error_name``) within 0.1 s of the USB transfer thread
+#: noticing, and it stayed there; re-plugging did not clear it (:meth:`lost`
+#: does not try to recover, only :meth:`hackrf_sweeper.stop` does).
+HACKRF_TRUE = 1
+#: How long after (re)starting the sweep to hold off :meth:`lost`: the
+#: firmware needs a moment to begin, and ``hackrf_is_streaming`` there is
+#: not the same as an unplug - not measured exactly, held well clear of a
+#: 400 ms poll.
+STREAMING_GRACE_S = 0.5
 #: FFTs averaged per tuning, from the block's second half (hackrf_sweep
 #: takes the last samples, clear of the retune): one FFT at 264 points -
 #: the whole range's auto bins - scattered the floor over 30 dB.
@@ -217,6 +228,8 @@ class hackrf_sweeper:
         self._clip_last = None
         self._held = None
         self._t_sweep = time.monotonic()
+        #: When ``_streaming`` last became True (:meth:`lost`'s grace period).
+        self._streaming_since = None
         self._reset()
 
     # -- control, from the Qt thread
@@ -250,6 +263,7 @@ class hackrf_sweeper:
         lib = _lib()
         with self._lock:
             self._streaming = False
+            self._streaming_since = None
         lib.hackrf_stop_rx(device)
         lib.hackrf_close(device)
 
@@ -318,6 +332,45 @@ class hackrf_sweeper:
         with self._lock:
             return self._clip_last
 
+    def lost(self):
+        """A short reason when libhackrf itself says the USB stream is no
+        longer running while this sweeper still expects it to be (see
+        ``HACKRF_TRUE`` above for what unplugging showed); else None.
+
+        None is also right, not a false alarm, before ``start()``, after
+        ``stop()``/``detach()``, and for ``STREAMING_GRACE_S`` after a
+        (re)start or :meth:`set_plan` - hackrf_stop_rx/hackrf_start_rx_sweep
+        briefly leave the device not streaming there, which is normal, not
+        lost. Pausing (:meth:`set_paused`) does not stop the USB transfer,
+        only this class's use of it, so it needs no exception here.
+
+        Called every 400 ms from the Qt thread (as ``start``/``stop`` are):
+        reads ``_device``/``_streaming`` once each without the lock, as the
+        rest of the class already does outside the panorama, so it can never
+        block behind the USB callback. Never raises: any ctypes trouble
+        (the device handle closed under it) is swallowed and reported as
+        "don't know" (None) - ``Engine.data_age`` catches a stall this
+        can't explain."""
+        device, streaming, since = self._device, self._streaming, self._streaming_since
+        if device is None or not streaming or since is None:
+            return None
+        if time.monotonic() - since < STREAMING_GRACE_S:
+            return None
+        try:
+            status = _lib().hackrf_is_streaming(device)
+        except Exception:
+            return None
+        if status == HACKRF_TRUE or status >= 0:
+            return None
+        if self._device is not device or not self._streaming:
+            return None                       # stopped/replanned meanwhile
+        try:
+            name = _lib().hackrf_error_name(status)
+            name = name.decode() if name else str(status)
+        except Exception:
+            name = str(status)
+        return f"the HackRF's USB stream stopped (libhackrf: {name})"
+
     # -- the device
     def _apply_gain(self):
         lib, g = _lib(), self._gain_plan(self.gain_percent)
@@ -332,6 +385,7 @@ class hackrf_sweeper:
                                      STEP_HZ, OFFSET_HZ, INTERLEAVED), 'sweep setup')
         with self._lock:
             self._streaming = True
+            self._streaming_since = time.monotonic()
         _check(lib.hackrf_start_rx_sweep(self._device, self._callback, None), 'sweep start')
 
     def _reset(self):
