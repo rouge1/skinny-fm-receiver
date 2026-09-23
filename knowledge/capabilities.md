@@ -13,7 +13,7 @@ is in `tools/fm_receiver/` and the tests are in `tools/tests/`.
 
 | Mark | Meaning |
 |---|---|
-| ✅ | Verified off air on real hardware (Signal Hound BB60D) |
+| ✅ | Verified off air on the real radio it is for (BB60D, HackRF One or RTL-SDR) |
 | 🧪 | Verified by an automated test with synthetic signals, no radio |
 | ⚠️ | Implemented, not yet verified on the hardware it is for |
 | 💡 | Idea, not built |

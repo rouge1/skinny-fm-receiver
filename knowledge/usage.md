@@ -149,8 +149,8 @@ Useful options (`./fm-receiver --help` lists them all):
     again. (Not a BB60D on a Mac: that stays held until the app quits - see
     *Setting up*.)
   - The **status line** shows what is running, or what went wrong, for
-    example "Input overloaded - turn the RF gain down". On a HackRF it
-    always ends with the share of samples clipped ("clipped 0.13%"):
+    example "Input overloaded - turn the RF gain down". On a HackRF or an
+    RTL-SDR it always ends with the share of samples clipped ("clipped 0.13%"):
     green under 0.3%, amber to 1%, and over that the overload warning. In
     a sweep it is the worst step of the last sweep, and names that step.
   - The **Themes** disc, top right, is the theme in force: a click moves to
@@ -216,10 +216,10 @@ spectrum and waterfall take the whole right-hand side.
 | **Tuner** | The same tuner the Receive tab has, here so you can place it while you sweep: it is the marker on the spectrum, it is what **Listen** tunes to, and it is what **Real time** watches around. Hover a digit and roll the wheel, type a frequency, or use the ▲/▼ beside it; a click on the spectrum moves it too, and so does a middle-drag of the orange channel band (see below). |
 | **Real time** *(BB60D, only with `--realtime`)* | Hidden unless the app is started with `--realtime`: Receive at 40 MS/s shows as much band (27 MHz), as often (30 times a second), and plays the station as well. A button that stays down. Pressing it drops the sweep to the 27 MHz it can watch, centred on the **Tuner**, and watches that instead of sweeping; letting it out gives back the span that was there. Put the tuner outside the window afterwards and the window moves to it. Widen the bounds past 27 MHz and it sweeps instead, saying so in the line under the buttons. Not on a Mac, whose Signal Hound library has no real time. See *Sweep, real time and IQ* below. |
 | **RBW** *(BB60D, HackRF)* | Resolution bandwidth. **Auto** keeps a sweep near 80,000 points: on a BB60D 300 kHz over the full range and 1 kHz over the FM band; on a HackRF it is the FFT's bin width, 76 kHz over the full range and 2.4 kHz (its finest) over the FM band. Narrower shows more detail and a lower noise floor. If you pick one too fine for the span, it is raised, and the line under the buttons says so. |
-| **Step bandwidth** *(USRP)* | The radio's sample rate while sweeping, which sets how much each step sees. Wider means fewer steps. Changing this restarts the radio. |
-| **FFT** *(USRP)* | Bins per FFT. This sets the RBW: 4096 bins at 20 MS/s gives 4.9 kHz. |
-| **Frames per step** *(USRP)* | FFT frames averaged at each step. More gives a smoother trace and a slower sweep. |
-| **Settle** *(USRP)* | How long to wait after each retune before trusting the samples; 5 ms by default. **If a signal appears twice, or shows where there is nothing, increase this.** |
+| **Step bandwidth** *(USRP, RTL-SDR)* | The radio's sample rate while sweeping, which sets how much each step sees. Wider means fewer steps. Changing this restarts the radio. |
+| **FFT** *(USRP, RTL-SDR)* | Bins per FFT. This sets the RBW: 4096 bins at 20 MS/s gives 4.9 kHz. |
+| **Frames per step** *(USRP, RTL-SDR)* | FFT frames averaged at each step. More gives a smoother trace and a slower sweep. |
+| **Settle** *(USRP, RTL-SDR)* | How long to wait after each retune before trusting the samples; 5 ms by default on a USRP, 100 ms on an RTL-SDR (a retune arrives 30-70 ms later over the network). **If a signal appears twice, or shows where there is nothing, increase this.** |
 | **Pause / Resume** | Freezes the sweep, for example to study the trace. |
 | **Listen** | Receive the station the **Tuner** is on - the selected station, or wherever the marker is. |
 | **Station threshold** | How far above the noise floor a channel must be to go in the list (default 15 dB). |
@@ -321,7 +321,7 @@ The multiplex (MPX) spectrum fills the bottom right.
 | **Center** | The radio's centre frequency (its LO), drawn as a **dashed line** on the spectrum (not the waterfall, which is left clear), thin and grey in every theme: it is a reference, and orange is kept for where you are tuned. Outside the tuner's reach the spectrum is dimmed. Moving it moves the band the tuner can reach. If the tuner is still inside the new band it stays where it is; if not, it is pulled in to the nearer edge. **While you move the Center the line fades away**, so you can see the spectrum under it, and it comes back once you stop. |
 | **Center on tuner** | Puts the Center 300 kHz below the tuner, so there is room to tune either way. |
 | **Tuner range** | The lowest and highest the tuner can go around this Center. It is about three quarters of the IQ bandwidth, less half a channel at each end. |
-| **IQ bandwidth** | The radio's sample rate in Receive: how much of the band the spectrum shows, and the tuner can reach (BB60D 2.5/5/10/20/40 MS/s, 2.5 greyed out on a Mac; HackRF 2-20 MS/s). Changing it rebuilds the receiver; the Center stays if the tuner still fits. |
+| **IQ bandwidth** | The radio's sample rate in Receive: how much of the band the spectrum shows, and the tuner can reach (BB60D 2.5/5/10/20/40 MS/s, 2.5 greyed out on a Mac; HackRF 2-20 MS/s; RTL-SDR 2 and 2.4 MS/s). Changing it rebuilds the receiver; the Center stays if the tuner still fits. |
 
 **The tuner stops at the edge of the band.** Rolling, stepping, typing,
 clicking or dragging past it leaves the tuner at the edge, and **Tuner
@@ -332,7 +332,7 @@ There is one exception: a station picked from outside Receive (from the
 Sweep list, or with `--freq`) places the Center for you, because there is
 no band yet to stay inside.
 
-On a HackRF the tuner also keeps 100 kHz clear of the Center, where the
+On a HackRF or an RTL-SDR the tuner also keeps 100 kHz clear of the Center, where the
 radio's DC spike is: it jumps over that gap in the direction you are tuning.
 The BB60D has no spike, so there is no gap.
 
@@ -619,7 +619,7 @@ To start fresh, delete the file. To use a different settings file, set
 | Ghost copies of signals in a sweep | On a USRP or an RTL-SDR, increase **Settle** (an RTL-SDR on a slower network may need more than its 100 ms). (The BB60D and HackRF sweep themselves.) |
 | Part of the left column is hidden under the spectrum | Drag the divider right. The column resizes itself on a theme change, so this should not happen any more. |
 | No RDS on a strong station | It may not send RDS; check the MPX view for a hump at 57 kHz. On a weak station, try a narrower channel filter. |
-| *Input overloaded* | Turn the RF gain down. On a HackRF it also gives the share of samples clipped; turn down until the message goes. In a sweep it names the step that clipped: over the whole range a strong TV transmitter can clip one step at a gain that suits FM, and then the FM band preset is the one to use. |
+| *Input overloaded* | Turn the RF gain down. On a HackRF or an RTL-SDR it also gives the share of samples clipped; turn down until the message goes. In a sweep it names the step that clipped: over the whole range a strong TV transmitter can clip one step at a gain that suits FM, and then the FM band preset is the one to use. |
 | Another program can't open the radio | Press **Stop** (or close the app): Stop lets go of the device. On a Mac, a BB60D is let go only when the app quits. |
 | The tuner won't go any further | It is at the edge of the band around the Center: move the **Center**, or press **Center on tuner** and carry on. |
 | No sound | The **Audio** panel says if the sound card could not be opened. Check the **Mute** button. |
