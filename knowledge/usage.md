@@ -316,7 +316,7 @@ The multiplex (MPX) spectrum fills the bottom right.
 
 | Control | What it does |
 |---|---|
-| **Center** | The radio's centre frequency (its LO), drawn as a **dashed line** on the spectrum (not the waterfall, which is left clear): yellow in Slate and Reading Room, verdigris in Walnut. Moving it moves the band the tuner can reach. If the tuner is still inside the new band it stays where it is; if not, it is pulled in to the nearer edge. **While you move the Center the line fades away**, so you can see the spectrum under it, and it comes back once you stop. |
+| **Center** | The radio's centre frequency (its LO), drawn as a **dashed line** on the spectrum (not the waterfall, which is left clear), thin and grey in every theme: it is a reference, and orange is kept for where you are tuned. Outside the tuner's reach the spectrum is dimmed. Moving it moves the band the tuner can reach. If the tuner is still inside the new band it stays where it is; if not, it is pulled in to the nearer edge. **While you move the Center the line fades away**, so you can see the spectrum under it, and it comes back once you stop. |
 | **Center on tuner** | Puts the Center 300 kHz below the tuner, so there is room to tune either way. |
 | **Tuner range** | The lowest and highest the tuner can go around this Center. It is about three quarters of the IQ bandwidth, less half a channel at each end. |
 | **IQ bandwidth** | The radio's sample rate in Receive: how much of the band the spectrum shows, and the tuner can reach (BB60D 2.5/5/10/20/40 MS/s, 2.5 greyed out on a Mac; HackRF 2-20 MS/s). Changing it rebuilds the receiver; the Center stays if the tuner still fits. |
@@ -525,7 +525,8 @@ What you see and hear depends on the file:
   stereo, region, the RDS details) work on the recording too.
 - **The strip** is the whole recording at a glance: time from left to right,
   frequency upwards, in the waterfall's colours. A station is a line along
-  it; music in a WAV shows its rhythm. The orange line is where you are.
+  it; music in a WAV shows its rhythm. The bright line is where you are, and
+what has already played is dimmed.
 - **Loop** starts again from the beginning at the end. Without it, playback
   stops and goes back to the start.
 - **Delete...** removes every file of the chosen recording, after asking.

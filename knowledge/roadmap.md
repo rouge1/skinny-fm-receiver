@@ -790,4 +790,20 @@ Both on the HackRF, handed over from ble-scanner for the session.
   new size one event at a time through the tab widget) squeezed the boxes
   above. The rows are now held and clipped, the height fixed per frame and
   the column refitted at once.
-- [ ] **The Recordings tab's time scrubber colours**, in all three themes.
+- [x] **The Recordings tab's time scrubber colours**, in all three themes:
+  see Round 10.
+
+## Round 10: the themes' spectrum (requested 2026-09-23)
+
+A review of all three themes, shown as before-and-after screenshots, and
+kept whole:
+
+- [x] The Center line a thin dashed `ink_3` in every theme.
+- [x] The channel band a faint tint with crisp edges.
+- [x] Out of the tuner's reach dimmed (the plot's `well` over the trace).
+- [x] A faint fill under the trace, and a frame round each plot.
+- [x] The scrubber's playhead in `ink`, the played part dimmed.
+- [x] Reading Room: the waterfall through the trace's teal; Stop/Start in ink.
+- [x] Walnut: the trace in cream; a darker waterfall floor.
+- [x] The Recordings scrubber's colours (Round 9's open item) - the playhead
+  and the played part above.

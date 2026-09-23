@@ -94,9 +94,17 @@ QSplitter::handle { background: %(ground)s; }
 """
 
 
+#: Reading Room's Stop/Start is in ink: grey on grey, it looked disabled.
+_READING_ROOM_QSS = """
+QPushButton#run { background: %(ink)s; color: %(panel)s; border-color: %(ink)s; }
+QPushButton#run:hover { background: %(ink_0)s; }
+"""
+
+
 def window_qss():
+    extra = _READING_ROOM_QSS if theme.current() == 'reading-room' else ''
     return (theme.flowgraph_qss(*_control_pictures())
-            + _EXTRA_QSS % dict(theme.TOKENS))
+            + (_EXTRA_QSS + extra) % dict(theme.TOKENS))
 
 
 def apply_window_theme(window, name=None):

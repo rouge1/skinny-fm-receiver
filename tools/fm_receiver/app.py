@@ -300,6 +300,7 @@ class MainWindow(Qt.QWidget):
         self.file_btn.clicked.connect(self._choose_file)
         row.addWidget(self.file_btn)
         self.run_btn = Qt.QPushButton("Stop")
+        self.run_btn.setObjectName('run')
         self.run_btn.setToolTip("Stop streaming and let go of the radio, or start again.")
         self.run_btn.clicked.connect(self._run_clicked)
         row.addWidget(self.run_btn)

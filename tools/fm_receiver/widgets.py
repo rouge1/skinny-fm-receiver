@@ -1213,10 +1213,10 @@ WATERFALL = {
     'slate': ((0.0, 'well'), (0.4, '#1d3a50'), (0.75, 'trace'), (1.0, 'live')),
     # Ink on paper: signals come out dark, through the pulse's ultramarine
     # to the iron-gall ink.
-    'reading-room': ((0.0, 'well'), (0.3, 'rule_soft'), (0.65, 'pulse'),
+    'reading-room': ((0.0, 'well'), (0.3, 'rule_soft'), (0.65, 'trace'),
                      (1.0, 'ink')),
     # Dial glow: the wood, through the tan of the dial to its cream.
-    'walnut': ((0.0, 'well'), (0.35, '#4a3322'), (0.6, 'rule'),
+    'walnut': ((0.0, 'well'), (0.45, '#33241a'), (0.65, 'rule'),
                (0.85, 'trace'), (1.0, 'ink')),
 }
 
@@ -1261,10 +1261,21 @@ def waterfall_lut(stops, n=256):
 #: its centre line is verdigris - the patina on a dial's brass - chosen over
 #: its sage ``good`` and a lemon yellow, side by side on a real FM band.
 MARKERS = {
-    'slate': {'tuner': 'live', 'center': 'warn'},
-    'reading-room': {'tuner': 'live', 'center': 'warn'},
-    'walnut': {'tuner': 'live', 'center': '#7cc7bd'},
+    # The Center is a reference, not an alert: the quietest ink, dashed.
+    # Orange means one thing - where you are tuned.
+    'slate': {'tuner': 'live', 'center': 'ink_3'},
+    'reading-room': {'tuner': 'live', 'center': 'ink_3'},
+    'walnut': {'tuner': 'live', 'center': 'ink_3'},
 }
+
+#: The trace's colour where it is not the theme's ``trace``: Walnut's tan
+#: is its chrome too, so the signal is drawn in the cream and leads.
+TRACE = {'walnut': 'ink'}
+
+
+def trace_colour():
+    token = TRACE.get(theme.current(), 'trace')
+    return Qt.QColor(theme.TOKENS[token])
 
 
 def density_lut():
@@ -1497,7 +1508,7 @@ class SpectrumView(Qt.QWidget):
         for _ in range(2):
             shade = pg.LinearRegionItem(movable=False)
             shade.setVisible(False)
-            shade.setZValue(-20)
+            shade.setZValue(5)             # over the trace: it dims it
             self.plot.addItem(shade, ignoreBounds=True)
             self.outside.append(shade)
         self.message = pg.TextItem('', anchor=(0.5, 0.5))
@@ -1620,7 +1631,17 @@ class SpectrumView(Qt.QWidget):
         # In pixels: 10 pt is 13 px on Linux but 10 on a Mac (72 dpi).
         self.plot.getPlotItem().setTitle(self.title, color=t['ink'], size='13px')
         self.plot.showGrid(x=True, y=True, alpha=0.18)
-        self.curve.setPen(pg.mkPen(t['trace'], width=1))
+        ink = trace_colour()
+        self.curve.setPen(pg.mkPen(ink, width=1))
+        # A faint fill under the trace, down past the bottom of any scale:
+        # it gives the spectrum weight, and a weak station a shape.
+        wash = Qt.QColor(ink)
+        wash.setAlpha(26)
+        self.curve.setFillLevel(-400.0)
+        self.curve.setBrush(pg.mkBrush(wash))
+        for plot in (self.plot, self.wf_plot):
+            if plot is not None:
+                plot.getPlotItem().getViewBox().setBorder(pg.mkPen(t['rule']))
         self.peak_curve.setPen(pg.mkPen(t['ink_3'], width=1,
                                         style=QtCore.Qt.DashLine))
         tuner = pg.mkPen(_marker_colour('tuner'), width=1.5)
@@ -1631,9 +1652,11 @@ class SpectrumView(Qt.QWidget):
         # Out of the tuner's reach: veiled, lighter on a dark theme and
         # darker on a light one (a black shade vanishes on a near-black
         # plot), with a dotted line where the reach ends.
-        dark = t['scheme'] == 'dark'
-        veil = Qt.QColor(t['ink'] if dark else t['shade'])
-        veil.setAlpha(18 if dark else 22)
+        # Out of reach is dimmed: the plot's own well laid over it, trace
+        # and grid alike, so it reads as unavailable. (Lighter, as it was
+        # on the dark themes, it read as selected.)
+        veil = Qt.QColor(t['well'])
+        veil.setAlpha(170)
         edge = pg.mkPen(Qt.QColor(t['ink_3']), width=1, style=QtCore.Qt.DotLine)
         for region in self.outside:
             region.setBrush(pg.mkBrush(veil))
@@ -1658,12 +1681,12 @@ class SpectrumView(Qt.QWidget):
         handle as well as a picture."""
         t = theme.TOKENS
         fill = Qt.QColor(t['live'])
-        fill.setAlpha(75 if self.band.hovered else 40)
+        fill.setAlpha(36 if self.band.hovered else 14)
         self.band.setBrush(pg.mkBrush(fill))
         self.band.update()
         for line in self.band.lines:
             edge = Qt.QColor(t['live'])
-            edge.setAlpha(160 if self.band.hovered else 90)
+            edge.setAlpha(255 if self.band.hovered else 200)
             line.setPen(pg.mkPen(edge))
 
     # -- data
@@ -2222,7 +2245,13 @@ class TimelineStrip(Qt.QWidget):
             x = (self._drag_x if self._drag_x is not None else
                  frame.left() + frame.width() * min(self.position / self.duration, 1.0))
             x = min(max(x, frame.left() + 1), frame.right() - 1)
-            p.setPen(Qt.QPen(_marker_colour('tuner'), 2))
+            # What has played is dimmed; the playhead is in the ink, apart
+            # from any colour the waterfall can reach.
+            played = Qt.QColor(t['ground'])
+            played.setAlpha(120)
+            p.fillRect(QtCore.QRectF(frame.left(), frame.top(), x - frame.left(),
+                                     frame.height()), played)
+            p.setPen(Qt.QPen(Qt.QColor(t['ink']), 2))
             p.drawLine(QtCore.QPointF(x, frame.top()), QtCore.QPointF(x, frame.bottom()))
         p.setPen(Qt.QPen(Qt.QColor(t['rule']), 1))
         p.setBrush(QtCore.Qt.NoBrush)
