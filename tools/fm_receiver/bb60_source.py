@@ -3,13 +3,14 @@
 """Signal Hound BB60D as a live GNU Radio source.
 
 Copied from the RF bench toolkit (``/data/python/SDR/apps/bb60_source.py``,
-commit 20c76e4). Six changes for this app, all marked "FM receiver": the
+commit 20c76e4). Seven changes for this app, all marked "FM receiver": the
 analog bandwidth is set with every rate (see :data:`IQ_BANDWIDTH`),
 ``start()`` drops settings left pending from before it,
 :attr:`bb60_source.hold_open` keeps the device open across a stop and start,
 :meth:`bb60_source.hold` opens it with no stream, for ``bb60_sweep``, it
 finds the module and the SoapySDR libraries on a Mac as well, and on a Mac
-it never closes the device (:data:`KEEP_OPEN`).
+it never closes the device (:data:`KEEP_OPEN`), and :meth:`bb60_source.lost`
+says when the device has gone.
 
 The BB60D is a SoapySDR device, but it cannot be driven through
 ``gr-soapy``: ``soapy.source(...)`` constructs, and then *every* setter -
@@ -48,6 +49,7 @@ import os
 import re
 import sys
 import threading
+import time
 
 import numpy as np
 from gnuradio import gr  # type: ignore
@@ -88,6 +90,15 @@ _EXPECTED_CHATTER = ('ConfigureIQCenter', 'ConfigureIO', 'Using format',
                      'set decimation', 'deprecrated')
 _overflows = [0]
 _last_message = ['']
+#: FM receiver: the driver's words when the USB connection has gone. Seen
+#: on 2026-09-23 with the BB60D unplugged under a stream: "[ERROR] GetIQ:
+#: Device connection issues detected" on fd 2 every ~0.25 s (each read's
+#: timeout) from the unplug on, and never in 80 s of normal running. It
+#: went on after the device was plugged back in: the stream never recovers.
+CONNECTION_LOST = 'connection issues'
+#: How many such lines since the last ``start()``, and when the last came
+#: (``time.monotonic``). The first is passed on to stderr, the rest counted.
+_connection_issues = [0, None]
 
 
 def _log_handler(level, text):
@@ -285,6 +296,11 @@ class _DriverOutput:
                 return
             if any(k in plain for k in _EXPECTED_CHATTER):
                 return
+            if CONNECTION_LOST in plain.lower():      # FM receiver: see lost()
+                _connection_issues[0] += 1
+                _connection_issues[1] = time.monotonic()
+                if _connection_issues[0] > 1:
+                    return                     # four a second, for ever
             os.write(self._saved, raw + b'\n')
         except Exception:
             # Never let filtering stderr be the thing that breaks a run.
@@ -343,6 +359,12 @@ def overflow_count():
 def reset_overflows():
     _overflows[0] = 0
     _last_message[0] = ''
+
+
+def reset_connection_issues():
+    """FM receiver: forget the driver's connection-issue lines (a new open)."""
+    _connection_issues[0] = 0
+    _connection_issues[1] = None
 
 _MODULE_DIRS = [
     '/usr/local/lib/SoapySDR/modules0.8',
@@ -471,6 +493,15 @@ class bb60_source(gr.sync_block):
     #: not a spin loop, short enough that a pending retune lands promptly.
     TIMEOUT_US = 200000
 
+    #: FM receiver: :meth:`lost` without the driver's words - reads that came
+    #: back with nothing, this many in a row and over this long. Unplugged
+    #: (2026-09-23), every read returned 0 at its timeout, ~0.25 s apart, for
+    #: good; running, 331776 samples a read and never 0 in 80 s. A read at
+    #: the slowest rate (312.5 kS/s) takes about 1 s and may time out once
+    #: or twice, and a retune may cost one; 8 reads and 2 s is neither.
+    EMPTY_READS_LOST = 8
+    EMPTY_SECONDS_LOST = 2.0
+
     #: FM receiver: while True, stop() closes only the stream and keeps the
     #: device, and the next start() sets up a stream on it again. Opening the
     #: device is most of the 1.6 s a Sweep/Receive switch took; the window
@@ -489,6 +520,7 @@ class bb60_source(gr.sync_block):
         self._lock = threading.Lock()
         self._pending = {}
         self._held = None
+        self._reset_lost()
 
     # -- lifecycle -------------------------------------------------------
 
@@ -497,6 +529,8 @@ class bb60_source(gr.sync_block):
         install_log_handler()
         capture_driver_output()
         reset_overflows()
+        reset_connection_issues()                 # FM receiver: see lost()
+        self._reset_lost()
         import SoapySDR  # type: ignore
         from SoapySDR import SOAPY_SDR_RX, SOAPY_SDR_CF32  # type: ignore
 
@@ -569,6 +603,43 @@ class bb60_source(gr.sync_block):
         """FM receiver: close a device kept open by :attr:`hold_open`."""
         self._held = None
 
+    # -- FM receiver: a device that has gone -----------------------------
+
+    def _reset_lost(self):
+        self._t_start = time.monotonic()
+        self._t_samples = None             # when a read last brought samples
+        self._empty_reads = 0              # reads in a row that brought none
+        self._t_empty = None               # when the first of them returned
+
+    def lost(self):
+        """FM receiver: why the stream has stopped for good, or None.
+
+        Two signs, both seen with the device unplugged (2026-09-23), neither
+        in normal running. The driver's "Device connection issues detected"
+        line (:data:`CONNECTION_LOST`), newer than this start and than the
+        last samples, says so at once. Failing that - the line worded
+        otherwise, or fd 2 not filtered - reads coming back empty for
+        :data:`EMPTY_READS_LOST` reads and :data:`EMPTY_SECONDS_LOST`. None
+        while stopped: the stream is closed then, or lent to ``bb60_sweep``.
+        Cheap and safe from any thread; never raises."""
+        try:
+            if self._stream is None:
+                return None
+            count, when = _connection_issues
+            samples = self._t_samples
+            if (count and when is not None and when > self._t_start
+                    and (samples is None or when > samples)):
+                return ("the BB60D's USB connection was lost "
+                        "(the driver reports connection issues)")
+            first = self._t_empty
+            if (self._empty_reads >= self.EMPTY_READS_LOST and first is not None
+                    and time.monotonic() - first >= self.EMPTY_SECONDS_LOST):
+                return ("the BB60D stopped streaming "
+                        f"({self._empty_reads} reads in a row brought nothing)")
+        except Exception:
+            pass
+        return None
+
     # -- settings --------------------------------------------------------
 
     def set_center_freq(self, hz):
@@ -620,6 +691,8 @@ class bb60_source(gr.sync_block):
         with self._lock:
             pending, self._pending = self._pending, {}
         if pending:
+            # FM receiver: a retune may cost a read; count empties afresh.
+            self._empty_reads, self._t_empty = 0, None
             try:
                 self._configure(**pending)
             except Exception as exc:
@@ -630,9 +703,15 @@ class bb60_source(gr.sync_block):
         status = self._sdr.readStream(self._stream, [out], len(out),
                                       timeoutUs=self.TIMEOUT_US)
         if status.ret > 0:
+            self._t_samples = time.monotonic()     # FM receiver: see lost()
+            self._empty_reads, self._t_empty = 0, None
             return status.ret
         if status.ret == -4:               # SOAPY_SDR_OVERFLOW - samples lost
             self.overflows += 1
+        elif status.ret == 0:              # FM receiver: see lost()
+            if self._t_empty is None:
+                self._t_empty = time.monotonic()
+            self._empty_reads += 1
         return 0
 
     def adc_overflows(self):

@@ -437,6 +437,13 @@ class BB60(Radio):
             pass
         return health
 
+    def lost(self):
+        """The IQ stream's word (``bb60_source.lost``): the driver's
+        "connection issues", or reads that bring nothing. Its own sweep
+        says so itself (``bb60_sweep.bb60_sweeper.lost``)."""
+        block = self.block
+        return block.lost() if block is not None else None
+
 
 class RTLSDR(Radio):
     """An RTL-SDR dongle through ``rtl_tcp`` (``rtl_tcp.py``): here, or on
