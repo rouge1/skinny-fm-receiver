@@ -205,6 +205,8 @@ class hackrf_sweeper:
         self.sweep_seconds = None
         self.overflows = 0
         self.error = None
+        #: When a transfer last came from the device (``Engine.data_age``).
+        self.last_data = None
         self._lock = threading.Lock()
         self._device = None
         # Kept referenced while the device may call it (a toolkit rule).
@@ -356,6 +358,7 @@ class hackrf_sweeper:
             t = ctypes.cast(transfer_p, POINTER(_Transfer)).contents
             if not self._streaming:
                 return 0
+            self.last_data = time.monotonic()
             raw = np.ctypeslib.as_array(t.buffer, shape=(t.valid_length,))
             blocks = raw[:t.valid_length // BYTES_PER_BLOCK * BYTES_PER_BLOCK] \
                 .reshape(-1, BYTES_PER_BLOCK)

@@ -606,6 +606,9 @@ class FakeNativeSweeper:
         self.error = None
         self.running = True
         self.stopped = False
+        self.paused = False
+        self.silent = False                      # True: no data, as if unplugged
+        self.last_data = time.monotonic()
         self.set_plan(plan)
 
     def set_plan(self, plan, frames=None, settle_ms=None):
@@ -634,10 +637,12 @@ class FakeNativeSweeper:
             shape = level - 30 * np.abs(freqs - f) / 100e3
             db = np.maximum(db, shape)
         self.sweeps += 1
+        if not self.silent:
+            self.last_data = time.monotonic()
         return freqs, db, db, self.sweeps
 
     def set_paused(self, paused):
-        pass
+        self.paused = bool(paused)
 
     def set_frames(self, frames):
         pass
@@ -1170,6 +1175,66 @@ def part6_rtl_address():
     print("part 6 passed")
 
 
+def part7_lost_radio():
+    """A radio that stops sending says so in the status line, whichever
+    radio it is: the samples stopping in Receive and in a LO-hopping sweep,
+    a radio's own sweep going quiet (but not while paused), and at once
+    when the radio knows why (an RTL-SDR's closed connection). It clears
+    when the samples come back."""
+    original = fmapp.make_radio, fmapp.STALL_S, bb60_sweep.REALTIME_OK
+    fmapp.STALL_S = 1.0
+    lost = lambda w: 'No samples from the Simulated radio' in w.status.text()  # noqa: E731
+    try:
+        fmapp.make_radio = lambda kind, *a, **k: SimRadio()
+        w = make_window(['--radio', 'hackrf', '--mode', 'receive', '--freq', '89.3'])
+        assert w._mode == 'receive' and w.engine.running, w.status.text()
+        pump(1.5)
+        assert not lost(w), w.status.text()
+        for mode in ('receive', 'sweep'):
+            w.tabs.setCurrentIndex(fmapp.TAB_MODES.index(mode))
+            assert w._mode == mode and w.engine.running, w.status.text()
+            pump(1.5)
+            assert not lost(w), (mode, w.status.text())
+            w.radio.block.silent = True
+            assert pump(4, lambda: lost(w)), (mode, w.status.text())
+            assert 'is it still connected' in w.status.text()
+            w.radio.block.silent = False
+            assert pump(4, lambda: not lost(w)), (mode, w.status.text())
+        # A radio that can tell why says so at once.
+        w.radio.lost = lambda: 'rtl_tcp closed the connection.'
+        assert pump(2, lambda: 'Simulated radio lost: rtl_tcp closed' in w.status.text()), \
+            w.status.text()
+        assert 'Stop, then Start' in w.status.text()
+        w.close()
+
+        fmapp.make_radio = lambda kind, *a, **k: NativeRadio()
+        bb60_sweep.REALTIME_OK = True
+        w = make_window(['--radio', 'bb60', '--mode', 'sweep'])
+        sweeper = w.engine.sweeper
+        assert sweeper.native, w.status.text()
+        pump(1.5)
+        assert not lost(w), w.status.text()
+        sweeper.silent = True
+        assert pump(4, lambda: lost(w)), w.status.text()
+        sweeper.silent = False
+        assert pump(4, lambda: not lost(w)), w.status.text()
+        # Paused, a quiet sweep is expected; resumed, it is counted afresh.
+        w.pause_btn.click()
+        assert sweeper.paused
+        sweeper.silent = True
+        pump(2.5)
+        assert not lost(w), w.status.text()
+        sweeper.silent = False
+        w.pause_btn.click()
+        assert not sweeper.paused
+        pump(1.5)
+        assert not lost(w), w.status.text()
+        w.close()
+    finally:
+        fmapp.make_radio, fmapp.STALL_S, bb60_sweep.REALTIME_OK = original
+    print("part 7 passed")
+
+
 if __name__ == '__main__':
     keep = '--keep' in sys.argv
     try:
@@ -1179,6 +1244,7 @@ if __name__ == '__main__':
         part4_no_realtime()
         part5_unavailable_rate()
         part6_rtl_address()
+        part7_lost_radio()
         print("GUI: all checks passed")
     finally:
         # A failed check must not leave a flowgraph running into interpreter

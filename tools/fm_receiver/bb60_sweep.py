@@ -380,6 +380,8 @@ class bb60_sweeper:
         self.sweep_seconds = None
         self.overflows = 0
         self.error = None
+        #: When a sweep or frame last came from the device (``Engine.data_age``).
+        self.last_data = None
         self._lock = threading.Lock()
         self._configure = True
         self._stop = threading.Event()
@@ -549,6 +551,7 @@ class bb60_sweeper:
                 if status == BB_ADC_OVERFLOW:
                     self.overflows += 1
                 now = time.monotonic()
+                self.last_data = now
                 with self._lock:
                     if self._configure:            # re-planned meanwhile
                         continue

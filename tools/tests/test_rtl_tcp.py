@@ -12,6 +12,9 @@ the commands it is sent.
 - Closing lets go of the socket, and a server that was already running is
   not stopped (it was not ours).
 - Something on the port that is not rtl_tcp is refused with a message.
+- A radio that stops sending is noticed: silent (``Engine.data_age``
+  grows, and falls again when it comes back), or gone (``lost`` says the
+  connection closed).
 - A dongle is detected by its USB vendor and product (sysfs on Linux,
   ioreg on a Mac), and Realtek's card readers and network adapters are not
   taken for one.
@@ -50,6 +53,7 @@ class FakeRtlTcp:
         self.listener.listen(1)
         self.port = self.listener.getsockname()[1]
         self.done = threading.Event()
+        self.hold = threading.Event()            # set: connected, sending nothing
         self.client_gone = threading.Event()
         threading.Thread(target=self._serve, daemon=True).start()
 
@@ -65,11 +69,18 @@ class FakeRtlTcp:
         chunk = iq.tobytes()                     # 10 ms, a whole number of cycles
         try:
             while not self.done.is_set():
-                conn.sendall(chunk)
+                if not self.hold.is_set():
+                    conn.sendall(chunk)
                 time.sleep(0.01)
         except OSError:
             pass
         self.client_gone.set()
+        try:
+            # The command thread is blocked in recv on it: close() alone
+            # would not end the connection until that returned.
+            conn.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         conn.close()
 
     def _commands(self, conn):
@@ -157,6 +168,37 @@ def test_not_rtl_tcp():
 
 
 
+def test_lost():
+    from fm_receiver.engine import Engine
+    fake = FakeRtlTcp()
+    radio = radios.make_radio('rtlsdr', rtl_address=f'127.0.0.1:{fake.port}')
+    tb = Engine(want_audio=False)
+    tb.use_radio(radio)
+    try:
+        tb.start_receive(98.7e6, RATE)
+        time.sleep(1.0)
+        assert tb.data_age() < 0.5 and radio.lost() is None, (tb.data_age(), radio.lost())
+        # Silent but connected: only the samples stopping tells.
+        fake.hold.set()
+        time.sleep(1.5)
+        assert tb.data_age() > 1.0 and radio.lost() is None, (tb.data_age(), radio.lost())
+        fake.hold.clear()
+        time.sleep(0.5)
+        assert tb.data_age() < 0.5, tb.data_age()
+        # Gone: the connection closed, and the radio says so.
+        fake.close()
+        t0 = time.time()
+        while radio.lost() is None and time.time() - t0 < 3:
+            time.sleep(0.05)
+        assert 'closed' in (radio.lost() or ''), radio.lost()
+        assert tb.lost_reason() == radio.lost()
+        # Stopped, nothing is expected.
+        tb.halt()
+        assert tb.data_age() is None
+    finally:
+        tb.close()
+
+
 def test_usb_detection():
     import tempfile
     # Linux: a device directory has idVendor/idProduct; an interface has none.
@@ -193,5 +235,6 @@ if __name__ == '__main__':
     test_parse_address()
     test_stream_and_commands()
     test_not_rtl_tcp()
+    test_lost()
     test_usb_detection()
     print('rtl_tcp: all checks passed')

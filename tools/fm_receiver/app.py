@@ -85,6 +85,10 @@ CLIP_NOTE = 3e-3
 #: The clipped readout is smoothed over about this long, as ble-scanner's is
 #: (0.95 old + 0.05 new per 16 ms).
 CLIP_TAU_S = 0.3
+#: No samples from the radio for this long and the status line says it is
+#: lost: longer than any mode switch or retune takes. A radio's own sweep
+#: may take longer than this for one pass, so it gets three of those.
+STALL_S = 3.0
 #: Below any reference level AGC would pick: from here it always rises.
 REF_FLOOR_DB = -200.0
 RADIO_ORDER = ('hackrf', 'usrp', 'bb60', 'rtlsdr', 'file')
@@ -2554,6 +2558,9 @@ class MainWindow(Qt.QWidget):
         elif health.get('dropped'):
             text += f" - {health['dropped']} buffers dropped"
             token = 'warn'
+        lost = self._lost_text()
+        if lost:
+            text, token = lost, 'bad'
         self._set_status(text, token)
         # Only a radio that reports its health sets the tooltip: an error's
         # tooltip stays, and starting a mode clears it.
@@ -2562,6 +2569,29 @@ class MainWindow(Qt.QWidget):
                    f"USB {health['usb_v']:.2f} V, {health['usb_a']:.2f} A")
             if self.status.toolTip() != tip:
                 self.status.setToolTip(tip)
+
+    def _lost_text(self):
+        """The status line for a radio that has stopped sending, or None.
+        A radio that can tell why (an RTL-SDR's closed connection) says so
+        at once; any other is noticed when its samples stop for a while."""
+        if self._mode not in ('sweep', 'receive') or self.radio is None:
+            return None
+        e = self.engine
+        age = e.data_age()
+        if age is None:
+            return None
+        again = "press Stop, then Start, to open it again"
+        if self.radio.lost():
+            return f"{self.radio.name} lost: {self.radio.lost()} - {again}"
+        limit = STALL_S
+        if e.mode == 'sweep' and getattr(e.sweeper, 'native', False):
+            limit = max(limit, 3 * (e.sweeper.sweep_seconds or 0))
+        if age < limit:
+            return None
+        text = (f"No samples from the {self.radio.name} for {age:.0f} s - "
+                f"is it still connected? Then {again}")
+        reason = e.lost_reason()
+        return text + (f" ({reason})" if reason else "")
 
     def _refresh_sweep(self):
         s = self.engine.sweeper

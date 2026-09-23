@@ -181,6 +181,12 @@ class Radio:
         """Counters worth showing: samples dropped, input overloaded."""
         return {}
 
+    def lost(self):
+        """Why the radio has stopped sending, if it can tell (a closed
+        connection), else None. One that can't tell is caught by the
+        engine's watch on the samples instead (``Engine.data_age``)."""
+        return None
+
     def ensure_open(self):
         """Open the IQ stream's block again if a sweep of the radio's own
         closed it (the HackRF's)."""
@@ -506,6 +512,9 @@ class RTLSDR(Radio):
         if self.block is None:
             return {}
         return {'dropped': self.block.overflows}
+
+    def lost(self):
+        return self.block.error if self.block is not None else None
 
 
 def _load_bb60_module():

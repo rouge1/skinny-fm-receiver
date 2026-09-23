@@ -67,6 +67,8 @@ class slow_radio(gr.sync_block):
         self.tones = tones
         self.latency = latency
         self.center = 0.0
+        #: True: sends nothing, as an unplugged radio (test_gui part 7).
+        self.silent = False
         self._pending = []                        # (applies at sample, hz)
         self._lock = threading.Lock()
         self._rng = np.random.default_rng(3)
@@ -76,6 +78,9 @@ class slow_radio(gr.sync_block):
             self._pending.append((self.nitems_written(0) + self.latency, hz))
 
     def work(self, input_items, output_items):
+        if self.silent:
+            time.sleep(0.01)
+            return 0
         out = output_items[0]
         n = min(len(out), 16384)
         start = self.nitems_written(0)

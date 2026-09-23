@@ -153,6 +153,9 @@ Useful options (`./fm-receiver --help` lists them all):
     RTL-SDR it always ends with the share of samples clipped ("clipped 0.13%"):
     green under 0.3%, amber to 1%, and over that the overload warning. In
     a sweep it is the worst step of the last sweep, and names that step.
+    If the radio stops sending (unplugged, or an RTL-SDR's network or
+    rtl_tcp gone), it turns red and says so: at once when the radio can
+    tell, or after 3 s without samples.
   - The **Themes** disc, top right, is the theme in force: a click moves to
     the next (Slate, Reading Room, Walnut). Hover over the disc or the word
     Themes to see its name, even while another window has the focus.
@@ -616,6 +619,7 @@ To start fresh, delete the file. To use a different settings file, set
 | Symptom | What to do |
 |---|---|
 | "No … was found" in the status line | Check the cable, and close anything else using the radio (Spike, GQRX, hackrf_transfer, another copy of this app). Then choose the radio again or press Start. |
+| *No samples from the … for N s* or *… lost* | The radio has stopped sending: unplugged, its USB reset, or, for an RTL-SDR on another computer, the network or rtl_tcp there gone. Check the cable (or the other computer), then press **Stop** and **Start**. It clears by itself if the samples come back. |
 | Ghost copies of signals in a sweep | On a USRP or an RTL-SDR, increase **Settle** (an RTL-SDR on a slower network may need more than its 100 ms). (The BB60D and HackRF sweep themselves.) |
 | Part of the left column is hidden under the spectrum | Drag the divider right. The column resizes itself on a theme change, so this should not happen any more. |
 | No RDS on a strong station | It may not send RDS; check the MPX view for a hump at 57 kHz. On a weak station, try a narrower channel filter. |

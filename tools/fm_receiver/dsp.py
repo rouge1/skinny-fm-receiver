@@ -59,6 +59,7 @@ import cmath
 import math
 import os
 import threading
+import time
 
 import numpy as np  # type: ignore
 from gnuradio import analog, blocks, fft, filter, gr  # type: ignore
@@ -305,6 +306,24 @@ class clip_probe(gr.sync_block):
             out = self._hit, self._n
             self._n = self._hit = 0
         return out
+
+
+class data_clock(gr.sync_block):
+    """When samples last came out of the radio. A radio that stops sending
+    (unplugged, its network gone) raises no error in the flowgraph: the
+    stream just stops, and the window would sit on the last picture, so
+    the engine watches this instead (:meth:`Engine.data_age`)."""
+
+    def __init__(self):
+        gr.sync_block.__init__(self, name='data_clock',
+                               in_sig=[np.complex64], out_sig=None)
+        self.last = None
+
+    def work(self, input_items, output_items):
+        n = len(input_items[0])
+        if n:
+            self.last = time.monotonic()
+        return n
 
 
 class stereo_phase_probe(gr.sync_block):

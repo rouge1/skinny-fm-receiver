@@ -25,10 +25,11 @@ Rules carried over from the RF bench toolkit:
 """
 
 import sys
+import time
 
 from gnuradio import audio, gr  # type: ignore
 
-from .dsp import AUDIO_RATE, ReceiveChain, WavChain
+from .dsp import AUDIO_RATE, ReceiveChain, WavChain, data_clock
 from .sweep import sweep_sink
 
 
@@ -53,6 +54,11 @@ class Engine(gr.top_block):
         self.audio_error = None
         self._audio_sink = None
         self._retired = []
+        # When the radio's samples last arrived, in either mode; one block,
+        # reconnected on every rebuild. ``_since`` is when this run began,
+        # so a stall is counted from there, not from before a mode switch.
+        self._clock = data_clock()
+        self._since = None
 
     # ---------------------------------------------------------- radio
     def use_radio(self, radio):
@@ -124,9 +130,40 @@ class Engine(gr.top_block):
                 pass
             raise
         self.running = True
+        self._since = time.monotonic()
         # SoapyHackRF ignores the preamp if it is set before the stream runs.
         if self.radio is not None:
             self.radio.apply_gain()
+
+    # ---------------------------------------------------------- lost radio
+    def data_age(self):
+        """Seconds since the radio last sent anything, counted from the
+        start of this run; None when nothing is expected (stopped, paused,
+        no radio). A native sweep reports its own data; a paused one sends
+        none, so the count starts again when it resumes."""
+        if not self.running or self.radio is None or self.mode not in ('receive', 'sweep'):
+            return None
+        now = time.monotonic()
+        s = self.sweeper
+        if self.mode == 'sweep' and getattr(s, 'native', False):
+            if s.paused:
+                self._since = now
+                return None
+            last = s.last_data
+        else:
+            last = self._clock.last
+        since = self._since if self._since is not None else now
+        return now - max(since, last if last is not None else since)
+
+    def lost_reason(self):
+        """Why the radio stopped sending, when it knows (the rtl_tcp
+        connection closed, a native sweep's error), else None."""
+        if self.radio is None:
+            return None
+        reason = self.radio.lost()
+        if reason is None and self.mode == 'sweep' and getattr(self.sweeper, 'native', False):
+            reason = self.sweeper.error
+        return reason
 
     # ---------------------------------------------------------- playback
     def start_wav(self, source, volume=0.5, muted=False):
@@ -181,6 +218,7 @@ class Engine(gr.top_block):
         self.station_hz = self.lo_hz + self.offset_hz
         self.rx = ReceiveChain(self, radio.block, self.rate, self.offset_hz,
                                audio_sink=self._audio(), **settings)
+        self.connect(radio.block, self._clock)
         self.mode = 'receive'
         self._started()
 
@@ -241,6 +279,7 @@ class Engine(gr.top_block):
             self.lo_hz = None
             self.mode = 'sweep'
             self.running = True
+            self._since = time.monotonic()
             return
         radio.ensure_open()
         radio.set_rate(plan.rate)
@@ -251,5 +290,6 @@ class Engine(gr.top_block):
         self.sweeper = sweep_sink(plan, radio.set_center, radio.block,
                                   frames=frames, settle_ms=settle)
         self.connect(radio.block, self.sweeper)
+        self.connect(radio.block, self._clock)
         self.mode = 'sweep'
         self._started()
