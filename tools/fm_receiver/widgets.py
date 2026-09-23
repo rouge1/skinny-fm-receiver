@@ -6,6 +6,7 @@ size or value that can be zero is checked before it divides anything.
 """
 
 import math
+import time
 
 import numpy as np  # type: ignore
 import pyqtgraph as pg  # type: ignore
@@ -1000,9 +1001,11 @@ class Card(Qt.QGroupBox):
     """A group box that can fold: :meth:`foldable` puts a chevron at the
     right of its title, and it or a click on the title hides the rows of
     its form - all but the ``keep`` rows, which stay in sight folded, less
-    any ``also`` widgets in them. A click slides it shut or open over
-    :attr:`FOLD_MS`; :meth:`set_folded` does it at once. :attr:`folded`
-    carries True when it folds, False when it opens."""
+    any ``also`` widgets in them, which fade. With ``center`` the row kept
+    glides to the middle of the card once it has folded, and back before
+    it opens. A click does all this over :attr:`FOLD_MS` a step;
+    :meth:`set_folded` at once. :attr:`folded` carries True when it folds,
+    False when it opens."""
 
     folded = pyqtSignal(bool)
     FOLD_MS = 200
@@ -1012,6 +1015,7 @@ class Card(Qt.QGroupBox):
         super().__init__(title, parent)
         self._form = None
         self._keep = self._also = ()
+        self._center = False
         self.chevron = None
         # The height itself is slid, minimum and maximum: with only the
         # maximum, the left column (sized to its minimums) squeezed the
@@ -1020,12 +1024,25 @@ class Card(Qt.QGroupBox):
         self._slide.setEasingCurve(QtCore.QEasingCurve.OutCubic)
         self._slide.valueChanged.connect(self._slide_to)
         self._slide.finished.connect(self._slid)
+        # The kept row's glide: the label column's least width, so the
+        # label (right-aligned in it) and its field move together.
+        self._glide = QtCore.QVariantAnimation(self)
+        self._glide.setEasingCurve(QtCore.QEasingCurve.InOutCubic)
+        self._glide.valueChanged.connect(
+            lambda x: self._form.setColumnMinimumWidth(0, int(x)))
+        self._glide.finished.connect(self._glided)
+        # The ``also`` widgets' fade.
+        self._fade = QtCore.QVariantAnimation(self)
+        self._fade.valueChanged.connect(self._set_opacity)
+        self._fade.finished.connect(self._faded)
 
-    def foldable(self, form, keep=(), also=(), folded=False):
+    def foldable(self, form, keep=(), also=(), folded=False, center=False):
         """``form`` is the card's :class:`Form`; ``keep``, widgets whose
         rows stay shown when it is folded; ``also``, widgets in those rows
-        that fold away all the same (the Tuner's Step knob)."""
+        that fade away all the same (the Tuner's Step knob); ``center``,
+        the kept row to the card's middle when folded."""
         self._form, self._keep, self._also = form, tuple(keep), tuple(also)
+        self._center = bool(center)
         self.chevron = _Chevron(self)
         self.chevron.setToolTip(f"Fold or open {self.title()}.")
         self.chevron.clicked.connect(lambda opened: self._fold(not opened, self.FOLD_MS))
@@ -1044,34 +1061,112 @@ class Card(Qt.QGroupBox):
         self._fold(folded, 0, emit=changed)
 
     def _fold(self, folded, ms, emit=True):
-        self._slide.stop()
+        for anim in (self._slide, self._glide, self._fade):
+            anim.stop()
         self.layout().setEnabled(True)
         self.chevron.turn_to(folded, ms)
-        start = self.height()
         if ms <= 0 or not self.isVisible():
             self._show_rows(not folded)
-            self.setMinimumHeight(0)
-            self.setMaximumHeight(self._NO_LIMIT)
+            self._set_opacity(1.0)
+            self._faded()
+            self._let_height_go()
+            self._form.setColumnMinimumWidth(
+                0, self._center_x() if folded and self._center else 0)
+        elif folded:
+            self._slide_rows(True, ms)
+        elif self._center and self._form.columnMinimumWidth(0) > 0:
+            self._glide_to(self._open_label_width(), ms)    # then _glided opens it
         else:
-            # The height it will end at, measured with the rows as they
-            # will be. Then the rows are laid out open and the layout held
-            # still, so the card's edge slides over them - squeezed by the
-            # layout instead, they piled on top of each other. Closing, they
-            # are hidden once the slide is done.
-            self._show_rows(not folded)
-            end = self._natural_height()
-            self._show_rows(True)
-            self.resize(self.width(), max(start, end))
-            self.layout().setEnabled(True)
-            self.layout().activate()
-            self.layout().setEnabled(False)
-            self.setFixedHeight(start)
-            self._slide.setDuration(ms)
-            self._slide.setStartValue(start)
-            self._slide.setEndValue(end)
-            self._slide.start()
+            self._slide_rows(False, ms)
         if emit:
             self.folded.emit(bool(folded))
+
+    def _slide_rows(self, folded, ms):
+        """Slide shut or open, the ``also`` widgets fading with it."""
+        start = self.height()
+        # The height it will end at, measured with the rows as they will
+        # be. Then the rows are laid out open and the layout held still, so
+        # the card's edge slides over them - squeezed by the layout
+        # instead, they piled on top of each other. Closing, they are
+        # hidden once the slide is done.
+        self._show_rows(not folded)
+        end = self._natural_height()
+        if not folded:
+            self._set_opacity(0.0)
+        self._show_rows(True)
+        self.resize(self.width(), max(start, end))
+        self.layout().activate()
+        self.layout().setEnabled(False)
+        self.setFixedHeight(start)
+        self._slide.setDuration(ms)
+        self._slide.setStartValue(start)
+        self._slide.setEndValue(end)
+        self._slide.start()
+        if self._also:
+            self._fade.setDuration(ms)
+            self._fade.setStartValue(1.0 if folded else 0.0)
+            self._fade.setEndValue(0.0 if folded else 1.0)
+            self._fade.start()
+
+    def _glide_to(self, x, ms):
+        self._glide.setDuration(ms)
+        self._glide.setStartValue(float(self._label_column()))
+        self._glide.setEndValue(float(x))
+        self._glide.start()
+
+    def _glided(self):
+        if not self.is_folded():
+            self._slide_rows(False, self.FOLD_MS)
+
+    def _label_column(self):
+        """The label column's width now."""
+        least = self._form.columnMinimumWidth(0)
+        for label, _ in self._form._rows:
+            if label is not None and not label.isHidden():
+                least = max(least, label.width())
+        return least
+
+    def _open_label_width(self):
+        return max([label.sizeHint().width() for label, _ in self._form._rows
+                    if label is not None] or [0])
+
+    def _center_x(self):
+        """The label column's width that puts the kept row, label and
+        field, in the middle of the card."""
+        form = self._form
+        for label, field in form._rows:
+            if label is None or not any(w in self._keep for w in _widgets_in(field)):
+                continue
+            field_w = (field.sizeHint().width() if isinstance(field, Qt.QLayout)
+                       else field.sizeHint().width())
+            margins = form.contentsMargins()
+            room = self.contentsRect().width() - margins.left() - margins.right()
+            label_w = label.sizeHint().width()
+            row_w = label_w + form.horizontalSpacing() + field_w
+            return label_w + max(0, (room - row_w) // 2)
+        return 0
+
+    def _set_opacity(self, value):
+        for w in self._also:
+            effect = w.graphicsEffect()
+            if not isinstance(effect, Qt.QGraphicsOpacityEffect):
+                effect = Qt.QGraphicsOpacityEffect(w)
+                w.setGraphicsEffect(effect)
+            effect.setOpacity(float(value))
+
+    def _faded(self):
+        """Fully shown again, a widget drops its fade: it paints as before,
+        glow and all."""
+        if not self.is_folded():
+            for w in self._also:
+                if isinstance(w.graphicsEffect(), Qt.QGraphicsOpacityEffect):
+                    w.setGraphicsEffect(None)
+
+    def _let_height_go(self):
+        self.layout().setEnabled(True)
+        self.setMinimumHeight(0)
+        self.setMaximumHeight(self._NO_LIMIT)
+        self.layout().activate()
 
     def _slide_to(self, height):
         """One step of the slide. Qt passes a size change up to the
@@ -1104,12 +1199,18 @@ class Card(Qt.QGroupBox):
         return self.sizeHint().height()
 
     def _slid(self):
-        if self.is_folded():
+        folded = self.is_folded()
+        if folded and self._center:
+            # Held where it is while the other rows go - the label column
+            # would snap narrower - and then glided to the middle.
+            self._form.setColumnMinimumWidth(0, self._label_column())
+        if folded:
             self._show_rows(False)
-        self.layout().setEnabled(True)
-        self.setMinimumHeight(0)
-        self.setMaximumHeight(self._NO_LIMIT)
-        self.layout().activate()
+        self._let_height_go()
+        if folded and self._center:
+            self._glide_to(self._center_x(), self.FOLD_MS)
+        elif not folded:
+            self._form.setColumnMinimumWidth(0, 0)
 
     def _show_rows(self, shown):
         for widgets in self._form.row_widgets():
@@ -1127,6 +1228,9 @@ class Card(Qt.QGroupBox):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         try:
+            if (self.chevron is not None and self._center and self.is_folded()
+                    and not self._slide.state() and not self._glide.state()):
+                self._form.setColumnMinimumWidth(0, self._center_x())
             if self.chevron is not None:
                 title = self._title_rect()
                 y = title.center().y() - self.chevron.height() // 2
@@ -1401,6 +1505,64 @@ class ChannelBand(pg.LinearRegionItem):
             self._view.bandDragFinished.emit()
 
 
+class _RowRing:
+    """Waterfall rows with the time each came, oldest overwritten. With
+    ``merge_s``, rows within one such slot are kept as their maximum - the
+    coarse copy a long stretch of time is drawn from."""
+
+    def __init__(self, rows, cols, merge_s=None):
+        self.rows = np.empty((rows, cols), dtype=np.float16)
+        self.t = np.zeros(rows)
+        self.n = self.head = 0
+        self.merge_s = merge_s
+        self._slot = None
+
+    def add(self, row, t):
+        slot = None if self.merge_s is None else int(t // self.merge_s)
+        if slot is not None and slot == self._slot and self.n:
+            last = (self.head - 1) % len(self.t)
+            np.maximum(self.rows[last], row, out=self.rows[last])
+            self.t[last] = t
+            return
+        self._slot = slot
+        self.rows[self.head] = row
+        self.t[self.head] = t
+        self.head = (self.head + 1) % len(self.t)
+        self.n = min(self.n + 1, len(self.t))
+
+    def newest_first(self):
+        """The ring's indices and times, newest first."""
+        order = (self.head - 1 - np.arange(self.n)) % len(self.t)
+        return order, self.t[order]
+
+
+def _ago(seconds):
+    """A waterfall's time scale: how long ago, from "now" at the top."""
+    if seconds < 0.05:
+        return "now"
+    if seconds < 90:
+        return f"{seconds:g} s"
+    whole = int(round(seconds))
+    return f"{whole // 60}:{whole % 60:02d}"
+
+
+class TimeAxis(pg.AxisItem):
+    """The waterfall's left axis: seconds ago, "now" at the top, at steps
+    that read as time (1, 2, 5, 10, 15, 30 s, then minutes)."""
+
+    STEPS = (0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300)
+
+    def tickSpacing(self, minVal, maxVal, size):
+        span = abs(maxVal - minVal)
+        for step in self.STEPS:
+            if span / step <= 6:
+                return [(step, 0)]
+        return [(self.STEPS[-1], 0)]
+
+    def tickStrings(self, values, scale, spacing):
+        return [_ago(v * scale) for v in values]
+
+
 class SpectrumView(Qt.QWidget):
     """A spectrum, optionally with a waterfall, and the dials that set the
     view: **Span** (zoom around the centre), **Ref** (the top of the scale),
@@ -1420,6 +1582,17 @@ class SpectrumView(Qt.QWidget):
     :attr:`bandDragged` (hertz) then :attr:`bandDragFinished`. With
     ``tuner_menu``, a right click offers to put the tuner where the pointer
     is, and :attr:`tunerRequested` carries it (hertz).
+
+    The level axis is a handle too: under the pointer it lights, the wheel
+    over it zooms the amplitude scale about the level under the pointer
+    (Range and Ref level together, as the wheel zooms the span), and a
+    middle-button drag up or down moves the Ref level. The knobs follow.
+
+    The waterfall keeps the last :attr:`WF_HISTORY_S` seconds and shows
+    :attr:`wf_span_s` of them, "now" at the top, with a time scale down its
+    left side; the wheel over that scale shows more or less of the past.
+    Where a row on screen covers several rows of data it shows their
+    maximum, so a short burst is not lost however far out it is zoomed.
     """
 
     clicked = pyqtSignal(float)
@@ -1430,12 +1603,28 @@ class SpectrumView(Qt.QWidget):
     bandDragFinished = pyqtSignal()
     tunerRequested = pyqtSignal(float)
 
+    #: Rows drawn on screen, whatever the time shown; columns kept.
     WF_ROWS = 220
     WF_COLS = 4096
+    #: How long the waterfall remembers, and the rows that allows at the
+    #: fastest rate one comes (Receive, 15 a second), kept as float16.
+    WF_HISTORY_S = 300.0
+    WF_HISTORY_ROWS = 4800
+    #: The coarse copy: a row a quarter of a second, drawn from once a row
+    #: on screen covers that much. From every row, five minutes on screen
+    #: took 90 ms a draw.
+    WF_COARSE_S = 0.25
+    #: How much of it is shown: at least, by default, at most.
+    WF_SPAN_S = (2.0, 20.0, WF_HISTORY_S)
+    #: A wheel notch over the time scale shows this much more or less.
+    TIME_ZOOM = 1.25
     #: The channel band is a handle as well as a picture: it is drawn at
     #: least this many pixels wide, so a narrow channel on a wide sweep can
     #: still be grabbed.
     BAND_MIN_PX = 7
+    #: A wheel notch over the level axis zooms the scale by this (a fifth
+    #: of it with Shift), as the Span knob's wheel does.
+    AXIS_ZOOM = 1.25
     #: The fades, in ms: out and in, and how long after the last move each
     #: line decides the tuner or centre has settled.
     FADE_FAST_MS = 120
@@ -1455,8 +1644,16 @@ class SpectrumView(Qt.QWidget):
         self.center_hz = 0.5
         self._peak = None
         self._x = None
-        self._wf = None
+        self._wf = None                   # the rows on screen, newest first
         self._wf_extent = None
+        self._hist = None                 # the history: every row, and
+        self._coarse = None               # the most of each quarter second
+        self._wf_drawn = 0.0              # the newest row's time when drawn
+        self.wf_span_s = self.WF_SPAN_S[1]
+        self._time_hot = False
+        self._wf_later = Qt.QTimer(self)
+        self._wf_later.setSingleShot(True)
+        self._wf_later.timeout.connect(self._draw_wf)
         self._syncing = False
         self._wanted_span = None
         self.snap_hz = snap_hz
@@ -1516,10 +1713,11 @@ class SpectrumView(Qt.QWidget):
         self.plot.sigXRangeChanged.connect(self._range_changed)
         self.plot.scene().sigMouseClicked.connect(self._scene_clicked)
         self.plot.scene().sigMouseMoved.connect(self._mouse_moved)
+        self.plot.scene().sigMouseMoved.connect(self._plot_mouse_moved)
 
         self.wf_plot = None
         if waterfall:
-            self.wf_plot = pg.PlotWidget()
+            self.wf_plot = pg.PlotWidget(axisItems={'left': TimeAxis('left')})
             self.wf_plot.setObjectName('waterfall')
             self.wf_plot.setMenuEnabled(False)
             self.wf_plot.hideButtons()
@@ -1528,15 +1726,20 @@ class SpectrumView(Qt.QWidget):
             self.wf_plot.getPlotItem().invertY(True)
             self.wf_plot.setXLink(self.plot)
             self.wf_plot.setLabel('left', 'time')
-            self.wf_plot.getAxis('left').setStyle(showValues=False)
+            # A label at either end would be cut in half: the top is now.
+            self.wf_plot.getAxis('left').setStyle(hideOverlappingLabels=True)
+            self.wf_plot.setYRange(0, self.wf_span_s, padding=0)
             # Linked views line up by where they are on screen, so the
             # waterfall's plot must start where the spectrum's does: its
-            # axis, with no numbers, is kept as wide as the spectrum's.
+            # axis is kept as wide as the spectrum's.
             self.plot.getAxis('left').geometryChanged.connect(self._match_axes)
             self.wf_image = pg.ImageItem()
             self.wf_plot.addItem(self.wf_image)
             self.wf_plot.scene().sigMouseClicked.connect(self._scene_clicked)
             self.wf_plot.scene().sigMouseMoved.connect(self._mouse_moved)
+            self.wf_plot.scene().sigMouseMoved.connect(self._wf_mouse_moved)
+            self.wf_plot.scene().installEventFilter(self)
+            self.wf_plot.viewport().installEventFilter(self)
 
         # The dials.
         self.span_knob = Knob('Span', self.min_span_hz, 6e9, 6e9, _span_text,
@@ -1569,6 +1772,7 @@ class SpectrumView(Qt.QWidget):
         # corner; clicks go through it to the plot.
         self.readout = Qt.QLabel('', self.plot)
         self.readout.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+        self.readout.hide()
         self.plot.getPlotItem().getViewBox().sigResized.connect(self._place_readout)
 
         # The lines are on the spectrum only: the waterfall is left clear.
@@ -1587,6 +1791,10 @@ class SpectrumView(Qt.QWidget):
         # tuner", and its marker shows before any drag begins. The scene is
         # watched for it: the band itself is not sent the press.
         self.plot.scene().installEventFilter(self)
+        # Leaving the plot must put the level axis's light out.
+        self.plot.viewport().installEventFilter(self)
+        self._axis_hot = False
+        self._axis_drag = None            # (pointer y, Ref level) at the press
 
         # Under the plot: the dials and switches, at the right-hand end.
         controls = Qt.QHBoxLayout()
@@ -1663,7 +1871,13 @@ class SpectrumView(Qt.QWidget):
             for line in region.lines:
                 line.setPen(edge)
         self.message.setColor(t['warn'])
-        self.readout.setStyleSheet(f"background: transparent; color: {t['ink']};")
+        # A chip of the panel behind the readout, nearly opaque, so a busy
+        # trace or density map under it can't wash the numbers out.
+        chip = Qt.QColor(t['panel'])
+        self.readout.setStyleSheet(
+            f"background: rgba({chip.red()}, {chip.green()}, {chip.blue()}, 224);"
+            f" color: {t['ink']}; border: 1px solid {t['rule']};"
+            " border-radius: 2px; padding: 3px 8px;")
         if self._density_args is not None:
             self.set_density(*self._density_args)    # in the new theme's colours
         if self.wf_plot is not None:
@@ -1712,6 +1926,7 @@ class SpectrumView(Qt.QWidget):
         if changed:
             self._peak = None
             self._wf = None
+            self._hist = None
         self.span_knob.setValue(min(span, high_hz - low_hz), emit=False)
         self._apply_span()
 
@@ -1749,6 +1964,7 @@ class SpectrumView(Qt.QWidget):
         self.peak_curve.setData([], [])
         self._peak = None
         self._wf = None
+        self._hist = None
         self._x = None
         if self.wf_plot is not None:
             self.wf_image.clear()
@@ -1825,7 +2041,7 @@ class SpectrumView(Qt.QWidget):
         if self.wf_plot is not None and self.wf_check.isChecked():
             self._add_row(np.asarray(freqs_hz) / self.scale, np.asarray(db))
 
-    def _add_row(self, x, db):
+    def _add_row(self, x, db, now=None):
         n = len(db)
         if n > self.WF_COLS:
             # Max-pool k bins to a column: a narrow carrier must not vanish.
@@ -1836,20 +2052,60 @@ class SpectrumView(Qt.QWidget):
         else:
             row = db
         extent = (x[0], x[-1] + (x[-1] - x[0]) / max(1, n - 1))
-        if self._wf is None or self._wf.shape[1] != len(row) or self._wf_extent != extent:
-            self._wf = np.full((self.WF_ROWS, len(row)), np.nan, dtype=np.float32)
+        if (self._hist is None or self._hist.rows.shape[1] != len(row)
+                or self._wf_extent != extent):
+            # A new band or resolution: the history starts again.
+            self._hist = _RowRing(self.WF_HISTORY_ROWS, len(row))
+            self._coarse = _RowRing(int(self.WF_HISTORY_S / self.WF_COARSE_S) + 2, len(row),
+                                    merge_s=self.WF_COARSE_S)
+            self._wf_drawn = 0.0
             self._wf_extent = extent
-            self.wf_plot.setYRange(0, self.WF_ROWS, padding=0)
-        self._wf[1:] = self._wf[:-1]
-        self._wf[0] = row
+        t = time.monotonic() if now is None else float(now)
+        self._hist.add(row, t)
+        self._coarse.add(row, t)
+        # Every row is drawn while a draw is cheap (the full history, a
+        # minute or less on screen); showing more, at most once a row on
+        # screen - and a timer sees the newest row drawn even if no more
+        # come (Pause).
+        wait = self.wf_span_s / self.WF_ROWS
+        if wait < self.WF_COARSE_S or t - self._wf_drawn >= wait * 0.999 or self._wf is None:
+            self._wf_later.stop()
+            self._draw_wf()
+        elif not self._wf_later.isActive():
+            self._wf_later.start(int(1000 * wait))
+
+    def _draw_wf(self):
+        """The rows on screen from the history: row ``b`` covers the ages
+        ``b`` to ``b + 1`` screen rows back from the newest, and shows the
+        most of every row of data it covers - or, zoomed in past the data's
+        own rate, the row that was current then."""
+        if self._hist is None or self._hist.n == 0 or self.wf_plot is None:
+            return
+        span = self.wf_span_s
+        # The coarse copy once a quarter second is two rows on screen or less.
+        ring = self._coarse if span / self.WF_ROWS >= self.WF_COARSE_S / 2 else self._hist
+        order, times = ring.newest_first()
+        n = len(order)
+        ages = times[0] - times
+        keep = min(n, int(np.searchsorted(ages, span, 'left')) + 1)
+        order, ages = order[:keep], ages[:keep]
+        step = span / self.WF_ROWS
+        lows = np.arange(self.WF_ROWS) * step
+        starts = np.clip(np.searchsorted(ages, lows, 'right') - 1, 0, keep - 1)
+        img = np.maximum.reduceat(ring.rows[order], starts, axis=0).astype(np.float32)
+        # Past the oldest row's own stretch there is nothing yet.
+        gap = float(np.median(np.diff(ages))) if keep > 1 else step
+        img[lows > ages[-1] + max(gap, step)] = np.nan
+        self._wf = img
+        self._wf_drawn = times[0]
         top = self.ref_knob.value()
         bottom = top - self.range_knob.value()
+        extent = self._wf_extent
         # The rectangle goes with every image: set before the first one, it
         # is lost, and the picture is drawn one column per MHz from zero.
-        self.wf_image.setImage(np.nan_to_num(self._wf, nan=bottom), autoLevels=False,
+        self.wf_image.setImage(np.nan_to_num(img, nan=bottom), autoLevels=False,
                                levels=(bottom, top),
-                               rect=QtCore.QRectF(extent[0], 0, extent[1] - extent[0],
-                                                  self.WF_ROWS))
+                               rect=QtCore.QRectF(extent[0], 0, extent[1] - extent[0], span))
 
     # -- markers
     def set_marker(self, hz):
@@ -1888,6 +2144,25 @@ class SpectrumView(Qt.QWidget):
     def eventFilter(self, obj, event):
         try:
             kind = event.type()
+            if obj is self.plot.viewport():
+                if kind == QtCore.QEvent.Leave and self._axis_drag is None:
+                    self._light_axis(False)
+                return False
+            if self.wf_plot is not None:
+                if obj is self.wf_plot.viewport():
+                    if kind == QtCore.QEvent.Leave:
+                        self._light_time_axis(False)
+                    return False
+                if obj is self.wf_plot.scene():
+                    if kind == QtCore.QEvent.GraphicsSceneWheel \
+                            and self._over_time_axis(event.scenePos()):
+                        fine = bool(event.modifiers() & QtCore.Qt.ShiftModifier)
+                        self.zoom_time(event.delta() / 120.0, fine)
+                        event.accept()
+                        return True
+                    return False
+            if self._axis_event(kind, event):
+                return True
             if kind in (QtCore.QEvent.GraphicsSceneMousePress,
                         QtCore.QEvent.GraphicsSceneMouseRelease) \
                     and event.button() == QtCore.Qt.MiddleButton:
@@ -1899,6 +2174,120 @@ class SpectrumView(Qt.QWidget):
         except Exception as exc:                  # never abort the app
             print(f"spectrum view: {exc}")
         return False
+
+    # -- the level axis as a handle
+    def _axis_rect(self):
+        """The level axis's own strip, in scene coordinates. (Its bounding
+        rectangle spans the plot too: the grid is drawn by the axis.)"""
+        axis = self.plot.getAxis('left')
+        parent = axis.parentItem()
+        return parent.mapRectToScene(axis.geometry()) if parent is not None \
+            else axis.sceneBoundingRect()
+
+    def _over_axis(self, scene_pos):
+        return self._axis_rect().contains(scene_pos)
+
+    def _light_axis(self, on):
+        """The level axis's numbers and unit lit (the on-air colour) while
+        the pointer is on it, with an up-and-down cursor: it can be wheeled
+        and dragged."""
+        if on == self._axis_hot:
+            return
+        self._axis_hot = on
+        self._paint_lit(self.plot, self.level_unit, on)
+
+    @staticmethod
+    def _paint_lit(plot, label, on):
+        t = theme.TOKENS
+        axis = plot.getAxis('left')
+        ink = _marker_colour('tuner') if on else Qt.QColor(t['ink_2'])
+        # The numbers and the name only: the axis's pen draws the grid too.
+        axis.setTextPen(pg.mkPen(ink))
+        if on:
+            axis.setLabel(label, color=ink.name())
+            plot.viewport().setCursor(QtCore.Qt.SizeVerCursor)
+        else:
+            axis.setLabel(label)                # its ordinary colour
+            plot.viewport().unsetCursor()
+
+    # -- the waterfall's time scale as a handle
+    def _time_axis_rect(self):
+        axis = self.wf_plot.getAxis('left')
+        parent = axis.parentItem()
+        return parent.mapRectToScene(axis.geometry()) if parent is not None \
+            else axis.sceneBoundingRect()
+
+    def _over_time_axis(self, scene_pos):
+        return self.wf_plot is not None and self._time_axis_rect().contains(scene_pos)
+
+    def _light_time_axis(self, on):
+        if on == self._time_hot:
+            return
+        self._time_hot = on
+        self._paint_lit(self.wf_plot, 'time', on)
+
+    def _wf_mouse_moved(self, scene_pos):
+        self._light_time_axis(self._over_time_axis(scene_pos))
+
+    def zoom_time(self, notches, fine=False):
+        """Show less of the past (``notches`` up) or more (down), "now"
+        staying at the top."""
+        step = 1 + (self.TIME_ZOOM - 1) / (5 if fine else 1)
+        self.set_wf_span(self.wf_span_s * step ** -notches)
+
+    def set_wf_span(self, seconds):
+        low, _, high = self.WF_SPAN_S
+        self.wf_span_s = float(min(max(seconds, low), high))
+        if self.wf_plot is not None:
+            self.wf_plot.setYRange(0, self.wf_span_s, padding=0)
+            self._draw_wf()
+
+    def _axis_event(self, kind, event):
+        """The wheel and the middle button on the level axis; True if the
+        event was the axis's."""
+        if kind == QtCore.QEvent.GraphicsSceneWheel and self._over_axis(event.scenePos()):
+            fine = bool(event.modifiers() & QtCore.Qt.ShiftModifier)
+            self.zoom_levels(event.delta() / 120.0, event.scenePos().y(), fine)
+            event.accept()
+            return True
+        middle = QtCore.Qt.MiddleButton
+        if kind == QtCore.QEvent.GraphicsSceneMousePress and event.button() == middle \
+                and self._over_axis(event.scenePos()):
+            self._axis_drag = (event.scenePos().y(), self.ref_knob.value())
+            event.accept()
+            return True
+        if kind == QtCore.QEvent.GraphicsSceneMouseMove and self._axis_drag is not None:
+            y0, ref0 = self._axis_drag
+            self.drag_levels(ref0, event.scenePos().y() - y0)
+            return True
+        if kind == QtCore.QEvent.GraphicsSceneMouseRelease and event.button() == middle \
+                and self._axis_drag is not None:
+            self._axis_drag = None
+            self._light_axis(self._over_axis(event.scenePos()))
+            return True
+        return False
+
+    def zoom_levels(self, notches, scene_y, fine=False):
+        """Zoom the amplitude scale ``notches`` wheel notches (up: in)
+        about the level at ``scene_y``, which stays where it is on screen."""
+        vb = self.plot.getPlotItem().getViewBox()
+        rect = vb.sceneBoundingRect()
+        level = vb.mapSceneToView(QtCore.QPointF(rect.center().x(), scene_y)).y()
+        step = 1 + (self.AXIS_ZOOM - 1) / (5 if fine else 1)
+        top, span = self.ref_knob.value(), self.range_knob.value()
+        new_span = min(max(span * step ** -notches, self.range_knob._min), self.range_knob._max)
+        new_top = level + (top - level) * new_span / span
+        self.range_knob.setValue(round(new_span, 1))
+        self.ref_knob.setValue(min(max(round(new_top, 1), self.ref_knob._min),
+                                   self.ref_knob._max))
+
+    def drag_levels(self, ref0, pixels):
+        """The scale dragged ``pixels`` down (negative: up) from where it
+        was, at Ref level ``ref0``: the trace goes with the pointer."""
+        vb = self.plot.getPlotItem().getViewBox()
+        per_pixel = self.range_knob.value() / max(1.0, vb.height())
+        ref = round((ref0 + pixels * per_pixel) * 2) / 2
+        self.ref_knob.setValue(min(max(ref, self.ref_knob._min), self.ref_knob._max))
 
     def _over_band(self, scene_pos):
         if not self.band.isVisible():
@@ -1988,7 +2377,7 @@ class SpectrumView(Qt.QWidget):
         return {'span_hz': self.span_knob.value(), 'ref_db': self.ref_knob.value(),
                 'range_db': self.range_knob.value(), 'avg': int(self.avg_knob.value()),
                 'peak_hold': self.peak_check.isChecked(),
-                'waterfall': self.wf_check.isChecked()}
+                'waterfall': self.wf_check.isChecked(), 'wf_span_s': self.wf_span_s}
 
     def load_state(self, state):
         if not isinstance(state, dict):
@@ -2005,6 +2394,8 @@ class SpectrumView(Qt.QWidget):
                 self.span_knob.setValue(self._wanted_span, emit=False)
             self.peak_check.setChecked(bool(state.get('peak_hold', False)))
             self.wf_check.setChecked(bool(state.get('waterfall', True)))
+            if 'wf_span_s' in state:
+                self.set_wf_span(float(state['wf_span_s']))
         except Exception as exc:
             print(f"spectrum view: ignoring saved state: {exc}")
 
@@ -2086,6 +2477,12 @@ class SpectrumView(Qt.QWidget):
         if self._menu_hz is not None:
             self.tunerRequested.emit(self._menu_hz)
 
+    def _plot_mouse_moved(self, scene_pos):
+        # The spectrum's own scene: the waterfall's moves come to
+        # _mouse_moved too, where its time scale sits as the level axis does.
+        if self._axis_drag is None:
+            self._light_axis(self._over_axis(scene_pos))
+
     def _mouse_moved(self, scene_pos):
         hz = self._to_hz(scene_pos)
         if hz is None or self._x is None or not len(self._x):
@@ -2097,6 +2494,7 @@ class SpectrumView(Qt.QWidget):
 
     def _set_readout(self, text):
         self.readout.setText(text)
+        self.readout.setVisible(bool(text))      # no empty chip
         self.readout.adjustSize()
         self._place_readout()
 

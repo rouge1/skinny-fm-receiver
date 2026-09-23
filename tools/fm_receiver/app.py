@@ -566,11 +566,12 @@ class MainWindow(Qt.QWidget):
         box.addStretch(1)
         return page
 
-    def _foldable(self, card, form, name, keep=(), also=()):
+    def _foldable(self, card, form, name, keep=(), also=(), center=False):
         """A Receive card with a chevron, folded as it was left."""
         self._cards = getattr(self, '_cards', {})
         self._cards[name] = card
-        card.foldable(form, keep, also, folded=bool(self.cfg['folded'].get(name)))
+        card.foldable(form, keep, also, folded=bool(self.cfg['folded'].get(name)),
+                      center=center)
         card.folded.connect(lambda folded: self.cfg['folded'].__setitem__(name, folded))
         return card
 
@@ -615,7 +616,7 @@ class MainWindow(Qt.QWidget):
         self.rx_rate_combo.activated.connect(lambda _: (self._update_folder_tip(),
                                                         self._restart_receive()))
         form.addRow("IQ bandwidth:", self.rx_rate_combo)
-        return self._foldable(box, form, 'radio', keep=(self.center_entry,))
+        return self._foldable(box, form, 'radio', keep=(self.center_entry,), center=True)
 
     def _build_tuner_card(self):
         """The station you hear, its step, and its channel filter."""
@@ -674,7 +675,8 @@ class MainWindow(Qt.QWidget):
         chan.addWidget(self.chan_roller)
         chan.addStretch(1)
         form.addRow("Channel filter:", chan)
-        return self._foldable(box, form, 'tuner', keep=(self.tuner,), also=(self.step_knob,))
+        return self._foldable(box, form, 'tuner', keep=(self.tuner,), also=(self.step_knob,),
+                              center=True)
 
     def _build_rds_card(self):
         """The station as decoded: its name, how it is decoded, how well it

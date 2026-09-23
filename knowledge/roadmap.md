@@ -807,3 +807,25 @@ kept whole:
 - [x] Walnut: the trace in cream; a darker waterfall floor.
 - [x] The Recordings scrubber's colours (Round 9's open item) - the playhead
   and the played part above.
+
+## Round 11 (requested 2026-09-23)
+
+- [x] **The level axis:** lit under the pointer; the wheel zooms the scale
+  (Ref level and Range together, about the pointer's level); a middle drag
+  moves the Ref level; the knobs follow. Sweep and Receive alike.
+- [x] **Folded Radio box:** Center and Center on tuner glide to the middle.
+- [x] **Folded Tuner box:** the tuner glides to the middle; the Step knob
+  fades out, and back in as it opens.
+- [x] **The readout on a panel**, so the trace can't wash it out.
+
+## Round 12: the waterfall in time (requested 2026-09-23)
+
+- [x] **A time scale** down the waterfall's left side, "now" at the top.
+- [x] **Five minutes kept**, shown 2 s to 5 min at a time; zoomed out, each
+  screen row the most of what it covers.
+- [x] **Hover and wheel on the time scale**, as on the level axis.
+- [ ] **Waterfall DVR.** A highlighted window on the time scale: the wheel
+  makes it bigger or smaller, and a middle-button drag moves it back and
+  forth in time, to look at (and later play back) a stretch of the past.
+  Needs the IQ kept as well as the picture - the history is only the
+  waterfall's rows today.

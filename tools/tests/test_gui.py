@@ -906,6 +906,8 @@ def part3_native_sweep():
         realtime_polish(w)
         auto_scale(w)
         folding(w)
+        level_axis(w)
+        time_axis(w)
         w.close()
         saved = json.load(open(os.environ['FMRX_CONFIG']))
         # Real time left its own window on the tuner, so the band is custom.
@@ -934,6 +936,80 @@ def auto_scale(w):
     top, span = view.ref_knob.value(), view.range_knob.value()
     assert span == 80 and top == -30, (top, span)       # -100..-40, 10 dB either side
     assert abs((top - span / 2) - (-70)) <= 0.5, 'the trace in the middle'
+
+
+def level_axis(w):
+    """The level axis: lit under the pointer, the wheel zooms the scale
+    about the level under it, a middle drag moves the Ref level; the knobs
+    follow."""
+    w.agc_box.setChecked(False)                  # AGC would move the Ref level
+    view = w.rf_view
+    view.ref_knob.setValue(-20)
+    view.range_knob.setValue(100)
+    pump(0.2)
+    port = view.plot.viewport()
+    rect = view._axis_rect()
+    at = view.plot.mapFromScene(QtCore.QPointF(rect.center().x(), rect.top() + rect.height() * 0.25))
+    _move(port, at)
+    pump(0.1)
+    assert view._axis_hot, 'the axis should light under the pointer'
+    vb = view.plot.getPlotItem().getViewBox()
+    scene_y = view.plot.mapToScene(at).y()
+    level = vb.mapSceneToView(QtCore.QPointF(vb.sceneBoundingRect().center().x(), scene_y)).y()
+    _wheel(port, at, 1)                          # zoom in a notch
+    pump(0.1)
+    top, span = view.ref_knob.value(), view.range_knob.value()
+    assert abs(span - 80) < 0.2, span
+    after = vb.mapSceneToView(QtCore.QPointF(vb.sceneBoundingRect().center().x(), scene_y)).y()
+    assert abs(after - level) < 0.5, ('the level under the pointer stays put', level, after)
+    _send(port, QtGui.QMouseEvent(QtCore.QEvent.MouseButtonPress, QtCore.QPointF(at),
+                                  QtCore.Qt.MiddleButton, QtCore.Qt.MiddleButton,
+                                  QtCore.Qt.NoModifier))
+    for dy in range(5, 45, 5):                   # 40 px down
+        _move(port, at + QtCore.QPoint(0, dy), QtCore.Qt.MiddleButton)
+    _send(port, QtGui.QMouseEvent(QtCore.QEvent.MouseButtonRelease,
+                                  QtCore.QPointF(at + QtCore.QPoint(0, 40)),
+                                  QtCore.Qt.MiddleButton, QtCore.Qt.NoButton,
+                                  QtCore.Qt.NoModifier))
+    pump(0.1)
+    moved = view.ref_knob.value() - top
+    assert moved > 5, ('dragging down raises the Ref level', top, view.ref_knob.value())
+    assert view.range_knob.value() == span, 'a drag leaves the Range'
+    _move(port, QtCore.QPoint(port.width() // 2, port.height() // 2))
+    pump(0.1)
+    assert not view._axis_hot
+    print(f"level axis: lit, wheel to {span:.0f} dB about {level:.1f}, drag moved Ref {moved:+.1f} dB")
+    w.agc_box.setChecked(True)                   # as it was
+
+
+def time_axis(w):
+    """The waterfall's time scale: marked in time, lit under the pointer,
+    and the wheel over it shows more or less of the past (kept for five
+    minutes), "now" staying at the top."""
+    from fm_receiver.widgets import TimeAxis, _ago
+    view = w.rf_view
+    assert [_ago(v) for v in (0, 5, 30, 90, 150)] == ['now', '5 s', '30 s', '1:30', '2:30']
+    assert isinstance(view.wf_plot.getAxis('left'), TimeAxis)
+    port = view.wf_plot.viewport()
+    rect = view._time_axis_rect()
+    at = view.wf_plot.mapFromScene(rect.center())
+    _move(port, at)
+    pump(0.1)
+    assert view._time_hot, 'the time scale should light under the pointer'
+    before = view.wf_span_s
+    _wheel(port, at, -2)                         # two notches down: more of the past
+    pump(0.1)
+    assert abs(view.wf_span_s - before * 1.25 ** 2) < 1e-6, (before, view.wf_span_s)
+    (_, _), (y0, y1) = view.wf_plot.getPlotItem().getViewBox().viewRange()
+    assert abs(y0) < 1e-6 and abs(y1 - view.wf_span_s) < 1e-6, (y0, y1)
+    _wheel(port, at, 40)                         # all the way in: the floor
+    assert view.wf_span_s == view.WF_SPAN_S[0]
+    view.set_wf_span(before)
+    _move(port, QtCore.QPoint(port.width() // 2, port.height() // 2))
+    pump(0.1)
+    assert not view._time_hot
+    assert view.state()['wf_span_s'] == before
+    print(f"time scale: lit, the wheel showed {before * 1.25 ** 2:.2f} s, down to {view.WF_SPAN_S[0]:g} s")
 
 
 def folding(w):

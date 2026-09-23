@@ -289,9 +289,10 @@ radio itself, **Tuner** picks the station inside the radio's band, and
 Each box has a **chevron** at the right of its title: click it, or the
 title, to fold the box away and again to open it; it slides shut or open,
 and the chevron turns. A folded **Radio** box
-still shows its **Center** and **Center on tuner**; a folded **Tuner** box
-its tuner (without the Step knob or the channel filter); a folded **RDS**
-box its **Now playing** and **RadioText**. The app remembers which are
+still shows its **Center** and **Center on tuner**, and a folded **Tuner**
+box its tuner, each gliding to the middle of the box once it has folded
+(the Step knob fades out as the Tuner box folds, and back in as it opens);
+a folded **RDS** box shows its **Now playing** and **RadioText**. The app remembers which are
 folded.
 
 ```
@@ -415,7 +416,23 @@ The **MPX view** (bottom right) is the demodulated multiplex from 0 to
 
 Each spectrum has its own dials, at the right-hand end of the row under it;
 the readout of the frequency and level under the pointer is in the
-bottom-left corner of the plot.
+bottom-left corner of the plot, on a small panel of its own so a busy trace
+can't wash it out.
+
+**The level axis** (dBFS, or dBm on the BB60D's own sweep) is a handle too.
+Its numbers light orange under the pointer. Roll the wheel over it to zoom
+the amplitude scale about the level under the pointer, as the wheel zooms
+the span: Ref level and Range change together (Shift for fine). Press the
+middle button on it and drag up or down to move the Ref level; the trace
+goes with the pointer. The knobs follow either way.
+
+**The waterfall's time scale** runs down its left side: the newest row at
+the top ("now"), then 2 s, 4 s ... ago. The waterfall remembers the last
+five minutes. Its numbers light orange under the pointer; roll the wheel
+over them to show more of the past or less (2 s to 5 minutes, 20 s at
+first; Shift for fine). Zoomed out, each row on screen shows the strongest
+of the rows it covers, so a short burst stays visible. The view remembers
+how much time it showed.
 **Hover over a dial and roll the mouse wheel** to turn it, or drag it up or
 down; hold Shift for fine steps. A dial under the pointer lights orange, and
 glows in Slate and Walnut or lifts on a shadow in Reading Room, so you can
