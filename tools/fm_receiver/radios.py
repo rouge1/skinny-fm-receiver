@@ -795,6 +795,31 @@ def usb_ids():
     return _sysfs_usb_ids()
 
 
+#: The USB (vendor, product) of each radio kind that plugs in by USB: the
+#: BB60D enumerates as Signal Hound's FX3 (2817:0007), the HackRF One as
+#: 1d50:6089. A USRP on the network, or an RTL-SDR on another computer,
+#: can't be seen this way.
+USB_IDS = {'bb60': {(0x2817, 0x0007)}, 'hackrf': {(0x1d50, 0x6089)},
+           'rtlsdr': RTL_USB_IDS}
+
+
+def plugged_in(kind, rtl_address=''):
+    """Whether a radio of ``kind`` is on this computer's USB now, without
+    opening it; None when that can't be told (a network radio, or no USB
+    listing: every machine lists its own hubs, so an empty one failed)."""
+    ids = USB_IDS.get(kind)
+    if not ids:
+        return None
+    if kind == 'rtlsdr':
+        from .rtl_tcp import is_local, parse_address
+        if not is_local(parse_address(rtl_address)[0]):
+            return None
+    present = usb_ids()
+    if not present:
+        return None
+    return bool(ids & set(present))
+
+
 def detect_radios():
     """The radio kinds plugged in now, cheapest checks only (USB, SoapySDR).
     A USRP on the network is not looked for: that takes seconds, and nor

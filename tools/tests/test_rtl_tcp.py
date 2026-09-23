@@ -255,6 +255,18 @@ def test_usb_detection():
     assert ids == [(0x0bda, 0x8153), (0x0bda, 0x2838)], ids
     assert radios.RTL_USB_IDS & set(ids)
     assert not radios.RTL_USB_IDS & {(0x0bda, 0x0328), (0x0bda, 0x8153)}
+    # plugged_in: by kind, None where USB can't tell.
+    saved = radios.usb_ids
+    try:
+        radios.usb_ids = lambda: [(0x1d6b, 0x0002), (0x1d50, 0x6089), (0x0bda, 0x2838)]
+        assert radios.plugged_in('hackrf') is True and radios.plugged_in('rtlsdr') is True
+        assert radios.plugged_in('bb60') is False
+        assert radios.plugged_in('rtlsdr', 'macmini') is None     # another computer
+        assert radios.plugged_in('usrp') is None and radios.plugged_in('file') is None
+        radios.usb_ids = lambda: []                                 # the listing failed
+        assert radios.plugged_in('hackrf') is None
+    finally:
+        radios.usb_ids = saved
 
 
 if __name__ == '__main__':

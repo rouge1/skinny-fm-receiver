@@ -39,7 +39,7 @@ from .bb60_sweep import RBW_LADDER, RT_MAX_SPAN_HZ
 from .dsp import AUDIO_RATE, CHANNEL_MAX_BW, MPX_RATE, wav_source
 from .engine import Engine
 from .radios import (RADIO_NAMES, IQFile, RadioError, detect_radios,
-                     make_radio, rate_label)
+                     make_radio, plugged_in, rate_label)
 from .rds_core import clock_text
 from .recording import (NAME_STEADY_S, IqRecording, RecordingInfo, WavWriter,
                         session_base)
@@ -89,6 +89,15 @@ CLIP_TAU_S = 0.3
 #: lost: longer than any mode switch or retune takes. A radio's own sweep
 #: may take longer than this for one pass, so it gets three of those.
 STALL_S = 3.0
+#: A lost radio's USB is looked at this often (``radios.plugged_in``: the
+#: listing costs about 20 ms). Seen gone and then back, it is opened again
+#: after BACK_SETTLE_S - once back on the bus a radio still loads its
+#: firmware - and tried REOPEN_TRIES times. None of the radios recovers by
+#: itself: unplugged and plugged back in (2026-09-23), each stayed silent
+#: until it was opened again.
+LOST_POLL_S = 1.0
+BACK_SETTLE_S = 2.0
+REOPEN_TRIES = 3
 #: Below any reference level AGC would pick: from here it always rises.
 REF_FLOOR_DB = -200.0
 RADIO_ORDER = ('hackrf', 'usrp', 'bb60', 'rtlsdr', 'file')
@@ -231,6 +240,8 @@ class MainWindow(Qt.QWidget):
         self._last_wf = 0.0
         self._last_overload = 0
         self._overload_until = 0.0
+        #: A lost radio being watched for its return (:meth:`_watch_lost`).
+        self._lost = None
         self._clipped = 0.0
         self._clipped_at = None
         self._clip_smooth = None
@@ -1022,6 +1033,7 @@ class MainWindow(Qt.QWidget):
 
     def _use_radio(self, kind):
         """Stop, open the radio of ``kind`` and start in the current mode."""
+        self._lost = None
         self._stop_recording("the radio changed")
         index = self.radio_combo.findData(kind)
         self.radio_combo.setCurrentIndex(max(0, index))
@@ -1180,6 +1192,7 @@ class MainWindow(Qt.QWidget):
         if self.radio is not None:
             # Closed, not just stopped: a stopped HackRF source still holds
             # the device, and Stop is how another program gets it.
+            self._lost = None
             self._stop_recording("streaming stopped")
             self._remember_radio_settings()
             self._save_view()
@@ -2468,6 +2481,7 @@ class MainWindow(Qt.QWidget):
             if self._rec_t0 is not None:
                 self._recording_progress()
             self._collect_overview()
+            self._watch_lost()                   # also once a reopen has failed
             if not self.engine.running:
                 return
             self._check_health()
@@ -2559,8 +2573,12 @@ class MainWindow(Qt.QWidget):
             text += f" - {health['dropped']} buffers dropped"
             token = 'warn'
         lost = self._lost_text()
-        if lost:
-            text, token = lost, 'bad'
+        if lost is None:
+            self._lost = None                    # it came back by itself
+        else:
+            if self._lost is None:
+                self._lost = self._new_lost_watch()
+            text, token = self._lost_status(lost), 'bad'
         self._set_status(text, token)
         # Only a radio that reports its health sets the tooltip: an error's
         # tooltip stays, and starting a mode clears it.
@@ -2593,6 +2611,51 @@ class MainWindow(Qt.QWidget):
                 f"is it still connected? Then {again}")
         reason = e.lost_reason()
         return text + (f" ({reason})" if reason else "")
+
+    def _new_lost_watch(self):
+        return {'kind': self.radio_combo.currentData(), 'name': self.radio.name,
+                'address': self.rtl_edit.text() if self._rtl_network else '',
+                'checked': 0.0, 'gone': False, 'back': None, 'tries': 0}
+
+    def _lost_status(self, text):
+        """What to say about a lost radio: once it is seen gone from the
+        USB, that it will open again by itself when it is back."""
+        w = self._lost
+        if w is not None and w['back'] is not None:
+            return f"{w['name']} is back - opening it again..."
+        if w is not None and w['gone']:
+            return f"{w['name']} unplugged - plug it back in and it will open again by itself"
+        return text
+
+    def _watch_lost(self):
+        """Open a lost radio again once it is back on the USB. Only one
+        that was seen gone first: a radio that stops sending while still
+        plugged in would stop again, so that is left to Stop and Start.
+        A network radio can't be seen (``plugged_in`` is None)."""
+        w = self._lost
+        now = time.monotonic()
+        if w is None or now - w['checked'] < LOST_POLL_S:
+            return
+        w['checked'] = now
+        present = plugged_in(w['kind'], w['address'])
+        if present is None:
+            return
+        if not present:
+            w['gone'], w['back'] = True, None
+            return
+        if not w['gone']:
+            return
+        if w['back'] is None:
+            w['back'] = now
+            self._set_status(self._lost_status(''), 'warn')
+            return
+        if now - w['back'] < BACK_SETTLE_S:
+            return
+        w['tries'] += 1
+        self._use_radio(w['kind'])               # forgets the watch
+        if self.radio is None and w['tries'] < REOPEN_TRIES:
+            w['back'] = now                      # not ready yet: again, later
+            self._lost = w
 
     def _refresh_sweep(self):
         s = self.engine.sweeper

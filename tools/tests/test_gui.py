@@ -1245,6 +1245,64 @@ def part7_lost_radio():
     print("part 7 passed")
 
 
+def part8_reopen():
+    """A lost radio seen gone from the USB, and then back, is opened again
+    by itself, in the mode it was in; a first open that fails is tried
+    again. One that stops sending while still plugged in is left to Stop
+    and Start - opened again, it would only stop again."""
+    saved = (fmapp.make_radio, fmapp.plugged_in, fmapp.STALL_S, fmapp.LOST_POLL_S,
+             fmapp.BACK_SETTLE_S)
+    usb = {'hackrf': True}
+    opened, refuse = [], [0]
+
+    def fake_make_radio(kind, *a, **k):
+        radio = SimRadio()
+        if refuse[0]:
+            refuse[0] -= 1
+            def fail():
+                raise radios.RadioError("No HackRF One was found.")
+            radio.open = fail
+        opened.append(radio)
+        return radio
+
+    fmapp.make_radio = fake_make_radio
+    fmapp.plugged_in = lambda kind, address='': usb.get(kind)
+    fmapp.STALL_S, fmapp.LOST_POLL_S, fmapp.BACK_SETTLE_S = 1.0, 0.2, 0.5
+    status = lambda w: w.status.text()  # noqa: E731
+    try:
+        w = make_window(['--radio', 'hackrf', '--mode', 'sweep', '--freq', '89.3'])
+        assert w._mode == 'sweep' and len(opened) == 1, w.status.text()
+        # Unplugged: silent, and gone from the USB.
+        opened[-1].block.silent = True
+        usb['hackrf'] = False
+        assert pump(5, lambda: 'unplugged - plug it back in' in status(w)), status(w)
+        # Back, but the first open fails (still starting up): tried again.
+        refuse[0] = 1
+        usb['hackrf'] = True
+        assert pump(3, lambda: 'is back - opening it again' in status(w)), status(w)
+        assert pump(6, lambda: len(opened) >= 3 and w.radio is opened[-1]
+                    and w.engine.running), (len(opened), status(w))
+        assert w._mode == 'sweep', w._mode
+        pump(1.5)
+        assert 'lost' not in status(w) and 'No samples' not in status(w), status(w)
+        assert w._lost is None
+        # Silent while still plugged in: said, but not opened again.
+        n = len(opened)
+        w.radio.block.silent = True
+        assert pump(4, lambda: 'No samples from the Simulated radio' in status(w)), status(w)
+        assert 'Stop, then Start' in status(w)
+        pump(2)
+        assert len(opened) == n, 'a radio that never left the USB was reopened'
+        # Stop forgets the watch.
+        w.run_btn.click()
+        assert w._lost is None and w.radio is None
+        w.close()
+    finally:
+        (fmapp.make_radio, fmapp.plugged_in, fmapp.STALL_S, fmapp.LOST_POLL_S,
+         fmapp.BACK_SETTLE_S) = saved
+    print("part 8 passed")
+
+
 if __name__ == '__main__':
     keep = '--keep' in sys.argv
     try:
@@ -1255,6 +1313,7 @@ if __name__ == '__main__':
         part5_unavailable_rate()
         part6_rtl_address()
         part7_lost_radio()
+        part8_reopen()
         print("GUI: all checks passed")
     finally:
         # A failed check must not leave a flowgraph running into interpreter
