@@ -7,7 +7,8 @@ with no launcher.
 - Run: `./fm-receiver` (activates the `gnu` conda env). Headless:
   `QT_QPA_PLATFORM=offscreen ./fm-receiver --no-audio --quit-after 10 --screenshot out.png`
 - Test: `python tools/tests/run_all.py` (no radio); add `--hw` when a BB60D
-  is attached, `--hackrf` for a HackRF. Other sessions on this machine (for
+  is attached, `--hackrf` for a HackRF, `--rtl` for an RTL-SDR (with this
+  app closed: the check starts and stops its own rtl_tcp). Other sessions on this machine (for
   example ble-scanner) use the HackRF too: check whether it is in use
   (`pgrep -af "blescan|hackrf_"`, and `hackrf_info` opens it) rather than
   assuming, and make sure nothing of ours holds it afterwards.

@@ -842,7 +842,7 @@ is fine for FM. First step towards using several radios over a network.
 - [x] **Off air over the network** (the Mac mini's R820T): Receive with
   stereo and RDS, the LO-hopping sweep, settle measured.
 - [x] **Local on real hardware**: a dongle plugged into the machine the app
-  runs on (Linux, 2026-09-23). Not yet on the Mac locally.
+  runs on (Linux, 2026-09-23), and on the Mac mini (the user, 2026-09-23).
 - [x] **Found on the first run**, after the BB60D and HackRF: by its USB
   IDs, which Realtek's other devices don't share.
 - [ ] **Several radios over the network**: the next step (to be planned).

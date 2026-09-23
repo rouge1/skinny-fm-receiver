@@ -1,10 +1,12 @@
-"""Run the tests: the five that need no radio, with ``--hw`` the BB60D
-check as well, and with ``--hackrf`` the HackRF check (other sessions may
-use the HackRF too: make sure it is yours before running it).
+"""Run the tests: the six that need no radio, with ``--hw`` the BB60D
+check as well, with ``--hackrf`` the HackRF check (other sessions may
+use the HackRF too: make sure it is yours before running it), and with
+``--rtl`` the RTL-SDR check (this app closed, so no rtl_tcp is running).
 
     python tools/tests/run_all.py          # about three minutes
     python tools/tests/run_all.py --hw     # plus a BB60D off air
     python tools/tests/run_all.py --hackrf # plus a HackRF off air
+    python tools/tests/run_all.py --rtl    # plus an RTL-SDR off air
 """
 
 import os
@@ -19,7 +21,8 @@ TESTS = ['test_sweep.py', 'test_tuning.py', 'test_receive_chain.py', 'test_gui.p
 
 def main():
     tests = (TESTS + (['hw_bb60_check.py'] if '--hw' in sys.argv else [])
-             + (['hw_hackrf_check.py'] if '--hackrf' in sys.argv else []))
+             + (['hw_hackrf_check.py'] if '--hackrf' in sys.argv else [])
+             + (['hw_rtl_check.py'] if '--rtl' in sys.argv else []))
     env = dict(os.environ, QT_QPA_PLATFORM='offscreen')
     failed = []
     for name in tests:

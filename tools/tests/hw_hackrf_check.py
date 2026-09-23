@@ -202,7 +202,7 @@ def gain_check(tb, radio, gains=(30, 40, 54, 67), seconds=8.0):
         k = n // 2 + int(round(tb.offset_hz / (tb.rate / n)))
         half = int(round(90e3 / (tb.rate / n)))
         snr = 10 * np.log10(np.mean(10 ** (db[k - half:k + half] / 10))) - np.median(db)
-        good = 100 * (1 - (snap['block_error_rate'] or 1)) if snap['blocks_seen'] else 0
+        good = 100 * (1 - snap['block_error_rate']) if snap['blocks_seen'] else 0
         rows.append((g, good, snap['groups'], snr, rx.channel_power_db(), rx.pilot_level()))
         print(f"gain {g:3d}%: RDS {good:5.1f}% blocks good ({snap['groups']} groups), "
               f"SNR {snr:4.1f} dB, channel {rx.channel_power_db():6.1f} dBFS, "
