@@ -173,6 +173,7 @@ class Engine(gr.top_block):
         self.halt(hold=True)
         self._clear()
         radio = self.radio
+        radio.ensure_open()                 # after a HackRF's own sweep
         radio.set_rate(rate)
         self.rate = float(radio.rate or rate)
         self.lo_hz, self.offset_hz = radio.tune_plan(station_hz, self.rate, center_hz)
@@ -241,6 +242,7 @@ class Engine(gr.top_block):
             self.mode = 'sweep'
             self.running = True
             return
+        radio.ensure_open()
         radio.set_rate(plan.rate)
         self.rate = plan.rate
         radio.set_center(plan.center(0))

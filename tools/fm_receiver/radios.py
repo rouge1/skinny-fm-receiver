@@ -85,6 +85,10 @@ class Radio:
     usable = 0.75
     default_gain = 50
     can_sweep = True
+    #: Sweeps in the device itself, as a plan from :meth:`native_plan`; and
+    #: of those, real time and AGC (the BB60D's).
+    has_realtime = False
+    has_agc = False
     freq_range_hz = (FREQ_MIN_HZ, FREQ_MAX_HZ)
     #: Offset of the station from the LO when the LO is moved to it: keeps the
     #: station off a HackRF's DC spike. The RF bench toolkit uses the same.
@@ -177,6 +181,12 @@ class Radio:
         """Counters worth showing: samples dropped, input overloaded."""
         return {}
 
+    def ensure_open(self):
+        """Open the IQ stream's block again if a sweep of the radio's own
+        closed it (the HackRF's)."""
+        if self.block is None:
+            self.open()
+
     def describe(self):
         return self.name
 
@@ -198,6 +208,11 @@ class HackRF(Radio):
     #: SNR on 89.3; 54% clipped (channel +2 dBFS) and RDS was lost.
     default_gain = 40
     freq_range_hz = (1e6, 6000e6)
+    #: Sweeps with its firmware (``hackrf_sweep``): the IQ stream's device is
+    #: closed while it does, and opened again for Receive.
+    native_sweep = True
+    sweep_range_hz = (1e6, 6000e6)
+    sweeper = None
 
     def open(self):
         from gnuradio import soapy  # type: ignore
@@ -224,8 +239,38 @@ class HackRF(Radio):
 
     def apply_gain(self, percent=None):
         super().apply_gain(percent)
-        for name, value in rx_gain_plan(self.gain_percent).items():
-            self.block.set_gain(0, name, value)
+        if self.sweeper is not None and self.sweeper.running:
+            self.sweeper.set_gain_percent(self.gain_percent)
+        if self.block is not None:
+            for name, value in rx_gain_plan(self.gain_percent).items():
+                self.block.set_gain(0, name, value)
+
+    def native_plan(self, start_hz, stop_hz, rbw_hz=None, **_view):
+        from .hackrf_sweep import HackRFSweepPlan
+        return HackRFSweepPlan(start_hz, stop_hz, rbw_hz)
+
+    def native_sweeper(self, plan):
+        """Close the IQ stream's device and sweep with the firmware; the
+        sweep is returned, running. Receive opens the stream again
+        (:meth:`ensure_open`), once the engine has stopped this."""
+        import gc
+        from .hackrf_sweep import HackRFError, hackrf_sweeper
+        self.sweeper = None
+        self.block = None
+        gc.collect()                            # the SoapySDR device, closed
+        sweeper = hackrf_sweeper(plan, rx_gain_plan, self.gain_percent)
+        try:
+            sweeper.start()
+        except (HackRFError, OSError) as exc:
+            raise RadioError(str(exc)) from exc
+        self.sweeper = sweeper
+        return sweeper
+
+    def close(self):
+        if self.sweeper is not None:
+            self.sweeper.stop()
+            self.sweeper = None
+        super().close()
 
 
 class USRP(Radio):
@@ -307,6 +352,9 @@ class BB60(Radio):
     #: Sweeps in the device (``bb60_sweep``), over the whole of its range
     #: from 9 kHz - the IQ stream is kept to the tuner's range.
     native_sweep = True
+    #: Real time and AGC in its own sweep (``bb60_sweep``).
+    has_realtime = True
+    has_agc = True
     sweep_range_hz = (9e3, 6000e6)
     sweeper = None
 
@@ -328,6 +376,10 @@ class BB60(Radio):
 
     def usable_fraction(self, rate):
         return self.USABLE.get(float(rate), 0.75)
+
+    def native_plan(self, start_hz, stop_hz, rbw_hz=None, **view):
+        from .bb60_sweep import NativeSweepPlan
+        return NativeSweepPlan(start_hz, stop_hz, rbw_hz, **view)
 
     def native_sweeper(self, plan):
         """Start the device's own sweep of ``plan`` (a

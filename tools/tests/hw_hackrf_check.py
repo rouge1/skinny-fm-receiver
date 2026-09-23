@@ -6,7 +6,8 @@ nothing else has it open:
     python tools/tests/hw_hackrf_check.py [--keep]     (about three minutes)
 
 1. **Found**: ``detect_radios`` lists it.
-2. **Sweep settle time.** The HackRF's queue of samples in USB transfers is
+2. **Sweep settle time** of the LO-hopping sweep - the window's for a
+   USRP; the HackRF sweeps with its firmware there (stage 6). The HackRF's queue of samples in USB transfers is
    invisible to the sweep's backlog count, so its settle time has to cover
    it; 40 ms was an estimate. Sweeps the FM band in two steps at several
    settle times against single-LO references, and reports the ghosts at
@@ -21,7 +22,10 @@ nothing else has it open:
 4. **The DC spike**: its height at the LO, against the tuner's 100 kHz
    keep-out.
 5. **Record, move the Center, play back** - as the BB60D check.
-6. **Mode switch time**, Sweep to Receive.
+6. **Its own sweep** (``hackrf_sweep``, the firmware's sweep mode, which
+   the window uses): the FM band with the station in it, 1 MHz-6 GHz in
+   under 2 s, the clipping per tuning, and Receive after it on the IQ
+   stream's device, decoding the same PI; both switches timed.
 7. **Let go**: once the engine is closed, ``hackrf_info`` - another
    program - must be able to open the HackRF while this one still runs.
 8. **The window**: opens the HackRF, sweeps, switches to Receive, shows
@@ -123,6 +127,60 @@ def settle_check(tb, radio, settles=(0.0, 5.0, 10.0, 20.0, 40.0)):
               f"median |diff| {diff:.2f} dB, ghosts {ghosts} of {int(quiet.sum())} quiet bins"
               f" (+{unexplained} over a quiet bin with no source a step away)")
     return plan.freqs(), s_db, results
+
+
+def _sweeps(tb, n, limit=30.0):
+    """The sweep after ``n`` more whole ones."""
+    s = tb.sweeper
+    serial, got, t0 = s.snapshot()[3], 0, time.time()
+    while got < n:
+        assert time.time() - t0 < limit, f"{got} of {n} sweeps in {limit} s: {s.error}"
+        freqs, _, done, ser = s.snapshot()
+        if done is not None and ser > serial:
+            serial, got = ser, got + 1
+        time.sleep(0.005)
+    return freqs, done
+
+
+def native_check(tb, radio, station, pi):
+    """The firmware's sweep, as the window runs it: the FM band with the
+    station in it, the whole range in under 2 s, clipping counted, then
+    Receive on the IQ stream's device again, decoding the same PI - the
+    mode switch both ways, timed."""
+    t0 = time.time()
+    tb.start_sweep(radio.native_plan(87.5e6, 108e6))
+    to_sweep = time.time() - t0
+    s = tb.sweeper
+    freqs, db = _sweeps(tb, 10)
+    found = find_stations(freqs, db, min_snr_db=20)
+    print(f"own sweep: {s.plan.describe()}, {s.sweep_seconds * 1e3:.0f} ms a sweep; stations "
+          + ", ".join(f"{f / 1e6:.1f}" for f, _, _ in found[:8]))
+    assert not np.isnan(db).any()
+    assert any(abs(f - station) < 150e3 for f, _, _ in found), (station, found)
+    assert s.sweep_seconds < 0.1, s.sweep_seconds
+    share, lo = s.clip_report()
+    print(f"  FM band: worst tuning clipped {share * 100:.2f}% (LO {lo / 1e6:.1f} MHz)")
+    s.set_plan(radio.native_plan(*radio.sweep_range_hz))
+    freqs, db = _sweeps(tb, 3)
+    share, lo = s.clip_report()
+    print(f"  {freqs[0] / 1e6:.0f} MHz to {freqs[-1] / 1e6:.0f} MHz: {s.plan.describe()}, "
+          f"{s.sweep_seconds * 1e3:.0f} ms a sweep, strongest {db.max():.1f} dBFS at "
+          f"{freqs[np.argmax(db)] / 1e6:.1f} MHz; worst tuning clipped {share * 100:.1f}% "
+          f"(LO {lo / 1e6:.1f} MHz)")
+    assert s.sweep_seconds < 2.0 and not np.isnan(db).any(), s.sweep_seconds
+    t0 = time.time()
+    tb.start_receive(station, RATE_RX)
+    to_receive = time.time() - t0
+    rx = tb.rx
+    snap = rx.rds.snapshot()
+    while time.time() - t0 < 20 and not (snap['pi_hex'] and snap['blocks_seen'] > 100):
+        rx.update_stereo()
+        time.sleep(0.2)
+        snap = rx.rds.snapshot()
+    print(f"  mode switch: to its own sweep {to_sweep * 1e3:.0f} ms, back to Receive "
+          f"{to_receive * 1e3:.0f} ms, then PI {snap['pi_hex']}, "
+          f"blocks {snap['blocks_ok']}/{snap['blocks_seen']}")
+    assert snap['pi_hex'] == pi, (snap['pi_hex'], pi)
 
 
 def gain_check(tb, radio, gains=(30, 40, 54, 67), seconds=8.0):
@@ -256,17 +314,11 @@ def main():
         t0 = time.time()
         pi, iq_path = receive_check(tb, radio, [f for f, _, _ in stations[:5]], folder,
                                     rate=RATE_RX)
+        station = tb.station_hz                  # center_check moves the tuner off it
         dc_spike(tb)
         gain_check(tb, radio)
         center_check(tb, pi)
-        t0 = time.time()
-        plan = SweepPlan(87.5e6, 108e6, 20e6, 4096, radio.usable_fraction(20e6),
-                         radio.dc_notch_hz)
-        tb.start_sweep(plan, frames=16)
-        t1 = time.time()
-        tb.start_receive(tb.station_hz, RATE_RX)
-        t2 = time.time()
-        print(f"mode switch: to Sweep {(t1 - t0) * 1e3:.0f} ms, to Receive {(t2 - t1) * 1e3:.0f} ms")
+        native_check(tb, radio, station, pi)
     finally:
         tb.close()
     free, text = free_check()

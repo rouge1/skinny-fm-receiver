@@ -24,7 +24,8 @@ with no launcher.
   Recordings tab's list and overview, `widgets.py` the knobs, digit
   entries, theme disc, spectrum view and timeline strip, `bb60_sweep.py` the
   BB60D's own sweep (Signal Hound's API through ctypes, on the device the
-  SoapySDR module opened).
+  SoapySDR module opened), `hackrf_sweep.py` the HackRF's (its firmware's
+  sweep mode through libhackrf, on the device the SoapySDR module lets go).
 - Knowledge: `knowledge/capabilities.md` is the living capability list.
   Update it (and its status marks) when a feature is added or verified.
   `knowledge/usage.md` is the user guide. `knowledge/roadmap.md` holds

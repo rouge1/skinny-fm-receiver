@@ -655,8 +655,13 @@ class NativeRadio(SimRadio):
     """Sweeps in the device, as the BB60D does, over 9 kHz-6 GHz; receives
     as the simulated radio."""
     native_sweep = True
+    has_realtime = True
+    has_agc = True
     sweep_range_hz = (9e3, 6000e6)
     made = []
+
+    def native_plan(self, start_hz, stop_hz, rbw_hz=None, **view):
+        return bb60_sweep.NativeSweepPlan(start_hz, stop_hz, rbw_hz, **view)
 
     def native_sweeper(self, plan):
         sweeper = FakeNativeSweeper(plan)

@@ -106,7 +106,8 @@ def receive_check(tb, radio, stations, folder, rate=RX_RATE):
         if snap['pi_hex'] and snap['block_error_rate'] < 0.2:
             break
     rx = tb.rx
-    health_check(radio, 'receiving')
+    if radio.kind == 'bb60':                      # shared with the HackRF check
+        health_check(radio, 'receiving')
     assert rx.pilot_locked(), 'no stereo pilot'
     assert snap['pi_hex'], 'no RDS on any of the strongest stations'
     assert snap['block_error_rate'] < 0.2, snap['block_error_rate']

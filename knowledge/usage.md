@@ -254,8 +254,12 @@ or a signal hidden under a stronger one, shows as a fainter patch no single
 trace would keep. The map runs from the view's **Ref level** down its
 **Range**; turn those and it follows. The trace is the highest level each
 point reached in each 33 ms.
- A HackRF's full range is about 400 hops, so a sweep takes tens
-of seconds; use the FM preset on it.
+ A HackRF sweeps with its firmware too: its whole range, 1 MHz to 6 GHz,
+in about 0.75 s, and the FM band 30 times a second. Its levels are dBFS,
+not calibrated. The RBW list sets its bin width (2.4 kHz at the finest);
+there is no real time and no AGC on it. Over the whole range at a gain that
+suits FM, a strong TV or phone transmitter clips its step: the status line
+says so, and names it.
 
 In the **station list**, one click moves the marker and a double-click starts
 listening. Once you have listened to a station, its RDS name appears next to

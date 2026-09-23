@@ -35,7 +35,7 @@ from PyQt5 import Qt, QtCore  # type: ignore
 from . import __version__, library, theme
 from .config import default_recording_dir, load_config, update_config
 from . import bb60_source, bb60_sweep
-from .bb60_sweep import RBW_LADDER, RT_MAX_SPAN_HZ, NativeSweepPlan
+from .bb60_sweep import RBW_LADDER, RT_MAX_SPAN_HZ
 from .dsp import AUDIO_RATE, CHANNEL_MAX_BW, MPX_RATE, wav_source
 from .engine import Engine
 from .radios import (RADIO_NAMES, IQFile, RadioError, detect_radios,
@@ -986,7 +986,7 @@ class MainWindow(Qt.QWidget):
             return
         kind = self.radio.kind
         self.cfg['gain'][kind] = self.gain_slider.value()
-        if self.radio.native_sweep:
+        if self.radio.has_agc:
             self.cfg['gain_auto'][kind] = self.agc_box.isChecked()
         if self.rx_rate_combo.count():
             self.cfg['receive_rate'][kind] = self.rx_rate_combo.currentData()
@@ -1025,7 +1025,7 @@ class MainWindow(Qt.QWidget):
         self.gain_slider.blockSignals(False)
         radio.gain_percent = float(self.gain_slider.value())
         self.agc_box.blockSignals(True)
-        self.agc_box.setChecked(bool(radio.native_sweep
+        self.agc_box.setChecked(bool(radio.has_agc
                                      and self.cfg['gain_auto'].get(kind, False)))
         self.agc_box.blockSignals(False)
         self._show_gain()
@@ -1036,6 +1036,7 @@ class MainWindow(Qt.QWidget):
         self._tuner_range(low, high)
         self.center_entry.set_range(low, high)
         self._show_sweep_rows(radio.native_sweep)
+        self.rt_btn.setVisible(radio.native_sweep and radio.has_realtime)
         if self.cfg['sweep_band'] == 'full':
             self._set_sweep_span(*radio.sweep_range_hz, replan=False)
         else:
@@ -1249,11 +1250,12 @@ class MainWindow(Qt.QWidget):
         start, stop = self.sweep_start.value(), self.sweep_stop.value()
         if self.radio.native_sweep:
             view = self.rf_view
-            return NativeSweepPlan(start, stop, self.rbw_combo.currentData() or None,
-                                   realtime=self.rt_btn.isChecked(),
-                                   ref_db=view.ref_knob.value(),
-                                   scale_db=view.range_knob.value(),
-                                   auto_gain=self.agc_box.isChecked())
+            radio = self.radio
+            return radio.native_plan(start, stop, self.rbw_combo.currentData() or None,
+                                     realtime=self.rt_btn.isChecked() and radio.has_realtime,
+                                     ref_db=view.ref_knob.value(),
+                                     scale_db=view.range_knob.value(),
+                                     auto_gain=self.agc_box.isChecked() and radio.has_agc)
         rate = float(self.sweep_rate_combo.currentData() or self.radio.default_sweep_rate)
         return SweepPlan(start, stop, rate, int(self.fft_combo.currentData()),
                          self.radio.usable_fraction(rate), self.radio.dc_notch_hz)
@@ -1307,7 +1309,7 @@ class MainWindow(Qt.QWidget):
         """The tuner put outside the window real time is watching moves the
         window, not the tuner: it is the tuner that says where to watch."""
         if not (self._mode == 'sweep' and self.rt_btn.isChecked()
-                and getattr(self.radio, 'native_sweep', False)):
+                and getattr(self.radio, 'has_realtime', False)):
             return
         if self.sweep_start.value() <= hz <= self.sweep_stop.value():
             return
@@ -1352,7 +1354,7 @@ class MainWindow(Qt.QWidget):
         self.rf_view.set_marker(self.tuner.value())
         self.rf_view.set_message('')
         self.rf_view.clear_peak()
-        self.rf_view.set_level_unit('dBm' if getattr(plan, 'native', False) else 'dBFS')
+        self.rf_view.set_level_unit(getattr(plan, 'unit', 'dBFS'))
         self.rf_view.clear_density()
         self.sweep_info.setText(plan.describe())
 
@@ -1567,13 +1569,13 @@ class MainWindow(Qt.QWidget):
     # ========================================================= live controls
     def _agc_on(self):
         """AGC in force: ticked, on a radio sweeping itself, in Sweep."""
-        return (self.radio is not None and self.radio.native_sweep
+        return (self.radio is not None and self.radio.has_agc
                 and self.agc_box.isChecked() and self._mode == 'sweep')
 
     def _show_gain(self):
         """The slider and its label, for AGC or not."""
         radio = self.radio
-        native = radio is not None and radio.native_sweep
+        native = radio is not None and radio.has_agc
         self.agc_box.setVisible(native)
         self.agc_box.setEnabled(native)
         agc = self._agc_on()

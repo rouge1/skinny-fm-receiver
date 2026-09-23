@@ -229,7 +229,51 @@ def test_agc_reference_level():
     assert strongest_input(db, 300.0, 1e3) == -20.0
 
 
+def test_hackrf_blocks_are_placed():
+    """The HackRF firmware's blocks, made up: a header, then 8-bit I/Q, one
+    block per tuning, interleaved (87, 92, 107, 112 MHz for 87-127). A tone
+    at 95.1 MHz lands at 95.1 in the sweep, whole and without gaps, and the
+    tuning whose samples clip is the one named."""
+    from fm_receiver.hackrf_sweep import (BYTES_PER_BLOCK, OFFSET_HZ, HackRFSweepPlan,
+                                          hackrf_sweeper)
+    from fm_receiver.radios import rx_gain_plan
+    plan = HackRFSweepPlan(87.5e6, 108e6, 100e3)
+    assert (plan.low_mhz, plan.high_mhz, plan.fft_size) == (87, 127, 200), plan.describe()
+    sweeper = hackrf_sweeper(plan, rx_gain_plan, 40)
+    rng = np.random.default_rng(2)
+
+    def block(mhz, clip=False):
+        b = np.zeros(BYTES_PER_BLOCK, dtype=np.uint8)
+        b[0] = b[1] = 0x7F
+        b[2:10] = np.frombuffer(np.uint64(mhz * 1_000_000).tobytes(), dtype=np.uint8)
+        n = (BYTES_PER_BLOCK - 10) // 2
+        t = np.arange(n) / 20e6
+        lo = mhz * 1e6 + OFFSET_HZ
+        x = 0.01 * (rng.standard_normal(n) + 1j * rng.standard_normal(n))
+        x += 0.5 * np.exp(2j * np.pi * (95.1e6 - lo) * t)
+        iq = np.empty(2 * n)
+        iq[0::2], iq[1::2] = x.real, x.imag
+        raw = np.clip(np.round(iq * 128), -127, 127)
+        if clip:
+            raw[::10] = 127
+        b[10:10 + 2 * n] = raw.astype(np.int8).view(np.uint8)
+        return b
+
+    tunings = [87, 92, 107, 112, 87]
+    blocks = np.stack([block(m, clip=(m == 107)) for m in tunings])
+    sweeper._take(blocks)
+    freqs, db, done, serial = sweeper.snapshot()
+    assert done is not None and serial == 1, serial
+    assert not np.isnan(done).any() and len(done) == len(freqs) == plan.points
+    peak = freqs[np.argmax(done)]
+    assert abs(peak - 95.1e6) <= plan.bin_hz, peak
+    assert done.max() > np.median(done) + 40, (done.max(), np.median(done))
+    share, lo = sweeper.clip_report()
+    assert lo == 107e6 + OFFSET_HZ and share > 0.05, (share, lo)
+
+
 if __name__ == '__main__':
+    test_hackrf_blocks_are_placed()
     test_agc_reference_level()
     test_clipping_is_counted()
     test_plan_tiles_the_span()

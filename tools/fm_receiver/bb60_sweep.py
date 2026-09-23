@@ -288,6 +288,8 @@ class NativeSweepPlan:
     known once it is set up, and filled in by the sweeper."""
 
     native = True
+    #: Calibrated by the device.
+    unit = 'dBm'
 
     def __init__(self, start_hz, stop_hz, rbw_hz=None, realtime=False,
                  ref_db=-20.0, scale_db=100.0, auto_gain=False):

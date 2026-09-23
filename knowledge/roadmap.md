@@ -289,7 +289,8 @@ done.
   clips just as well, so a sweep-side count would be the next step.
 - 💡 At 10 MS/s, 40% gain already clips 4%. A per-rate default gain for
   the HackRF, or a note in the Radio card, may be worth it.
-- 💡 **HackRF gain split: LNA before VGA?** ble-scanner measured this at
+- [x] **HackRF gain split: LNA before VGA?** Measured 2026-09-22: no; see
+  *HackRF: its own sweep, and the gain split*. ble-scanner measured this at
   2.4 GHz for Bluetooth on 2026-09-22. It uses the same toolkit gain plan
   (LNA share 0.45).
   - With LNA + VGA fixed at 62 dB and the same clipping, moving 8 dB from
@@ -369,8 +370,9 @@ either settle time; stages 2-6 passed on the final code. Fixed
   - Found on the way: re-planning the hopping sweep kept the old plan's
     last sweep, and the Span dial clamped a saved span to the previous
     view's limit. Both fixed.
-- 💡 **Native HackRF sweep** (`hackrf_sweep`'s firmware mode): its full
+- [x] **Native HackRF sweep** (`hackrf_sweep`'s firmware mode): its full
   range by LO hopping is about 400 steps, tens of seconds a sweep.
+  **Shipped 2026-09-22**: see *HackRF: its own sweep, and the gain split*.
 - 💡 **A waterfall at the zoomed view's resolution.** Over 6 GHz each
   waterfall column is about 1.5 MHz, so zooming into a band shows blocks.
   Rows could be pooled to the visible range, at the cost of history rows
@@ -655,3 +657,44 @@ there for 15 s, no overloads).
   follows it, so it never runs a sweep at a knob left at -80 dBm.
 - 💡 Try AGC over the full range against the slider, band by band, and on
   the Mac.
+
+## HackRF: its own sweep, and the gain split (requested 2026-09-22)
+
+Both on the HackRF, handed over from ble-scanner for the session.
+
+- [x] **The gain split for FM: keep LNA share 0.45.** Equal LNA + VGA
+  totals split four ways (8/32, 16/24, 24/16, 32/8 at 40 dB; 16/32 to 40/8
+  at 48), 8 s each, on 99.1, 89.3 and 90.1, two passes interleaved:
+  - SNR moved by 2 dB at most across the splits, in no one direction; the
+    present 16/24 (the 40% default) was best or level on 89.3 and 90.1
+    (90.1, the weakest: 18.1 dB against 16.3-16.6).
+  - RDS: 89.3 at 100% with 8/32 and 16/24, 88% at 32/8; 90.1 at 100%
+    throughout; 99.1 scattered from 56 to 88% with no pattern.
+  - 48 dB in all (47%) gained nothing and cost 89.3's RDS (41-86%) with no
+    clipping - overload by the strong stations. 40% stays the default.
+  - So ble-scanner's gain at 2.4 GHz (more LNA) doesn't carry to FM here.
+  - A first run reset the RDS decoder before each 6 s window and read 0%
+    where it had not resynced; the counts above are blocks decoded within
+    each window, without a reset.
+- [x] **The HackRF's own sweep** (`hackrf_sweep.py`), in the window for the
+  HackRF in place of LO hopping. Done in the process through libhackrf
+  rather than by running `hackrf_sweep`, so the samples are to hand: the
+  clipped readout carries over (per tuning), and the levels are dBFS on
+  the window's scale.
+  - 1 MHz-6 GHz in 0.75 s (8 GHz/s); the FM band in 38 ms, capped at 30 a
+    second; the same stations as the BB60D.
+  - The IQ stream's SoapySDR device is let go for it and opened again for
+    Receive (60-100 ms each way). `hackrf_exit` is never called: it would
+    end the USB context the SoapySDR module shares.
+  - One FFT per tuning at the full range's 264 points scattered the floor
+    over 30 dB; averaging up to 15 from each block's second half brought
+    that to 6.6 dB for no extra radio time.
+  - Found on the way: at 40% a UHF TV tuning (LO 533.5 MHz) clips 60-70%
+    over the full range, and a 600 MHz LTE one did once. The FM band clips
+    0.1-0.3%. The warning says which.
+  - Found on the way: Round 6 had put the BB60D's health check in the
+    receive stage the HackRF check shares, which failed it; fixed.
+  - The LO-hopping sweep stays for the USRP, and the HackRF check keeps its
+    settle-time stage on it.
+  - 💡 Try it on the Mac (libhackrf by its name, then the environment's
+    `lib`).
