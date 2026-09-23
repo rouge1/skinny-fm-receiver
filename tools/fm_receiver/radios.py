@@ -474,6 +474,16 @@ class RTLSDR(Radio):
                 f"No RTL-SDR could be reached on {self.address or 'this computer'}."
                 f"\n\n({exc})") from exc
         self.block = rtl_tcp_source(sock, self.default_receive_rate)
+        # rtl_tcp opens the dongle in automatic gain. Sent from here, the
+        # manual-gain command has the whole of start_receive() (building the
+        # chain) to cross the socket and USB before the flowgraph ever reads
+        # a sample - measured (2026-09-23, R820T, 60% gain, 99.1 MHz): with
+        # gain applied only after start() as Engine._started() also does,
+        # 38-58% of samples clipped for ~200 ms; from here, a single 100 ms
+        # window (right at start) still touched 3%, but the window's own
+        # 400 ms poll never saw a share above 0.5%, well under CLIP_WARN.
+        # The after-start apply_gain() stays too, for a gain change mid-run.
+        self.apply_gain()
 
     def close(self):
         super().close()
