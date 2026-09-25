@@ -941,5 +941,5 @@ one frequency.
 - [x] **RF gain inside the Radio box**, a row under IQ bandwidth, not a
   row above the box. It folds away with the box.
 - [x] **Tuner range inside the Tuner box**, right on top of the tuner
-  digits: "↔ 97.800 - 99.000 MHz", the DC gap moved to its tooltip. In
+  digits and centred over them: "↔ 97.800 - 99.000 MHz", the DC gap moved to its tooltip. In
   sight folded or open.

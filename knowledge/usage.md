@@ -366,7 +366,7 @@ The multiplex (MPX) spectrum fills the bottom right.
 **The tuner stops at the edge of the band.** Rolling, stepping, typing,
 clicking or dragging past it leaves the tuner at the edge, and **Tuner
 range** (the ↔ line on top of the tuner) says so: *↔ Band edge: move
-the Center*. To go further, move the Center. The parts of the spectrum
+Center*. To go further, move the Center. The parts of the spectrum
 the tuner cannot reach are shaded, with a dotted line at each limit.
 
 There is one exception: a station picked from outside Receive (from the
@@ -396,7 +396,7 @@ those - or 5 MS/s (40 MB/s) on a Mac, where 2.5 is greyed out for the BB60D.
 |---|---|
 | **Tuner** | The station you hear, to 1 kHz. **Hover over a digit** and it lights up; **roll the mouse wheel** to move that digit up or down. It carries as arithmetic does: rolling up the tens digit of 90.000 gives 100.000, and so does rolling up the ones digit of 99.000. With the pointer over a digit, **Up/Down** do the same and **PageUp/PageDown** move it by ten. **Type a digit** (or press Enter, or double-click) to type a whole frequency in MHz; Enter sets it and Escape leaves it as it was. |
 | **▲ / ▼ beside the tuner** | Steps the tuner down or up by one **Step**. Click a half (hold it to repeat), or roll the wheel over it. Ctrl+Left and Ctrl+Right do the same from anywhere in the window. |
-| **Tuner range** (↔, right on top of the tuner) | The lowest and highest the tuner can go around the radio's Center, in MHz. It is about three quarters of the IQ bandwidth, less half a channel at each end. It stays in sight when the box is folded. Its tooltip says how far it keeps clear of the Center on a HackRF or RTL-SDR. |
+| **Tuner range** (↔, right on top of the tuner, centred over its digits) | The lowest and highest the tuner can go around the radio's Center, in MHz. It is about three quarters of the IQ bandwidth, less half a channel at each end. It stays in sight when the box is folded. Its tooltip says how far it keeps clear of the Center on a HackRF or RTL-SDR. |
 | **Step** (knob) | Four settings: 10, 50, 100 and 200 kHz. It sets what the arrows and Ctrl+Left/Right move by, and what Snap rounds to. FM channels are 200 kHz apart in the Americas, on the odd tenths (88.1, 88.3 … 107.9), and a 200 kHz Step keeps to those; Europe's are 100 kHz apart. |
 | **Channel filter** | 60-400 kHz, applied live. (The **IQ – channel** recording is 500 kS/s; the filter stops at 400 kHz because the channel is sampled at 500 kS/s and the filter needs room to roll off inside it.) Hover a digit and roll the wheel, use its **▲ / ▼** (5 kHz a click), or roll the wheel over the orange band on the spectrum. A narrower filter rejects a strong neighbour, but below about 180 kHz stereo and RDS start to suffer. Wider than about 250 kHz the audio takes in any neighbour that close; the widths up to 400 kHz are for the **IQ – channel** recording, which then holds an HD Radio station's digital sidebands (±200 kHz). |
 

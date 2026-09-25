@@ -1066,6 +1066,8 @@ def folding(w):
     assert 'MHz' in w.range_label.text() and 'kHz' not in w.range_label.text()
     gap = w.tuner.geometry().top() - w.range_label.geometry().bottom()
     assert 0 < gap < 8, ('right on top of the tuner', gap)
+    over = w.range_label.geometry().center().x() - w.tuner.geometry().center().x()
+    assert abs(over) <= 1, ('centred over the digits', over)
     assert w.step_knob.isHidden() and w.chan_entry.isHidden()
     tuner.set_folded(False)
     assert not w.step_knob.isHidden() and not w.chan_entry.isHidden()

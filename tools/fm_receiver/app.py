@@ -792,23 +792,21 @@ class MainWindow(Qt.QWidget):
                               "... 107.9); 100 kHz is Europe's.")
         self.step_knob.valueChanged.connect(lambda _: self._snap_toggled(
             self.snap_check.isChecked()))
-        # Right on top of the tuner, its range, as wide as the tuner and
-        # its roller; as much room under them keeps the tuner level with
-        # its label and the knob.
+        # Right on top of the tuner, its range, as wide as the digits and
+        # centred over them; as much room under them keeps the tuner level
+        # with its label, its roller and the knob.
         self.range_label = _wrapping(Qt.QLabel("-"))
         self.range_label.setTextFormat(QtCore.Qt.RichText)
-        dial = Qt.QHBoxLayout()
-        dial.setSpacing(6)
-        dial.addWidget(self.tuner, 0, QtCore.Qt.AlignVCenter)
-        dial.addWidget(self.roller, 0, QtCore.Qt.AlignVCenter)
+        self.range_label.setAlignment(QtCore.Qt.AlignHCenter)
         column = Qt.QVBoxLayout()
         column.setSpacing(2)
         column.addStretch(1)
         column.addWidget(self.range_label)
-        column.addLayout(dial)
+        column.addWidget(self.tuner)
         column.addSpacing(self.range_label.sizeHint().height() + column.spacing())
         column.addStretch(1)
         tune.addLayout(column)
+        tune.addWidget(self.roller, 0, QtCore.Qt.AlignVCenter)
         tune.addWidget(self.step_knob)
         tune.addStretch(1)
         form.addRow("Tuner:", tune)
@@ -1631,7 +1629,7 @@ class MainWindow(Qt.QWidget):
             tip += (f"\nIt also keeps {self.radio.min_offset_hz / 1e3:.0f} kHz clear of "
                     "the Center, where the radio's DC spike is.")
         if at_edge:
-            text = _coloured("\u2194 Band edge: move the Center", 'warn')
+            text = _coloured("\u2194 Band edge: move Center", 'warn')
             tip = "The tuner stops at the edge of the band: move the Center to go further."
             self._edge_timer.start(3000)
         self.range_label.setText(text)
