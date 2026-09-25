@@ -917,3 +917,19 @@ one frequency.
   second of fixed chunks. And rtl_433's frequency for an on-off burst
   moves with its level, not where it is: the slice's centre is given.
 - [ ] rtl_433 in Receive off air, and its CPU on the BB60D at 10 and 40 MS/s.
+
+## Round 18 (requested 2026-09-24)
+
+- [x] **The rtl_433 tab folded into Receive, and removed.** Receive's
+  rtl_433 card took its Band presets (each setting the IQ bandwidth,
+  Center and tuner for rtl_433 there), its Width (the whole band, or one
+  250 kHz / 1 MHz slice that now follows the tuner), Options and Log to
+  file. The devices list is a tab beside the multiplex while rtl_433
+  decodes, each row's tooltip all it last sent (the Device box went).
+  `--rtl433-freq` starts in Receive set for it; `--mode rtl433`, Ctrl+4
+  and the engine's rtl433 mode are gone.
+- [ ] Not done: leaving the FM demodulator out away from the FM band. Its
+  channel filter feeds the channel recording and the signal readout, and
+  crossing the band edge would rebuild the flowgraph.
+- [ ] rtl_433 in Receive off air, and its CPU on the BB60D at 10 and 40 MS/s
+  (carried over from Round 17).

@@ -11,12 +11,12 @@ Ettus USRP) in four tabs:
   `rtl_tcp` there over ssh.
 - **Receive (IQ)** runs the radio at an IQ bandwidth (up to 27 MHz on the
   BB60D) and demodulates one station: stereo audio, RDS/RBDS, the multiplex
-  spectrum. Tick its rtl_433 box and rtl_433 decodes the sensors in the
-  band at the same time.
+  spectrum. Its rtl_433 box passes the band (around 433.92 MHz, 315, 868
+  or 915, or wherever it is tuned) to
+  [rtl_433](https://github.com/merbanan/rtl_433) at the same time, from any
+  of the radios, and lists the weather stations, sensors and remotes it
+  decodes.
 - **Recordings** lists what you recorded and plays it back.
-- **rtl_433** passes the band around 433.92 MHz (or 315, 868, 915) to
-  [rtl_433](https://github.com/merbanan/rtl_433), from any of the radios,
-  and lists the weather stations, sensors and remotes it decodes.
 
 The Sweep and Receive views have dials for span, reference level, amplitude
 range and averaging (A fits the scale to the trace). The audio has mute and volume. You can record the audio

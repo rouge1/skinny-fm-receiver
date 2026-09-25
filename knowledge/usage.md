@@ -24,13 +24,12 @@ more things that conda doesn't have: Signal Hound's library
 Signal Hound's licence lets their library be copied only to people who own
 the hardware, and this repository is public.
 
-### rtl_433, for the rtl_433 tab
+### rtl_433, for decoding sensors in Receive
 
-The **rtl_433** tab needs [rtl_433](https://github.com/merbanan/rtl_433)
+Receive's **rtl_433** box needs [rtl_433](https://github.com/merbanan/rtl_433)
 installed as a program; conda-forge has no package for it. On Linux,
 `sudo apt install rtl-433`; on a Mac, `brew install rtl_433`. The app finds
-it on the PATH. Without it the tab still shows the band, and says what to
-install.
+it on the PATH. Without it the box says what to install.
 
 ### The BB60D on Linux
 
@@ -131,8 +130,8 @@ Useful options (`./fm-receiver --help` lists them all):
 | `--rtl-address macmini` | Use an RTL-SDR on another computer (an ssh host), and show its address box. Without it the RTL-SDR is this computer's |
 | `--file PATH` | Play back an IQ recording instead of a radio |
 | `--freq 95.1` | Tune to this station (MHz) |
-| `--mode sweep` / `receive` / `recordings` / `rtl433` | Start in this tab |
-| `--rtl433-freq 868.3` | Where the rtl_433 tab decodes (MHz) |
+| `--mode sweep` / `receive` / `recordings` | Start in this tab |
+| `--rtl433-freq 868.3` | Start in Receive, set for rtl_433 at this frequency (MHz), decoding |
 | `--sweep 87.5 108` | Set the sweep span (MHz) |
 | `--theme slate` / `reading-room` / `walnut` | Choose the colour theme |
 | `--realtime` | Show the Sweep tab's **Real time** button (BB60D, not on a Mac); it is hidden otherwise |
@@ -143,12 +142,12 @@ Useful options (`./fm-receiver --help` lists them all):
 
 ```
 ┌ FM Receiver  Radio:[BB60D ▾] [Stop]   status line ................... Themes (●) ┐
-│┌ Sweep|Receive|Recordings|433┐ ┌ RF spectrum ─────────────────────────────────────┐ │
+│┌ Sweep | Receive | Recordings┐ ┌ RF spectrum ─────────────────────────────────────┐ │
 ││ controls for the mode      │ │                                                   │ │
 │└────────────────────────────┘ │ waterfall                                         │ │
 │┌ RF gain ───────────────────┐ ├ readout      Span Ref Range Avg □Peak □Waterfall ┤ │
 │┌ Audio: Mute  Volume  L/R ──┐ ├───────────────────────────────────────────────────┤ │
-│┌ Record: □WAV □IQ ch □IQ band│ │ Receive: MPX + RDS  /  rtl_433: devices heard    │ │
+│┌ Record: □WAV □IQ ch □IQ band│ │ Receive: Multiplex | rtl_433 devices             │ │
 └────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -174,9 +173,6 @@ Useful options (`./fm-receiver --help` lists them all):
   the radio between them. On a BB60D the switch takes 0.02-0.3 s.
 - **The third tab, Recordings,** plays back what you recorded. The radio is
   closed while it is open, and opens again when you go back.
-- **The fourth tab, rtl_433,** hands a band around 433.92 MHz (or 315, 868
-  or 915) to rtl_433 and lists the sensors and remotes it decodes; see
-  *rtl_433: sensors and remotes* below.
 - **RF gain** applies to the radio in every mode, and each radio remembers its
   own setting. In Receive it is a row at the top of the tab, above the
   Radio box. In Sweep it has a box inside the tab, under the Sweep and Tuner
@@ -187,7 +183,7 @@ Useful options (`./fm-receiver --help` lists them all):
   moves to 5 dB over the strongest signal, which is how Signal Hound
   recommends setting it. Turn the knob by hand to hold a higher level; AGC
   takes over again when the signals rise past it or fall 10 dB below.
-- **AGC in Receive and rtl_433** (BB60D, HackRF, RTL-SDR, USRP): the app
+- **AGC in Receive** (BB60D, HackRF, RTL-SDR, USRP): the app
   moves the gain itself, and **the slider moves with it**. When the radio
   overloads (a BB60D says so; on the others, over 1% of the samples clip)
   it turns the gain down 10% (5% if under 10% clip), again every couple of
@@ -349,9 +345,8 @@ which are folded.
 │ Clear RDS, Signal, Audio, then the RDS itself │
 └───────────────────────────────────────────────┘
 ┌ rtl_433 ─────────────────────────────────────┐
-│ □ Decode the band           [Clear devices]   │
-│ Band, Signal, Samples, then the device heard  │
-│ last, and Decode quality                      │
+│ □ Decode with rtl_433, Band, Width, Options,  │
+│ Log; then the device heard last               │
 └───────────────────────────────────────────────┘
 ```
 
@@ -458,29 +453,9 @@ The **MPX view** (bottom right) is the demodulated multiplex from 0 to
 
 ### rtl_433 in Receive
 
-The **rtl_433** box, under RDS, decodes with rtl_433 while you listen: tune
-the Center to 433.92 MHz, say, and the weather stations and remotes in the
-band show up here as they are heard. It needs rtl_433 installed (see
-*Setting up*), and is off until you tick **Decode the band**; ticking or
-unticking it restarts Receive, in about a second. It works as the rtl_433
-tab's **Whole band**: the band is cut into slices of about 250 kHz, each
-decoded by its own rtl_433, so anything in them is decoded, wherever the
-tuner is. At most 12 slices, 3 MHz: of a wider IQ bandwidth, the middle
-3 MHz around the Center (the **Band** row says so). Moving the **Center**
-moves the slices with it, without a restart. The rtl_433 tab's **Options**
-and **Log to file** apply here too.
-
-| Row | What it shows or does |
-|---|---|
-| **Decode the band** | rtl_433 on, or off. It costs CPU: about half a core at the BB60D's 10 MS/s, less at narrower bandwidths. |
-| **Clear devices** | Forgets the devices heard, here and in the rtl_433 tab's list. |
-| **Band** | What rtl_433 is given: from and to, and how many slices. |
-| **Signal** | As RDS's: the last device's burst in dBFS, and how far it stood above the noise of the slice that heard it (green above 30 dB, amber above 15, red below). |
-| **Samples** | How much the samples were raised to the level rtl_433 expects (an RTL-SDR's). |
-| **Device**, **ID**, **Frequency**, **Readings** | The device heard last: its model, ID and channel, where (rtl_433's estimate; for an on-off device, the middle of the slice that heard it, to about 200 kHz), and what it sent. |
-| **Heard** | When, and how many messages it has sent. |
-| **Devices** | How many different devices have been heard. They are all in the rtl_433 tab's list, which shows only in that tab. |
-| **Decode quality** | rtl_433's version and how many messages it decoded; red, with its last words, if it stopped; amber if it fell behind and samples were dropped. |
+The **rtl_433** box decodes the sensors and remotes in the band while you
+listen, and lists them in an **rtl_433 devices** tab beside the multiplex.
+See *rtl_433: sensors and remotes* below.
 
 ## Views: bandwidth and amplitude
 
@@ -646,56 +621,63 @@ any station that was in the band. A playback can't sweep.
 
 ## rtl_433: sensors and remotes
 
-The **rtl_433** tab (Ctrl+4) decodes the small transmitters of the ISM
-bands with [rtl_433](https://github.com/merbanan/rtl_433): weather
+The **rtl_433** box in the Receive tab, under RDS, decodes the small
+transmitters of the ISM bands with
+[rtl_433](https://github.com/merbanan/rtl_433) while you listen: weather
 stations, thermometers, tyre pressure sensors, doorbells, remotes and
 smoke alarms. It works with any radio here, not only an RTL-SDR, and with
 an IQ recording that holds the band: the app keeps the radio and passes
-rtl_433 the samples, so the spectrum and waterfall stay up while it
-decodes. It needs rtl_433 installed (see *Setting up*).
+rtl_433 the samples, so the spectrum, waterfall and recording all go on
+while it decodes. It needs rtl_433 installed (see *Setting up*). (Until
+2026-09-24 this was a tab of its own; Receive does it all now.)
 
-- **Band** picks where to listen: 433.92 MHz (weather stations and remotes
-  nearly everywhere), 315 MHz (remotes and tyre pressure in the Americas),
-  868.3 MHz (Europe) or 915 MHz (the Americas). **Frequency** is the same
-  as digits, for anywhere else; double-clicking a burst on the spectrum or
-  waterfall moves it there. Changing either restarts rtl_433, in about a
-  second.
-- **Width** is how much of the band rtl_433 gets, the orange band on the
-  spectrum.
-  - **Whole band** (the default): everything the radio takes in around
-    the Frequency, so anything anywhere on the spectrum is decoded. The
-    choice says how much: 1.92 MHz on an RTL-SDR (the whole 433 MHz ISM
-    band), 3 MHz on a HackRF, 1.5 MHz on a BB60D. It is cut into slices
-    250 kHz apart, one rtl_433 each, overlapping, so a sensor on a boundary
-    between two is still heard whole; what two slices both hear is listed
-    once. About 80% of a core for the app and 14% for the twelve rtl_433s,
-    on a HackRF.
-  - **250 kHz**: one rtl_433, rtl_433's own default width. **1 MHz**: one
-    rtl_433, for the wider FSK sensors of 868 and 915 MHz. The radio's
-    centre (the dashed line) is put below the band, so a HackRF's DC spike
-    stays outside it.
-- **Options** are more of rtl_433's command-line options: `-R 40` to run
-  only that decoder, `-R -129` to leave one out, `-X "..."` for a decoder of
-  your own. Hover over the box for examples. `rtl_433 -R help` lists the
-  decoders.
-- **The list under the spectrum** has one row per device: when it was last
-  heard, its model, ID and channel, about where (rtl_433's estimate; for an
-  on-off device, whose rtl_433 figure moves with its level, the centre of
-  the slice that heard it, to about 200 kHz), what it sent (temperature,
-  humidity, pressure, button codes...), its level in dBFS and how far above
-  the slice's noise, and how many messages it sent. Newest first. Click a row to see everything it last sent in the
-  **Device** box. Most devices repeat each message several times, so the
-  count climbs in steps. **Clear list** empties it.
-- **Log to file** writes every message, as a line of JSON with the time it
-  was heard, to `rtl_433-<date>-<time>.jsonl` in the recordings folder.
-- The samples are raised before rtl_433 gets them, to the level an
-  RTL-SDR's would be at: rtl_433 decodes nothing much quieter, and a
-  BB60D's are about 60 dB quieter. The info line shows by how much.
-- The info line says how many messages and devices rtl_433 has found. It
-  turns red if rtl_433 stops, with its last words, and amber if the radio
-  sends faster than rtl_433 reads (the samples it missed are counted).
-- **RF gain** works as in Receive, and the status line shows clipping the
-  same way.
+```
+┌ rtl_433 ─────────────────────────────────────┐
+│ □ Decode with rtl_433        [Clear devices]  │
+│      Band: [433.92 MHz - weather stations ▾]  │
+│     Width: [Whole band - 1.50 MHz, 6 slices ▾]│
+│   Options: [                              ]   │
+│ □ Log to file                                 │
+│  Decoding, Signal, Samples, then the device   │
+│  heard last, Devices, Decode quality          │
+└───────────────────────────────────────────────┘
+```
+
+The quickest start: pick a **Band**. That sets the IQ bandwidth, the
+Center and the tuner for rtl_433 there, ticks **Decode with rtl_433**, and
+Receive starts again, in about a second. Or put the Center anywhere and
+tick the box yourself.
+
+| Control | What it does |
+|---|---|
+| **Decode with rtl_433** | On or off. Ticking or unticking it restarts Receive. It costs CPU: about half a core for the whole band at the BB60D's 10 MS/s, less at narrower IQ bandwidths or one slice. |
+| **Clear devices** | Forgets the devices heard. |
+| **Band** | 433.92 MHz (weather stations and remotes nearly everywhere), 315 MHz (remotes and tyre pressure in the Americas), 868.3 MHz (Europe) or 915 MHz (the Americas). For the **Whole band** it picks the widest IQ bandwidth whose band fits in 12 slices and puts the Center on the frequency: 1.92 MHz on an RTL-SDR (the whole 433 MHz ISM band), 3 MHz on a HackRF, 1.5 MHz on a BB60D. For one slice it picks the lowest IQ bandwidth that holds it, and puts the Center below it, so a HackRF's DC spike stays out of it. *Where the radio is* shows once you move away. |
+| **Width** | How much of the band rtl_433 gets. **Whole band** (the default): all the radio takes in around the Center, cut into slices about 250 kHz apart, one rtl_433 each, overlapping, so a sensor on a boundary between two is still heard whole; what two slices both hear is listed once. At most 12 slices, 3 MHz: of a wider IQ bandwidth, the middle 3 MHz around the Center (the Decoding row says so). **250 kHz at the tuner**: one rtl_433, its own default width, on the orange channel, following the tuner; much less CPU. **1 MHz at the tuner**: the same, for the wider FSK sensors of 868 and 915 MHz. |
+| **Options** | More of rtl_433's command-line options: `-R 40` to run only that decoder, `-R -129` to leave one out, `-X "..."` for a decoder of your own. Hover over the box for examples; `rtl_433 -R help` lists the decoders. Options that don't parse are left out, and Decode quality says so. |
+| **Log to file** | Every message, as a line of JSON with the time it was heard, to `rtl_433-<date>-<time>.jsonl` in the recordings folder. |
+| **Decoding** | What rtl_433 is given: from and to, and how many slices (or *at the tuner*). |
+| **Signal** | As RDS's: the last device's burst in dBFS, and how far it stood above the noise of the slice that heard it (green above 30 dB, amber above 15, red below). |
+| **Samples** | How much the samples were raised before rtl_433 got them, to the level an RTL-SDR's would be at: rtl_433 decodes nothing much quieter, and a BB60D's are about 60 dB quieter. |
+| **Device**, **ID**, **Frequency**, **Readings** | The device heard last: its model, ID and channel, where (rtl_433's estimate; for an on-off device, whose rtl_433 figure moves with its level, the centre of the slice that heard it, to about 200 kHz), and what it sent. Folded, the box keeps Device and Readings. |
+| **Heard** | When, and how many messages it has sent. |
+| **Devices** | How many different devices have been heard. |
+| **Decode quality** | rtl_433's version and how many messages it decoded; red, with its last words, if it stopped; amber if it fell behind and samples were dropped. |
+
+Moving the **Center** moves the whole band's slices with it, and a single
+slice follows the tuner, both without restarting rtl_433.
+
+**The devices heard** are listed under the spectrum, in an **rtl_433
+devices** tab beside **Multiplex**, which shows while rtl_433 decodes (it
+opens on the devices). One row per device: when it was last heard, its
+model, ID and channel, about where, what it sent (temperature, humidity,
+pressure, button codes...), its level in dBFS and how far above the
+slice's noise, and how many messages it sent. Newest first. Hover over a
+row to see everything it last sent. Most devices repeat each message
+several times, so the count climbs in steps.
+
+**RF gain** and **AGC** work as they do for the station, and the status
+line shows clipping the same way.
 
 ## Radios
 
@@ -712,7 +694,7 @@ On a Mac, Ctrl is the ⌘ Command key.
 
 | Keys | Action |
 |---|---|
-| Ctrl+1 / Ctrl+2 / Ctrl+3 / Ctrl+4 | Sweep / Receive / Recordings / rtl_433 |
+| Ctrl+1 / Ctrl+2 / Ctrl+3 | Sweep / Receive / Recordings |
 | Ctrl+Left / Ctrl+Right | Step the tuner down / up by the Step |
 | Up / Down (pointer on a digit) | That digit of the Tuner, Center or Channel filter up / down |
 | PageUp / PageDown | The same digit by ten |
@@ -732,8 +714,8 @@ closes. They include:
 - the tab, the tuner and the Center;
 - the dials and audio settings;
 - the recording choices and folder, and whether playback loops;
-- the rtl_433 tab's frequency, width, options and whether it logs, and
-  whether Receive decodes with rtl_433;
+- whether Receive decodes with rtl_433, and its width, options and
+  whether it logs;
 - the theme and the window layout.
 
 To start fresh, delete the file. To use a different settings file, set
