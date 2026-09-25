@@ -1,13 +1,13 @@
 """rtl_433 on the radio's samples: the ISM-band sensors around - weather
 stations, tyre pressure, doorbells, remotes - decoded by rtl_433
-(https://github.com/merbanan/rtl_433), for whichever radio is open.
+(https://github.com/merbanan/rtl_433), for whichever radio is open. It runs
+in Receive, beside the station, from the Receive tab's rtl_433 card (an
+rtl_433 tab of its own went, 2026-09-24: Receive had come to do the same).
 
 ::
 
-    IQ (rate R, LO) ─┬─ shift the frequency to 0 Hz, low-pass, decimate
-                     │    to about the width ─ pipe ─ rtl_433 -r cf32:- -F json
-                     ├─ RF spectrum tap
-                     └─ clip probe
+    IQ (rate R, LO) ─ shift the tuner to 0 Hz, low-pass, decimate
+                      to about the width ─ pipe ─ rtl_433 -r cf32:- -F json
 
     or, for the whole band:
 
@@ -15,14 +15,15 @@ stations, tyre pressure, doorbells, remotes - decoded by rtl_433
                       (a spike's)              W apart, each 2W wide  ├─ pipe ─ rtl_433
                                                                       └─ ... one each
 
-**In Receive too.** The Receive tab's rtl_433 card puts the same whole-band
-chain on the receive chain's samples, at the rate the user picked: at most
-``MAX_SLICES`` slices, the middle of a wider band (:func:`band_slices`),
-the band cut down to them first when it is much wider
-(:func:`predecimation`). Moving the Center moves the slices; what rtl_433
-then reports is put right rather than rtl_433 restarted
-(:meth:`DecodeChain.move`). Each message's level is given in the radio's
-dBFS as well (``level_dbfs``, ``floor_dbfs``: :meth:`DecodeChain._place`).
+**At Receive's rate.** The chain takes the receive chain's samples, at the
+rate the user picked: at most ``MAX_SLICES`` slices, the middle of a wider
+band (:func:`band_slices`), the band cut down to them first when it is much
+wider (:func:`predecimation`). A band preset picks the rate and Center that
+suit it (:func:`band_plan`, :func:`plan`). Moving the Center moves the
+slices, and the tuner a single slice; what rtl_433 then reports is put
+right rather than rtl_433 restarted (:meth:`DecodeChain.retune`). Each
+message's level is given in the radio's dBFS as well (``level_dbfs``,
+``floor_dbfs``: :meth:`DecodeChain._place`).
 
 **The whole band, in slices.** rtl_433 decodes anything in what it is
 given, but best at about 250 kS/s, its default. So for the whole band a
@@ -73,7 +74,6 @@ from gnuradio import blocks, filter, gr  # type: ignore
 from gnuradio.fft import window  # type: ignore
 from gnuradio.filter import firdes  # type: ignore
 
-from .dsp import clip_probe, spectrum_frames_per_s, spectrum_tap
 
 PROGRAM = 'rtl_433'
 #: (Hz, what is there) - the bands rtl_433's sensors use.
@@ -243,7 +243,7 @@ def predecimation(m, needed):
     """The most a band for a channelizer of ``m`` slices may be cut down
     by first, keeping ``needed`` slices either side of the LO: a whole
     divisor of ``m`` that leaves it even (the channelizer's /2) and at
-    least ``2 * needed``. 1 when nothing can go: the rtl_433 tab's band
+    least ``2 * needed``. 1 when nothing can go: :func:`band_plan`'s rate
     holds no more than it uses."""
     best = 1
     for d in range(2, m + 1):
@@ -306,7 +306,8 @@ class Pipe:
     (its rtl_433's stdin) that must not block the flowgraph: see the module
     notes. ``gain`` is the factor it is moving towards, ``applied`` the one
     the last block got, ``noise`` the noise's RMS it is judged from;
-    ``history`` holds (when, applied, noise, peak) for recent blocks. :meth:`feed` is called from :class:`pipe_sink`."""
+    ``history`` holds (when, applied, noise, peak) for recent blocks.
+    :meth:`feed` is called from :class:`pipe_sink`."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -501,30 +502,29 @@ class Rtl433:
 
 class DecodeChain:
     """Builds the chain in the module notes into top block ``tb`` and starts
-    rtl_433 on it: one slice ``width_hz`` wide at ``offset_hz`` from the LO,
-    or with ``band`` (``(M, W, centres)`` from :func:`band_plan`) the whole
-    band in slices, one rtl_433 each. Every block is kept here while the
-    flowgraph may run (an RF bench toolkit rule). ``program`` None builds
-    the chain with nothing on the pipes: the spectrum still shows.
-    ``dc_notch_hz``: the radio's DC spike, blocked before the channelizer.
-    ``spectrum`` False leaves out the RF spectrum and clip probe: in
-    Receive the receive chain has its own."""
+    rtl_433 on it: one slice ``width_hz`` wide at ``offset_hz`` from the LO
+    (the tuner), or with ``band`` (``(M, W, centres)`` from
+    :func:`band_slices`) the whole band in slices, one rtl_433 each. Every
+    block is kept here while the flowgraph may run (an RF bench toolkit
+    rule). ``program`` None builds the chain with nothing on the pipes, for
+    :meth:`launch`. ``dc_notch_hz``: the radio's DC spike, blocked before
+    the channelizer."""
 
-    RF_FFT = 4096
     #: Slices kept clear either side of those used, when the band is cut
     #: down before the channelizer (:func:`predecimation`).
     GUARD_SLICES = 2
 
     def __init__(self, tb, source, rate, lo_hz, program, extra_args=(), *,
-                 offset_hz=0.0, width_hz=DEFAULT_WIDTH, band=None, dc_notch_hz=0.0,
-                 spectrum=True):
+                 offset_hz=0.0, width_hz=DEFAULT_WIDTH, band=None, dc_notch_hz=0.0):
         self.rate = float(rate)
         self.lo_hz = float(lo_hz)
-        self._moves = [(0.0, 0.0)]                # (from when, Hz the LO has moved)
+        self.offset_hz = float(offset_hz)
+        self._moves = [(0.0, 0.0)]                # (from when, Hz the slices have moved)
         self._keep = []
         self.slices = []                          # [(centre Hz, pipe_sink)]
         if band is None:
             self.width = float(width_hz)
+            self.predecim = 1
             self.decim = decimation(self.rate, self.width)
             self.out_rate = self.rate / self.decim
             self.band = filter.freq_xlating_fir_filter_ccf(
@@ -577,13 +577,6 @@ class DecodeChain:
             self.low_hz = self.slices[0][0] - w / 2
             self.high_hz = self.slices[-1][0] + w / 2
         self.freq_hz = (self.low_hz + self.high_hz) / 2
-        if spectrum:
-            self.rf_probe = spectrum_tap(tb, self._keep, source, self.rate, self.RF_FFT, True)
-            size = self.RF_FFT
-            self.clip_keep = blocks.keep_m_in_n(
-                gr.sizeof_gr_complex, size, size * spectrum_frames_per_s(self.rate, size), 0)
-            self.clip = clip_probe()
-            tb.connect(source, self.clip_keep, self.clip)
         self.procs = []
         self._recent = {}                         # payload -> (heard, slice)
         self.duplicates = 0                       # dropped by take(): see DUP_S
@@ -625,14 +618,23 @@ class DecodeChain:
         gains = [pipe.gain for _, pipe in self.slices if pipe.gain]
         return max(gains) if gains else None
 
-    def move(self, lo_hz):
-        """The LO moved (Receive's Center) and the slices with it. Each
-        rtl_433 keeps the frequency it was started on, so what it reports
-        from now on is put right in :meth:`take`: no restart, no gap."""
-        shift = float(lo_hz) - self.lo_hz
+    def retune(self, lo_hz, offset_hz):
+        """Receive retuned: the Center (the LO) moves the whole band's
+        slices; a single slice follows the tuner (``offset_hz`` from the
+        LO). Each rtl_433 keeps the frequency it was started on, so what it
+        reports from now on is put right in :meth:`take`: no restart, no
+        gap."""
+        lo_hz, offset_hz = float(lo_hz), float(offset_hz)
+        single = hasattr(self, 'band')
+        if single:
+            shift = (lo_hz + offset_hz) - (self.lo_hz + self.offset_hz)
+            if offset_hz != self.offset_hz:
+                self.band.set_center_freq(offset_hz)
+        else:
+            shift = lo_hz - self.lo_hz
+        self.lo_hz, self.offset_hz = lo_hz, offset_hz
         if not shift:
             return
-        self.lo_hz += shift
         self.low_hz += shift
         self.high_hz += shift
         self.freq_hz += shift

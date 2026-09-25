@@ -255,7 +255,8 @@ def decode(program, folder):
     engine = Engine(want_audio=False)
     engine.use_radio(IQFile(base + '.cfile'))
     try:
-        engine.start_decode(FREQ, 250e3, program, extra_args=('-R', '0', '-X', FLEX))
+        engine.start_receive(FREQ, RATE, center_hz=CENTER,
+                             decode=(program, ('-R', '0', '-X', FLEX), 250e3))
         chain = engine.decoder
         assert abs(engine.station_hz - FREQ) < 1 and chain.out_rate == 250e3
         log = os.path.join(folder, 'decoded.jsonl')
@@ -271,6 +272,9 @@ def decode(program, folder):
         assert 'rssi' in msg and 'snr' in msg, msg
         assert chain.problem() is None
         assert rtl433.device_key(msg)[0] == 'fmrx_test'
+        # The slice follows the tuner, rtl_433 left running.
+        engine.tune(FREQ + 50e3)
+        assert abs(chain.freq_hz - engine.station_hz) < 1 and chain.proc.proc.poll() is None
         proc = chain.proc.proc
         gain = chain.gain
     finally:
@@ -298,8 +302,8 @@ def decode_band(program, folder):
     engine = Engine(want_audio=False)
     engine.use_radio(IQFile(base + '.cfile'))
     try:
-        engine.start_decode(FREQ, rtl433.WHOLE_BAND, program,
-                            extra_args=('-R', '0', '-X', FLEX))
+        engine.start_receive(CENTER + 100e3, RATE, center_hz=CENTER,
+                             decode=(program, ('-R', '0', '-X', FLEX), rtl433.WHOLE_BAND))
         chain = engine.decoder
         n = len(chain.slices)
         assert n == 6 and len(chain.procs) == n, (n, len(chain.procs))
@@ -350,7 +354,7 @@ def decode_receive(program, folder):
     engine.use_radio(IQFile(base + '.cfile'))
     try:
         engine.start_receive(CENTER + 100e3, rate, center_hz=CENTER,
-                             decode=(program, ('-R', '0', '-X', FLEX)))
+                             decode=(program, ('-R', '0', '-X', FLEX), rtl433.WHOLE_BAND))
         chain = engine.decoder
         assert engine.rx is not None and engine.decode_error is None, engine.decode_error
         assert len(chain.slices) == 12 and chain.predecim == 2, (len(chain.slices), chain.predecim)
@@ -378,7 +382,7 @@ def decode_receive(program, folder):
             assert abs(msg['level_dbfs'] - want) < 1.5, (bits, msg['level_dbfs'], want)
             assert msg['level_dbfs'] - msg['floor_dbfs'] > 20, msg
         a_mhz = got['a5c3f0']['freq']
-        chain.move(CENTER + 1e6)
+        chain.retune(CENTER + 1e6, chain.offset_hz)
         moved = None
         deadline = time.monotonic() + 6.0
         while time.monotonic() < deadline and moved is None:
@@ -429,7 +433,8 @@ def bresser(program):
             engine = Engine(want_audio=False)
             engine.use_radio(IQFile(base + '.cfile'))
             try:
-                engine.start_decode(centre, rtl433.WHOLE_BAND, program)
+                engine.start_receive(centre + 100e3, RATE, center_hz=centre,
+                                     decode=(program, (), rtl433.WHOLE_BAND))
                 got = []
                 t0 = time.monotonic()
                 while time.monotonic() - t0 < 4 and not got:
