@@ -129,6 +129,9 @@ DEFAULTS = {
     'radio': None, 'usrp_address': '', 'iq_file': '', 'mode': 'receive',
     'frequency_mhz': 98.7, 'center_mhz': None, 'step_khz': 100, 'gain': {}, 'gain_auto': {},
     'receive_rate': {},
+    # Per radio: the most gain AGC on the IQ stream may use - where the
+    # slider was last put by hand; the slider itself follows AGC.
+    'agc_ceiling': {},
     'sweep_rate': {}, 'settle_ms': {}, 'channel_bw_khz': 200, 'region': 'RBDS',
     'stereo': True, 'volume': 60, 'muted': False, 'sweep_band': 'full',
     'sweep_start_mhz': 87.5, 'sweep_stop_mhz': 108.0, 'sweep_rbw_khz': 0,
@@ -335,8 +338,10 @@ class MainWindow(Qt.QWidget):
         self._last_overload = 0
         self._overload_until = 0.0
         self._overload_at = None
-        #: AGC on the IQ stream (IqAgc), made when it is first needed.
+        #: AGC on the IQ stream (IqAgc), made when it is first needed, and
+        #: the most gain it may use: where the slider was last put by hand.
         self._iq_agc = None
+        self._agc_ceiling = None
         #: A lost radio being watched for its return (:meth:`_watch_lost`).
         self._lost = None
         self._clipped = 0.0
@@ -1287,6 +1292,8 @@ class MainWindow(Qt.QWidget):
         self.cfg['gain'][kind] = self.gain_slider.value()
         if self._agc_available():
             self.cfg['gain_auto'][kind] = self.agc_box.isChecked()
+            if self._agc_ceiling is not None:
+                self.cfg['agc_ceiling'][kind] = self._agc_ceiling
         if self.rx_rate_combo.count():
             self.cfg['receive_rate'][kind] = self.rx_rate_combo.currentData()
         if self.sweep_rate_combo.count():
@@ -1323,6 +1330,8 @@ class MainWindow(Qt.QWidget):
         self.gain_slider.setValue(int(self.cfg['gain'].get(kind, radio.default_gain)))
         self.gain_slider.blockSignals(False)
         radio.gain_percent = float(self.gain_slider.value())
+        # Saved apart from the gain: AGC may have left the slider under it.
+        self._agc_ceiling = float(self.cfg['agc_ceiling'].get(kind, self.gain_slider.value()))
         self.agc_box.blockSignals(True)
         self.agc_box.setChecked(bool(self._agc_available()
                                      and self.cfg['gain_auto'].get(kind, False)))
@@ -2134,13 +2143,19 @@ class MainWindow(Qt.QWidget):
             self._iq_agc = None
             return
         if self._iq_agc is None:
-            self._iq_agc = IqAgc(self.gain_slider.value(), self.radio.gain_percent)
+            ceiling = self._agc_ceiling if self._agc_ceiling is not None \
+                else self.gain_slider.value()
+            self._iq_agc = IqAgc(ceiling, self.radio.gain_percent)
         gain = self._iq_agc.update(now, overloads, calm, heavy)
         if gain is not None:
             try:
                 self.radio.apply_gain(gain)
             except Exception as exc:
                 self._set_status(f"AGC could not set the gain: {exc}", 'warn')
+            # The slider follows, quietly: a move by hand is a new ceiling.
+            self.gain_slider.blockSignals(True)
+            self.gain_slider.setValue(int(round(self.radio.gain_percent)))
+            self.gain_slider.blockSignals(False)
             self._show_gain()
 
     def _show_gain(self):
@@ -2155,22 +2170,23 @@ class MainWindow(Qt.QWidget):
         agc = self._agc_on()
         self.gain_slider.setEnabled(radio is not None and radio.kind != 'file' and not agc)
         if self._iq_agc_on():
+            ceiling = self._agc_ceiling if self._agc_ceiling is not None \
+                else self.gain_slider.value()
             self.gain_label.setText(f"AGC {radio.gain_percent:.0f}%")
             self.gain_slider.setToolTip(
-                "With AGC: the most gain it will use. It is at "
-                f"{radio.gain_percent:.0f}% now.\nOnce that has settled, turn AGC "
-                "off to keep it there with no more gaps.")
+                f"With AGC the slider follows the gain AGC sets, up to {ceiling:.0f}%:\n"
+                "where you last put it. Moving it sets a new limit, and the gain.\n"
+                "Once the gain has settled, turn AGC off to keep it there.")
         else:
             self.gain_label.setText("AGC" if agc else f"{self.gain_slider.value()}%")
             self.gain_slider.setToolTip("")
 
     def _agc_toggled(self, on):
         self._agc_levels = []
-        if not on and self._iq_agc is not None and self.radio is not None:
-            # Turned off once it has settled: the gain stays where AGC put it.
-            self.gain_slider.blockSignals(True)
-            self.gain_slider.setValue(int(round(self.radio.gain_percent)))
-            self.gain_slider.blockSignals(False)
+        if on:
+            # From here: AGC may use up to where the slider is now. Turned off,
+            # the gain stays where AGC put it - the slider is already there.
+            self._agc_ceiling = float(self.gain_slider.value())
         self._iq_agc = None
         if self.radio is not None:
             self.cfg['gain_auto'][self.radio.kind] = self.agc_box.isChecked()
@@ -2204,7 +2220,9 @@ class MainWindow(Qt.QWidget):
             knob.setValue(ref)
 
     def _gain_changed(self, value):
-        self._iq_agc = None                   # with AGC, a new ceiling: start there
+        # Moved by hand (AGC moves it quietly): with AGC, a new ceiling.
+        self._agc_ceiling = float(value)
+        self._iq_agc = None
         self.gain_label.setText("AGC" if self._agc_on() else f"{value}%")
         if self.radio is not None:
             self.radio.gain_percent = float(value)

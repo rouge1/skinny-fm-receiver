@@ -783,7 +783,8 @@ def agc(w):
     w.tabs.setCurrentIndex(1)
     pump(0.3)
     assert w._mode == 'receive' and w.gain_slider.isEnabled() and w._iq_agc_on()
-    assert w.gain_label.text().startswith('AGC ') and 'most gain' in w.gain_slider.toolTip()
+    assert w.gain_label.text().startswith('AGC ')
+    assert 'follows the gain AGC sets' in w.gain_slider.toolTip()
     w.tabs.setCurrentIndex(0)
     pump(0.3)
     assert w._mode == 'sweep' and not w.gain_slider.isEnabled()
@@ -1463,7 +1464,8 @@ def part10_iq_agc():
     """AGC in Receive and rtl_433, on a radio that overloads over 42%: the
     gain comes down by itself until it stops, the slider stays the ceiling,
     the silence is called an overload rather than a lost radio, and
-    unticking AGC keeps the gain it found. The same on a HackRF from its
+    unticking AGC keeps the gain it found. The slider follows AGC; where it
+    was last put by hand is the limit, saved apart. The same on a HackRF from its
     clipped share, held while it clips only a little, and greyed in Sweep."""
     iq_agc_steps()
     saved = fmapp.make_radio, fmapp.STALL_S
@@ -1484,15 +1486,32 @@ def part10_iq_agc():
             assert ok, (mode, r.gain_percent, r.applied)
             assert r.gain_percent == 40 and r.applied[-2:] == [50, 40], r.applied
             assert any(seen_agc_status), "the status line never said AGC was at work"
-            assert w.gain_slider.value() == 60 and w.gain_label.text() == 'AGC 40%'
+            # The slider follows AGC; where it was put by hand is the limit.
+            assert w.gain_slider.value() == 40 and w.gain_label.text() == 'AGC 40%'
+            assert w._agc_ceiling == 60 and 'up to 60%' in w.gain_slider.toolTip()
             pump(2.5)
             text = w.status.text()
             assert 'No samples' not in text and 'lost' not in text, text
             assert r.gain_percent == 40, r.applied              # settled, no hunting
-            # Off: the gain stays where AGC put it, and the slider says so.
+            if mode == 'receive':
+                # Saved apart: the slider where AGC left it, the limit where
+                # it was put; a new window starts at the first, may go to the second.
+                w._remember_radio_settings()
+                assert w.cfg['gain']['bb60'] == 40 and w.cfg['agc_ceiling']['bb60'] == 60
+                again = make_window(['--radio', 'bb60', '--mode', 'sweep', '--freq', '89.3'],
+                                    config={'recording_dir': FOLDER, 'gain': {'bb60': 40},
+                                            'agc_ceiling': {'bb60': 60}})
+                assert again.gain_slider.value() == 40 and again._agc_ceiling == 60
+                again.close()
+                # A move by hand under AGC: the new limit, and the gain.
+                w.gain_slider.setValue(30)
+                assert w._agc_ceiling == 30 and r.gain_percent == 30
+                pump(1)
+                assert r.gain_percent == 30 and w.gain_slider.value() == 30
+            # Off: the gain stays where AGC put it, and the slider is there.
             w.agc_box.setChecked(False)
-            assert w.gain_slider.value() == 40 and r.gain_percent == 40
-            assert w.gain_label.text() == '40%', w.gain_label.text()
+            assert w.gain_slider.value() == r.gain_percent, (w.gain_slider.value(), r.gain_percent)
+            assert w.gain_label.text() == f'{w.gain_slider.value()}%', w.gain_label.text()
             w.close()
         # A HackRF: its clipped share drives it; nothing in Sweep.
         fmapp.make_radio = lambda kind, *a, **k: ClipRadio()
@@ -1511,7 +1530,7 @@ def part10_iq_agc():
                         or r.gain_percent == 40), (mode, r.gain_percent)
             assert any(said), "the status line never said AGC was at work"
             pump(2)
-            assert r.gain_percent == 40 and w.gain_slider.value() == 60
+            assert r.gain_percent == 40 and w.gain_slider.value() == 40 and w._agc_ceiling == 60
             if mode == 'receive':
                 # A light overload (3%) takes a half step: 40 to 35.
                 w._iq_agc.changed_at = None
@@ -1528,7 +1547,7 @@ def part10_iq_agc():
                 w.tabs.setCurrentIndex(fmapp.TAB_MODES.index('sweep'))
                 pump(0.5)
                 assert w.agc_box.isChecked() and not w.agc_box.isEnabled()
-                assert w.gain_slider.isEnabled() and w.gain_label.text() == '60%', \
+                assert w.gain_slider.isEnabled() and w.gain_label.text() == '35%', \
                     w.gain_label.text()
             w.close()
         # With AGC off, a silent overloaded radio still says overloaded, not lost.
