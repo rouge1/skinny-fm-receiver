@@ -13,3 +13,18 @@ knowledge, workflows, commands and constraints:
 - knowledge/rtl-software.md: Linux SDR decoders and tools, their apt
   packages, and which could be fed like the rtl_433 card
 - knowledge/rf-ctf.md: RF CTF challenge types and the tools that decode them
+
+Tools installed on this machine outside the app's `gnu` env (details in
+rtl-software.md, "What this machine already has"):
+
+- Universal Radio Hacker 2.10.0, through pipx: `urh` (GUI) and `urh_cli`
+  in `~/.local/bin`. The GUI opens the app's `.cfile` recordings as cf32
+  (set the sample rate from the `.sigmf-meta`). `urh_cli` has no IQ-file
+  input: it receives from a radio (`-rx -d RTL-TCP|RTL-SDR|HackRF|USRP`)
+  and prints bits using demodulation settings from the GUI (`-mo`, `-sps`,
+  or a saved project file). It can also transmit (`-tx`): never without
+  being asked. A radio URH opens is taken from the app, and the HackRF may
+  be in use by another session.
+- apt decoders: rtl_433, inspectrum, gqrx, multimon-ng, direwolf,
+  minimodem, fldigi, qsstv, welle.io, dump1090-mutability, gr-satellites,
+  wsjtx, sox, audacity, sonic-visualiser.

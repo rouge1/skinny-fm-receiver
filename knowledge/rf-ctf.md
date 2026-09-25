@@ -29,8 +29,8 @@ record, or an IQ file handed out (`.cfile`/`.cf32`, `.cu8`, `.cs16`,
 
 | Type | How the flag is carried | Decode with | apt on 24.04 |
 |---|---|---|---|
-| OOK / ASK | pulse widths or on/off bits, often UART 8N1 or a PT2262/EV1527 code | URH, inspectrum, `rtl_433 -A` (pulse analyser), GNU Radio | `inspectrum`, `rtl-433` (installed); URH `pip install urh` |
-| 2-FSK / GFSK | two tones become bits, then UART 8N1 or a sync word + packet | URH (auto demod), inspectrum (measure baud), GNU Radio quad demod + clock recovery, minimodem | `inspectrum`, `minimodem`, GNU Radio (installed) |
+| OOK / ASK | pulse widths or on/off bits, often UART 8N1 or a PT2262/EV1527 code | URH, inspectrum, `rtl_433 -A` (pulse analyser), GNU Radio | `inspectrum`, `rtl-433`; URH through pipx (all installed) |
+| 2-FSK / GFSK | two tones become bits, then UART 8N1 or a sync word + packet | URH (auto demod), inspectrum (measure baud), GNU Radio quad demod + clock recovery, minimodem | `inspectrum`, `minimodem`, GNU Radio; URH through pipx (all installed) |
 | PSK (BPSK/QPSK) | symbols need Costas + timing recovery, sometimes differential | GNU Radio, SigDigger, URH, fldigi (PSK31), gr-satellites | `fldigi`, `gr-satellites`; SigDigger AppImage |
 | QAM / exotic | Hack-A-Sat style constellations | GNU Radio, numpy | – |
 | AFSK / Bell 202 | 1200/2200 Hz audio tones | minimodem `1200`, multimon-ng `AFSK1200`, direwolf | `minimodem`, `multimon-ng`, `direwolf` |
@@ -104,7 +104,8 @@ repeat. The ISM band's real GFSK meter traffic was a decoy: `rtl_433` or
 
 ## Install for CTF
 
-apt (all present in 24.04, none installed yet):
+apt (all present in 24.04; all installed on this machine by 2026-09-25
+except `aircrack-ng`):
 
 ```bash
 sudo apt install rtl-sdr inspectrum gqrx-sdr sox multimon-ng minimodem direwolf \
@@ -115,8 +116,11 @@ sudo apt install aircrack-ng
 
 Not in apt:
 
-- `pip install urh sigmf`, using pipx or a venv. Keep them out of the `gnu`
-  env unless they are needed next to GNU Radio.
+- URH: installed with `pipx install urh` (2.10.0). `urh` opens this app's
+  `.cfile` as cf32; `urh_cli` only works with a live radio (no IQ-file input).
+  See rtl-software.md, "URH".
+- `pip install sigmf` (not installed), in a venv or `pipx inject urh sigmf`.
+  Keep these out of the `gnu` env unless they are needed next to GNU Radio.
 - SigDigger: AppImage from https://github.com/BatchDrake/SigDigger/releases
 - SDR++: .deb from https://github.com/AlexandreRouma/SDRPlusPlus/releases
 - gr-lora_sdr: `conda install -n gnu -c tapparelj -c conda-forge gnuradio-lora_sdr`

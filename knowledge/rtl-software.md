@@ -15,20 +15,62 @@ confirmed.
 
 ## What this machine already has
 
+Checked again on 2026-09-25, after the "What to install" apt lines below
+were run.
+
 - The `rtl_*` tools (`rtl_sdr`, `rtl_tcp`, `rtl_fm`, `rtl_power`, `rtl_test`,
-  `rtl_eeprom`, `rtl_adsb`, `rtl_biast`) are inside the `gnu` conda env only.
-  They come from conda-forge's `rtl-sdr` 2.0.2, which `environment.yml` pins.
-  Ubuntu's `rtl-sdr` package (2.0.1) is **not** installed, only its library
-  `librtlsdr2`. With the env off, none of them is on the PATH.
+  `rtl_eeprom`, `rtl_adsb`, `rtl_biast`) are in two places. The `gnu` conda
+  env has conda-forge's `rtl-sdr` 2.0.2, which `environment.yml` pins, and
+  these come first while the env is active. Ubuntu's `rtl-sdr` 2.0.1 is
+  installed too, so with the env off they are in `/usr/bin`.
 - apt: `rtl-433` 23.11 (inputs file, rtl_tcp, RTL-SDR, SoapySDR), `hackrf`
   (includes `hackrf_sweep`), `ubertooth`, `gnuradio` 3.10.9 (includes
   `gnuradio-companion`), `soapysdr-tools`, `python3-soapysdr`, and SoapySDR
   modules for RTL-SDR, HackRF, Airspy, bladeRF, LMS7, UHD, Mirics and the
   SoapyRemote client.
+- apt, from the lists below: `gqrx-sdr` 2.17.4, `inspectrum` 0.3.1, `sox`,
+  `multimon-ng` 1.3.0, `direwolf` 1.7, `minimodem` 0.24, `fldigi` 4.2.03,
+  `qsstv` 9.5.8, `welle.io` 2.4 (`welle-io`, `welle-cli`),
+  `dump1090-mutability`, `gpredict`, `gr-satellites` 5.5, `wsjtx` 2.7.0-rc3,
+  `audacity`, `sonic-visualiser` and `gnss-sdr`. Not installed from the
+  lists: `codec2`, `cubicsdr`, `soapyremote-server` and `aircrack-ng`.
+- **Universal Radio Hacker 2.10.0**, through pipx (`sudo apt install pipx`,
+  then `pipx install urh`; upgrade with `pipx upgrade urh`). It lives in its
+  own venv (`~/.local/share/pipx/venvs/urh`, Qt 6.11), apart from the `gnu`
+  env, and puts `urh` (the GUI) and `urh_cli` in `~/.local/bin`. The PyPI
+  wheel includes the native device modules: HackRF, RTL-SDR and USRP load
+  (Airspy, bladeRF, LimeSDR, PlutoSDR and SDRplay are built too), and
+  RTL-TCP needs none. Not yet tried on a radio. See "URH" below.
+- Nothing else from the not-in-apt list (SDR++, SigDigger, readsb,
+  AIS-catcher, dsd-fme, redsea, SatDump, rtlamr, csdr, dumpvdl2, dumphfdl,
+  acarsdec, gr-lora_sdr). `sigmf` isn't installed in any Python either.
 - The udev rules for RTL-SDR (`/etc/udev/rules.d/rtl-sdr.rules`,
   `/lib/udev/rules.d/60-librtlsdr2.rules`) are in place. No DVB blacklist
   exists, and none is needed: librtlsdr detaches `dvb_usb_rtl28xxu` when it
   opens the dongle (see [usage.md](usage.md)).
+
+### URH
+
+- **Files: the GUI.** URH picks a file's sample format from its extension:
+  `.cu8`/`.complex16u`, `.cs8`/`.complex16s`, `.cu16`, `.cs16`, `.wav`,
+  `.coco` and Flipper's `.sub`. Anything else is read as cf32, so this app's
+  `.cfile` recordings open as they are (from its source, 2026-09-25). URH
+  doesn't read the `.sigmf-meta`, so set the sample rate by hand from it.
+- **`urh_cli` has no IQ-file input.** It receives from a radio (`-rx`,
+  `-d HackRF|RTL-SDR|RTL-TCP|USRP|...`, `-f`, `-s`, `-g`) and demodulates
+  with parameters you give it (`-mo ASK|FSK|PSK|GFSK|OQPSK`, `-sps`
+  samples per symbol, `-n` noise, `-c` centre, `-t` tolerance). It prints
+  bits (`--hex` for hex), or with `-r` writes raw IQ (`-file`). A
+  `project_file` from the GUI supplies the settings. It also **transmits**
+  (`-tx`, on a HackRF): don't use `-tx` without being asked.
+- So: find the demodulation settings in the GUI on a recording, save the
+  project, then `urh_cli` can decode the same signal live. For example,
+  `urh_cli -d RTL-TCP -f 433.92e6 -s 1e6 -g 30 -rx -mo ASK -sps 500 -rt 10`
+  (start `rtl_tcp` first: urh_cli connects to 127.0.0.1:1234, the default
+  in its RTL-TCP code; the numbers here are illustrative).
+- A live radio in URH or `urh_cli` owns the device, the same as this app.
+  Close the app's Receive first, and check the HackRF isn't in use (see
+  CLAUDE.md).
 
 ### RTL-SDR Blog V4 and V4L
 
@@ -64,7 +106,7 @@ Whether conda-forge's 2.0.2 has it: unverified, and probably not.
 | OpenWebRX+ | Web SDR server with many decoders (SSTV, AIS, HFDL, FLEX …) | not in apt: its own PPA supports 24.04, or Docker | RTL, Soapy, SDRplay | github.com/luarvique/openwebrx, active |
 | SpyServer | Airspy's streaming server (SDR#, SDR++ clients) | not in apt: binary from airspy.com | Airspy, RTL-SDR | closed freeware |
 | inspectrum | Offline IQ analyser: measure symbol rate, extract symbols | `inspectrum` 0.3.1 | cu8/cs16/cf32/SigMF files | github.com/miek/inspectrum |
-| Universal Radio Hacker | Record, demodulate and reverse-engineer protocols | not in apt: `pip install urh` (or snap) | RTL, HackRF, Soapy, files | github.com/jopohl/urh, active |
+| Universal Radio Hacker | Record, demodulate and reverse-engineer protocols | not in apt: `pipx install urh` (installed, 2.10.0; the snap is 2.9.3 from 2022 and confined to home) | RTL, HackRF, Soapy, files | github.com/jopohl/urh, active |
 | SigDigger (suscan) | Live and offline signal analyser: PSK/FSK/ASK inspectors | not in apt: AppImage from releases | Soapy devices, files | github.com/BatchDrake/SigDigger, active |
 | baudline | Time-frequency analyser | not in apt: free binary from baudline.com | Audio, files | dormant |
 | Linrad, qradiolink | Weak-signal Rx / GNU Radio digital-voice transceiver | not in apt: build / AppImage | various | niche |
@@ -180,7 +222,7 @@ SoapyRemote.
 
 The Ubuntu names starting `rtl` are only `rtl-sdr` and `rtl-433` (installed).
 The rest have their own names. All of the packages below exist in 24.04's
-apt (checked 2026-09-25):
+apt (checked 2026-09-25), and all but the optional line are now installed:
 
 ```bash
 # The base: system rtl_* tools (off the conda env), a receiver GUI, IQ analysis
@@ -201,7 +243,7 @@ sudo apt install codec2 cubicsdr soapyremote-server
 
 Not in apt, but worth having, roughly in order:
 
-1. **Universal Radio Hacker**: `pip install urh`. Unknown OOK/FSK/PSK to bits.
+1. **Universal Radio Hacker**: installed (`pipx install urh`, 2.10.0). Unknown OOK/FSK/PSK to bits.
 2. **SDR++**: the .deb from GitHub releases.
 3. **redsea**: build it. It decodes RDS to JSON, useful for checking `rds_core.py`.
 4. **AIS-catcher**: its install script, or build it.
