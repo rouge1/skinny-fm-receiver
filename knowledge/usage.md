@@ -24,6 +24,14 @@ more things that conda doesn't have: Signal Hound's library
 Signal Hound's licence lets their library be copied only to people who own
 the hardware, and this repository is public.
 
+### rtl_433, for the rtl_433 tab
+
+The **rtl_433** tab needs [rtl_433](https://github.com/merbanan/rtl_433)
+installed as a program; conda-forge has no package for it. On Linux,
+`sudo apt install rtl-433`; on a Mac, `brew install rtl_433`. The app finds
+it on the PATH. Without it the tab still shows the band, and says what to
+install.
+
 ### The BB60D on Linux
 
 Install the library in `/usr/local/lib`, and build and install
@@ -123,7 +131,8 @@ Useful options (`./fm-receiver --help` lists them all):
 | `--rtl-address macmini` | Use an RTL-SDR on another computer (an ssh host), and show its address box. Without it the RTL-SDR is this computer's |
 | `--file PATH` | Play back an IQ recording instead of a radio |
 | `--freq 95.1` | Tune to this station (MHz) |
-| `--mode sweep` / `receive` / `recordings` | Start in this tab |
+| `--mode sweep` / `receive` / `recordings` / `rtl433` | Start in this tab |
+| `--rtl433-freq 868.3` | Where the rtl_433 tab decodes (MHz) |
 | `--sweep 87.5 108` | Set the sweep span (MHz) |
 | `--theme slate` / `reading-room` / `walnut` | Choose the colour theme |
 | `--realtime` | Show the Sweep tab's **Real time** button (BB60D, not on a Mac); it is hidden otherwise |
@@ -134,12 +143,12 @@ Useful options (`./fm-receiver --help` lists them all):
 
 ```
 ┌ FM Receiver  Radio:[BB60D ▾] [Stop]   status line ................... Themes (●) ┐
-│┌ Sweep | Receive | Recordings┐ ┌ RF spectrum ─────────────────────────────────────┐ │
+│┌ Sweep|Receive|Recordings|433┐ ┌ RF spectrum ─────────────────────────────────────┐ │
 ││ controls for the mode      │ │                                                   │ │
 │└────────────────────────────┘ │ waterfall                                         │ │
 │┌ RF gain ───────────────────┐ ├ readout      Span Ref Range Avg □Peak □Waterfall ┤ │
 │┌ Audio: Mute  Volume  L/R ──┐ ├───────────────────────────────────────────────────┤ │
-│┌ Record: □WAV □IQ ch □IQ band│ │ Sweep: stations found  /  Receive: MPX + RDS     │ │
+│┌ Record: □WAV □IQ ch □IQ band│ │ Receive: MPX + RDS  /  rtl_433: devices heard    │ │
 └────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -165,6 +174,9 @@ Useful options (`./fm-receiver --help` lists them all):
   the radio between them. On a BB60D the switch takes 0.02-0.3 s.
 - **The third tab, Recordings,** plays back what you recorded. The radio is
   closed while it is open, and opens again when you go back.
+- **The fourth tab, rtl_433,** hands a band around 433.92 MHz (or 315, 868
+  or 915) to rtl_433 and lists the sensors and remotes it decodes; see
+  *rtl_433: sensors and remotes* below.
 - **RF gain** applies to the radio in both modes, and each radio remembers its
   own setting. In Sweep it sits inside the tab, under the Sweep and Tuner
   boxes; elsewhere it is under the tabs, above **Audio** and **Record**,
@@ -173,9 +185,26 @@ Useful options (`./fm-receiver --help` lists them all):
   device in its own sweep: the slider greys out, and the **Ref level** knob
   moves to 5 dB over the strongest signal, which is how Signal Hound
   recommends setting it. Turn the knob by hand to hold a higher level; AGC
-  takes over again when the signals rise past it or fall 10 dB below. In
-  Receive the slider sets the gain even with AGC ticked (the IQ stream has
-  no automatic gain), and says so when you hover over it.
+  takes over again when the signals rise past it or fall 10 dB below.
+- **AGC in Receive and rtl_433** (BB60D, HackRF, RTL-SDR, USRP): the app
+  moves the gain itself. When the radio overloads (a BB60D says so; on the
+  others, over 1% of the samples clip) it turns the gain down 10% (5% if
+  under 10% clip), again every couple of seconds while that lasts, and
+  after a minute with no overload and under 0.3% clipped it tries 5% back
+  up, never above the slider. In between it leaves the gain alone. A try
+  that brings the overload back is undone, and the next waits twice as
+  long. On a HackRF or RTL-SDR the
+  box is greyed in Sweep, which has no AGC for them, and keeps its tick for
+  Receive. The slider is the most AGC will
+  use; the label beside it (*AGC 40%*) is where it is now. **Each change
+  can leave a gap in the samples** (about 0.1 s on a BB60D; none on a
+  HackRF, though each try at more gain can clip for a moment), a click in the audio or a
+  burst rtl_433 may miss, so **once it has settled, untick AGC**. The gain
+  stays where AGC put it, and the slider moves there. If a step up brings
+  the overload back, it waits twice as long before trying again (up to
+  16 minutes). Worth knowing: **an overloaded BB60D sends no samples at
+  all**, so the spectrum freezes and the sound stops. The status line says
+  *Input overloaded*, not that the radio is lost.
 - On a BB60D, hover over the **status line** for its temperature, USB
   voltage and current. Below 4.4 V the status line warns: measurements may
   be off, so check the cable and the USB port.
@@ -576,6 +605,48 @@ opens tuned to the station it was recorded on. Tuning moves the channel
 within the recorded band. A whole-band recording therefore lets you listen to
 any station that was in the band. A playback can't sweep.
 
+## rtl_433: sensors and remotes
+
+The **rtl_433** tab (Ctrl+4) decodes the small transmitters of the ISM
+bands with [rtl_433](https://github.com/merbanan/rtl_433): weather
+stations, thermometers, tyre pressure sensors, doorbells, remotes and
+smoke alarms. It works with any radio here, not only an RTL-SDR, and with
+an IQ recording that holds the band: the app keeps the radio and passes
+rtl_433 the samples, so the spectrum and waterfall stay up while it
+decodes. It needs rtl_433 installed (see *Setting up*).
+
+- **Band** picks where to listen: 433.92 MHz (weather stations and remotes
+  nearly everywhere), 315 MHz (remotes and tyre pressure in the Americas),
+  868.3 MHz (Europe) or 915 MHz (the Americas). **Frequency** is the same
+  as digits, for anywhere else; double-clicking a burst on the spectrum or
+  waterfall moves it there. Changing either restarts rtl_433, in about a
+  second.
+- **Width** is how much of the band rtl_433 gets, the orange band on the
+  spectrum. 250 kHz is rtl_433's own default. 1 MHz suits the wider FSK
+  sensors of 868 and 915 MHz and transmitters well off their channel. The
+  radio's centre (the dashed line) is put below the band, so a HackRF's DC
+  spike stays outside it.
+- **Options** are more of rtl_433's command-line options: `-R 40` to run
+  only that decoder, `-R -129` to leave one out, `-X "..."` for a decoder of
+  your own. Hover over the box for examples. `rtl_433 -R help` lists the
+  decoders.
+- **The list under the spectrum** has one row per device: when it was last
+  heard, its model, ID and channel, what it sent (temperature, humidity,
+  pressure, button codes...), its level and SNR, and how many messages it
+  sent. Newest first. Click a row to see everything it last sent in the
+  **Device** box. Most devices repeat each message several times, so the
+  count climbs in steps. **Clear list** empties it.
+- **Log to file** writes every message, as a line of JSON with the time it
+  was heard, to `rtl_433-<date>-<time>.jsonl` in the recordings folder.
+- The samples are raised before rtl_433 gets them, to the level an
+  RTL-SDR's would be at: rtl_433 decodes nothing much quieter, and a
+  BB60D's are about 60 dB quieter. The info line shows by how much.
+- The info line says how many messages and devices rtl_433 has found. It
+  turns red if rtl_433 stops, with its last words, and amber if the radio
+  sends faster than rtl_433 reads (the samples it missed are counted).
+- **RF gain** works as in Receive, and the status line shows clipping the
+  same way.
+
 ## Radios
 
 | Radio | Notes |
@@ -591,7 +662,7 @@ On a Mac, Ctrl is the ⌘ Command key.
 
 | Keys | Action |
 |---|---|
-| Ctrl+1 / Ctrl+2 / Ctrl+3 | Sweep / Receive / Recordings |
+| Ctrl+1 / Ctrl+2 / Ctrl+3 / Ctrl+4 | Sweep / Receive / Recordings / rtl_433 |
 | Ctrl+Left / Ctrl+Right | Step the tuner down / up by the Step |
 | Up / Down (pointer on a digit) | That digit of the Tuner, Center or Channel filter up / down |
 | PageUp / PageDown | The same digit by ten |
@@ -611,6 +682,7 @@ closes. They include:
 - the tab, the tuner and the Center;
 - the dials and audio settings;
 - the recording choices and folder, and whether playback loops;
+- the rtl_433 tab's frequency, width, options and whether it logs;
 - the theme and the window layout.
 
 To start fresh, delete the file. To use a different settings file, set
@@ -626,7 +698,7 @@ To start fresh, delete the file. To use a different settings file, set
 | Ghost copies of signals in a sweep | On a USRP or an RTL-SDR, increase **Settle** (an RTL-SDR on a slower network may need more than its 100 ms). (The BB60D and HackRF sweep themselves.) |
 | Part of the left column is hidden under the spectrum | Drag the divider right. The column resizes itself on a theme change, so this should not happen any more. |
 | No RDS on a strong station | It may not send RDS; check the MPX view for a hump at 57 kHz. On a weak station, try a narrower channel filter. |
-| *Input overloaded* | Turn the RF gain down. On a HackRF or an RTL-SDR it also gives the share of samples clipped; turn down until the message goes. In a sweep it names the step that clipped: over the whole range a strong TV transmitter can clip one step at a gain that suits FM, and then the FM band preset is the one to use. |
+| *Input overloaded* | Turn the RF gain down, or tick **AGC** and let it find the gain (then untick it). An overloaded BB60D sends nothing at all, so the spectrum stops too. On a HackRF or an RTL-SDR it also gives the share of samples clipped; turn down until the message goes. In a sweep it names the step that clipped: over the whole range a strong TV transmitter can clip one step at a gain that suits FM, and then the FM band preset is the one to use. |
 | Another program can't open the radio | Press **Stop** (or close the app): Stop lets go of the device. On a Mac, a BB60D is let go only when the app quits. |
 | The tuner won't go any further | It is at the edge of the band around the Center: move the **Center**, or press **Center on tuner** and carry on. |
 | No sound | The **Audio** panel says if the sound card could not be opened. Check the **Mute** button. |

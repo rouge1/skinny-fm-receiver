@@ -381,6 +381,7 @@ either settle time; stages 2-6 passed on the final code. Fixed
   not lining up after a zoom.
 - 💡 Station finding beyond FM (TV, airband, ISM) would need other
   detectors and a way to listen to them; out of scope for an FM receiver.
+  (ISM sensors are now decoded by rtl_433: see Round 14.)
 
 ### From Signal Hound's API reference (2026-09-22)
 
@@ -846,3 +847,33 @@ is fine for FM. First step towards using several radios over a network.
 - [x] **Found on the first run**, after the BB60D and HackRF: by its USB
   IDs, which Realtek's other devices don't share.
 - [ ] **Several radios over the network**: the next step (to be planned).
+
+## Round 14: rtl_433 (requested 2026-09-24)
+
+- [x] **An rtl_433 tab, fed by the app** (the user's choice over handing
+  the radio to rtl_433): the radio's samples piped to rtl_433, so every
+  radio works and the spectrum stays up. rtl_433 is a system package
+  (apt's `rtl-433`, Homebrew's `rtl_433`); conda-forge has none.
+- [x] Presets, frequency, width, options; the devices listed under the
+  spectrum; a JSON-lines log.
+- [ ] **Off air**: real sensors on each radio.
+- [ ] On the Mac mini (Homebrew's rtl_433).
+
+## Round 15: AGC on the IQ stream (requested 2026-09-24)
+
+The BB60D overloaded in Receive at 60% with AGC ticked, which then worked
+only in Sweep. Found on the way: an overloaded BB60D sends no samples at
+all, which the window was ready to call a lost radio.
+
+- [x] **AGC in Receive and rtl_433** from the BB60D's overload reports, the
+  slider its ceiling; a tooltip saying to untick it once settled, since
+  each change leaves a ~0.1 s gap. Off air: 60% to 40% in 2.4 s, RDS 95%.
+- [x] An overloaded BB60D's silence called an overload, not a lost radio.
+- [x] The same from the clipped share, for the HackRF, RTL-SDR and USRP
+  (requested 2026-09-24): over 1% clipped steps down, under 0.3% counts
+  towards a rise. Tested with a simulated HackRF.
+- [x] Off air on a HackRF (2026-09-24): no gap on a gain change; 60% to
+  40% in 3 s on 99.1 MHz. It showed two refinements, both done: a rise that
+  overloads is undone rather than stepped under (it had gone to 35%), and
+  light clipping (under 10%) takes half a step.
+- [ ] Off air on an RTL-SDR, with its gap measured.

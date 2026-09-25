@@ -1,7 +1,7 @@
 # FM Receiver
 
 An FM broadcast receiver for SDRs (Signal Hound BB60D, HackRF One, RTL-SDR,
-Ettus USRP) in three tabs:
+Ettus USRP) in four tabs:
 
 - **Sweep (FFT)** covers a span wider than the radio can see at once (the
   whole FM band, or anything up to 6 GHz) as one spectrum and waterfall, and
@@ -13,6 +13,9 @@ Ettus USRP) in three tabs:
   BB60D) and demodulates one station: stereo audio, RDS/RBDS, the multiplex
   spectrum.
 - **Recordings** lists what you recorded and plays it back.
+- **rtl_433** passes the band around 433.92 MHz (or 315, 868, 915) to
+  [rtl_433](https://github.com/merbanan/rtl_433), from any of the radios,
+  and lists the weather stations, sensors and remotes it decodes.
 
 The Sweep and Receive views have dials for span, reference level, amplitude
 range and averaging (A fits the scale to the trace). The audio has mute and volume. You can record the audio

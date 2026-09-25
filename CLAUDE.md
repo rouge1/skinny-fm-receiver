@@ -34,7 +34,9 @@ with no launcher.
   SoapySDR module opened), `hackrf_sweep.py` the HackRF's (its firmware's
   sweep mode through libhackrf, on the device the SoapySDR module lets go),
   `rtl_tcp.py` the RTL-SDR (an rtl_tcp client; rtl_tcp started here, or on
-  another computer over ssh).
+  another computer over ssh), `rtl433.py` the rtl_433 tab's chain (the
+  radio's samples piped into an rtl_433 process, its JSON read back;
+  rtl_433 is a system package, `rtl-433` on Linux, not in conda).
 - Knowledge: `knowledge/capabilities.md` is the living capability list.
   Update it (and its status marks) when a feature is added or verified.
   `knowledge/usage.md` is the user guide. `knowledge/roadmap.md` holds
