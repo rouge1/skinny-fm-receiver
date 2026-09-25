@@ -174,8 +174,8 @@ Useful options (`./fm-receiver --help` lists them all):
 - **The third tab, Recordings,** plays back what you recorded. The radio is
   closed while it is open, and opens again when you go back.
 - **RF gain** applies to the radio in every mode, and each radio remembers its
-  own setting. In Receive it is a row at the top of the tab, above the
-  Radio box. In Sweep it has a box inside the tab, under the Sweep and Tuner
+  own setting. In Receive it is a row of the Radio box, under IQ
+  bandwidth. In Sweep it has a box inside the tab, under the Sweep and Tuner
   boxes; elsewhere its box is under the tabs, above **Audio** and **Record**,
   which are hidden in Sweep since there is nothing to hear or record while
   the radio sweeps. On a BB60D the **AGC** box beside it hands the gain to the
@@ -315,8 +315,8 @@ it.
 ## Receive (IQ)
 
 In Receive the radio runs at a narrow IQ bandwidth, and the app demodulates
-one station. At the top is the **RF gain** row (with AGC), then four boxes:
-**Radio** sets the radio itself, **Tuner** picks the station inside the
+one station, in four boxes: **Radio** sets the radio itself (with its
+**RF gain** and AGC), **Tuner** picks the station inside the
 radio's band, **RDS** shows the station as decoded, and **RTL433**
 decodes the sensors and remotes in the band, if you tick it.
 
@@ -324,7 +324,8 @@ Each box has a **chevron** at the right of its title: click it, or the
 title, to fold the box away and again to open it; it slides shut or open,
 and the chevron turns. A folded **Radio** box
 still shows its **Center** and **Center on tuner**, and a folded **Tuner**
-box its tuner, each gliding to the middle of the box once it has folded
+box its **Tuner range** (↔) and tuner, each gliding to the middle of the box
+once it has folded
 (the Step knob fades out as the Tuner box folds, and back in as it opens);
 a folded **RDS** box shows its **Now playing** and **RadioText**, and a
 folded **RTL433** box its **Device** and **Readings**. The app remembers
@@ -333,10 +334,11 @@ which are folded.
 ```
 ┌ Radio ───────────────────────────────────────┐
 │       Center: [0098.400 MHz] [Center on tuner]│   the radio's own frequency
-│  Tuner range: 94.800 - 102.000 MHz            │   where the tuner can go
 │ IQ bandwidth: [10 MS/s ▾]                     │   how much band it takes in
+│      RF gain: □ AGC ──────●──────── 60%       │   how hard it listens
 └───────────────────────────────────────────────┘
 ┌ Tuner ───────────────────────────────────────┐
+│               ↔ 94.800 - 102.000 MHz          │   where the tuner can go
 │        Tuner: [0099.100 MHz] [▲▼]   (Step)    │   the station you hear
 │Channel filter: [200 kHz] [▲▼]                 │
 └───────────────────────────────────────────────┘
@@ -358,12 +360,13 @@ The multiplex (MPX) spectrum fills the bottom right.
 |---|---|
 | **Center** | The radio's centre frequency (its LO), drawn as a **dashed line** on the spectrum (not the waterfall, which is left clear), thin and grey in every theme: it is a reference, and orange is kept for where you are tuned. Outside the tuner's reach the spectrum is dimmed. Moving it moves the band the tuner can reach. If the tuner is still inside the new band it stays where it is; if not, it is pulled in to the nearer edge. **While you move the Center the line fades away**, so you can see the spectrum under it, and it comes back once you stop. |
 | **Center on tuner** | Puts the Center 300 kHz below the tuner, so there is room to tune either way. |
-| **Tuner range** | The lowest and highest the tuner can go around this Center. It is about three quarters of the IQ bandwidth, less half a channel at each end. |
 | **IQ bandwidth** | The radio's sample rate in Receive: how much of the band the spectrum shows, and the tuner can reach (BB60D 2.5/5/10/20/40 MS/s, 2.5 greyed out on a Mac; HackRF 2-20 MS/s; RTL-SDR 2 and 2.4 MS/s). Changing it rebuilds the receiver; the Center stays if the tuner still fits. |
+| **RF gain** | The radio's gain, with **AGC** where the radio says when it overloads (see *RF gain* above). The same slider as in Sweep, and each radio remembers its own. |
 
 **The tuner stops at the edge of the band.** Rolling, stepping, typing,
 clicking or dragging past it leaves the tuner at the edge, and **Tuner
-range** says so. To go further, move the Center. The parts of the spectrum
+range** (the ↔ line on top of the tuner) says so: *↔ Band edge: move
+the Center*. To go further, move the Center. The parts of the spectrum
 the tuner cannot reach are shaded, with a dotted line at each limit.
 
 There is one exception: a station picked from outside Receive (from the
@@ -393,6 +396,7 @@ those - or 5 MS/s (40 MB/s) on a Mac, where 2.5 is greyed out for the BB60D.
 |---|---|
 | **Tuner** | The station you hear, to 1 kHz. **Hover over a digit** and it lights up; **roll the mouse wheel** to move that digit up or down. It carries as arithmetic does: rolling up the tens digit of 90.000 gives 100.000, and so does rolling up the ones digit of 99.000. With the pointer over a digit, **Up/Down** do the same and **PageUp/PageDown** move it by ten. **Type a digit** (or press Enter, or double-click) to type a whole frequency in MHz; Enter sets it and Escape leaves it as it was. |
 | **▲ / ▼ beside the tuner** | Steps the tuner down or up by one **Step**. Click a half (hold it to repeat), or roll the wheel over it. Ctrl+Left and Ctrl+Right do the same from anywhere in the window. |
+| **Tuner range** (↔, right on top of the tuner) | The lowest and highest the tuner can go around the radio's Center, in MHz. It is about three quarters of the IQ bandwidth, less half a channel at each end. It stays in sight when the box is folded. Its tooltip says how far it keeps clear of the Center on a HackRF or RTL-SDR. |
 | **Step** (knob) | Four settings: 10, 50, 100 and 200 kHz. It sets what the arrows and Ctrl+Left/Right move by, and what Snap rounds to. FM channels are 200 kHz apart in the Americas, on the odd tenths (88.1, 88.3 … 107.9), and a 200 kHz Step keeps to those; Europe's are 100 kHz apart. |
 | **Channel filter** | 60-400 kHz, applied live. (The **IQ – channel** recording is 500 kS/s; the filter stops at 400 kHz because the channel is sampled at 500 kS/s and the filter needs room to roll off inside it.) Hover a digit and roll the wheel, use its **▲ / ▼** (5 kHz a click), or roll the wheel over the orange band on the spectrum. A narrower filter rejects a strong neighbour, but below about 180 kHz stereo and RDS start to suffer. Wider than about 250 kHz the audio takes in any neighbour that close; the widths up to 400 kHz are for the **IQ – channel** recording, which then holds an HD Radio station's digital sidebands (±200 kHz). |
 

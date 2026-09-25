@@ -933,3 +933,13 @@ one frequency.
   crossing the band edge would rebuild the flowgraph.
 - [ ] rtl_433 in Receive off air, and its CPU on the BB60D at 10 and 40 MS/s
   (carried over from Round 17).
+
+## Round 19 (requested 2026-09-25)
+
+- [x] **The Receive box titled RTL433** (the checkbox and the devices tab
+  still name the program, rtl_433).
+- [x] **RF gain inside the Radio box**, a row under IQ bandwidth, not a
+  row above the box. It folds away with the box.
+- [x] **Tuner range inside the Tuner box**, right on top of the tuner
+  digits: "↔ 97.800 - 99.000 MHz", the DC gap moved to its tooltip. In
+  sight folded or open.
