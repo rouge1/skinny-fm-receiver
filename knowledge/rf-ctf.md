@@ -119,8 +119,9 @@ Not in apt:
 - URH: installed with `pipx install urh` (2.10.0). `urh` opens this app's
   `.cfile` as cf32; `urh_cli` only works with a live radio (no IQ-file input).
   See rtl-software.md, "URH".
-- `pip install sigmf` (not installed), in a venv or `pipx inject urh sigmf`.
-  Keep these out of the `gnu` env unless they are needed next to GNU Radio.
+- sigmf: installed into URH's venv with `pipx inject urh sigmf` (1.13.0);
+  run it with `~/.local/share/pipx/venvs/urh/bin/python`. Keep these out
+  of the `gnu` env unless they are needed next to GNU Radio.
 - SigDigger: AppImage from https://github.com/BatchDrake/SigDigger/releases
 - SDR++: .deb from https://github.com/AlexandreRouma/SDRPlusPlus/releases
 - gr-lora_sdr: `conda install -n gnu -c tapparelj -c conda-forge gnuradio-lora_sdr`

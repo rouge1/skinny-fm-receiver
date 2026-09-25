@@ -43,7 +43,10 @@ were run.
   RTL-TCP needs none. Not yet tried on a radio. See "URH" below.
 - Nothing else from the not-in-apt list (SDR++, SigDigger, readsb,
   AIS-catcher, dsd-fme, redsea, SatDump, rtlamr, csdr, dumpvdl2, dumphfdl,
-  acarsdec, gr-lora_sdr). `sigmf` isn't installed in any Python either.
+  acarsdec, gr-lora_sdr).
+- `sigmf` 1.13.0, injected into URH's venv (`pipx inject urh sigmf`). It
+  has no command: use `~/.local/share/pipx/venvs/urh/bin/python` to read
+  or write `.sigmf-meta` files. It isn't in the `gnu` env.
 - The udev rules for RTL-SDR (`/etc/udev/rules.d/rtl-sdr.rules`,
   `/lib/udev/rules.d/60-librtlsdr2.rules`) are in place. No DVB blacklist
   exists, and none is needed: librtlsdr detaches `dvb_usb_rtl28xxu` when it
