@@ -342,49 +342,66 @@ def _read(data, start, length):
     return seg
 
 
+#: The spectrum views' FFT sizes (``dsp.ReceiveChain.RF_FFT``,
+#: ``dsp.WavChain.FFT``): the overview's levels are theirs, bin for bin.
+RF_FFT = 4096
+AUDIO_FFT = 2048
+
+
+def blackman_harris(n):
+    """The spectrum taps' window (``dsp.spectrum_tap``), in numpy."""
+    k = 2 * np.pi * np.arange(n) / (n - 1)
+    return (0.35875 - 0.48829 * np.cos(k) + 0.14128 * np.cos(2 * k)
+            - 0.01168 * np.cos(3 * k))
+
+
 def overview(track, columns=480, rows=64, frames=4):
     """``track`` from end to end: a (rows, columns) float32 array in dB, row
     0 the lowest frequency, and the (low, high) frequency of its rows in Hz.
 
-    IQ rows are the band, max-pooled so a narrow carrier stays visible. A
-    WAV's rows are spaced logarithmically from 50 Hz to 16 kHz, as the ear
-    hears, the channels mixed to one."""
+    **In the spectrum views' own dB** (dBFS for IQ): the same window, FFT
+    size and scaling as their taps, so the strip can be coloured by the
+    view's Ref level and Range and mean what the view does. Each row is the
+    most of its bins (max-pooled), as a narrow carrier shows in the view.
+    IQ rows are the band. A WAV's rows are spaced logarithmically from 50
+    Hz to 16 kHz, as the ear hears, the channels mixed to one."""
     if track.kind == 'audio':
         data = wav_frames(track.path)
         total = len(data)
         rate = track.rate
-        nfft = 4096
+        nfft = AUDIO_FFT
         scale = 1.0 / 32768.0 if data.dtype == np.int16 else 1.0
-        win = np.hanning(nfft)
+        win = blackman_harris(nfft)
+        norm = float(np.sum(win)) ** 2
         freqs = np.fft.rfftfreq(nfft, 1.0 / rate)
         top = min(16e3, rate / 2)
         edges = np.geomspace(50.0, top, rows + 1)
-        weights = np.zeros((rows, len(freqs)))
+        bins = []
         for r in range(rows):
-            inside = (freqs >= edges[r]) & (freqs < edges[r + 1])
-            if inside.any():
-                weights[r, inside] = 1.0 / inside.sum()
-            else:                         # narrower than a bin: the nearest
-                weights[r, np.argmin(np.abs(freqs - np.sqrt(edges[r] * edges[r + 1])))] = 1.0
+            inside = np.flatnonzero((freqs >= edges[r]) & (freqs < edges[r + 1]))
+            if not len(inside):           # narrower than a bin: the nearest
+                inside = [int(np.argmin(np.abs(freqs - np.sqrt(edges[r] * edges[r + 1]))))]
+            bins.append((int(inside[0]), int(inside[-1]) + 1))
         img = np.full((rows, columns), -200.0, dtype=np.float32)
         if total:
             for c, starts in enumerate(_column_starts(total, columns, nfft, frames)):
                 segs = np.stack([_read(data, s, nfft).mean(axis=1) * scale for s in starts])
-                power = np.mean(np.abs(np.fft.rfft(segs * win, axis=1)) ** 2, axis=0)
-                img[:, c] = 10 * np.log10(weights @ power + 1e-20)
+                power = np.mean(np.abs(np.fft.rfft(segs * win, axis=1)) ** 2, axis=0) / norm
+                img[:, c] = [10 * np.log10(power[a:b].max() + 1e-20) for a, b in bins]
         return img, (edges[0], edges[-1])
 
-    nfft = 1024
+    nfft = RF_FFT
     data = np.memmap(track.path, dtype=np.complex64, mode='r')
     total = len(data)
     rate = track.rate
-    win = np.hanning(nfft).astype(np.float32)
+    win = blackman_harris(nfft).astype(np.float32)
+    norm = float(np.sum(win)) ** 2
     pool = nfft // rows
     img = np.full((rows, columns), -200.0, dtype=np.float32)
     if total:
         for c, starts in enumerate(_column_starts(total, columns, nfft, frames)):
             segs = np.stack([_read(data, s, nfft) for s in starts])
-            power = np.mean(np.abs(np.fft.fft(segs * win, axis=1)) ** 2, axis=0)
+            power = np.mean(np.abs(np.fft.fft(segs * win, axis=1)) ** 2, axis=0) / norm
             power = np.fft.fftshift(power)[:rows * pool].reshape(rows, pool).max(axis=1)
             img[:, c] = 10 * np.log10(power + 1e-20)
     centre = track.center_hz or 0.0

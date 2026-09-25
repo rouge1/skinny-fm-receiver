@@ -15,6 +15,12 @@ an IQ recording, played through the real :class:`Engine` into rtl_433.
 - the whole band, in slices: each radio's plan, and two remotes in one
   recording both decoded, the one on a slice boundary heard by both slices
   and kept once;
+- Receive's band too (its rtl_433 card), at a rate wider than twelve
+  slices: the middle cut down before the channelizer, what is in it
+  decoded and what is outside not, levels in the radio's dBFS, and a moved
+  LO putting right the frequencies reported;
+- the same burst from two slices kept once, with the stronger one's level;
+  an on-off burst put at its slice's centre;
 - closing the chain ends rtl_433;
 - rtl_433 is given the frequency before the rate (after it, over 800 MHz,
   the rate goes back to rtl_433's own and nothing decodes);
@@ -108,6 +114,13 @@ def plans():
         pass
     else:
         raise AssertionError("2.4 GHz accepted for an RTL-SDR")
+    # Receive's band, at the rate picked there: its middle, cut down to it
+    # before the channelizer when much wider.
+    m, w, centres = rtl433.band_slices(BB60(), 10e6)
+    assert (m, len(centres)) == (40, 12) and rtl433.predecimation(m, 6 + 2) == 2
+    assert rtl433.predecimation(160, 8) == 10 and rtl433.predecimation(16, 8) == 1
+    m, w, centres = rtl433.band_slices(RTLSDR(), 2.4e6)
+    assert (m, len(centres)) == (10, 8) and rtl433.predecimation(m, 4 + 2) == 1
     args = rtl433.command('rtl_433', 250e3, 868.3e6)
     assert args.index('-f') < args.index('-s'), args
     print("plan: LO clear of the band for each radio; the whole band 1.92 MHz in 8 "
@@ -157,6 +170,44 @@ def pipe():
           "none blocked; a closed reader noticed")
 
 
+class _Said:
+    """An rtl_433 that has said ``said``: [(heard, message)]."""
+
+    def __init__(self, said):
+        self.said = list(said)
+        self.decoded = len(self.said)
+
+    def take(self):
+        said, self.said = self.said, []
+        return said
+
+
+def duplicates():
+    """The same burst from two slices is kept once, and with the stronger
+    slice's level and frequency, whichever said so first - in place, as
+    the window may already show it."""
+    chain = object.__new__(rtl433.DecodeChain)
+    now = time.time()
+    pipes = [rtl433.Pipe(), rtl433.Pipe()]
+    pipes[0].history.append((now - 0.2, 2.0, 1e-4, 0.45))     # heard it 6 dB down
+    pipes[1].history.append((now - 0.2, 1.0, 1e-4, 0.9))
+    chain.slices = [(433.745e6, pipes[0]), (433.995e6, pipes[1])]
+    chain._moves, chain._recent, chain._log, chain.duplicates = [(0.0, 0.0)], {}, None, 0
+    msg = {'model': 'X', 'id': 1, 'mod': 'FSK', 'freq': 433.8, 'rssi': -30.0}
+    chain.procs = [_Said([(now, dict(msg))]), _Said([])]
+    first = chain.take()
+    assert len(first) == 1 and first[0][1]['level_dbfs'] == -36.0, first
+    chain.procs[1].said = [(now + 0.01, dict(msg, freq=433.95))]
+    assert chain.take() == [] and chain.duplicates == 1
+    kept = first[0][1]
+    assert kept['level_dbfs'] == -30.0 and kept['freq'] == 433.95, kept
+    # An on-off burst is put at its slice's centre.
+    chain.procs[0].said = [(now + 2.0, dict(msg, id=2, mod='ASK', freq=433.9))]
+    assert chain.take()[0][1]['freq'] == 433.745
+    print("duplicates: kept once, with the stronger slice's level; an on-off "
+          "burst at its slice's centre")
+
+
 def levels():
     rng = np.random.default_rng(3)
     for sigma in (1e-5, 1e-3):                   # a BB60D's noise, then a HackRF's
@@ -171,11 +222,27 @@ def levels():
     y = sink.level(burst).view(np.float32)
     assert np.abs(y).max() <= 1.0 and y.min() >= -1.0
     loud = rtl433.Pipe()
-    x = (0.3 * (rng.standard_normal(4096) + 1j * rng.standard_normal(4096))).astype(np.complex64)
-    loud.level(x)
+    for _ in range(3):
+        x = (0.3 * (rng.standard_normal(4096) + 1j * rng.standard_normal(4096))
+             ).astype(np.complex64)
+        loud.level(x)
     assert loud.gain == 1.0, loud.gain            # never turned down
+    # A long burst in a channelizer's small blocks: a second of noise, then
+    # 400 ms of a carrier 40 dB over it, 512 samples a block (500 kS/s).
+    # The noise is still the noise, and the burst raised as far as fits.
+    sink = rtl433.Pipe()
+    sigma, tone = 1e-4, 1e-2
+    for n in range(1000 + 400):
+        x = (sigma * (rng.standard_normal(512) + 1j * rng.standard_normal(512))
+             ).astype(np.complex64)
+        if n >= 1000:
+            x += np.complex64(tone)
+        sink.level(x)
+    assert abs(20 * np.log10(sink.noise / (sigma * np.sqrt(2)))) < 1.0, sink.noise
+    assert sink.applied > 0.8 * rtl433.PEAK / (tone + 4 * sigma), sink.applied
     print("levels: noise raised to an RTL-SDR's from 1e-5 and 1e-3, bursts held "
-          "at full scale, loud noise left alone")
+          "at full scale, loud noise left alone, a 400 ms burst in small blocks not "
+          "taken for noise")
 
 
 def decode(program, folder):
@@ -249,9 +316,8 @@ def decode_band(program, folder):
         assert chain.duplicates > 0, "the boundary burst was not heard by two slices"
         heard_b = sorted(h for h, m in got if m.get('rows', [{}])[0].get('data') == b_bits)
         assert all(b - a >= rtl433.DUP_S for a, b in zip(heard_b, heard_b[1:])), heard_b
-        # rtl_433 reports an on-off burst at about the frequency it was
-        # given - the slice's centre - not where in the slice it is: A, 75 kHz
-        # under its slice's centre, read 12 kHz over it. And the slices
+        # An on-off burst is put at the centre of the slice that heard it:
+        # rtl_433's own frequency for one is not where it is. And the slices
         # overlap, so the one that heard it first may be the next one over.
         freqs = {m['rows'][0]['data']: m['freq'] for _, m in got if m.get('model') == 'fmrx_test'}
         near = (0.8 * chain.width + 20e3) / 1e6
@@ -263,6 +329,73 @@ def decode_band(program, folder):
     print(f"whole band: {n} slices from {chain.low_hz / 1e6:.3f} to {chain.high_hz / 1e6:.3f} "
           f"MHz; A at {freqs[BITS]:.3f} and B on a boundary at {freqs[b_bits]:.3f} decoded, "
           f"B's second copy dropped {chain.duplicates} times; all {n} rtl_433 ended on close")
+
+
+def decode_receive(program, folder):
+    """Receive's rtl_433 at 8 MS/s: the middle 3 MHz, cut down by 2 before
+    the channelizer. Two remotes in it decoded, one outside it not; the
+    level in the radio's dBFS; moving the LO puts right what is reported."""
+    rate = 8e6
+    trim = slice(int(0.18 * rate), None)       # 300 ms quiet after: the noise
+
+    bursts = {'a5c3f0': (300e3, 0.1), 'c3a55a': (-600e3, 0.03), '5a0ff0': (2.5e6, 0.1)}
+    iq = sum(ook_burst(rate, off, bits, repeats=3, amplitude=amp, seed=i)[trim]
+             for i, (bits, (off, amp)) in enumerate(bursts.items()))
+    base = os.path.join(folder, 'wide')
+    iq.astype(np.complex64).tofile(base + '.cfile')
+    with open(base + '.json', 'w') as fh:
+        json.dump({'rate': rate, 'center_hz': CENTER, 'offset_hz': 100e3,
+                   'station_hz': CENTER + 100e3}, fh)
+    engine = Engine(want_audio=False)
+    engine.use_radio(IQFile(base + '.cfile'))
+    try:
+        engine.start_receive(CENTER + 100e3, rate, center_hz=CENTER,
+                             decode=(program, ('-R', '0', '-X', FLEX)))
+        chain = engine.decoder
+        assert engine.rx is not None and engine.decode_error is None, engine.decode_error
+        assert len(chain.slices) == 12 and chain.predecim == 2, (len(chain.slices), chain.predecim)
+        got = {}
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and (len(got) < 2 or not chain.duplicates):
+            time.sleep(0.2)
+            for _, m in chain.take():
+                if m.get('model') == 'fmrx_test':
+                    got.setdefault(m['rows'][0]['data'], m)
+        assert set(got) == {'a5c3f0', 'c3a55a'}, (set(got), chain.problem())
+        # B, 25 kHz from a slice's centre, is heard 6 dB down by the next
+        # one too, which may be the only one to decode a loop of the
+        # recording: the strongest of a few seconds is B's level.
+        best = {bits: [m] for bits, m in got.items()}
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            for _, m in chain.take():
+                if m.get('model') == 'fmrx_test':
+                    best.setdefault(m['rows'][0]['data'], []).append(m)
+        for bits, msgs in best.items():
+            want = 20 * np.log10(bursts[bits][1])
+            msg = max(msgs, key=lambda m: m['level_dbfs'])
+            assert abs(msg['level_dbfs'] - want) < 1.5, (bits, msg['level_dbfs'], want)
+            assert msg['level_dbfs'] - msg['floor_dbfs'] > 20, msg
+        a_mhz = got['a5c3f0']['freq']
+        chain.move(CENTER + 1e6)
+        moved = None
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline and moved is None:
+            time.sleep(0.2)
+            moved = next((m['freq'] for _, m in chain.take()
+                          if m.get('rows', [{}])[0].get('data') == 'a5c3f0'), None)
+        # Either of the two slices A is in may say so first.
+        assert moved is not None and abs(moved - a_mhz - 1.0) <= chain.width / 1e6 + 1e-6, \
+            (a_mhz, moved)
+        procs = [p.proc for p in chain.procs]
+    finally:
+        engine.close()
+    assert all(p.poll() is not None for p in procs), "an rtl_433 still running after close"
+    level = max(m['level_dbfs'] for m in best['a5c3f0'])
+    print(f"Receive at 8 MS/s: 12 slices, cut down by 2 first; A at "
+          f"{level:.1f} dBFS (-20 put in) and B decoded, the one "
+          "outside not; a moved LO moves what is reported")
 
 
 def bresser(program):
@@ -313,6 +446,7 @@ def bresser(program):
 
 def main():
     plans()
+    duplicates()
     levels()
     pipe()
     program = rtl433.find_program()
@@ -323,6 +457,7 @@ def main():
     try:
         decode(program, folder)
         decode_band(program, folder)
+        decode_receive(program, folder)
         bresser(program)
     finally:
         shutil.rmtree(folder, ignore_errors=True)

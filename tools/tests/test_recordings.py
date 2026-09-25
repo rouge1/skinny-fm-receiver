@@ -9,7 +9,8 @@ once it has held still.
 Part 2 records the synthetic station from an IQ file in the Receive tab -
 WAV, channel and band, with a retune - then opens the Recordings tab and
 plays it back: the radio closes, the recording is listed with its RDS
-name, the band plays with RDS, seeks (by the overview strip too), pauses
+name, the strip coloured by the RF spectrum's Ref level and Range and in
+its dBFS, the band plays with RDS, seeks (by the overview strip too), pauses
 and resumes with RDS kept, stops at its end or loops, the WAV plays with
 its spectrum and the RadioText logged at record time, a recording is
 deleted, and going back to Receive opens the radio where it was.
@@ -231,11 +232,29 @@ def part2_window():
     rec = w._rec_sel
     assert w.track_combo.count() == 4 and w._track.kind == 'iq-band'
     assert pump(5, lambda: w.timeline._index is not None), 'no overview'
+    # The strip is coloured by the RF spectrum's Ref level and Range, and
+    # follows them.
+    view = w.rf_view
+    assert w.timeline._levels == (view.ref_knob.value() - view.range_knob.value(),
+                                  view.ref_knob.value()), w.timeline._levels
+    before = w.timeline._index.copy()
+    view.ref_knob.setValue(view.ref_knob.value() - 30)
+    view.range_knob.setValue(60)
+    assert w.timeline._levels == (view.ref_knob.value() - 60, view.ref_knob.value())
+    assert not np.array_equal(before, w.timeline._index), 'the colours did not move'
 
     # The band plays with RDS; the time goes on.
     w.play_btn.setChecked(True)
     assert e.running and e.rx is not None and w._mode == 'playback', w.status.text()
     assert w.top_stack.currentWidget() is w.rf_view and w.bottom.isVisible()
+    # The strip's dB are the spectrum's: its loudest level, the view's.
+    assert pump(3, lambda: w._rx_sig is not None)
+    pump(1)
+    shown, strip = float(np.max(w._rx_sig[1])), float(np.max(w.timeline._db))
+    assert abs(shown - strip) < 3, (shown, strip)
+    # Playing, the view's own saved scale, and the strip follows it.
+    assert w.timeline._levels == (view.ref_knob.value() - view.range_knob.value(),
+                                  view.ref_knob.value())
     assert pump(12, lambda: 'TEST FM' in w.play_station.text()), w.play_station.text()
     assert pump(8, lambda: 'Hello from the synthetic station' in w.play_text.text()), \
         w.play_text.text()
@@ -287,6 +306,21 @@ def part2_window():
     peak = x[band][np.argmax(db[band])]
     assert abs(peak - 1.0) < 0.05 or abs(peak - 2.5) < 0.05, peak     # the tones, kHz
     assert max(w.meter._rms) > -30, w.meter._rms
+    # A WAV's strip: the sound's spectrum sets its colours, and its dB are
+    # that view's.
+    av = w.audio_view
+    assert w.timeline._levels == (av.ref_knob.value() - av.range_knob.value(),
+                                  av.ref_knob.value()), w.timeline._levels
+    assert pump(5, lambda: w.timeline._db is not None), 'no WAV overview'
+    # Where it is playing: this WAV was recorded across a retune, so its
+    # loudest moment is not now.
+    cols = w.timeline._db.shape[1]
+    at = int(w._play.source.position / 48000 / w.timeline.duration * cols)
+    shown = float(np.max(db))
+    strip = float(np.max(w.timeline._db[:, max(0, at - 4):at + 2]))
+    assert abs(shown - strip) < 3, (shown, strip, float(np.max(w.timeline._db)))
+    av.range_knob.setValue(av.range_knob.value() - 20)
+    assert w.timeline._levels[0] == av.ref_knob.value() - av.range_knob.value()
     assert 'Hello from the synthetic station' in w.play_text.text(), w.play_text.text()
     w.play_btn.setChecked(False)
     assert e.running and w._play.source.paused, 'a WAV pauses on silence'

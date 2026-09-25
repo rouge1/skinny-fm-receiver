@@ -11,9 +11,18 @@ stations, tyre pressure, doorbells, remotes - decoded by rtl_433
 
     or, for the whole band:
 
-    IQ ─ DC blocker ─ shift W/2 ─ channelizer, M slices W apart ─┬─ pipe ─ rtl_433
-         (a spike's)              (each 2W wide, at 2W)          ├─ pipe ─ rtl_433
-                                                                 └─ ... one each
+    IQ ─ [cut down] ─ DC blocker ─ shift W/2 ─ channelizer, M slices ─┬─ pipe ─ rtl_433
+                      (a spike's)              W apart, each 2W wide  ├─ pipe ─ rtl_433
+                                                                      └─ ... one each
+
+**In Receive too.** The Receive tab's rtl_433 card puts the same whole-band
+chain on the receive chain's samples, at the rate the user picked: at most
+``MAX_SLICES`` slices, the middle of a wider band (:func:`band_slices`),
+the band cut down to them first when it is much wider
+(:func:`predecimation`). Moving the Center moves the slices; what rtl_433
+then reports is put right rather than rtl_433 restarted
+(:meth:`DecodeChain.move`). Each message's level is given in the radio's
+dBFS as well (``level_dbfs``, ``floor_dbfs``: :meth:`DecodeChain._place`).
 
 **The whole band, in slices.** rtl_433 decodes anything in what it is
 given, but best at about 250 kS/s, its default. So for the whole band a
@@ -39,7 +48,7 @@ at an 8-bit RTL-SDR's scale: a burst at 0.003 of full scale, 40 dB over the
 noise, was not decoded at all (rtl_433 23.11, 2026-09-24), where the same
 burst at 0.3 was. The BB60D's noise sits about 60 dB under an RTL-SDR's, so
 :class:`pipe_sink` raises the samples until the noise is ``NOISE_LEVEL``
-(a slow gain, from the quieter blocks of the last second or two), but never
+(a slow gain, from the quieter parts of the last second), but never
 past full scale - block by block, the peak sets the most it may be raised
 (rtl_433 lost an on-off burst at 30x full scale, and an FSK one clipped to
 it) - and never turns anything down.
@@ -91,18 +100,28 @@ OVERSAMPLE = 2
 #: time is the wall clock's, ``-M time:iso``: from a pipe it would be the
 #: samples' count), shown in their own columns rather than among the readings.
 META_KEYS = ('time', 'model', 'id', 'channel', 'protocol', 'mod', 'freq', 'freq1',
-             'freq2', 'rssi', 'snr', 'noise', 'mic')
+             'freq2', 'rssi', 'snr', 'noise', 'mic', 'level_dbfs', 'floor_dbfs')
 #: The noise's RMS, of full scale, that the samples are raised to: an
 #: RTL-SDR's noise is a few steps of its 8 bits.
 NOISE_LEVEL = 0.03
-#: The most they are raised, 100 dB; the noise is judged from this many
-#: blocks (about a second or two), at this percentile, so bursts don't count.
+#: The most they are raised, 100 dB. The noise is judged from the RMS of
+#: each ``NOISE_CHUNK`` samples (every ``LEVEL_STRIDE``-th), the last
+#: ``NOISE_CHUNKS`` of them - a second at 500 kS/s - at this percentile, so
+#: bursts don't count unless they fill 80% of it. By chunks, not blocks: a
+#: channelizer's blocks are 128-1280 samples, and 64 of them, 60 ms, were
+#: filled by one 190 ms burst, which took the gain from 30 to 1 mid-burst.
 MAX_GAIN = 1e5
-NOISE_BLOCKS = 64
+NOISE_CHUNK = 8192
+NOISE_CHUNKS = 64
 NOISE_PERCENTILE = 20
 LEVEL_STRIDE = 16
 #: The most any sample's I or Q is raised to.
 PEAK = 0.9
+#: A message's level is judged from the gains its slice's samples got in
+#: the ``BURST_S`` before rtl_433 said it (the burst, and rtl_433's
+#: lag); ``HISTORY_S`` of blocks are kept.
+BURST_S = 1.5
+HISTORY_S = 3.0
 #: Messages kept for the window between its looks: rtl_433 can repeat one
 #: burst a dozen times, and a busy band is a few a second.
 QUEUE = 2000
@@ -167,37 +186,47 @@ def plan(radio, freq_hz, width_hz):
     return rate, lo, offset
 
 
+def slicing(radio, rate):
+    """(M, W, slices either side of the LO that fit the usable band) at
+    ``rate``: ``M`` the channelizer's size, ``rate / M = W`` about ``SLICE``."""
+    m = max(2, int(round(rate / SLICE)))
+    m += m % 2                                   # the channelizer's /2
+    w = rate / m
+    return m, w, int(rate * radio.usable_fraction(rate) / 2 // w)
+
+
+def band_slices(radio, rate):
+    """(M, W, slice centres from the LO) for the usable band at ``rate``:
+    the slices either side of the LO, the LO on a boundary, at most
+    ``MAX_SLICES`` - the middle of a wider band. Receive's rate is the
+    user's: 12 slices, 3 MHz, of the BB60D's 10 MS/s."""
+    m, w, per_side = slicing(radio, rate)
+    per_side = max(1, min(per_side, MAX_SLICES // 2))
+    return m, w, [(k + 0.5) * w for k in range(-per_side, per_side)]
+
+
 def band_plan(radio, freq_hz):
     """(radio rate, LO, M, W, slice centres from the LO) for the whole band
     around ``freq_hz``: the widest receive rate whose usable band holds no
     more than ``MAX_SLICES`` slices (the lowest, cut to that many, if
-    none does). ``M`` is the channelizer's size, ``rate / M = W`` about
-    ``SLICE``; the slices sit either side of the LO, the LO on a boundary.
-    An IQ recording's band is the one it has. ValueError if the radio
-    cannot reach it."""
+    none does), sliced by :func:`band_slices`. An IQ recording's band is
+    the one it has. ValueError if the radio cannot reach it."""
     low, high = radio.freq_range_hz
     rates = sorted(radio.usable_receive_rates()) or [radio.default_receive_rate]
     if radio.kind == 'file':
         rates = rates[-1:]
-    best = None
-    for rate in rates:
-        m = max(2, int(round(rate / SLICE)))
-        m += m % 2                               # the channelizer's /2
-        w = rate / m
-        per_side = int(rate * radio.usable_fraction(rate) / 2 // w)
-        if 2 * per_side <= MAX_SLICES:
-            best = (rate, m, w, max(1, per_side))
-        elif best is None:
-            best = (rate, m, w, MAX_SLICES // 2)
+    rate = None
+    for r in rates:
+        fits = 2 * slicing(radio, r)[2] <= MAX_SLICES
+        if fits or rate is None:
+            rate = r
+        if not fits:
             break
-        else:
-            break
-    rate, m, w, per_side = best
     lo = radio.center_hz if radio.kind == 'file' else float(freq_hz)
     if radio.kind != 'file' and not low <= lo <= high:
         raise ValueError(f"{lo / 1e6:.3f} MHz is outside the {radio.name}'s "
                          f"range ({low / 1e6:g} to {high / 1e6:g} MHz)")
-    centres = [(k + 0.5) * w for k in range(-per_side, per_side)]
+    m, w, centres = band_slices(radio, rate)
     return rate, lo, m, w, centres
 
 
@@ -208,6 +237,19 @@ def slice_taps(rate, w):
     of them. Slices that only met (passing 0.5 ``w``) lost a Bresser 5-in-1
     (FSK, 150 kHz wide) on a boundary and 75 kHz off a centre."""
     return firdes.low_pass(1.0, rate, 0.9 * w, 0.2 * w, window.WIN_HAMMING)
+
+
+def predecimation(m, needed):
+    """The most a band for a channelizer of ``m`` slices may be cut down
+    by first, keeping ``needed`` slices either side of the LO: a whole
+    divisor of ``m`` that leaves it even (the channelizer's /2) and at
+    least ``2 * needed``. 1 when nothing can go: the rtl_433 tab's band
+    holds no more than it uses."""
+    best = 1
+    for d in range(2, m + 1):
+        if m % d == 0 and (m // d) % 2 == 0 and m // d >= 2 * needed:
+            best = d
+    return best
 
 
 def payload(msg):
@@ -263,48 +305,73 @@ class Pipe:
     """One slice's samples, raised to rtl_433's level, to a file descriptor
     (its rtl_433's stdin) that must not block the flowgraph: see the module
     notes. ``gain`` is the factor it is moving towards, ``applied`` the one
-    the last block got. :meth:`feed` is called from :class:`pipe_sink`."""
+    the last block got, ``noise`` the noise's RMS it is judged from;
+    ``history`` holds (when, applied, noise, peak) for recent blocks. :meth:`feed` is called from :class:`pipe_sink`."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self._fd = None
         self._pending = b''
-        self._rms = collections.deque(maxlen=NOISE_BLOCKS)
+        self._rms = collections.deque(maxlen=NOISE_CHUNKS)
+        self._power = 0.0                         # the chunk so far: sum of |x|^2,
+        self._counted = 0                         # of this many samples
         self.gain = None                          # to put the noise at NOISE_LEVEL
         self.applied = None                       # used on the last block: PEAK-limited
+        self.noise = None
+        self.history = collections.deque()
         self.sent = 0
         self.dropped = 0
         self.broken = False
 
     def level(self, x):
         """``x`` times the gain, with the gain moved a step towards what
-        puts the noise at ``NOISE_LEVEL``, but no more than keeps the
-        block's peak at ``PEAK``: never past full scale (rtl_433 lost an
-        on-off burst at 30x full scale). A few passes over the samples,
-        the noise judged from every ``LEVEL_STRIDE``-th."""
+        puts the noise at ``NOISE_LEVEL`` each time a chunk of samples is
+        complete, but no more than keeps the block's peak at ``PEAK``: never
+        past full scale (rtl_433 lost an on-off burst at 30x full scale). A
+        few passes over the samples, the noise judged from every
+        ``LEVEL_STRIDE``-th."""
         sub = x[::LEVEL_STRIDE]
-        rms = float(np.sqrt(np.vdot(sub, sub).real / len(sub))) if len(sub) else 0.0
-        if rms > 0:
-            self._rms.append(rms)
-        if self._rms:
-            # The 20th percentile, picked in Python: numpy's took 50 us a
-            # call, most of the cost at a few thousand samples a block.
-            ranked = sorted(self._rms)
-            noise = ranked[len(ranked) * NOISE_PERCENTILE // 100]
-            want = min(max(NOISE_LEVEL / noise, 1.0), MAX_GAIN) if noise > 0 else 1.0
-            # A fifth of the way a block, in dB: steady within a second.
-            self.gain = want if self.gain is None else self.gain * (want / self.gain) ** 0.2
+        self._power += float(np.vdot(sub, sub).real)
+        self._counted += len(sub)
+        if self._counted * LEVEL_STRIDE >= NOISE_CHUNK:
+            rms = float(np.sqrt(self._power / self._counted))
+            self._power, self._counted = 0.0, 0
+            if rms > 0:
+                self._rms.append(rms)
+            if self._rms:
+                # The 20th percentile, picked in Python: numpy's took 50 us
+                # a call.
+                ranked = sorted(self._rms)
+                noise = self.noise = ranked[len(ranked) * NOISE_PERCENTILE // 100]
+                want = min(max(NOISE_LEVEL / noise, 1.0), MAX_GAIN) if noise > 0 else 1.0
+                # A fifth of the way a chunk, in dB: steady within a second.
+                self.gain = (want if self.gain is None
+                             else self.gain * (want / self.gain) ** 0.2)
         gain = self.gain or 1.0
         iq = x.view(np.float32)
         peak = max(float(iq.max()), -float(iq.min())) if len(iq) else 0.0
         if peak * gain > PEAK:
             gain = max(1.0, PEAK / peak)
         self.applied = gain
+        now = time.time()
+        self.history.append((now, gain, self.noise, peak))
+        while self.history[0][0] < now - HISTORY_S:
+            self.history.popleft()
         y = x * np.float32(gain)
         if peak * gain > 1.0:                     # a radio at full scale: as it is
             view = y.view(np.float32)
             np.clip(view, -1.0, 1.0, out=view)
         return y
+
+    def gains_at(self, heard):
+        """(the gain the loudest block got, the noise's RMS) in the
+        ``BURST_S`` before ``heard``: the loudest is the burst's, and a
+        strong one was raised less than the rest. None with no blocks."""
+        got = [(p, a, n) for t, a, n, p in list(self.history)
+               if heard - BURST_S <= t <= heard]
+        if not got:
+            return None
+        return max(got)[1], got[-1][2]
 
     def set_fd(self, fd):
         with self._lock:
@@ -439,14 +506,21 @@ class DecodeChain:
     band in slices, one rtl_433 each. Every block is kept here while the
     flowgraph may run (an RF bench toolkit rule). ``program`` None builds
     the chain with nothing on the pipes: the spectrum still shows.
-    ``dc_notch_hz``: the radio's DC spike, blocked before the channelizer."""
+    ``dc_notch_hz``: the radio's DC spike, blocked before the channelizer.
+    ``spectrum`` False leaves out the RF spectrum and clip probe: in
+    Receive the receive chain has its own."""
 
     RF_FFT = 4096
+    #: Slices kept clear either side of those used, when the band is cut
+    #: down before the channelizer (:func:`predecimation`).
+    GUARD_SLICES = 2
 
     def __init__(self, tb, source, rate, lo_hz, program, extra_args=(), *,
-                 offset_hz=0.0, width_hz=DEFAULT_WIDTH, band=None, dc_notch_hz=0.0):
+                 offset_hz=0.0, width_hz=DEFAULT_WIDTH, band=None, dc_notch_hz=0.0,
+                 spectrum=True):
         self.rate = float(rate)
         self.lo_hz = float(lo_hz)
+        self._moves = [(0.0, 0.0)]                # (from when, Hz the LO has moved)
         self._keep = []
         self.slices = []                          # [(centre Hz, pipe_sink)]
         if band is None:
@@ -464,18 +538,29 @@ class DecodeChain:
             m, w, centres = band
             self.width = float(w)
             self.out_rate = OVERSAMPLE * w
-            head = source
+            head, rate = source, self.rate
+            self.predecim = predecimation(m, len(centres) // 2 + self.GUARD_SLICES)
+            if self.predecim > 1:
+                # Only the slices used, before the channelizer: 43% of a
+                # core against 127% at 20 MS/s, 78 against 286 at 40.
+                m //= self.predecim
+                rate /= self.predecim
+                edge = (len(centres) // 2 + 0.5) * w
+                self.pre = filter.fir_filter_ccf(self.predecim, firdes.low_pass(
+                    1.0, self.rate, rate / 2, rate - 2 * edge, window.WIN_HAMMING))
+                tb.connect(head, self.pre)
+                head = self.pre
             if dc_notch_hz:
                 # The spike's mean taken away: a DC blocker cost 23-43% of a
                 # core at 4 MS/s, this a few.
-                self.dc_mean = filter.single_pole_iir_filter_cc(2 * np.pi * 1e3 / self.rate)
+                self.dc_mean = filter.single_pole_iir_filter_cc(2 * np.pi * 1e3 / rate)
                 self.dc = blocks.sub_cc()
                 tb.connect(head, (self.dc, 0))
                 tb.connect(head, self.dc_mean, (self.dc, 1))
                 head = self.dc
-            self.shift = blocks.rotator_cc(-2 * np.pi * (w / 2) / self.rate)
+            self.shift = blocks.rotator_cc(-2 * np.pi * (w / 2) / rate)
             from gnuradio.filter import pfb  # type: ignore
-            self.channelizer = pfb.channelizer_ccf(m, slice_taps(self.rate, w),
+            self.channelizer = pfb.channelizer_ccf(m, slice_taps(rate, w),
                                                    float(OVERSAMPLE))
             tb.connect(head, self.shift, self.channelizer)
             used = {int(round(c / w - 0.5)) % m: c for c in centres}
@@ -492,12 +577,13 @@ class DecodeChain:
             self.low_hz = self.slices[0][0] - w / 2
             self.high_hz = self.slices[-1][0] + w / 2
         self.freq_hz = (self.low_hz + self.high_hz) / 2
-        self.rf_probe = spectrum_tap(tb, self._keep, source, self.rate, self.RF_FFT, True)
-        size = self.RF_FFT
-        self.clip_keep = blocks.keep_m_in_n(gr.sizeof_gr_complex, size,
-                                            size * spectrum_frames_per_s(self.rate, size), 0)
-        self.clip = clip_probe()
-        tb.connect(source, self.clip_keep, self.clip)
+        if spectrum:
+            self.rf_probe = spectrum_tap(tb, self._keep, source, self.rate, self.RF_FFT, True)
+            size = self.RF_FFT
+            self.clip_keep = blocks.keep_m_in_n(
+                gr.sizeof_gr_complex, size, size * spectrum_frames_per_s(self.rate, size), 0)
+            self.clip = clip_probe()
+            tb.connect(source, self.clip_keep, self.clip)
         self.procs = []
         self._recent = {}                         # payload -> (heard, slice)
         self.duplicates = 0                       # dropped by take(): see DUP_S
@@ -505,14 +591,20 @@ class DecodeChain:
         self.log_path = None
         self.log_error = None
         if program:
-            try:
-                for centre, pipe in self.slices:
-                    proc = Rtl433(program, self.out_rate, centre, extra_args)
-                    self.procs.append(proc)
-                    pipe.set_fd(proc.stdin_fd)
-            except Exception:
-                self.close()
-                raise
+            self.launch(program, extra_args)
+
+    def launch(self, program, extra_args=()):
+        """Start an rtl_433 on each slice. If one cannot start, those that
+        did are ended and it raises; the blocks stay, to be kept."""
+        try:
+            for centre, pipe in self.slices:
+                proc = Rtl433(program, self.out_rate, centre, extra_args)
+                self.procs.append(proc)
+                pipe.set_fd(proc.stdin_fd)
+        except Exception:
+            self.close()
+            self.procs = []
+            raise
 
     @property
     def proc(self):
@@ -533,13 +625,64 @@ class DecodeChain:
         gains = [pipe.gain for _, pipe in self.slices if pipe.gain]
         return max(gains) if gains else None
 
+    def move(self, lo_hz):
+        """The LO moved (Receive's Center) and the slices with it. Each
+        rtl_433 keeps the frequency it was started on, so what it reports
+        from now on is put right in :meth:`take`: no restart, no gap."""
+        shift = float(lo_hz) - self.lo_hz
+        if not shift:
+            return
+        self.lo_hz += shift
+        self.low_hz += shift
+        self.high_hz += shift
+        self.freq_hz += shift
+        self.slices = [(c + shift, pipe) for c, pipe in self.slices]
+        self._moves.append((time.time(), self._moves[-1][1] + shift))
+
+    def _place(self, heard, i, msg):
+        """Put right what rtl_433 said of where and how strong: its
+        frequencies for an LO moved since it started (by when it was
+        heard) - for an on-off burst the slice's centre instead, as
+        rtl_433's is not where it is: 2 to 100 kHz over the centre it was
+        given wherever the burst sat in the slice, the more the louder
+        (2026-09-24) - and its level in the radio's own dBFS - rtl_433 heard the
+        samples raised (:class:`Pipe`), by less during a strong burst.
+        ``level_dbfs`` is the burst's: rtl_433's ``rssi`` less the gain
+        the loudest block before it got (the least gain was wrong just
+        after a start, when blocks go at 1 until the noise is judged),
+        within 0.5 dB of the tone put in, from -70 to -1 dBFS.
+        ``floor_dbfs`` is the slice's noise, as the pipe measures it,
+        within 1.5 dB of the noise put in; rtl_433's own ``noise`` read 6-7
+        dB under (2026-09-24)."""
+        moved = next(m for t, m in reversed(self._moves) if t <= heard)
+        if msg.get('mod') == 'ASK' and i < len(self.slices):
+            msg['freq'] = round(self.slices[i][0] / 1e6, 6)
+            for key in ('freq1', 'freq2'):
+                msg.pop(key, None)
+        elif moved:
+            for key in ('freq', 'freq1', 'freq2'):
+                if isinstance(msg.get(key), (int, float)):
+                    msg[key] = round(msg[key] + moved / 1e6, 6)
+        gains = self.slices[i][1].gains_at(heard) if i < len(self.slices) else None
+        if gains is not None:
+            applied, noise = gains
+            if isinstance(msg.get('rssi'), (int, float)):
+                msg['level_dbfs'] = round(msg['rssi'] - 20 * np.log10(applied), 1)
+            if noise:
+                msg['floor_dbfs'] = round(20 * np.log10(noise), 1)
+        return msg
+
     def take(self):
         """[(unix time heard, message)] since the last call, from every
-        slice, oldest first; the same message from another slice within
-        ``DUP_S`` dropped. Logged, when a log is set."""
+        slice, oldest first, placed (:meth:`_place`); the same message from
+        another slice within ``DUP_S`` dropped - but if that slice heard it
+        stronger, the message kept takes its level and frequency, in place
+        (it may already be shown): a burst near a slice's edge is also
+        heard, 6 dB down, by the next, which may be first to say so.
+        Logged, when a log is set."""
         got = []
         for i, proc in enumerate(self.procs):
-            got.extend((heard, i, msg) for heard, msg in proc.take())
+            got.extend((heard, i, self._place(heard, i, msg)) for heard, msg in proc.take())
         got.sort(key=lambda g: g[0])
         out = []
         for heard, i, msg in got:
@@ -547,8 +690,12 @@ class DecodeChain:
             seen = self._recent.get(key)
             if seen is not None and seen[1] != i and heard - seen[0] < DUP_S:
                 self.duplicates += 1              # the next slice heard it too
+                kept = seen[2]
+                if msg.get('level_dbfs', -1e9) > kept.get('level_dbfs', -1e9):
+                    kept.update({k: v for k, v in msg.items() if k in META_KEYS
+                                 and k not in ('time', 'model', 'id', 'channel')})
                 continue
-            self._recent[key] = (heard, i)
+            self._recent[key] = (heard, i, msg)
             out.append((heard, msg))
         if got:
             newest = got[-1][0]

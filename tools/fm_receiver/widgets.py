@@ -2541,6 +2541,8 @@ class TimelineStrip(Qt.QWidget):
                         "upwards.\nClick or drag to jump.")
         self.duration = 0.0
         self.position = 0.0
+        self._db = None                     # (rows, cols) dB, top row first
+        self._levels = None                 # (bottom, top) dB, from the view
         self._index = None                  # (rows, cols) uint8, top row first
         self._image = None
         self._image_theme = None
@@ -2548,17 +2550,30 @@ class TimelineStrip(Qt.QWidget):
         self.note = ''
 
     def set_overview(self, img):
-        """``img``: (rows, columns) in dB, row 0 the lowest frequency. The
-        colours span the 5th to the 99.7th percentile, so the floor sinks
-        into the background and the strongest signals are the brightest."""
+        """``img``: (rows, columns) in dB, row 0 the lowest frequency, in the
+        spectrum view's own dB (``library.overview``). Coloured as the
+        view's waterfall is, by :meth:`set_levels`; until those are given,
+        from its 5th to its 99.7th percentile."""
+        self._db = None if img is None else np.asarray(img, dtype=np.float64)[::-1]
+        self._colour()
+
+    def set_levels(self, ref_db, range_db):
+        """The view's Ref level and Range: the colours run from Ref - Range
+        (the background) to Ref (the brightest), as its waterfall's do."""
+        levels = (float(ref_db) - float(range_db), float(ref_db))
+        if levels != self._levels:
+            self._levels = levels
+            self._colour()
+
+    def _colour(self):
+        img = self._db
         if img is None:
             self._index = None
         else:
-            img = np.asarray(img, dtype=np.float64)
-            low, high = np.percentile(img, 5), np.percentile(img, 99.7)
+            low, high = self._levels or (np.percentile(img, 5), np.percentile(img, 99.7))
             level = (img - low) / max(high - low, 1e-6)
             self._index = np.ascontiguousarray(
-                np.round(np.clip(level, 0, 1) * 255).astype(np.uint8)[::-1])
+                np.round(np.clip(level, 0, 1) * 255).astype(np.uint8))
         self._image = None
         self.update()
 

@@ -203,6 +203,8 @@ def knob_glow(w):
     pump(0.1)
     for knob in (w.volume_knob, w.step_knob, w.rf_view.span_knob):
         dial = knob.dial
+        w.left_scroll.ensureWidgetVisible(knob)       # a tall Receive tab scrolls
+        pump(0.1)
         _hover(away, QtCore.QPoint(2, 2))
         assert pump(1, lambda: dial.glow == 0.0), (knob.caption.text(), dial.glow)
         _hover(dial, mid)
@@ -537,6 +539,9 @@ def part2_sweep():
         assert (w.sweep_start.value(), w.sweep_stop.value()) == (low, high)
         assert w.fft_combo.isVisible() and not w.rbw_combo.isVisible()
         assert w.rf_view.level_unit == 'dBFS'
+        # What the sweep is doing: at the foot of the tab, under RF gain.
+        outer = w._sweep_outer
+        assert outer.indexOf(w.sweep_info) == outer.indexOf(w.gain_box) + 1
         # Dragged or zoomed out (what the mouse calls), the view stops at
         # 0 Hz and 6 GHz - the waterfall's too, which pans both. The two
         # plots are lined up on screen (linked views go by that), and the
@@ -1063,17 +1068,30 @@ def folding(w):
     rds.set_folded(True)                         # Now playing and RadioText
     assert not w.lbl['radiotext'].isHidden() and not w.lbl['nowplaying'].isHidden()
     assert w.lbl['pi'].isHidden() and w.clear_btn.isHidden()
-    # RF gain is in the Sweep tab while sweeping, under the tabs elsewhere;
-    # Audio and Record are hidden in Sweep. The tabs are as tall as the
-    # page on show.
+    # RF gain is its box in the Sweep tab while sweeping, a row above the
+    # Radio card in Receive, and its box under the tabs elsewhere; Audio
+    # and Record are hidden in Sweep. The tabs are as tall as the page on
+    # show.
     w.tabs.setCurrentIndex(0)
     pump(0.3)
-    assert w.tabs.widget(0).isAncestorOf(w.gain_box)
+    assert w.tabs.widget(0).isAncestorOf(w.gain_box) and w.gain_box.isAncestorOf(w.gain_row)
+    assert w.gain_caption.isHidden() and not w.gain_box.isHidden()
     assert w.audio_box.isHidden() and w.record_box.isHidden()
     w.tabs.setCurrentIndex(1)
     pump(0.3)
-    assert w.gain_box.parent() is w.left_panel
+    page = w.tabs.widget(1)
+    assert page.isAncestorOf(w.gain_row) and w.gain_box.isHidden()
+    assert w._receive_box.indexOf(w.gain_row) == 0 and not w.gain_caption.isHidden()
+    radio_card = w._cards['radio']
+    assert w.gain_row.geometry().bottom() < radio_card.geometry().top(), \
+        (w.gain_row.geometry(), radio_card.geometry())
     assert not w.audio_box.isHidden() and not w.record_box.isHidden()
+    w.tabs.setCurrentIndex(fmapp.TAB_MODES.index('rtl433'))
+    pump(0.3)
+    assert w.gain_box.parent() is w.left_panel and w.gain_box.isAncestorOf(w.gain_row)
+    assert not w.gain_box.isHidden() and w.gain_caption.isHidden()
+    w.tabs.setCurrentIndex(1)
+    pump(0.3)
     page = w.tabs.widget(1)
     assert w.tabs.sizeHint().height() < page.sizeHint().height() + 80, \
         (w.tabs.sizeHint(), page.sizeHint())
@@ -1398,10 +1416,66 @@ def part9_rtl433():
         assert w.audio_box.isVisible()
         if proc is not None:
             assert proc.proc.poll() is not None, "rtl_433 still runs in Receive"
+        rx_rtl433_card(w)
         w.close()
     finally:
         fmapp.make_radio = original
     print("part 9 passed")
+
+
+def rx_rtl433_card(w):
+    """Receive's rtl_433 card: off, nothing extra runs; ticked, Receive
+    starts again with the band in slices beside the station, its level
+    shown as RDS shows the station's; moving the Center moves the slices
+    and what they report, with no restart; unticked, rtl_433 ends."""
+    e = w.engine
+    card = w.rtl_lbl
+    assert not w.rx_rtl_check.isChecked() and e.decoder is None
+    assert card['band'].text().startswith('Off'), card['band'].text()
+    w.rx_rtl_check.setChecked(True)
+    assert pump(3, lambda: e.running and e.mode == 'receive' and e.decoder is not None)
+    d = e.decoder
+    assert e.rx is not None and len(d.slices) == 6 and d.predecim == 1
+    assert not hasattr(d, 'rf_probe'), "Receive's spectrum is the receive chain's"
+    if fmapp.rtl433.find_program() is None:
+        assert 'not installed' in card['band'].text()
+    else:
+        assert len(d.procs) == 6 and e.decode_error is None, e.decode_error
+        assert '6 slices of 250 kHz' in card['band'].text(), card['band'].text()
+        assert 'middle' not in card['band'].text()
+        # Heard later than the samples flowing now: only this block counts.
+        later = time.time() + 100
+        d.slices[2][1].history.append((later - 0.5, 10.0, 1e-4, 0.05))
+        d.procs[2]._new.append((later, {
+            'model': 'Oregon-THGR122N', 'id': 77, 'channel': 1, 'freq': 433.9,
+            'temperature_C': 19.5, 'rssi': -3.0, 'snr': 20.0, 'noise': -23.0}))
+        assert pump(3, lambda: card['device'].text() == 'Oregon-THGR122N'), card['device'].text()
+        # rtl_433's -3 dB, of samples raised 20 dB: -23 dBFS, 57 over a -80 floor.
+        assert card['signal'].text().startswith('-23.0 dBFS in slice'), card['signal'].text()
+        assert '57 dB' in card['signal'].text() and 'above the floor' in card['signal'].text()
+        assert card['id'].text() == 'id 77, channel 1' and 'temperature_C 19.5' in card['readings'].text()
+        assert card['freq'].text() == '433.900 MHz' and card['devices'].text().startswith('1,')
+        assert w.devices_table.rowCount() == 1                # the rtl_433 tab's list too
+        assert w.devices_table.item(0, 6).text() == '-23.0 dBFS, SNR 57', \
+            w.devices_table.item(0, 6).text()
+        # The Center moves 200 kHz: the slices go with it, rtl_433 is not
+        # restarted, and what it says from then on is put right.
+        procs = [p.proc for p in d.procs]
+        low = d.low_hz
+        w.center_entry.setValue(e.lo_hz + 200e3, emit=True)
+        assert pump(2, lambda: abs(d.low_hz - low - 200e3) < 1), d.low_hz - low
+        assert e.decoder is d and all(p.poll() is None for p in procs)
+        d.procs[0]._new.append((later + 1, {'model': 'Moved', 'freq': 433.5}))
+        assert pump(3, lambda: card['device'].text() == 'Moved')
+        assert card['freq'].text() == '433.700 MHz', card['freq'].text()
+        w._clear_devices()
+        assert card['device'].text() == '-' and card['devices'].text() == 'None yet'
+    w.rx_rtl_check.setChecked(False)
+    assert pump(3, lambda: e.running and e.mode == 'receive' and e.decoder is None)
+    if fmapp.rtl433.find_program() is not None:
+        assert all(p.poll() is not None for p in procs), "rtl_433 still runs, unticked"
+    print("Receive's rtl_433 card: the band in slices beside the station, its level "
+          "in dBFS, the Center moving them without a restart")
 
 
 def iq_agc_steps():
