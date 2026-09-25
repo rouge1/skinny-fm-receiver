@@ -893,3 +893,27 @@ one frequency.
   915 presets never worked. Fixed, and slices that only met, and the
   single 250 kHz slice, were too narrow for it. Both widened.
 - [ ] A real sensor off air, on any radio (the band here has been quiet).
+
+## Round 17 (requested 2026-09-24)
+
+- [x] **The Recordings strip coloured by the spectrum's Ref level and
+  Range**, following them; its levels made the view's own dBFS.
+- [x] **RF gain in the Receive tab**, a row above the Radio box, not a box
+  of its own. Sweep and rtl_433 keep its box.
+- [x] **The sweep's status line** ("The BB60D's own sweep, RBW ...,
+  ms per sweep") at the foot of the Sweep tab, under RF gain, not among
+  the Sweep box's controls.
+- [x] **rtl_433 in Receive, as RDS**: an rtl_433 box under RDS, with a
+  chevron, decoding the band while the station plays (the rtl_433 tab's
+  Whole band, at most 12 slices; cut down first at wide IQ bandwidths).
+  Its rows mirror RDS's: Band, Signal, Samples, the device heard last,
+  Devices, Decode quality. Moving the Center moves the slices, no restart.
+- [x] **Signal as RDS's**: "-19.3 dBFS in slice, 58 dB above the floor",
+  rtl_433's level turned into the radio's dBFS; the rtl_433 tab's Level
+  column the same.
+- [x] Found on the way: the pipe judged the noise from its last 64 blocks,
+  60 ms of a channelizer's small ones, so a long burst was taken for the
+  noise and turned down 30 dB mid-burst (the rtl_433 tab too). Now a
+  second of fixed chunks. And rtl_433's frequency for an on-off burst
+  moves with its level, not where it is: the slice's centre is given.
+- [ ] rtl_433 in Receive off air, and its CPU on the BB60D at 10 and 40 MS/s.
