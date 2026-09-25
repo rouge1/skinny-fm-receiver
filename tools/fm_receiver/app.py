@@ -889,7 +889,7 @@ class MainWindow(Qt.QWidget):
         how it decodes, the device heard last, how strongly, and how well
         rtl_433 is doing. Every device heard is listed under the spectrum,
         in the rtl_433 devices tab beside the multiplex."""
-        box = Card("rtl_433")
+        box = Card("RTL433")
         form = self._form(box)
         big = Qt.QFont()
         big.setPixelSize(19)

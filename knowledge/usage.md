@@ -26,7 +26,7 @@ the hardware, and this repository is public.
 
 ### rtl_433, for decoding sensors in Receive
 
-Receive's **rtl_433** box needs [rtl_433](https://github.com/merbanan/rtl_433)
+Receive's **RTL433** box needs [rtl_433](https://github.com/merbanan/rtl_433)
 installed as a program; conda-forge has no package for it. On Linux,
 `sudo apt install rtl-433`; on a Mac, `brew install rtl_433`. The app finds
 it on the PATH. Without it the box says what to install.
@@ -317,7 +317,7 @@ it.
 In Receive the radio runs at a narrow IQ bandwidth, and the app demodulates
 one station. At the top is the **RF gain** row (with AGC), then four boxes:
 **Radio** sets the radio itself, **Tuner** picks the station inside the
-radio's band, **RDS** shows the station as decoded, and **rtl_433**
+radio's band, **RDS** shows the station as decoded, and **RTL433**
 decodes the sensors and remotes in the band, if you tick it.
 
 Each box has a **chevron** at the right of its title: click it, or the
@@ -327,7 +327,7 @@ still shows its **Center** and **Center on tuner**, and a folded **Tuner**
 box its tuner, each gliding to the middle of the box once it has folded
 (the Step knob fades out as the Tuner box folds, and back in as it opens);
 a folded **RDS** box shows its **Now playing** and **RadioText**, and a
-folded **rtl_433** box its **Device** and **Readings**. The app remembers
+folded **RTL433** box its **Device** and **Readings**. The app remembers
 which are folded.
 
 ```
@@ -344,7 +344,7 @@ which are folded.
 │ Station, Standard, Stereo / Snap to step,     │
 │ Clear RDS, Signal, Audio, then the RDS itself │
 └───────────────────────────────────────────────┘
-┌ rtl_433 ─────────────────────────────────────┐
+┌ RTL433 ──────────────────────────────────────┐
 │ □ Decode with rtl_433, Band, Width, Options,  │
 │ Log; then the device heard last               │
 └───────────────────────────────────────────────┘
@@ -453,7 +453,7 @@ The **MPX view** (bottom right) is the demodulated multiplex from 0 to
 
 ### rtl_433 in Receive
 
-The **rtl_433** box decodes the sensors and remotes in the band while you
+The **RTL433** box decodes the sensors and remotes in the band while you
 listen, and lists them in an **rtl_433 devices** tab beside the multiplex.
 See *rtl_433: sensors and remotes* below.
 
@@ -621,7 +621,7 @@ any station that was in the band. A playback can't sweep.
 
 ## rtl_433: sensors and remotes
 
-The **rtl_433** box in the Receive tab, under RDS, decodes the small
+The **RTL433** box in the Receive tab, under RDS, decodes the small
 transmitters of the ISM bands with
 [rtl_433](https://github.com/merbanan/rtl_433) while you listen: weather
 stations, thermometers, tyre pressure sensors, doorbells, remotes and
@@ -632,7 +632,7 @@ while it decodes. It needs rtl_433 installed (see *Setting up*). (Until
 2026-09-24 this was a tab of its own; Receive does it all now.)
 
 ```
-┌ rtl_433 ─────────────────────────────────────┐
+┌ RTL433 ──────────────────────────────────────┐
 │ □ Decode with rtl_433        [Clear devices]  │
 │      Band: [433.92 MHz - weather stations ▾]  │
 │     Width: [Whole band - 1.50 MHz, 6 slices ▾]│
