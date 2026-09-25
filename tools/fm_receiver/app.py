@@ -707,7 +707,6 @@ class MainWindow(Qt.QWidget):
         box.addWidget(self._build_rds_card())
         box.addWidget(self._build_rx_rtl433_card())
         box.addStretch(1)
-        self._receive_box = box                 # RF gain's row goes on top
         return page
 
     def _foldable(self, card, form, name, keep=(), also=(), center=False):
@@ -749,9 +748,6 @@ class MainWindow(Qt.QWidget):
         row.addWidget(self.recenter_btn)
         row.addStretch(1)
         form.addRow("Center:", row)
-        self.range_label = _wrapping(Qt.QLabel("-"))
-        self.range_label.setTextFormat(QtCore.Qt.RichText)
-        form.addRow("Tuner range:", self.range_label)
         self.rx_rate_combo = Qt.QComboBox()
         self.rx_rate_combo.setToolTip(
             "The radio's IQ bandwidth (sample rate) while receiving: how much of "
@@ -761,6 +757,11 @@ class MainWindow(Qt.QWidget):
                                                         self._label_rtl_width(),
                                                         self._restart_receive()))
         form.addRow("IQ bandwidth:", self.rx_rate_combo)
+        # RF gain's row comes here in Receive (:meth:`_place_side_boxes`).
+        self.rx_gain_slot = Qt.QWidget()
+        slot = Qt.QHBoxLayout(self.rx_gain_slot)
+        slot.setContentsMargins(0, 0, 0, 0)
+        form.addRow("RF gain:", self.rx_gain_slot)
         return self._foldable(box, form, 'radio', keep=(self.center_entry,), center=True)
 
     def _build_tuner_card(self):
@@ -791,8 +792,23 @@ class MainWindow(Qt.QWidget):
                               "... 107.9); 100 kHz is Europe's.")
         self.step_knob.valueChanged.connect(lambda _: self._snap_toggled(
             self.snap_check.isChecked()))
-        tune.addWidget(self.tuner, 0, QtCore.Qt.AlignVCenter)
-        tune.addWidget(self.roller, 0, QtCore.Qt.AlignVCenter)
+        # Right on top of the tuner, its range, as wide as the tuner and
+        # its roller; as much room under them keeps the tuner level with
+        # its label and the knob.
+        self.range_label = _wrapping(Qt.QLabel("-"))
+        self.range_label.setTextFormat(QtCore.Qt.RichText)
+        dial = Qt.QHBoxLayout()
+        dial.setSpacing(6)
+        dial.addWidget(self.tuner, 0, QtCore.Qt.AlignVCenter)
+        dial.addWidget(self.roller, 0, QtCore.Qt.AlignVCenter)
+        column = Qt.QVBoxLayout()
+        column.setSpacing(2)
+        column.addStretch(1)
+        column.addWidget(self.range_label)
+        column.addLayout(dial)
+        column.addSpacing(self.range_label.sizeHint().height() + column.spacing())
+        column.addStretch(1)
+        tune.addLayout(column)
         tune.addWidget(self.step_knob)
         tune.addStretch(1)
         form.addRow("Tuner:", tune)
@@ -820,8 +836,8 @@ class MainWindow(Qt.QWidget):
         chan.addWidget(self.chan_roller)
         chan.addStretch(1)
         form.addRow("Channel filter:", chan)
-        return self._foldable(box, form, 'tuner', keep=(self.tuner,), also=(self.step_knob,),
-                              center=True)
+        return self._foldable(box, form, 'tuner', keep=(self.tuner,),
+                              also=(self.step_knob,), center=True)
 
     def _build_rds_card(self):
         """The station as decoded: its name, how it is decoded, how well it
@@ -1102,18 +1118,14 @@ class MainWindow(Qt.QWidget):
 
     def _build_gain(self):
         """The RF gain row, in its own box: the box sits in Sweep's tab or
-        under the tabs, and in Receive the row leaves it for the top of the
-        tab, above the Radio card, with a caption of its own
-        (:meth:`_place_side_boxes`)."""
+        under the tabs, and in Receive the row leaves it for a row of the
+        Radio card (:meth:`_place_side_boxes`)."""
         box = Qt.QGroupBox("RF gain")
         self._gain_box_layout = Qt.QVBoxLayout(box)
         self.gain_row = Qt.QWidget()
         row = Qt.QHBoxLayout(self.gain_row)
         row.setContentsMargins(0, 0, 0, 0)
         self._gain_box_layout.addWidget(self.gain_row)
-        self.gain_caption = Qt.QLabel("RF gain:")
-        self.gain_caption.setVisible(False)
-        row.addWidget(self.gain_caption)
         # FM receiver: AGC - the BB60D's own in its sweep, and the window's
         # on the IQ stream of any radio that says when it overloads.
         self.agc_box = Qt.QCheckBox("AGC")
@@ -1485,18 +1497,15 @@ class MainWindow(Qt.QWidget):
         return TAB_MODES[max(0, self.tabs.currentIndex())]
 
     def _place_side_boxes(self):
-        """In Receive the RF gain is a row at the top of the tab, above the
-        Radio card. In Sweep its box goes into the tab, under its boxes, and
+        """In Receive the RF gain is a row of the Radio card. In Sweep its box goes into the tab, under its boxes, and
         Audio and Record are hidden: there is nothing to hear or record
         while the radio sweeps. Elsewhere all three sit under the tabs."""
         mode = self._tab_mode()
         receive = mode == 'receive'
         if receive:
-            # Above the Radio card, a row of the tab's own, not a box.
-            self._receive_box.insertWidget(0, self.gain_row)
+            self.rx_gain_slot.layout().addWidget(self.gain_row)
         else:
             self._gain_box_layout.addWidget(self.gain_row)
-        self.gain_caption.setVisible(receive)
         self.gain_box.setVisible(not receive)
         if mode == 'sweep':
             self._sweep_outer.insertWidget(self._sweep_outer.indexOf(self.sweep_info),
@@ -1615,14 +1624,18 @@ class MainWindow(Qt.QWidget):
             self.range_label.setText('-')
             return
         low, high = e.tuner_range()
-        text = f"{low / 1e6:.3f} - {high / 1e6:.3f} MHz"
+        text = f"\u2194 {low / 1e6:.3f} - {high / 1e6:.3f} MHz"
+        tip = ("Tuner range: the lowest and highest the tuner can go around the "
+               "radio's Center.")
         if self.radio is not None and self.radio.min_offset_hz:
-            text += f", clear of the centre by {self.radio.min_offset_hz / 1e3:.0f} kHz"
+            tip += (f"\nIt also keeps {self.radio.min_offset_hz / 1e3:.0f} kHz clear of "
+                    "the Center, where the radio's DC spike is.")
         if at_edge:
-            text = _coloured("The tuner stops at the edge of the band: move the "
-                             "Center to go further.", 'warn')
+            text = _coloured("\u2194 Band edge: move the Center", 'warn')
+            tip = "The tuner stops at the edge of the band: move the Center to go further."
             self._edge_timer.start(3000)
         self.range_label.setText(text)
+        self.range_label.setToolTip(tip)
 
     def _restart_receive(self):
         if self._mode == 'receive' and self.radio is not None:

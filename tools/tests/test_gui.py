@@ -158,7 +158,7 @@ def spectrum_mouse(w):
     view.span_knob.setValue(view.span_knob._max)
     _middle_drag(port, _plot_point(view, 98.8e6), _plot_point(view, 100.2e6))
     assert abs(e.station_hz - 99.375e6) < 1, e.station_hz
-    assert 'edge of the band' in w.range_label.text(), w.range_label.text()
+    assert 'Band edge' in w.range_label.text(), w.range_label.text()
     # The tuner's digits: the wheel over the 100 kHz digit.
     w.tune(98.7e6)
     t = w.tuner
@@ -497,7 +497,7 @@ def radio_card(w):
     w.center_entry.setValue(94.8e6, emit=True)
     w.tune(96.0e6)                                    # past the top edge
     assert abs(e.station_hz - 95.4e6) < 1 and abs(e.lo_hz - 94.8e6) < 1, e.station_hz
-    assert 'edge of the band' in w.range_label.text()
+    assert 'Band edge' in w.range_label.text()
     w.tune(94.83e6)                                   # into the DC keep-out, going down
     assert abs(e.station_hz - 94.7e6) < 1, e.station_hz
     view.peak_check.setChecked(True)
@@ -1048,7 +1048,7 @@ def time_axis(w):
 
 def folding(w):
     """The Receive cards fold on their chevron; the Radio card keeps its
-    Center in sight."""
+    Center in sight, the Tuner card its tuner and range."""
     radio, tuner, rds = (w._cards[k] for k in ('radio', 'tuner', 'rds'))
     w.tabs.setCurrentIndex(1)
     pump(0.3)
@@ -1057,34 +1057,37 @@ def folding(w):
     pump(0.1)
     assert radio.is_folded() and radio.maximumHeight() < full, (radio.maximumHeight(), full)
     pump(0.4)
-    assert w.range_label.isHidden() and w.rx_rate_combo.isHidden()
+    assert w.rx_gain_slot.isHidden() and w.rx_rate_combo.isHidden()
     assert radio.height() < full and radio.maximumHeight() > 10000, 'the limit is let go'
     assert not w.center_entry.isHidden() and not w.recenter_btn.isHidden()
-    tuner.set_folded(True)                       # just the tuner, no Step
+    tuner.set_folded(True)                       # the tuner and its range, no Step
     assert not w.tuner.isHidden() and not w.roller.isHidden()
+    assert not w.range_label.isHidden() and w.range_label.text().startswith('\u2194')
+    assert 'MHz' in w.range_label.text() and 'kHz' not in w.range_label.text()
+    gap = w.tuner.geometry().top() - w.range_label.geometry().bottom()
+    assert 0 < gap < 8, ('right on top of the tuner', gap)
     assert w.step_knob.isHidden() and w.chan_entry.isHidden()
     tuner.set_folded(False)
     assert not w.step_knob.isHidden() and not w.chan_entry.isHidden()
+    assert not w.range_label.isHidden()
     rds.set_folded(True)                         # Now playing and RadioText
     assert not w.lbl['radiotext'].isHidden() and not w.lbl['nowplaying'].isHidden()
     assert w.lbl['pi'].isHidden() and w.clear_btn.isHidden()
-    # RF gain is its box in the Sweep tab while sweeping, a row above the
+    # RF gain is its box in the Sweep tab while sweeping, a row of the
     # Radio card in Receive, and its box under the tabs elsewhere; Audio
     # and Record are hidden in Sweep. The tabs are as tall as the page on
     # show.
     w.tabs.setCurrentIndex(0)
     pump(0.3)
     assert w.tabs.widget(0).isAncestorOf(w.gain_box) and w.gain_box.isAncestorOf(w.gain_row)
-    assert w.gain_caption.isHidden() and not w.gain_box.isHidden()
+    assert not w.gain_box.isHidden()
     assert w.audio_box.isHidden() and w.record_box.isHidden()
     w.tabs.setCurrentIndex(1)
     pump(0.3)
     page = w.tabs.widget(1)
     assert page.isAncestorOf(w.gain_row) and w.gain_box.isHidden()
-    assert w._receive_box.indexOf(w.gain_row) == 0 and not w.gain_caption.isHidden()
-    radio_card = w._cards['radio']
-    assert w.gain_row.geometry().bottom() < radio_card.geometry().top(), \
-        (w.gain_row.geometry(), radio_card.geometry())
+    assert w.rx_gain_slot.isAncestorOf(w.gain_row)     # folded away with Radio
+    assert radio._form.labelForField(w.rx_gain_slot).text() == "RF gain:"
     assert not w.audio_box.isHidden() and not w.record_box.isHidden()
     page = w.tabs.widget(1)
     assert w.tabs.sizeHint().height() < page.sizeHint().height() + 80, \

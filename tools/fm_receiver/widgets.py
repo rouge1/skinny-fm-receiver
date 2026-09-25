@@ -1132,10 +1132,11 @@ class Card(Qt.QGroupBox):
 
     def _center_x(self):
         """The label column's width that puts the kept row, label and
-        field, in the middle of the card."""
+        field, in the middle of the card: the row of the first ``keep``
+        widget, when more than one row is kept."""
         form = self._form
         for label, field in form._rows:
-            if label is None or not any(w in self._keep for w in _widgets_in(field)):
+            if label is None or self._keep[0] not in _widgets_in(field):
                 continue
             field_w = (field.sizeHint().width() if isinstance(field, Qt.QLayout)
                        else field.sizeHint().width())
