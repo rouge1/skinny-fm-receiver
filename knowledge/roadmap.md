@@ -876,4 +876,6 @@ all, which the window was ready to call a lost radio.
   40% in 3 s on 99.1 MHz. It showed two refinements, both done: a rise that
   overloads is undone rather than stepped under (it had gone to 35%), and
   light clipping (under 10%) takes half a step.
+- [x] The slider follows AGC (asked 2026-09-24); the limit is where it was
+  last put by hand, saved apart. Off air on the BB60D: slider at 40%.
 - [ ] Off air on an RTL-SDR, with its gap measured.

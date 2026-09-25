@@ -187,24 +187,24 @@ Useful options (`./fm-receiver --help` lists them all):
   recommends setting it. Turn the knob by hand to hold a higher level; AGC
   takes over again when the signals rise past it or fall 10 dB below.
 - **AGC in Receive and rtl_433** (BB60D, HackRF, RTL-SDR, USRP): the app
-  moves the gain itself. When the radio overloads (a BB60D says so; on the
-  others, over 1% of the samples clip) it turns the gain down 10% (5% if
-  under 10% clip), again every couple of seconds while that lasts, and
-  after a minute with no overload and under 0.3% clipped it tries 5% back
-  up, never above the slider. In between it leaves the gain alone. A try
-  that brings the overload back is undone, and the next waits twice as
-  long. On a HackRF or RTL-SDR the
-  box is greyed in Sweep, which has no AGC for them, and keeps its tick for
-  Receive. The slider is the most AGC will
-  use; the label beside it (*AGC 40%*) is where it is now. **Each change
-  can leave a gap in the samples** (about 0.1 s on a BB60D; none on a
-  HackRF, though each try at more gain can clip for a moment), a click in the audio or a
-  burst rtl_433 may miss, so **once it has settled, untick AGC**. The gain
-  stays where AGC put it, and the slider moves there. If a step up brings
-  the overload back, it waits twice as long before trying again (up to
-  16 minutes). Worth knowing: **an overloaded BB60D sends no samples at
-  all**, so the spectrum freezes and the sound stops. The status line says
-  *Input overloaded*, not that the radio is lost.
+  moves the gain itself, and **the slider moves with it**. When the radio
+  overloads (a BB60D says so; on the others, over 1% of the samples clip)
+  it turns the gain down 10% (5% if under 10% clip), again every couple of
+  seconds while that lasts. After a minute with no overload and under 0.3%
+  clipped it tries 5% back up, but never above where you last put the
+  slider yourself (hover over the slider to see that limit). Moving the
+  slider by hand sets a new limit, and the gain. A try that brings the
+  overload back is undone, and the next waits twice as long (up to 16
+  minutes). **Each change can leave a gap in the samples** (about 0.1 s on
+  a BB60D; none on a HackRF, though each try at more gain can clip for a
+  moment), a click in the audio or a burst rtl_433 may miss, so **once it
+  has settled, untick AGC**: the gain stays where AGC put it. On a HackRF
+  or RTL-SDR the box is greyed in Sweep, which has no AGC for them, and
+  keeps its tick for Receive. The gain and the limit are both remembered,
+  so the next start begins at the settled gain. Worth knowing: **an
+  overloaded BB60D sends no samples at all**, so the spectrum freezes and
+  the sound stops; the status line says *Input overloaded*, not that the
+  radio is lost.
 - On a BB60D, hover over the **status line** for its temperature, USB
   voltage and current. Below 4.4 V the status line warns: measurements may
   be off, so check the cable and the USB port.
