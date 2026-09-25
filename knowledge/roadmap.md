@@ -879,3 +879,17 @@ all, which the window was ready to call a lost radio.
 - [x] The slider follows AGC (asked 2026-09-24); the limit is where it was
   last put by hand, saved apart. Off air on the BB60D: slider at 40%.
 - [ ] Off air on an RTL-SDR, with its gap measured.
+
+## Round 16: rtl_433 on the whole band (requested 2026-09-24)
+
+"Anything in the band gets decoded", rather than 250 kHz or 1 MHz around
+one frequency.
+
+- [x] **The whole band, in overlapping slices**, one rtl_433 each, the
+  default Width; the same message from two slices kept once. Off air on a
+  HackRF: 12 slices, 3 MHz, 79% of a core for the app.
+- [x] Found on the way, with a real Bresser 5-in-1 recording: rtl_433 was
+  given `-s` before `-f`, which over 800 MHz decoded nothing - the 868 and
+  915 presets never worked. Fixed, and slices that only met, and the
+  single 250 kHz slice, were too narrow for it. Both widened.
+- [ ] A real sensor off air, on any radio (the band here has been quiet).

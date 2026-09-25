@@ -622,16 +622,26 @@ decodes. It needs rtl_433 installed (see *Setting up*).
   waterfall moves it there. Changing either restarts rtl_433, in about a
   second.
 - **Width** is how much of the band rtl_433 gets, the orange band on the
-  spectrum. 250 kHz is rtl_433's own default. 1 MHz suits the wider FSK
-  sensors of 868 and 915 MHz and transmitters well off their channel. The
-  radio's centre (the dashed line) is put below the band, so a HackRF's DC
-  spike stays outside it.
+  spectrum.
+  - **Whole band** (the default): everything the radio takes in around
+    the Frequency, so anything anywhere on the spectrum is decoded. The
+    choice says how much: 1.92 MHz on an RTL-SDR (the whole 433 MHz ISM
+    band), 3 MHz on a HackRF, 1.5 MHz on a BB60D. It is cut into slices
+    250 kHz apart, one rtl_433 each, overlapping, so a sensor on a boundary
+    between two is still heard whole; what two slices both hear is listed
+    once. About 80% of a core for the app and 14% for the twelve rtl_433s,
+    on a HackRF.
+  - **250 kHz**: one rtl_433, rtl_433's own default width. **1 MHz**: one
+    rtl_433, for the wider FSK sensors of 868 and 915 MHz. The radio's
+    centre (the dashed line) is put below the band, so a HackRF's DC spike
+    stays outside it.
 - **Options** are more of rtl_433's command-line options: `-R 40` to run
   only that decoder, `-R -129` to leave one out, `-X "..."` for a decoder of
   your own. Hover over the box for examples. `rtl_433 -R help` lists the
   decoders.
 - **The list under the spectrum** has one row per device: when it was last
-  heard, its model, ID and channel, what it sent (temperature, humidity,
+  heard, its model, ID and channel, about where (rtl_433's estimate: for an
+  on-off device only which slice heard it, to about 200 kHz), what it sent (temperature, humidity,
   pressure, button codes...), its level and SNR, and how many messages it
   sent. Newest first. Click a row to see everything it last sent in the
   **Device** box. Most devices repeat each message several times, so the
