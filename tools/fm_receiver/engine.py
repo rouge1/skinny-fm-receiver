@@ -319,20 +319,27 @@ class Engine(gr.top_block):
     # ---------------------------------------------------------- rtl_433
     def start_decode(self, freq_hz, width_hz, program, extra_args=()):
         """Pass ``width_hz`` around ``freq_hz`` to rtl_433 (``program``, its
-        path; None for the spectrum alone). Raises ValueError for a
+        path; None for the spectrum alone), or with ``rtl433.WHOLE_BAND``
+        the whole band around it, in slices. Raises ValueError for a
         frequency the radio cannot reach, with the flowgraph stopped."""
         radio = self.radio
         self.halt(hold=True)
         self._clear()
-        rate, lo, offset = rtl433.plan(radio, float(freq_hz), float(width_hz))
+        band = None
+        if width_hz == rtl433.WHOLE_BAND:
+            rate, lo, m, w, centres = rtl433.band_plan(radio, float(freq_hz))
+            offset, band = 0.0, (m, w, centres)
+        else:
+            rate, lo, offset = rtl433.plan(radio, float(freq_hz), float(width_hz))
         radio.ensure_open()
         radio.set_rate(rate)
         self.rate = float(radio.rate or rate)
         radio.set_center(lo)
         self.lo_hz, self.offset_hz = lo, offset
         self.station_hz = lo + offset
-        self.decoder = rtl433.DecodeChain(self, radio.block, self.rate, offset, width_hz,
-                                          self.station_hz, program, extra_args)
+        self.decoder = rtl433.DecodeChain(
+            self, radio.block, self.rate, lo, program, extra_args, offset_hz=offset,
+            width_hz=width_hz, band=band, dc_notch_hz=getattr(radio, 'dc_notch_hz', 0.0))
         self.connect(radio.block, self._clock)
         self.mode = 'rtl433'
         try:

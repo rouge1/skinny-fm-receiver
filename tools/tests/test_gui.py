@@ -1323,8 +1323,8 @@ def part8_reopen():
 
 
 def part9_rtl433():
-    """The rtl_433 tab: the radio's band around 433.92 MHz with the part
-    passed to rtl_433 marked, and its devices listed under the spectrum
+    """The rtl_433 tab: the radio's band around 433.92 MHz, all of it passed
+    to rtl_433 in slices (the default) or one 250 kHz part, marked, and its devices listed under the spectrum
     where the multiplex was; nothing to hear or record. A preset, a
     double-click on the spectrum and the digits each move it; Receive's
     tuner does not. A message rtl_433 sends is listed, and picked, shown
@@ -1336,6 +1336,22 @@ def part9_rtl433():
         w = make_window(['--radio', 'hackrf', '--mode', 'rtl433', '--freq', '89.3'])
         e = w.engine
         assert w._mode == e.mode == 'rtl433' and e.running, w.status.text()
+        # First, the whole band (the default): 2 MS/s, 75% usable, in six
+        # 250 kHz slices either side of the LO, one rtl_433 each.
+        d = e.decoder
+        assert w._rtl_width() == fmapp.rtl433.WHOLE_BAND and e.lo_hz == 433.92e6
+        assert len(d.slices) == 6 and len(d.procs) in (0, 6), (len(d.slices), len(d.procs))
+        assert w.rf_view._band_hz == (433.17e6, 434.67e6), w.rf_view._band_hz
+        assert '6 slices' in w.status.text() and '433.17 MHz to 434.67 MHz' in w.status.text(), \
+            w.status.text()
+        assert w.rtl_width_combo.currentText() == 'Whole band - 1.50 MHz, 6 slices', \
+            w.rtl_width_combo.currentText()
+        assert 'devices' in w.rtl_info.text() and '6 slices' in w.rtl_info.text()
+        procs = [p.proc for p in d.procs]
+        # Then one slice, 250 kHz, clear of the LO.
+        w.rtl_width_combo.setCurrentIndex(w.rtl_width_combo.findData(250e3))
+        w._restart_rtl433()
+        assert all(p.poll() is not None for p in procs), "a slice's rtl_433 still runs"
         assert abs(e.station_hz - 433.92e6) < 1 and e.lo_hz < e.station_hz - 125e3
         assert 'rtl_433 on 433.92 MHz' in w.status.text(), w.status.text()
         assert w.bottom.currentWidget() is w.devices_table and w.bottom.isVisible()
@@ -1358,12 +1374,12 @@ def part9_rtl433():
         # A message, as rtl_433 would send it.
         if e.decoder.proc is not None:
             e.decoder.proc._new.append((time.time(), {
-                'model': 'Acurite-Tower', 'id': 1234, 'channel': 'A',
+                'model': 'Acurite-Tower', 'id': 1234, 'channel': 'A', 'freq': 868.4612,
                 'temperature_C': 21.5, 'humidity': 40, 'rssi': -20.2, 'snr': 15.0}))
             assert pump(2, lambda: w.devices_table.rowCount() == 1)
             cells = [w.devices_table.item(0, c).text() for c in range(len(fmapp.DEVICE_COLUMNS))]
-            assert cells[1:4] == ['Acurite-Tower', '1234', 'A'], cells
-            assert 'temperature_C 21.5' in cells[4] and cells[5].startswith('-20.2 dB'), cells
+            assert cells[1:5] == ['Acurite-Tower', '1234', 'A', '868.461'], cells
+            assert 'temperature_C 21.5' in cells[5] and cells[6].startswith('-20.2 dB'), cells
             w.devices_table.setCurrentCell(0, 0)
             assert 'humidity: 40' in w.rtl_device.text(), w.rtl_device.text()
             w._clear_devices()

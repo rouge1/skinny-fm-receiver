@@ -123,7 +123,7 @@ TAB_MODES = ('sweep', 'receive', 'recordings', 'rtl433')
 #: The saved view (dials, span) of the RF spectrum in each mode that has one.
 VIEW_KEYS = {'receive': 'view_receive', 'playback': 'view_playback', 'rtl433': 'view_rtl433'}
 #: The rtl_433 tab's list of devices, left to right.
-DEVICE_COLUMNS = ("Heard", "Device", "ID", "Ch", "Readings", "Level", "Msgs")
+DEVICE_COLUMNS = ("Heard", "Device", "ID", "Ch", "MHz", "Readings", "Level", "Msgs")
 
 DEFAULTS = {
     'radio': None, 'usrp_address': '', 'iq_file': '', 'mode': 'receive',
@@ -149,7 +149,8 @@ DEFAULTS = {
     'view_playback': {'span_hz': 1e12, 'ref_db': -10, 'range_db': 110, 'avg': 4},
     'view_audio': {'span_hz': 16e3, 'ref_db': -10, 'range_db': 90, 'avg': 2},
     'play_loop': False,
-    'rtl433_mhz': rtl433.DEFAULT_HZ / 1e6, 'rtl433_width_khz': rtl433.DEFAULT_WIDTH / 1e3,
+    # The whole band, in slices (rtl433.WHOLE_BAND), unless a width is picked.
+    'rtl433_mhz': rtl433.DEFAULT_HZ / 1e6, 'rtl433_width_khz': rtl433.WHOLE_BAND,
     'rtl433_log': False, 'rtl433_args': '',
     # The band the radio streams for rtl_433, all of it, peaks held a while.
     'view_rtl433': {'span_hz': 1e12, 'ref_db': -10, 'range_db': 110, 'avg': 1},
@@ -981,9 +982,10 @@ class MainWindow(Qt.QWidget):
                                    value_hz=float(self.cfg['rtl433_mhz']) * 1e6,
                                    pixel_size=20, default_place=3, caption='rtl_433 frequency')
         self.rtl_freq.setToolTip(
-            "Where rtl_433 listens: the middle of the band passed to it. Hover a\n"
-            "digit and roll the wheel, or type a frequency; double-click a burst\n"
-            "on the spectrum or waterfall to move here.")
+            "Where rtl_433 listens: the middle of the band passed to it (with\n"
+            "the Whole band, the radio's centre). Hover a digit and roll the\n"
+            "wheel, or type a frequency; double-click a burst on the spectrum\n"
+            "or waterfall to move here.")
         self.rtl_freq.valueChanged.connect(lambda _hz: (self._select_rtl_preset(),
                                                         self._rtl_timer.start()))
         form.addRow("Frequency:", self.rtl_freq)
@@ -993,15 +995,21 @@ class MainWindow(Qt.QWidget):
         self._rtl_timer.setInterval(500)
         self._rtl_timer.timeout.connect(self._restart_rtl433)
         self.rtl_width_combo = Qt.QComboBox()
+        # Its label says how wide once a radio is open (_label_whole_band).
+        self.rtl_width_combo.addItem("Whole band", rtl433.WHOLE_BAND)
         for hz in rtl433.WIDTHS:
             label = f"{hz / 1e3:g} kHz" if hz < 1e6 else f"{hz / 1e6:g} MHz"
             self.rtl_width_combo.addItem(label, float(hz))
         saved = float(self.cfg['rtl433_width_khz']) * 1e3
         self.rtl_width_combo.setCurrentIndex(max(0, self.rtl_width_combo.findData(saved)))
         self.rtl_width_combo.setToolTip(
-            "How much of the band rtl_433 is given. 250 kHz is its own default,\n"
-            "what its decoders are made on; 1 MHz holds the wider FSK sensors of\n"
-            "868 and 915 MHz, and a transmitter further off its channel.")
+            "How much of the band rtl_433 is given.\n"
+            "Whole band: all the radio takes in around the Frequency, cut into\n"
+            f"slices of about {rtl433.SLICE / 1e3:g} kHz, one rtl_433 each (at most "
+            f"{rtl433.MAX_SLICES}), so\nanything anywhere on the spectrum is "
+            "decoded.\n"
+            "250 kHz: one rtl_433, its own default width. 1 MHz: one rtl_433 for\n"
+            "the wider FSK sensors of 868 and 915 MHz.")
         self.rtl_width_combo.activated.connect(lambda _: self._restart_rtl433())
         form.addRow("Width:", self.rtl_width_combo)
         self.rtl_args = Qt.QLineEdit(self.cfg['rtl433_args'])
@@ -1059,9 +1067,11 @@ class MainWindow(Qt.QWidget):
         header = table.horizontalHeader()
         header.setSectionResizeMode(Qt.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(DEVICE_COLUMNS.index("Readings"), Qt.QHeaderView.Stretch)
-        table.setToolTip("Each device rtl_433 has decoded: when it was last heard, what "
-                         "it said, how strong,\nand how many messages. Click one for "
-                         "all it sent, in the rtl_433 tab.")
+        table.setToolTip("Each device rtl_433 has decoded: when it was last heard, where "
+                         "(MHz: rtl_433's estimate;\nfor an on-off device, the middle of "
+                         "the slice that heard it, to about 200 kHz), what it said,\nhow "
+                         "strong, and how many messages. Click one for all it sent, in "
+                         "the rtl_433 tab.")
         table.currentCellChanged.connect(lambda *_: self._show_device())
         self.devices_table = table
         return table
@@ -1343,6 +1353,7 @@ class MainWindow(Qt.QWidget):
         low, high = radio.freq_range_hz
         self._tuner_range(low, high)
         self.center_entry.set_range(low, high)
+        self._label_whole_band()
         self._show_sweep_rows(radio.native_sweep)
         self.rt_btn.setVisible(radio.native_sweep and radio.has_realtime
                                and self.args.realtime)
@@ -1572,8 +1583,13 @@ class MainWindow(Qt.QWidget):
             return (f"{self.radio.describe()} - "
                     + what.format(_freq_text(plan.start_hz), _freq_text(plan.stop_hz)))
         if e.mode == 'rtl433' and e.decoder is not None:
-            return (f"{self.radio.describe()} - rtl_433 on {_freq_text(e.station_hz)}, "
-                    f"{rate_label(e.decoder.out_rate)} of {rate_label(e.rate)}")
+            d = e.decoder
+            if len(d.slices) > 1:
+                return (f"{self.radio.describe()} - rtl_433 on {_freq_text(d.low_hz)} to "
+                        f"{_freq_text(d.high_hz)}, {len(d.slices)} slices, at "
+                        f"{rate_label(e.rate)}")
+            return (f"{self.radio.describe()} - rtl_433 on {_freq_text(d.freq_hz)}, "
+                    f"{rate_label(d.out_rate)} of {rate_label(e.rate)}")
         what = 'Sweeping' if e.mode == 'sweep' else 'Receiving'
         return f"{self.radio.describe()} - {what} at {rate_label(e.rate)}"
 
@@ -1791,8 +1807,21 @@ class MainWindow(Qt.QWidget):
 
     # ---- rtl_433
     def _rtl_width(self):
+        """The Width in Hz, or rtl433.WHOLE_BAND (0)."""
         data = self.rtl_width_combo.currentData()
-        return float(data) if data else rtl433.DEFAULT_WIDTH
+        return float(data) if data is not None else rtl433.WHOLE_BAND
+
+    def _label_whole_band(self):
+        """'Whole band - 1.92 MHz, 8 slices' for the radio open."""
+        index = self.rtl_width_combo.findData(rtl433.WHOLE_BAND)
+        text = "Whole band"
+        if self.radio is not None:
+            try:
+                _, _, _, w, centres = rtl433.band_plan(self.radio, self.rtl_freq.value())
+                text += f" - {len(centres) * w / 1e6:.2f} MHz, {len(centres)} slices"
+            except ValueError:
+                pass
+        self.rtl_width_combo.setItemText(index, text)
 
     def _select_rtl_preset(self):
         hz = self.rtl_freq.value()
@@ -1837,10 +1866,10 @@ class MainWindow(Qt.QWidget):
         self.engine.start_decode(self.rtl_freq.value(), self._rtl_width(), program, extra)
         e = self.engine
         view.set_marker_auto(False)
-        view.set_extent(e.lo_hz - e.rate / 2, e.lo_hz + e.rate / 2, center_hz=e.station_hz)
-        half = e.decoder.width / 2
-        view.set_band(e.station_hz - half, e.station_hz + half)
-        view.set_marker(e.station_hz)
+        d = e.decoder
+        view.set_extent(e.lo_hz - e.rate / 2, e.lo_hz + e.rate / 2, center_hz=d.freq_hz)
+        view.set_band(d.low_hz, d.high_hz)
+        view.set_marker(d.freq_hz)
         view.set_center_line(e.lo_hz)
         view.set_tuner_range(None, None)
         view.clear_peak()
@@ -1869,13 +1898,17 @@ class MainWindow(Qt.QWidget):
             self.rtl_info.setText(_coloured(problem, 'bad'))
             return
         version = rtl433.program_version(d.proc.path)
-        text = (f"rtl_433 {version} on {rate_label(d.out_rate)} around "
-                f"{d.freq_hz / 1e6:.3f} MHz: {d.proc.decoded} messages, "
+        span = f"{d.low_hz / 1e6:.3f} to {d.high_hz / 1e6:.3f} MHz"
+        if len(d.slices) > 1:
+            where = f"{len(d.slices)} slices of {d.width / 1e3:g} kHz, {span}"
+        else:
+            where = f"{rate_label(d.out_rate)}, {span}"
+        text = (f"rtl_433 {version} on {where}: {d.decoded} messages, "
                 f"{len(self._devices)} devices")
-        if d.pipe.gain and d.pipe.gain > 1.01:
-            text += f"<br>Samples raised {20 * math.log10(d.pipe.gain):.0f} dB to rtl_433's level"
-        if d.pipe.dropped:
-            text += "<br>" + _coloured(f"{d.pipe.dropped} samples dropped: rtl_433 "
+        if d.gain and d.gain > 1.01:
+            text += f"<br>Samples raised {20 * math.log10(d.gain):.0f} dB to rtl_433's level"
+        if d.dropped:
+            text += "<br>" + _coloured(f"{d.dropped} samples dropped: rtl_433 "
                                        "fell behind", 'warn')
         self.rtl_info.setText(text)
 
@@ -1893,8 +1926,8 @@ class MainWindow(Qt.QWidget):
         elif not on:
             self._rtl_log = None
         if d is not None and d.proc is not None:
-            d.proc.set_log(self._rtl_log)
-            error = d.proc.log_error
+            d.set_log(self._rtl_log)
+            error = d.log_error
         else:
             error = None
         if error:
@@ -1918,8 +1951,8 @@ class MainWindow(Qt.QWidget):
             self._devices_dirty = False
             self._fill_devices()
         self._show_rtl433_info()
-        if d.proc is not None and d.proc.log_error:
-            self.rtl_log_label.setText(_coloured(f"Could not log: {d.proc.log_error}", 'bad'))
+        if d.log_error:
+            self.rtl_log_label.setText(_coloured(f"Could not log: {d.log_error}", 'bad'))
 
     def _fill_devices(self):
         table = self.devices_table
@@ -1935,8 +1968,11 @@ class MainWindow(Qt.QWidget):
                 level = f"{msg['rssi']:.1f} dB"
                 if isinstance(msg.get('snr'), (int, float)):
                     level += f", SNR {msg['snr']:.0f}"
+            freq = msg.get('freq')
+            freq = f"{freq:.3f}" if isinstance(freq, (int, float)) else ''
             cells = (time.strftime('%H:%M:%S', time.localtime(seen['last'])), key[0],
-                     key[1], key[2], rtl433.readings_text(msg), level, str(seen['count']))
+                     key[1], key[2], freq, rtl433.readings_text(msg), level,
+                     str(seen['count']))
             for c, text in enumerate(cells):
                 item = Qt.QTableWidgetItem(text)
                 if c == 0:

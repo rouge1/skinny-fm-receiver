@@ -12,7 +12,16 @@ an IQ recording, played through the real :class:`Engine` into rtl_433.
   decoder given for it (``-X``), with its level; logged as JSON lines -
   recorded at the BB60D's level, 60 dB under an RTL-SDR's, which rtl_433
   given the samples as they are does not decode;
-- closing the chain ends rtl_433.
+- the whole band, in slices: each radio's plan, and two remotes in one
+  recording both decoded, the one on a slice boundary heard by both slices
+  and kept once;
+- closing the chain ends rtl_433;
+- rtl_433 is given the frequency before the rate (after it, over 800 MHz,
+  the rate goes back to rtl_433's own and nothing decodes);
+- with ``FMRX_RTL433_TESTS`` pointing at a checkout of rtl_433's own test
+  recordings (github.com/merbanan/rtl_433_tests), a real FSK sensor -
+  a Bresser 5-in-1, 150 kHz wide - decoded in the whole band wherever it
+  sits: mid-slice, on a boundary, off a centre.
 
 Needs rtl_433 on the PATH; says so and passes if it is not.
 
@@ -78,24 +87,43 @@ def plans():
     # The BB60D has no spike: just the half width, at its lowest usable rate.
     rate, lo, offset = rtl433.plan(BB60(), 868.3e6, 250e3)
     assert offset == 125e3 and rate == min(BB60.usable_receive_rates()), (rate, offset)
+    # The whole band: the LO on the frequency, on a boundary between slices.
+    rate, lo, m, w, centres = rtl433.band_plan(RTLSDR(), FREQ)
+    assert (rate, m, w, lo) == (2.4e6, 10, 240e3, FREQ), (rate, m, w, lo)
+    assert len(centres) == 8 and centres[3] == -120e3 and centres[4] == 120e3, centres
+    assert len(centres) * w >= 1.74e6                     # the 433 ISM band, all of it
+    rate, lo, m, w, centres = rtl433.band_plan(HackRF(), FREQ)
+    assert (rate, len(centres)) == (4e6, 12), (rate, len(centres))
+    rate, lo, m, w, centres = rtl433.band_plan(BB60(), FREQ)
+    assert len(centres) <= rtl433.MAX_SLICES and rate / m == w
+    try:
+        rtl433.band_plan(RTLSDR(), 2400e6)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("2.4 GHz accepted for an RTL-SDR's whole band")
     try:
         rtl433.plan(RTLSDR(), 2400e6, 250e3)
     except ValueError:
         pass
     else:
         raise AssertionError("2.4 GHz accepted for an RTL-SDR")
-    print("plan: LO clear of the band for each radio; out of range refused")
+    args = rtl433.command('rtl_433', 250e3, 868.3e6)
+    assert args.index('-f') < args.index('-s'), args
+    print("plan: LO clear of the band for each radio; the whole band 1.92 MHz in 8 "
+          "slices on an RTL-SDR, 3 MHz in 12 on a HackRF; out of range refused")
 
 
 def pipe():
-    sink = rtl433.pipe_sink()
+    sink = rtl433.Pipe()
     r, w = os.pipe()
     os.set_blocking(w, False)
     sink.set_fd(w)
-    block = (np.arange(8191) + 1j).astype(np.complex64)   # odd: not a page
+    # Odd, not a page; every sample its own phase, under full scale.
+    block = (0.5 * np.exp(2j * np.pi * np.arange(8191) / 8191)).astype(np.complex64)
     t0 = time.monotonic()
     for _ in range(200):
-        assert sink.work([block], []) == len(block)
+        sink.feed(block)
     assert time.monotonic() - t0 < 2.0, "the pipe blocked"
     assert sink.dropped > 0 and sink.dropped % len(block) == 0, sink.dropped
     # rtl_433 catches up: what arrives is every block sent, whole.
@@ -116,13 +144,13 @@ def pipe():
     except BlockingIOError:
         pass
     assert len(got) == sink.sent * 8, (len(got), sink.sent * 8)
-    # Levelled (all limited to full scale here), but each sample's phase
-    # kept: a block out of step would show as the wrong phases.
+    # Levelled, but each sample's phase kept: a block out of step would
+    # show as the wrong phases.
     x = np.frombuffer(bytes(got), np.complex64).reshape(-1, len(block))
     assert np.allclose(np.angle(x), np.angle(block), atol=1e-5), "out of step"
     os.close(r)
-    sink.work([block], [])
-    sink.work([block], [])
+    sink.feed(block)
+    sink.feed(block)
     assert sink.broken, "a closed reader not noticed"
     os.close(w)
     print(f"pipe: {sink.sent} samples sent, {sink.dropped} dropped in whole blocks, "
@@ -132,16 +160,17 @@ def pipe():
 def levels():
     rng = np.random.default_rng(3)
     for sigma in (1e-5, 1e-3):                   # a BB60D's noise, then a HackRF's
-        sink = rtl433.pipe_sink()
+        sink = rtl433.Pipe()
         for _ in range(40):
             x = (sigma * (rng.standard_normal(4096) + 1j * rng.standard_normal(4096))
                  ).astype(np.complex64)
             y = sink.level(x)
         rms = np.sqrt(np.mean(np.abs(y) ** 2))
         assert abs(20 * np.log10(rms / rtl433.NOISE_LEVEL)) < 1.0, (sigma, rms)
-    burst = np.full(4096, 0.5, np.complex64)     # far over the noise: held at full scale
-    assert np.abs(sink.level(burst)).max() <= 0.99 + 1e-6
-    loud = rtl433.pipe_sink()
+    burst = np.full(4096, 0.5 + 0.5j, np.complex64)   # far over the noise: at full scale
+    y = sink.level(burst).view(np.float32)
+    assert np.abs(y).max() <= 1.0 and y.min() >= -1.0
+    loud = rtl433.Pipe()
     x = (0.3 * (rng.standard_normal(4096) + 1j * rng.standard_normal(4096))).astype(np.complex64)
     loud.level(x)
     assert loud.gain == 1.0, loud.gain            # never turned down
@@ -163,7 +192,7 @@ def decode(program, folder):
         chain = engine.decoder
         assert abs(engine.station_hz - FREQ) < 1 and chain.out_rate == 250e3
         log = os.path.join(folder, 'decoded.jsonl')
-        chain.proc.set_log(log)
+        chain.set_log(log)
         got = []
         deadline = time.monotonic() + 8.0
         while time.monotonic() < deadline and not got:
@@ -176,7 +205,7 @@ def decode(program, folder):
         assert chain.problem() is None
         assert rtl433.device_key(msg)[0] == 'fmrx_test'
         proc = chain.proc.proc
-        gain = chain.pipe.gain
+        gain = chain.gain
     finally:
         engine.close()
     assert proc.poll() is not None, "rtl_433 still running after close"
@@ -185,6 +214,101 @@ def decode(program, folder):
     print(f"decode: {BITS} at the BB60D's level read back by rtl_433 "
           f"{rtl433.program_version(program)} (SNR {msg['snr']:.0f} dB, gain "
           f"{20 * np.log10(gain):.0f} dB), logged; rtl_433 ended on close")
+
+
+def decode_band(program, folder):
+    """Two remotes, one after the other: A 300 kHz over the centre, in the
+    middle of a slice; B at 250 kHz, on the boundary between two."""
+    a_hz, b_hz, b_bits = FREQ, CENTER + 250e3, 'c3a55a'
+    burst_a = ook_burst(RATE, a_hz - CENTER, BITS, amplitude=0.1)
+    burst_b = ook_burst(RATE, b_hz - CENTER, b_bits, amplitude=0.1, seed=4)
+    base = os.path.join(folder, 'two')
+    np.concatenate([burst_a, burst_b]).tofile(base + '.cfile')
+    with open(base + '.json', 'w') as fh:
+        json.dump({'rate': RATE, 'center_hz': CENTER, 'offset_hz': 0.0,
+                   'station_hz': CENTER}, fh)
+    loop_s = 2 * len(burst_a) / RATE
+    engine = Engine(want_audio=False)
+    engine.use_radio(IQFile(base + '.cfile'))
+    try:
+        engine.start_decode(FREQ, rtl433.WHOLE_BAND, program,
+                            extra_args=('-R', '0', '-X', FLEX))
+        chain = engine.decoder
+        n = len(chain.slices)
+        assert n == 6 and len(chain.procs) == n, (n, len(chain.procs))
+        assert abs(chain.low_hz - (CENTER - 750e3)) < 1 and abs(chain.high_hz - (CENTER + 750e3)) < 1
+        got = []
+        deadline = time.monotonic() + 3 * loop_s + 4.0
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            got += chain.take()
+            codes = {m['rows'][0]['data'] for _, m in got if m.get('model') == 'fmrx_test'}
+            if {BITS, b_bits} <= codes and chain.duplicates:
+                break
+        assert {BITS, b_bits} <= codes, (codes, [list(p.messages)[-2:] for p in chain.procs])
+        assert chain.duplicates > 0, "the boundary burst was not heard by two slices"
+        heard_b = sorted(h for h, m in got if m.get('rows', [{}])[0].get('data') == b_bits)
+        assert all(b - a >= rtl433.DUP_S for a, b in zip(heard_b, heard_b[1:])), heard_b
+        # rtl_433 reports an on-off burst at about the frequency it was
+        # given - the slice's centre - not where in the slice it is: A, 75 kHz
+        # under its slice's centre, read 12 kHz over it. And the slices
+        # overlap, so the one that heard it first may be the next one over.
+        freqs = {m['rows'][0]['data']: m['freq'] for _, m in got if m.get('model') == 'fmrx_test'}
+        near = (0.8 * chain.width + 20e3) / 1e6
+        assert abs(freqs[BITS] - a_hz / 1e6) < near and abs(freqs[b_bits] - b_hz / 1e6) < near, freqs
+        procs = [p.proc for p in chain.procs]
+    finally:
+        engine.close()
+    assert all(p.poll() is not None for p in procs), "an rtl_433 still running after close"
+    print(f"whole band: {n} slices from {chain.low_hz / 1e6:.3f} to {chain.high_hz / 1e6:.3f} "
+          f"MHz; A at {freqs[BITS]:.3f} and B on a boundary at {freqs[b_bits]:.3f} decoded, "
+          f"B's second copy dropped {chain.duplicates} times; all {n} rtl_433 ended on close")
+
+
+def bresser(program):
+    """A real Bresser 5-in-1 (FSK, 868.3 MHz, 250 kS/s) from rtl_433's test
+    recordings, put at 2 MS/s in the middle of a slice, on a boundary and
+    75 kHz off a centre: decoded in the whole band each time."""
+    root = os.environ.get('FMRX_RTL433_TESTS')
+    path = os.path.join(root or '', 'tests', 'bresser_5in1', '01', 'g001_868.3M_250k.cu8')
+    if not root or not os.path.exists(path):
+        print("Bresser 5-in-1: skipped (set FMRX_RTL433_TESTS to a checkout of "
+              "rtl_433_tests to run it)")
+        return
+    from scipy import signal as sps
+    raw = np.fromfile(path, np.uint8).astype(np.float32)
+    x = ((raw[0::2] - 127.4) + 1j * (raw[1::2] - 127.4)) / 128.0
+    up = sps.resample_poly(x, 8, 1).astype(np.complex64)
+    centre = 868.0e6
+    folder = tempfile.mkdtemp(prefix='fmrx-bresser-')
+    try:
+        for where in (868.375e6, 868.25e6, 868.30e6):
+            t = np.arange(len(up)) / RATE
+            pad = np.zeros(int(0.3 * RATE), np.complex64)
+            y = np.concatenate([pad, up * np.exp(2j * np.pi * (where - centre) * t), pad])
+            rng = np.random.default_rng(1)
+            y = y + 0.002 * (rng.standard_normal(len(y)) + 1j * rng.standard_normal(len(y)))
+            base = os.path.join(folder, 'b')
+            y.astype(np.complex64).tofile(base + '.cfile')
+            with open(base + '.json', 'w') as fh:
+                json.dump({'rate': RATE, 'center_hz': centre, 'offset_hz': 0.0,
+                           'station_hz': centre}, fh)
+            engine = Engine(want_audio=False)
+            engine.use_radio(IQFile(base + '.cfile'))
+            try:
+                engine.start_decode(centre, rtl433.WHOLE_BAND, program)
+                got = []
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < 4 and not got:
+                    time.sleep(0.2)
+                    got = [m for _, m in engine.decoder.take() if m.get('model') == 'Bresser-5in1']
+                assert got and got[0]['temperature_C'] == 8.0, (where, got)
+            finally:
+                engine.close()
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    print("Bresser 5-in-1 (a real FSK recording): decoded mid-slice, on a boundary "
+          "and 75 kHz off a centre")
 
 
 def main():
@@ -198,6 +322,8 @@ def main():
     folder = tempfile.mkdtemp(prefix='fmrx-433-')
     try:
         decode(program, folder)
+        decode_band(program, folder)
+        bresser(program)
     finally:
         shutil.rmtree(folder, ignore_errors=True)
     return 0
