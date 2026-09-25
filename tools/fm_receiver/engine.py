@@ -1,4 +1,4 @@
-"""The flowgraph: one radio, and either the sweep or the receive chain.
+"""The flowgraph: one radio, and the sweep, the receive chain or rtl_433's.
 
 Sweep and Receive want the radio at different rates and share nothing
 downstream of it, so switching mode stops the flowgraph, disconnects
@@ -8,7 +8,9 @@ open across the switch (``halt(hold=True)``) - reopening it was 1.6 s. The
 BB60D sweeps in the device instead (``bb60_sweep``), with no flowgraph at
 all, on the same open device; Receive starts its stream again. What
 must *not* rebuild - retuning, channel bandwidth, volume, mute, stereo,
-region, recording - is done on the running blocks.
+region, recording - is done on the running blocks. The rtl_433 tab's
+chain (``rtl433.DecodeChain``) is a third mode, built the same way; its
+rtl_433 process starts with the chain and ends with it.
 
 Recordings play through here too, with no radio open. An IQ recording is
 a radio (``radios.IQFile``) and goes through Receive; a WAV has a chain
@@ -29,6 +31,7 @@ import time
 
 from gnuradio import audio, gr  # type: ignore
 
+from . import rtl433
 from .dsp import AUDIO_RATE, ReceiveChain, WavChain, data_clock
 from .sweep import sweep_sink
 
@@ -47,6 +50,7 @@ class Engine(gr.top_block):
         self.rx = None
         self.sweeper = None
         self.player = None
+        self.decoder = None
         self.rate = None
         self.lo_hz = None
         self.offset_hz = None
@@ -108,13 +112,16 @@ class Engine(gr.top_block):
         self.disconnect_all()
         if self.sweeper is not None:
             self.sweeper.detach()
-        for chain in (self.rx, self.sweeper, self.player):
+        if self.decoder is not None:
+            self.decoder.close()                 # rtl_433 ends with its chain
+        for chain in (self.rx, self.sweeper, self.player, self.decoder):
             if chain is not None:
                 self._retired.append(chain)
         del self._retired[:-self.RETIRED_KEPT]
         self.rx = None
         self.sweeper = None
         self.player = None
+        self.decoder = None
         self.mode = None
 
     def _started(self):
@@ -141,7 +148,8 @@ class Engine(gr.top_block):
         start of this run; None when nothing is expected (stopped, paused,
         no radio). A native sweep reports its own data; a paused one sends
         none, so the count starts again when it resumes."""
-        if not self.running or self.radio is None or self.mode not in ('receive', 'sweep'):
+        if not self.running or self.radio is None \
+                or self.mode not in ('receive', 'sweep', 'rtl433'):
             return None
         now = time.monotonic()
         s = self.sweeper
@@ -307,3 +315,28 @@ class Engine(gr.top_block):
         self.connect(radio.block, self._clock)
         self.mode = 'sweep'
         self._started()
+
+    # ---------------------------------------------------------- rtl_433
+    def start_decode(self, freq_hz, width_hz, program, extra_args=()):
+        """Pass ``width_hz`` around ``freq_hz`` to rtl_433 (``program``, its
+        path; None for the spectrum alone). Raises ValueError for a
+        frequency the radio cannot reach, with the flowgraph stopped."""
+        radio = self.radio
+        self.halt(hold=True)
+        self._clear()
+        rate, lo, offset = rtl433.plan(radio, float(freq_hz), float(width_hz))
+        radio.ensure_open()
+        radio.set_rate(rate)
+        self.rate = float(radio.rate or rate)
+        radio.set_center(lo)
+        self.lo_hz, self.offset_hz = lo, offset
+        self.station_hz = lo + offset
+        self.decoder = rtl433.DecodeChain(self, radio.block, self.rate, offset, width_hz,
+                                          self.station_hz, program, extra_args)
+        self.connect(radio.block, self._clock)
+        self.mode = 'rtl433'
+        try:
+            self._started()
+        except Exception:
+            self.decoder.close()
+            raise

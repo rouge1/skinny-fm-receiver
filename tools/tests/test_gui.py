@@ -779,11 +779,11 @@ def agc(w):
     knob.setValue(held)
     pump(1)
     assert knob.value() == held, knob.value()
-    # Receive: the slider sets the gain there, and says so.
+    # Receive: the window's own AGC there, the slider its ceiling (part 10).
     w.tabs.setCurrentIndex(1)
     pump(0.3)
-    assert w._mode == 'receive' and w.gain_slider.isEnabled()
-    assert w.gain_label.text().endswith('%') and 'no automatic gain' in w.gain_slider.toolTip()
+    assert w._mode == 'receive' and w.gain_slider.isEnabled() and w._iq_agc_on()
+    assert w.gain_label.text().startswith('AGC ') and 'most gain' in w.gain_slider.toolTip()
     w.tabs.setCurrentIndex(0)
     pump(0.3)
     assert w._mode == 'sweep' and not w.gain_slider.isEnabled()
@@ -1198,7 +1198,8 @@ def part6_rtl_address():
 
 def part7_lost_radio():
     """A radio that stops sending says so in the status line, whichever
-    radio it is: the samples stopping in Receive and in a LO-hopping sweep,
+    radio it is: the samples stopping in Receive, in a LO-hopping sweep and
+    in rtl_433,
     a radio's own sweep going quiet (but not while paused), and at once
     when the radio knows why (an RTL-SDR's closed connection). It clears
     when the samples come back."""
@@ -1211,7 +1212,7 @@ def part7_lost_radio():
         assert w._mode == 'receive' and w.engine.running, w.status.text()
         pump(1.5)
         assert not lost(w), w.status.text()
-        for mode in ('receive', 'sweep'):
+        for mode in ('receive', 'sweep', 'rtl433'):
             w.tabs.setCurrentIndex(fmapp.TAB_MODES.index(mode))
             assert w._mode == mode and w.engine.running, w.status.text()
             pump(1.5)
@@ -1320,6 +1321,230 @@ def part8_reopen():
     print("part 8 passed")
 
 
+def part9_rtl433():
+    """The rtl_433 tab: the radio's band around 433.92 MHz with the part
+    passed to rtl_433 marked, and its devices listed under the spectrum
+    where the multiplex was; nothing to hear or record. A preset, a
+    double-click on the spectrum and the digits each move it; Receive's
+    tuner does not. A message rtl_433 sends is listed, and picked, shown
+    in full. Bad Options say why. rtl_433 ends with the mode.
+    (Decoding itself: test_rtl433.)"""
+    original = fmapp.make_radio
+    try:
+        fmapp.make_radio = lambda kind, *a, **k: SimRadio()
+        w = make_window(['--radio', 'hackrf', '--mode', 'rtl433', '--freq', '89.3'])
+        e = w.engine
+        assert w._mode == e.mode == 'rtl433' and e.running, w.status.text()
+        assert abs(e.station_hz - 433.92e6) < 1 and e.lo_hz < e.station_hz - 125e3
+        assert 'rtl_433 on 433.92 MHz' in w.status.text(), w.status.text()
+        assert w.bottom.currentWidget() is w.devices_table and w.bottom.isVisible()
+        assert not w.audio_box.isVisible() and not w.record_box.isVisible()
+        band = w.rf_view._band_hz
+        assert abs(band[1] - band[0] - 250e3) < 1 and abs(sum(band) / 2 - 433.92e6) < 1, band
+        program = e.decoder.proc
+        # Receive's tuner is not rtl_433's.
+        w.tune(95.1e6)
+        assert abs(e.station_hz - 433.92e6) < 1 and e.mode == 'rtl433'
+        # A preset, then a double-click on the spectrum.
+        w.rtl_preset.setCurrentIndex(2)
+        w._rtl_preset_chosen(2)
+        assert pump(3, lambda: abs(e.station_hz - 868.3e6) < 1 and e.running), e.station_hz
+        if program is not None:
+            assert program.proc.poll() is not None, "the last rtl_433 still runs"
+        w._rf_activated(868.4567e6)
+        assert pump(3, lambda: abs(e.station_hz - 868.457e6) < 1), e.station_hz
+        assert w.rtl_preset.currentData() is None                       # Custom
+        # A message, as rtl_433 would send it.
+        if e.decoder.proc is not None:
+            e.decoder.proc._new.append((time.time(), {
+                'model': 'Acurite-Tower', 'id': 1234, 'channel': 'A',
+                'temperature_C': 21.5, 'humidity': 40, 'rssi': -20.2, 'snr': 15.0}))
+            assert pump(2, lambda: w.devices_table.rowCount() == 1)
+            cells = [w.devices_table.item(0, c).text() for c in range(len(fmapp.DEVICE_COLUMNS))]
+            assert cells[1:4] == ['Acurite-Tower', '1234', 'A'], cells
+            assert 'temperature_C 21.5' in cells[4] and cells[5].startswith('-20.2 dB'), cells
+            w.devices_table.setCurrentCell(0, 0)
+            assert 'humidity: 40' in w.rtl_device.text(), w.rtl_device.text()
+            w._clear_devices()
+            assert w.devices_table.rowCount() == 0
+        # Options that do not parse say so.
+        w.rtl_args.setText('-X "n=unfinished')
+        w._rtl_args_changed()
+        assert 'Options' in w.status.text(), w.status.text()
+        w.rtl_args.setText('')
+        w._rtl_args_changed()
+        assert pump(3, lambda: e.running and e.mode == 'rtl433'), w.status.text()
+        # Back to Receive: the multiplex, the audio, and no rtl_433.
+        proc = e.decoder.proc
+        w.tabs.setCurrentIndex(fmapp.TAB_MODES.index('receive'))
+        assert e.mode == 'receive' and w.bottom.currentWidget() is w.rx_page
+        assert w.audio_box.isVisible()
+        if proc is not None:
+            assert proc.proc.poll() is not None, "rtl_433 still runs in Receive"
+        w.close()
+    finally:
+        fmapp.make_radio = original
+    print("part 9 passed")
+
+
+def iq_agc_steps():
+    """IqAgc alone: down 10% once overloads show in two polls within 1.5 s, nothing
+    judged within a second of a change, up 5% after a minute quiet, never
+    over the slider, and a rise that brings the overload back doubles the
+    wait before the next and is only undone, not stepped a whole 10% under."""
+    agc = fmapp.IqAgc(60, 60)
+    assert agc.update(0.0, 2) is None                     # one poll: not yet
+    assert agc.update(0.4, 1) == 50                       # two: down
+    assert agc.update(0.8, 3) is None                     # its own gap
+    assert agc.update(1.6, 2) is None and agc.update(2.0, 0) is None    # an empty poll
+    assert agc.update(2.4, 2) == 40                       # between two: still down
+    one = fmapp.IqAgc(60, 60)                             # two, but 2 s apart: no
+    assert one.update(0.0, 1) is None and one.update(2.0, 1) is None
+    t = 2.4
+    for _ in range(3):                                    # quiet from here
+        t += 0.4
+        assert agc.update(t, 0) is None
+    assert agc.update(t + 60.0, 0) == 45                  # a minute quiet: up
+    t += 60.0
+    assert agc.update(t + 1.2, 1) is None and agc.update(t + 1.6, 1) == 40   # undone
+    assert agc.rise_wait == 120.0, agc.rise_wait          # the rise overloaded
+    assert agc.update(t + 70.0, 0) is None                # 60 s is not enough now
+    assert agc.update(t + 1.6 + 121.0, 0) == 45
+    top = fmapp.IqAgc(50, 48)
+    top.update(0.0, 0)
+    assert top.update(61.0, 0) == 50 and top.update(200.0, 0) is None   # the slider
+    low = fmapp.IqAgc(5, 5)
+    low.update(0.0, 1)
+    assert low.update(0.4, 1) == 0 and low.update(2.0, 1) is None       # 0% is the end
+    # Clipping a little, not calm: no overload, but no rise either.
+    light = fmapp.IqAgc(60, 60)                           # a light overload: half a step
+    light.update(0.0, 1, heavy=False)
+    assert light.update(0.4, 1, heavy=False) == 55
+    warm = fmapp.IqAgc(60, 40)
+    for t in range(0, 300, 1):
+        assert warm.update(float(t), 0, calm=False) is None
+    assert warm.update(300.4, 0) is None and warm.update(361.0, 0) == 45
+    print("IQ AGC: steps down on a held overload, up after quiet, capped by the "
+          "slider, backs off a rise that overloads, holds while it clips a little")
+
+
+class OverloadRadio(SimRadio):
+    """A simulated BB60D that overloads over ``limit`` % gain: it reports an
+    ADC overload each poll, and sends nothing, as the real one does."""
+    kind = 'bb60'
+    name = 'Simulated BB60D'
+    has_agc = True
+    limit = 42.0
+
+    def open(self):
+        super().open()
+        self.overloads = 0
+        self.applied = []
+
+    def apply_gain(self, percent=None):
+        super().apply_gain(percent)
+        self.applied.append(self.gain_percent)
+
+    def health(self):
+        if self.block is not None and self.gain_percent > self.limit:
+            self.overloads += 2
+            self.block.silent = True
+        elif self.block is not None:
+            self.block.silent = False
+        return {'overload': self.overloads}
+
+
+class ClipRadio(SimRadio):
+    """A simulated HackRF: no overload reports, its clipping counted."""
+    clip_warn = True
+
+
+def part10_iq_agc():
+    """AGC in Receive and rtl_433, on a radio that overloads over 42%: the
+    gain comes down by itself until it stops, the slider stays the ceiling,
+    the silence is called an overload rather than a lost radio, and
+    unticking AGC keeps the gain it found. The same on a HackRF from its
+    clipped share, held while it clips only a little, and greyed in Sweep."""
+    iq_agc_steps()
+    saved = fmapp.make_radio, fmapp.STALL_S
+    fmapp.STALL_S = 1.0
+    try:
+        fmapp.make_radio = lambda kind, *a, **k: OverloadRadio()
+        for mode in ('receive', 'rtl433'):
+            w = make_window(['--radio', 'bb60', '--mode', mode, '--freq', '89.3'])
+            r = w.radio
+            assert w.agc_box.isVisible()
+            w.gain_slider.setValue(60)
+            w.agc_box.setChecked(True)
+            assert w._iq_agc_on() and w.gain_label.text() == 'AGC 60%', w.gain_label.text()
+            assert 'turn AGC off' in w.agc_box.toolTip()
+            seen_agc_status = []
+            ok = pump(10, lambda: (seen_agc_status.append('AGC is turning' in w.status.text())
+                                   or r.gain_percent <= r.limit and w.engine.running))
+            assert ok, (mode, r.gain_percent, r.applied)
+            assert r.gain_percent == 40 and r.applied[-2:] == [50, 40], r.applied
+            assert any(seen_agc_status), "the status line never said AGC was at work"
+            assert w.gain_slider.value() == 60 and w.gain_label.text() == 'AGC 40%'
+            pump(2.5)
+            text = w.status.text()
+            assert 'No samples' not in text and 'lost' not in text, text
+            assert r.gain_percent == 40, r.applied              # settled, no hunting
+            # Off: the gain stays where AGC put it, and the slider says so.
+            w.agc_box.setChecked(False)
+            assert w.gain_slider.value() == 40 and r.gain_percent == 40
+            assert w.gain_label.text() == '40%', w.gain_label.text()
+            w.close()
+        # A HackRF: its clipped share drives it; nothing in Sweep.
+        fmapp.make_radio = lambda kind, *a, **k: ClipRadio()
+        for mode in ('receive', 'rtl433'):
+            w = make_window(['--radio', 'hackrf', '--mode', mode, '--freq', '89.3'])
+            r = w.radio
+            share = lambda: 0.5 if r.gain_percent > 42 else 0.0           # noqa: E731
+            w._clip_counts = lambda: ('receive', int(share() * 1e4), 10000)
+            w.gain_slider.setValue(60)
+            w.agc_box.setChecked(True)
+            assert w.agc_box.isVisible() and w.agc_box.isEnabled() and w._iq_agc_on()
+            tip = w.agc_box.toolTip()
+            assert '5% when over 1%' in tip and 'turn AGC off' in tip, tip
+            said = []
+            assert pump(10, lambda: said.append('AGC is turning the gain down' in w.status.text())
+                        or r.gain_percent == 40), (mode, r.gain_percent)
+            assert any(said), "the status line never said AGC was at work"
+            pump(2)
+            assert r.gain_percent == 40 and w.gain_slider.value() == 60
+            if mode == 'receive':
+                # A light overload (3%) takes a half step: 40 to 35.
+                w._iq_agc.changed_at = None
+                w._clip_counts = lambda: ('receive', 300, 10000)
+                assert pump(3, lambda: r.gain_percent == 35), r.gain_percent
+                w._clip_counts = lambda: ('receive', 0, 10000)
+                pump(1.2)
+                # Clipping a little (0.5%): held, and not called an overload.
+                w._iq_agc.quiet_since -= 120
+                w._clip_counts = lambda: ('receive', 50, 10000)
+                pump(1.5)
+                assert r.gain_percent == 35, r.gain_percent
+                # Sweep: the box keeps its tick, greyed; the slider is the gain.
+                w.tabs.setCurrentIndex(fmapp.TAB_MODES.index('sweep'))
+                pump(0.5)
+                assert w.agc_box.isChecked() and not w.agc_box.isEnabled()
+                assert w.gain_slider.isEnabled() and w.gain_label.text() == '60%', \
+                    w.gain_label.text()
+            w.close()
+        # With AGC off, a silent overloaded radio still says overloaded, not lost.
+        fmapp.make_radio = lambda kind, *a, **k: OverloadRadio()
+        w = make_window(['--radio', 'bb60', '--mode', 'receive', '--freq', '89.3'])
+        w.agc_box.setChecked(False)
+        w.gain_slider.setValue(60)
+        pump(4)
+        text = w.status.text()
+        assert 'Input overloaded - turn the RF gain down' in text and 'No samples' not in text, text
+        w.close()
+    finally:
+        fmapp.make_radio, fmapp.STALL_S = saved
+    print("part 10 passed")
+
+
 if __name__ == '__main__':
     keep = '--keep' in sys.argv
     try:
@@ -1331,6 +1556,8 @@ if __name__ == '__main__':
         part6_rtl_address()
         part7_lost_radio()
         part8_reopen()
+        part9_rtl433()
+        part10_iq_agc()
         print("GUI: all checks passed")
     finally:
         # A failed check must not leave a flowgraph running into interpreter
