@@ -347,6 +347,8 @@ class MainWindow(Qt.QWidget):
         self._starting = False
         # Recording: its description (RDS and all), for the Recordings tab.
         self._rec_info = None
+        #: The files the last recording saved (control.py replies with them).
+        self._last_saved = []
         # The Recordings tab: the live radio to go back to, what is listed,
         # chosen and playing, and the overview being worked out.
         self._live = None
@@ -2138,6 +2140,7 @@ class MainWindow(Qt.QWidget):
                 saved.append(f"Description not saved: {exc}")
             self._rec_info = None
         self._rec_t0 = None
+        self._last_saved = files
         self.rec_btn.blockSignals(True)
         self.rec_btn.setChecked(False)
         self.rec_btn.blockSignals(False)

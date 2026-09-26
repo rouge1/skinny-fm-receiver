@@ -15,6 +15,12 @@ span the whole radio there, so the band is the engine's), the range and
 AGC reported as the window has them, and AGC switched with its row hidden
 by the fold. Both went wrong off air on the BB60D before this part.
 
+The measuring commands too: ``peaks`` (the peak finder alone on a trace
+with known signals, then on the station with Peak hold), ``rate``,
+``record`` and ``capture`` (the files, their sizes, the Record box's ticks
+put back); in part 2, ``sweep`` over a span, and ``peaks`` finding the
+simulated radio's tones in it.
+
 Part 3 is ``--no-audio``: the window starts muted, says so, and unmutes
 from ``mute off``; the flag's mute is never saved, so the next run starts
 as the settings say.
@@ -42,7 +48,8 @@ os.environ['FMRX_CONTROL'] = os.path.join(FOLDER, 'control.sock')
 
 from fm_receiver import app as fmapp  # noqa: E402
 from fm_receiver import radios  # noqa: E402
-from fm_receiver.control import ControlServer  # noqa: E402
+from fm_receiver.control import ControlServer, find_peaks  # noqa: E402
+import numpy as np  # noqa: E402
 from tests import signals  # noqa: E402
 from tests.test_sweep import slow_radio  # noqa: E402
 
@@ -168,6 +175,18 @@ def part2_retuning_radio():
         assert c.ok('agc on')['agc'] and w.agc_box.isChecked() and c.ok('status')['agc']
         assert not c.ok('agc off')['agc'] and not w.agc_box.isChecked()
         assert c.ok('gain 30')['gain_percent'] == 30 and w.radio.gain_percent == 30
+        # Sweep a span: the tab switches, its digits move, and peaks finds the
+        # simulated radio's two tones in the held trace.
+        r = c.ok('sweep 90 105')
+        assert r == {'start_mhz': 90.0, 'stop_mhz': 105.0}, r
+        assert w.tabs.currentIndex() == 0 and w._mode == 'sweep'
+        c.ok('peakhold on')
+        assert pump(10, lambda: len(c.ok('peaks 15')['peaks']) >= 2), c.ok('peaks 15')
+        found = [p['freq_mhz'] for p in c.ok('peaks 15')['peaks']]
+        for tone in (95.1, 101.7):
+            assert any(abs(f - tone) < 0.1 for f in found), (tone, found)
+        c.refused('sweep 105 90', 'above START')
+        c.ok('peakhold off')
         print("retuning radio: Center moved by tune, AGC with the Radio box folded")
     finally:
         control.close()
@@ -205,7 +224,25 @@ def part3_no_audio():
     print("--no-audio: muted at start, not saved, unmuted by mute off")
 
 
+def peak_finder():
+    freqs = np.linspace(400e6, 450e6, 5001)                # 10 kHz bins
+    db = np.full(len(freqs), -100.0)
+    db[1000] = -60.0                                       # 410 MHz, one bin
+    db[2500:2521] = -70.0                                  # 425.0-425.2 MHz, 210 kHz
+    db[2510] = -65.0
+    db[2523] = -75.0                                       # 3 bins on: the same signal
+    db[4000] = -95.0                                       # 5 dB up: under the threshold
+    floor, peaks = find_peaks(freqs, db, 10.0)
+    assert floor == -100.0 and len(peaks) == 2, peaks
+    assert peaks[0]['freq_mhz'] == 410.0 and peaks[0]['above_floor_db'] == 40.0
+    assert peaks[1]['freq_mhz'] == 425.1 and peaks[1]['level_db'] == -65.0, peaks[1]
+    assert abs(peaks[1]['width_khz'] - 240.0) < 0.1, peaks[1]
+    assert find_peaks(freqs[:4], db[:4])[1] == []
+    print("peak finder: ok")
+
+
 def main():
+    peak_finder()
     station = signals.write_station(os.path.join(FOLDER, 'synth'), seconds=12.0)
     args = fmapp.parse_args(['--file', station, '--no-sound-card', '--no-save'])
     w = fmapp.MainWindow(args, {'recording_dir': FOLDER})
@@ -280,6 +317,56 @@ def main():
         assert other.reply()['ok'] and time.time() - t0 > 0.55, 'wait did not hold'
         assert c.reply()['result'] == {'waited_s': 0.6}
         c.refused('wait 1000', 'seconds')
+
+        # Peaks: the station on the spectrum, with Peak hold and without.
+        assert c.ok('peakhold on')['peak_hold'] and w.rf_view.peak_check.isChecked()
+        c.ok('wait 1')
+        p = c.ok('peaks')
+        assert p['trace'] == 'peak hold' and p['unit'] == 'dBFS', p
+        top = p['peaks'][0]
+        assert abs(top['freq_mhz'] - 98.7) < 0.15 and top['above_floor_db'] > 20, p
+        inside = c.ok('peaks 10 98.5 98.9')
+        assert inside['span_mhz'][0] >= 98.5 and inside['peaks'], inside
+        assert c.ok('peaks 200')['peaks'] == []             # nothing that loud
+        c.refused('peaks 10 150 160', 'not on the spectrum')
+        c.refused('peaks 10 98.5', 'usage')
+        c.ok('peakhold clear')
+        assert not c.ok('peakhold off')['peak_hold']
+        assert c.ok('peaks')['trace'] == 'live'
+
+        # Rate: a file has the one rate it was recorded at.
+        assert c.ok('rate 2.5')['rate_msps'] == 2.5 and w.engine.running
+        c.refused('rate 7', 'offers 2.5')
+
+        # Record and capture: files named and sized, the ticks put back.
+        before = {k: getattr(w, n).isChecked() for k, n in
+                  (('audio', 'rec_audio'), ('iq-channel', 'rec_channel'), ('iq-band', 'rec_band'))}
+        cap = c.ask('capture 1 iq-channel', timeout=15)
+        assert cap['ok'], cap
+        cap = cap['result']
+        paths = [f['path'] for f in cap['files']]
+        cfile = [f for f in cap['files'] if f['path'].endswith('.cfile')]
+        assert len(cfile) == 1 and 'iq-channel' in cfile[0]['path'], paths
+        assert 2e6 < cfile[0]['bytes'] < 8e6, cfile          # ~1 s at 500 kS/s, 8 bytes
+        assert any(p.endswith('.sigmf-meta') for p in paths), paths
+        assert cap['kind'] == 'iq-channel' and abs(cap['station_mhz'] - 98.7) < 1e-6, cap
+        after = c.ok('record iq-band off')
+        assert {k: after[k] for k in before} == {**before, 'iq-band': False}, (before, after)
+        assert not w.rec_btn.isChecked()
+        c.refused('capture 1000', 'seconds')
+        c.refused('capture 1 wav', 'one of')
+        c.ok('record audio off')
+        c.ok('record iq-channel off')
+        c.refused('record start', 'Tick something')
+        c.ok('record audio on')
+        assert c.ok('record start')['recording'] and w.rec_btn.isChecked()
+        c.refused('record audio off', 'record stop')
+        c.refused('capture 1', 'already recording')
+        c.ok('wait 0.5')
+        done = c.ok('record stop')
+        assert not done['recording'] and done['files'], done
+        assert done['files'][0]['path'].endswith('-audio.wav') and done['files'][0]['bytes'] > 44
+        c.refused('record stop', 'not recording')
 
         # JSON commands, bad ones, unknown ones; help lists them all.
         r = c.ask(json.dumps({'cmd': 'volume', 'args': [45]}))

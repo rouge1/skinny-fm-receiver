@@ -29,6 +29,7 @@ import os
 import shlex
 import sys
 
+import numpy as np  # type: ignore
 from PyQt5 import Qt, QtCore, QtNetwork  # type: ignore
 
 from .config import control_path
@@ -277,6 +278,211 @@ def cmd_wait(w, args):
     if not 0 <= seconds <= MAX_WAIT_S:
         raise CommandError(f"wait: 0 to {MAX_WAIT_S:.0f} seconds")
     return Later(seconds, lambda: {'waited_s': seconds})
+
+
+@command('sweep', 'sweep START STOP', "The Sweep tab over START-STOP MHz, as its "
+         "Start and Stop digits set it (switching to Sweep first).")
+def cmd_sweep(w, args):
+    start, stop = (_number(a, 'sweep') for a in _args(args, 2, 2, 'sweep START STOP'))
+    if w.radio is None:
+        raise CommandError("no radio is open")
+    if not w.radio.can_sweep:
+        raise CommandError(f"{w.radio.describe()} can't sweep")
+    if stop <= start:
+        raise CommandError("sweep: STOP must be above START")
+    if w._tab_mode() != 'sweep':
+        cmd_mode(w, ['sweep'])
+    w._set_sweep_span(start * 1e6, stop * 1e6)
+    return {'start_mhz': _mhz(w.sweep_start.value()), 'stop_mhz': _mhz(w.sweep_stop.value())}
+
+
+@command('peakhold', 'peakhold on|off|clear', "The RF spectrum's Peak hold box; "
+         "clear starts the held trace again.")
+def cmd_peakhold(w, args):
+    word = _args(args, 1, 1, 'peakhold on|off|clear')[0].lower()
+    view = w.rf_view
+    if word == 'clear':
+        view.clear_peak()
+    else:
+        view.peak_check.setChecked(_on_off(word, 'peakhold'))
+    return {'peak_hold': view.peak_check.isChecked()}
+
+
+#: Runs of bins over the threshold closer than this many bins (or
+#: PEAK_MERGE_HZ) are one signal.
+PEAK_MERGE_BINS = 3
+PEAK_MERGE_HZ = 10e3
+
+
+def find_peaks(freqs, db, threshold_db=10.0, limit=20):
+    """Signals standing ``threshold_db`` over the floor (the median): each
+    run of bins above it, runs a few bins apart merged, as ``(floor,
+    [{freq_mhz, level_db, above_floor_db, width_khz}, ...])``, strongest
+    first."""
+    freqs = np.asarray(freqs, dtype=np.float64)
+    db = np.asarray(db, dtype=np.float64)
+    if len(db) < 8:
+        return float('nan'), []
+    floor = float(np.median(db))
+    bin_hz = (freqs[-1] - freqs[0]) / max(1, len(freqs) - 1)
+    gap = max(PEAK_MERGE_BINS, int(np.ceil(PEAK_MERGE_HZ / max(bin_hz, 1.0))))
+    hot = np.flatnonzero(db > floor + threshold_db)
+    if not len(hot):
+        return floor, []
+    peaks = []
+    for run in np.split(hot, np.flatnonzero(np.diff(hot) > gap) + 1):
+        top = run[np.argmax(db[run])]
+        peaks.append({'freq_mhz': round(float(freqs[top]) / 1e6, 6),
+                      'level_db': round(float(db[top]), 1),
+                      'above_floor_db': round(float(db[top]) - floor, 1),
+                      'width_khz': round(float(run[-1] - run[0] + 1) * bin_hz / 1e3, 1)})
+    peaks.sort(key=lambda p: -p['level_db'])
+    return floor, peaks[:limit]
+
+
+@command('peaks', 'peaks [THRESHOLD_DB [START STOP]]', "The signals on the RF spectrum "
+         "(the held trace while Peak hold is on) THRESHOLD_DB (default 10) over the "
+         "floor, within START-STOP MHz if given; the strongest 20.")
+def cmd_peaks(w, args):
+    usage = 'peaks [THRESHOLD_DB [START STOP]]'
+    if len(_args(args, 0, 3, usage)) == 2:
+        raise CommandError(f"usage: {usage}")
+    threshold = _number(args[0], 'peaks') if args else 10.0
+    view = w.rf_view
+    if view._x is None or not len(view._x):
+        raise CommandError("nothing on the spectrum yet ('wait' a moment)")
+    held = (view.peak_check.isChecked() and view._peak is not None
+            and len(view._peak) == len(view._x))
+    freqs = view._x * view.scale
+    db = view._peak if held else view._db
+    if len(args) == 3:
+        low, high = (_number(a, 'peaks') * 1e6 for a in args[1:])
+        inside = (freqs >= low) & (freqs <= high)
+        if inside.sum() < 8:
+            raise CommandError(f"peaks: {args[1]}-{args[2]} MHz is not on the spectrum "
+                               f"({freqs[0] / 1e6:.3f}-{freqs[-1] / 1e6:.3f} MHz)")
+        freqs, db = freqs[inside], db[inside]
+    floor, peaks = find_peaks(freqs, db, threshold)
+    return {'trace': 'peak hold' if held else 'live', 'unit': view.level_unit,
+            'floor_db': round(floor, 1),
+            'bin_khz': round((freqs[-1] - freqs[0]) / max(1, len(freqs) - 1) / 1e3, 3),
+            'span_mhz': [_mhz(freqs[0]), _mhz(freqs[-1])], 'peaks': peaks}
+
+
+@command('rate', 'rate MSPS', "The Radio box's IQ bandwidth (Receive).")
+def cmd_rate(w, args):
+    msps = _number(_args(args, 1, 1, 'rate MSPS')[0], 'rate')
+    combo = w.rx_rate_combo
+    offered = []
+    for i in range(combo.count()):
+        rate = float(combo.itemData(i))
+        enabled = bool(combo.model().item(i).isEnabled())
+        offered.append(f"{rate / 1e6:g}" + ("" if enabled else " (greyed)"))
+        if abs(rate - msps * 1e6) < 1:
+            if not enabled:
+                raise CommandError(f"{msps:g} MS/s is greyed out here: "
+                                   f"{combo.itemData(i, QtCore.Qt.ToolTipRole)}")
+            combo.setCurrentIndex(i)
+            combo.activated.emit(i)             # as a pick from the list does
+            e = w.engine
+            return {'rate_msps': round(e.rate / 1e6, 6) if e.rate else msps}
+    raise CommandError(f"rate: this radio offers {', '.join(offered)} MS/s")
+
+
+RECORD_KINDS = {'audio': 'rec_audio', 'iq-channel': 'rec_channel', 'iq-band': 'rec_band'}
+
+
+def _record_reply(w):
+    paths = []
+    for p in w._last_saved:
+        paths.append(p)
+        # The descriptions beside the IQ: its rate and centre, for other tools.
+        if p.endswith('.cfile'):
+            paths.extend(q for q in (p[:-6] + '.sigmf-meta', p[:-6] + '.json')
+                         if os.path.exists(q))
+    files = [{'path': p, 'bytes': os.path.getsize(p) if os.path.exists(p) else None}
+             for p in paths]
+    return {'recording': w.rec_btn.isChecked(), 'files': files}
+
+
+@command('record', 'record start|stop, record audio|iq-channel|iq-band on|off',
+         "The Record box: what to record, and the Record button. Stop replies "
+         "with the files.")
+def cmd_record(w, args):
+    usage = 'record start|stop, record audio|iq-channel|iq-band on|off'
+    word = _args(args, 1, 2, usage)[0].lower()
+    if len(args) == 2:
+        if word not in RECORD_KINDS:
+            raise CommandError(f"record: one of {', '.join(RECORD_KINDS)}")
+        box = getattr(w, RECORD_KINDS[word])
+        if not box.isEnabled():
+            raise CommandError("recording: 'record stop' first to change what is recorded")
+        box.setChecked(_on_off(args[1], 'record'))
+        return {kind: getattr(w, name).isChecked() for kind, name in RECORD_KINDS.items()}
+    if word == 'start':
+        if w.rec_btn.isChecked():
+            raise CommandError("already recording")
+        w.rec_btn.setChecked(True)
+        if not w.rec_btn.isChecked():
+            raise CommandError(_plain(w.rec_label.text()) or "could not record")
+        return {'recording': True}
+    if word == 'stop':
+        if not w.rec_btn.isChecked():
+            raise CommandError("not recording")
+        w.rec_btn.setChecked(False)
+        return _record_reply(w)
+    raise CommandError(f"usage: {usage}")
+
+
+#: A capture larger than this is refused: pick a lower IQ bandwidth.
+MAX_CAPTURE_BYTES = 4e9
+#: Bytes a second each kind writes (IQ band: 8 a sample, at the IQ rate).
+CAPTURE_RATES = {'iq-channel': 4e6, 'audio': 192e3}
+
+
+@command('capture', 'capture SECONDS [iq-band|iq-channel|audio]', "Record only that "
+         "(default iq-band) for SECONDS, then reply with the files. The Record box's "
+         f"ticks are put back after. At most {MAX_CAPTURE_BYTES / 1e9:g} GB.")
+def cmd_capture(w, args):
+    _args(args, 1, 2, 'capture SECONDS [iq-band|iq-channel|audio]')
+    seconds = _number(args[0], 'capture')
+    kind = args[1].lower() if len(args) == 2 else 'iq-band'
+    if kind not in RECORD_KINDS:
+        raise CommandError(f"capture: one of {', '.join(RECORD_KINDS)}")
+    if not 0 < seconds <= MAX_WAIT_S:
+        raise CommandError(f"capture: 0 to {MAX_WAIT_S:.0f} seconds")
+    if w.rec_btn.isChecked():
+        raise CommandError("already recording ('record stop' first)")
+    rate = w.engine.rate or 0.0
+    size = CAPTURE_RATES.get(kind, 8 * rate) * seconds
+    if size > MAX_CAPTURE_BYTES:
+        raise CommandError(f"capture: {size / 1e9:.1f} GB at {rate / 1e6:g} MS/s; "
+                           "pick a lower 'rate', or fewer seconds")
+    ticks = {name: getattr(w, name).isChecked() for name in RECORD_KINDS.values()}
+
+    def put_back():
+        for name, on in ticks.items():
+            getattr(w, name).setChecked(on)
+
+    for k, name in RECORD_KINDS.items():
+        getattr(w, name).setChecked(k == kind)
+    w.rec_btn.setChecked(True)
+    if not w.rec_btn.isChecked():
+        put_back()
+        raise CommandError(_plain(w.rec_label.text()) or "could not record")
+    lo, station = w.engine.lo_hz, w.engine.station_hz
+
+    def finish():
+        try:
+            if w.rec_btn.isChecked():
+                w.rec_btn.setChecked(False)
+            reply = _record_reply(w)
+            reply.update(kind=kind, seconds=seconds, rate_msps=rate / 1e6,
+                         center_mhz=_mhz(lo), station_mhz=_mhz(station))
+            return reply
+        finally:
+            put_back()
+    return Later(seconds, finish)
 
 
 def parse(line):

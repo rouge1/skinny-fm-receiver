@@ -656,7 +656,20 @@ tools/fmctl help                          # every command
 | `mode sweep` / `receive` / `recordings` | The tabs |
 | `volume PERCENT`, `mute on` / `off` | Audio |
 | `screenshot PATH.png` | A picture of the window, as it is on screen |
+| `sweep START STOP` | The Sweep tab over START-STOP MHz (switching to it first) |
+| `peakhold on` / `off` / `clear` | The RF spectrum's **Peak hold**: the most each frequency reached, which catches short bursts |
+| `peaks [THRESHOLD_DB [START STOP]]` | The signals on the RF spectrum (the held trace while Peak hold is on) THRESHOLD_DB (default 10) over the floor, within START-STOP MHz if given: each one's frequency, level, height over the floor and width, the strongest 20 |
+| `rate MSPS` | The IQ bandwidth |
+| `record audio` / `iq-channel` / `iq-band` `on` / `off`, `record start` / `stop` | The Record box. `stop` replies with the files saved, the `.sigmf-meta` beside each IQ file included |
+| `capture SECONDS [iq-band` / `iq-channel` / `audio]` | Records only that (IQ of the whole band by default) for SECONDS and replies with the files; the Record box's ticks are put back after. Refused over 4 GB: at 40 MS/s the whole band is 320 MB/s, so 12 s at most |
 | `wait SECONDS` | Replies after that long (up to 120 s) with the window running meanwhile, so a later command sees the result: RDS takes a few seconds |
+
+A survey of the ISM bands, for example (a BB60D, which sweeps itself):
+
+```sh
+tools/fmctl 'sweep 300 1000; peakhold on; wait 90; peaks 8 433 435; peaks 8 902 928'
+tools/fmctl 'mode receive; tune 915; center 915; capture 5'    # the whole 27 MHz, 1.6 GB
+```
 
 A command the window would refuse is refused, with the reason: `gain` while
 AGC is on, `agc` on a radio without it, `center` outside Receive, `tune`

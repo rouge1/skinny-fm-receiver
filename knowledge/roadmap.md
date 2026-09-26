@@ -994,7 +994,7 @@ about 45 minutes.
 
 - [x] Control socket in the window, and `fmctl`
 - [x] The first version's commands (*)
-- [ ] The rest of the commands
+- [ ] The rest of the commands: `rate`, `sweep`, `record` done (with `peakhold`, `peaks`, `capture`, 2026-09-25, for surveys); `radio`, `start`/`stop`, `filter`, `stereo`, `step`, `threshold`, `pause`/`resume`, `stations` to do
 - [x] `test_control.py`, in `run_all.py`
 - [x] Off air with the window open: on the BB60D (2026-09-25; no RTL-SDR was plugged in), in capabilities.md
 - [x] `usage.md` (a section on `fmctl`) and `capabilities.md`
