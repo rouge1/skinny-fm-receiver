@@ -9,3 +9,5 @@ recordings/
 # .claude/skills/). Make the link in each checkout:
 #   mkdir -p .claude/skills && ln -s ../../.agents/skills/fm-receiver .claude/skills/fm-receiver
 .claude/
+# RF CTF challenge work: IQ recordings (tens of GB), scripts and write-ups.
+challenge/
