@@ -11,7 +11,7 @@ knowledge, workflows, commands and constraints:
 - knowledge/roadmap.md: planned work, in phases
 - knowledge/google_bb60d.md: links to Signal Hound's BB60 API documentation
 - knowledge/rtl-software.md: Linux SDR decoders and tools, their apt
-  packages, and which could be fed like the rtl_433 card
+  packages, and which could be fed from a recording or the IQ out
 - knowledge/rf-ctf.md: RF CTF challenge types and the tools that decode them
 
 When the user has the window open, work it with `tools/fmctl` (`status`,

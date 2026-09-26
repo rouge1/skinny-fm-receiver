@@ -976,7 +976,6 @@ Linux (Qt's local sockets on both).
 | `radio rtlsdr/hackrf/bb60/...`, `start`, `stop` | The Radio list and Start/Stop |
 | `rate 2.4`, `filter 225`, `stereo on/off`, `step 200` | IQ bandwidth, channel filter, stereo, tuner step |
 | `sweep 87.5 108`, `threshold 15`, `pause`/`resume` | The Sweep tab |
-| `rtl433 on/off`, `rtl433 band 433.92`, `rtl433 width ...` | Receive's RTL433 card |
 | `record start/stop`, `record audio/iq-channel/iq-band on/off` | The Record box |
 | `stations` | The Sweep tab's station list |
 
@@ -1016,7 +1015,8 @@ Radio's File Source, inspectrum, URH (rate by hand) and
 
 **Which samples.** The whole band at the IQ bandwidth, or a slice around
 the tuner at a rate picked for it (the channel's 500 kS/s, or wider), cut
-down in the flowgraph as the rtl_433 chain does. Receive only: the BB60D's
+down in the flowgraph (shift, low-pass, decimate, as the removed rtl_433
+chain did). Receive only: the BB60D's
 and HackRF's own sweeps make no IQ stream. The BB60D's whole band at
 40 MS/s is 320 MB/s: offered, but a slice is the usual choice.
 
@@ -1026,7 +1026,7 @@ and HackRF's own sweeps make no IQ stream. The BB60D's whole band at
 |---|---|---|
 | ZeroMQ PUB (`gr-zeromq`, in the `gnu` env) | GNU Radio (ZMQ SUB Source), Python/numpy, Claude | cf32, any number of subscribers; a slow one loses samples, never stalls the radio. Rate, centre and tuner sent as a tag or a side channel |
 | An rtl_tcp server (port 1235) | SDR++, gqrx, URH / `urh_cli -d RTL-TCP`, `rtl_433 -d rtl_tcp:` | cu8, so 8 bits: the BB60D's range is lost. The client's set-frequency command moves the tuner (or the Center) through the window, as `fmctl tune` does; its rate and gain commands are refused or mapped |
-| A pipe to any command | csdr, rtl_433, one-off scripts | The rtl_433 chain's pipe, general: whole blocks dropped when the reader falls behind |
+| A pipe to any command | csdr, rtl_433, one-off scripts | As the removed rtl_433 card's pipe was (git history, `rtl433.py`): non-blocking, whole blocks dropped when the reader falls behind |
 
 `fmctl iq-out zmq on [--band|--slice WIDTH]`, `iq-out rtl_tcp on`,
 `iq-out off`, and in `status`: what is served, to how many, samples dropped.

@@ -34,10 +34,7 @@ with no launcher.
   SoapySDR module opened), `hackrf_sweep.py` the HackRF's (its firmware's
   sweep mode through libhackrf, on the device the SoapySDR module lets go),
   `rtl_tcp.py` the RTL-SDR (an rtl_tcp client; rtl_tcp started here, or on
-  another computer over ssh), `rtl433.py` the rtl_433 chain, for Receive's
-  rtl_433 card (the radio's samples piped into rtl_433 processes, their
-  JSON read back; rtl_433 is a system package, `rtl-433` on Linux, not in
-  conda), `control.py` the control socket the running window listens on,
+  another computer over ssh), `control.py` the control socket the running window listens on,
   which `tools/fmctl` talks to (with the window open, use it rather than
   opening the radio).
 - Knowledge: `knowledge/capabilities.md` is the living capability list.

@@ -108,7 +108,7 @@ def cmd_help(w, args):
 
 
 @command('status', 'status', "What the window shows: radio, tab, frequencies, gain, "
-         "audio, stereo, RDS, signal, clipping, recording, rtl_433.")
+         "audio, stereo, RDS, signal, clipping, recording.")
 def cmd_status(w, args):
     e = w.engine
     radio = w.radio
@@ -157,11 +157,6 @@ def cmd_status(w, args):
             'groups': snap['groups'],
             'blocks_good_percent': good,
         }
-    if e.decoder is not None:
-        key = getattr(w, '_rtl_latest', None)
-        seen = w._devices.get(key) if key is not None else None
-        out['rtl433'] = {'devices': len(w._devices),
-                         'last': seen['msg'] if seen else None}
     return out
 
 

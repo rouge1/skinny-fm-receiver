@@ -70,7 +70,7 @@ def _control_pictures():
 
 # What this window adds to the toolkit's flowgraph stylesheet: the mode
 # tabs, a button that stays down (Mute, Record, Pause), the small step
-# buttons, the station list and rtl_433's table of devices.
+# buttons and the station list.
 _EXTRA_QSS = """
 QTabWidget::pane { border: 1px solid %(rule)s; border-radius: 2px;
     background: %(panel)s; top: -1px; }
@@ -90,13 +90,6 @@ QListWidget { background: %(well)s; color: %(ink)s;
     border: 1px solid %(rule)s; border-radius: 2px; }
 QListWidget::item { padding: 3px 6px; }
 QListWidget::item:selected { background: %(rule)s; color: %(ink)s; }
-QTableWidget { background: %(well)s; color: %(ink)s; gridline-color: %(rule)s;
-    border: 1px solid %(rule)s; border-radius: 2px; }
-QTableWidget::item { padding: 2px 6px; }
-QTableWidget::item:selected { background: %(rule)s; color: %(ink)s; }
-QHeaderView::section { background: %(panel)s; color: %(ink_2)s;
-    border: none; border-right: 1px solid %(rule)s;
-    border-bottom: 1px solid %(rule)s; padding: 4px 6px; }
 QSplitter::handle { background: %(ground)s; }
 """
 
