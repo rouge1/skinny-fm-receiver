@@ -28,6 +28,7 @@ Rules carried over from the RF bench toolkit:
   disconnected.
 """
 
+import os
 import sys
 import time
 
@@ -220,8 +221,15 @@ class Engine(gr.top_block):
         if self._audio_sink is None:
             # FM receiver: conda's ALSA reads the system's conf.d, where
             # PipeWire makes "default" its own plugin, which conda lacks.
-            # Its PulseAudio plugin reaches pipewire-pulse instead.
-            devices = ['', 'pulse'] if sys.platform.startswith('linux') else ['']
+            # Its PulseAudio plugin reaches pipewire-pulse instead. Tried
+            # first when a PulseAudio server is up, so "default" never gets
+            # to print its failures.
+            devices = ['']
+            if sys.platform.startswith('linux'):
+                runtime = os.environ.get('XDG_RUNTIME_DIR', '')
+                pulse_up = (os.environ.get('PULSE_SERVER')
+                            or os.path.exists(os.path.join(runtime, 'pulse', 'native')))
+                devices = ['pulse', ''] if pulse_up else ['', 'pulse']
             for device in devices:
                 try:
                     self._audio_sink = audio.sink(AUDIO_RATE, device, True)
