@@ -5,7 +5,8 @@ stereo/RDS reception with recording. It is a PyQt5 + GNU Radio 3.10 app
 with no launcher.
 
 - Run: `./fm-receiver` (activates the `gnu` conda env). Headless:
-  `QT_QPA_PLATFORM=offscreen ./fm-receiver --no-audio --quit-after 10 --screenshot out.png`
+  `QT_QPA_PLATFORM=offscreen ./fm-receiver --no-sound-card --quit-after 10 --screenshot out.png`
+  (`--no-sound-card` is hidden, for tests: `--no-audio` only starts muted)
 - Test: `python tools/tests/run_all.py` (no radio); add `--hw` when a BB60D
   is attached, `--hackrf` for a HackRF, `--rtl` for an RTL-SDR (with this
   app closed: the check starts and stops its own rtl_tcp). Other sessions on this machine (for
@@ -34,10 +35,9 @@ with no launcher.
   SoapySDR module opened), `hackrf_sweep.py` the HackRF's (its firmware's
   sweep mode through libhackrf, on the device the SoapySDR module lets go),
   `rtl_tcp.py` the RTL-SDR (an rtl_tcp client; rtl_tcp started here, or on
-  another computer over ssh), `rtl433.py` the rtl_433 chain, for Receive's
-  rtl_433 card (the radio's samples piped into rtl_433 processes, their
-  JSON read back; rtl_433 is a system package, `rtl-433` on Linux, not in
-  conda).
+  another computer over ssh), `control.py` the control socket the running window listens on,
+  which `tools/fmctl` talks to (with the window open, use it rather than
+  opening the radio).
 - Knowledge: `knowledge/capabilities.md` is the living capability list.
   Update it (and its status marks) when a feature is added or verified.
   `knowledge/usage.md` is the user guide. `knowledge/roadmap.md` holds

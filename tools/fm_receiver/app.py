@@ -8,10 +8,7 @@ spectrum view:
   cheap. The stations it finds are listed; double-click one, or the
   spectrum, to listen.
 - **Receive (IQ)** runs the radio at a narrow IQ bandwidth and demodulates
-  one station: stereo audio, RDS, the multiplex spectrum (``dsp.py``). Its
-  rtl_433 card passes the band to rtl_433 as well (``rtl433.py``), and lists
-  the sensors and remotes it decodes under the spectrum, beside the
-  multiplex. (rtl_433 had a tab of its own until Receive did the same.)
+  one station: stereo audio, RDS, the multiplex spectrum (``dsp.py``).
 
 The third, **Recordings**, lists what Record made (``library.py``) and plays
 it back. The radio is closed meanwhile - free for other programs - and
@@ -26,10 +23,8 @@ settings are saved when it closes (``config.py``).
 
 import argparse
 import concurrent.futures
-import html
 import math
 import os
-import shlex
 import signal
 import sys
 import time
@@ -37,7 +32,7 @@ import time
 import numpy as np  # type: ignore
 from PyQt5 import Qt, QtCore  # type: ignore
 
-from . import __version__, library, rtl433, theme
+from . import library, theme
 from .config import default_recording_dir, load_config, update_config
 from . import bb60_source, bb60_sweep
 from .bb60_sweep import RBW_LADDER, RT_MAX_SPAN_HZ
@@ -122,8 +117,6 @@ RADIO_ORDER = ('hackrf', 'usrp', 'bb60', 'rtlsdr', 'file')
 TAB_MODES = ('sweep', 'receive', 'recordings')
 #: The saved view (dials, span) of the RF spectrum in each mode that has one.
 VIEW_KEYS = {'receive': 'view_receive', 'playback': 'view_playback'}
-#: rtl_433's list of devices, under the spectrum, left to right.
-DEVICE_COLUMNS = ("Heard", "Device", "ID", "Ch", "MHz", "Readings", "Level", "Msgs")
 
 DEFAULTS = {
     'radio': None, 'usrp_address': '', 'iq_file': '', 'mode': 'receive',
@@ -149,10 +142,6 @@ DEFAULTS = {
     'view_playback': {'span_hz': 1e12, 'ref_db': -10, 'range_db': 110, 'avg': 4},
     'view_audio': {'span_hz': 16e3, 'ref_db': -10, 'range_db': 90, 'avg': 2},
     'play_loop': False,
-    # rtl_433 in Receive (its card): on or off; the whole band, in slices
-    # (rtl433.WHOLE_BAND), unless a width is picked; its log and options.
-    'rx_rtl433': False, 'rtl433_width_khz': rtl433.WHOLE_BAND,
-    'rtl433_log': False, 'rtl433_args': '',
     'theme': 'slate', 'geometry': None, 'splitters': {},
 }
 
@@ -318,8 +307,11 @@ class MainWindow(Qt.QWidget):
         # Tooltips while another window - the terminal - has the focus: Qt
         # shows them only in the active window otherwise.
         self.setAttribute(QtCore.Qt.WA_AlwaysShowToolTips, True)
-        self.setWindowTitle(f"FM Receiver {__version__}")
-        self.engine = Engine(want_audio=not args.no_audio)
+        self.setWindowTitle("FM Receiver")
+        self.engine = Engine(want_audio=not args.no_sound_card)
+        #: Muted by --no-audio, and not yet unmuted: the saved setting is
+        #: left as it was, so the flag lasts only for this run.
+        self._flag_muted = bool(args.no_audio)
         self.radio = None
         self._mode = None
         self._wav = None
@@ -353,14 +345,10 @@ class MainWindow(Qt.QWidget):
         self._names = {}
         self._rx_sig = None
         self._starting = False
-        #: rtl_433: each device heard, by rtl433.device_key; and the log.
-        self._devices = {}
-        self._devices_dirty = False
-        self._rx_rtl_note = None                 # why Receive's rtl_433 left something out
-        self._rtl_log = None
-        self._rtl_args_used = None
         # Recording: its description (RDS and all), for the Recordings tab.
         self._rec_info = None
+        #: The files the last recording saved (control.py replies with them).
+        self._last_saved = []
         # The Recordings tab: the live radio to go back to, what is listed,
         # chosen and playing, and the overview being worked out.
         self._live = None
@@ -705,7 +693,6 @@ class MainWindow(Qt.QWidget):
         box.addWidget(self._build_radio_card())
         box.addWidget(self._build_tuner_card())
         box.addWidget(self._build_rds_card())
-        box.addWidget(self._build_rx_rtl433_card())
         box.addStretch(1)
         return page
 
@@ -754,7 +741,6 @@ class MainWindow(Qt.QWidget):
             "the band\nthe spectrum shows, and the tuner can reach, around the "
             "Center.")
         self.rx_rate_combo.activated.connect(lambda _: (self._update_folder_tip(),
-                                                        self._label_rtl_width(),
                                                         self._restart_receive()))
         form.addRow("IQ bandwidth:", self.rx_rate_combo)
         # RF gain's row comes here in Receive (:meth:`_place_side_boxes`).
@@ -898,114 +884,6 @@ class MainWindow(Qt.QWidget):
         return self._foldable(box, form, 'rds',
                               keep=(self.lbl['nowplaying'], self.lbl['radiotext']))
 
-    def _build_rx_rtl433_card(self):
-        """rtl_433 on Receive's band, as RDS is on its station: where and
-        how it decodes, the device heard last, how strongly, and how well
-        rtl_433 is doing. Every device heard is listed under the spectrum,
-        in the rtl_433 devices tab beside the multiplex."""
-        box = Card("RTL433")
-        form = self._form(box)
-        big = Qt.QFont()
-        big.setPixelSize(19)
-        big.setBold(True)
-        row = Qt.QHBoxLayout()
-        self.rx_rtl_check = Qt.QCheckBox("Decode with rtl_433")
-        self.rx_rtl_check.setToolTip(
-            "rtl_433 on the band the radio streams, beside the station: the\n"
-            "sensors and remotes in it are listed under the spectrum. Ticking or\n"
-            "unticking it restarts Receive. It costs CPU: about half a core for\n"
-            "the whole band at 10 MS/s.")
-        self.rx_rtl_check.setChecked(bool(self.cfg['rx_rtl433']))
-        self.rx_rtl_check.toggled.connect(self._rx_rtl_toggled)
-        row.addWidget(self.rx_rtl_check)
-        row.addStretch(1)
-        self.rx_rtl_clear = Qt.QPushButton("Clear devices")
-        self.rx_rtl_clear.setToolTip("Forget the devices heard.")
-        self.rx_rtl_clear.clicked.connect(self._clear_devices)
-        row.addWidget(self.rx_rtl_clear)
-        form.addRow(row)
-        self.rtl_preset = Qt.QComboBox()
-        for hz, name in rtl433.PRESETS:
-            self.rtl_preset.addItem(name, hz)
-        self.rtl_preset.addItem("Where the radio is", None)
-        self.rtl_preset.setToolTip(
-            "An ISM band: the IQ bandwidth, Center and tuner set for rtl_433\n"
-            "there, and decoding switched on. Or anywhere: move the Center.")
-        self.rtl_preset.activated.connect(self._rtl_preset_chosen)
-        form.addRow("Band:", self.rtl_preset)
-        self.rtl_width_combo = Qt.QComboBox()
-        # Its label says how wide once a radio is open (_label_rtl_width).
-        self.rtl_width_combo.addItem("Whole band", rtl433.WHOLE_BAND)
-        for hz in rtl433.WIDTHS:
-            label = f"{hz / 1e3:g} kHz" if hz < 1e6 else f"{hz / 1e6:g} MHz"
-            self.rtl_width_combo.addItem(f"{label} at the tuner", float(hz))
-        saved = float(self.cfg['rtl433_width_khz']) * 1e3
-        self.rtl_width_combo.setCurrentIndex(max(0, self.rtl_width_combo.findData(saved)))
-        self.rtl_width_combo.setToolTip(
-            "How much of the band rtl_433 is given.\n"
-            "Whole band: all the radio takes in around the Center, cut into\n"
-            f"slices of about {rtl433.SLICE / 1e3:g} kHz, one rtl_433 each (at most "
-            f"{rtl433.MAX_SLICES}: the middle\n"
-            f"{rtl433.MAX_SLICES * rtl433.SLICE / 1e6:g} MHz of a wider IQ "
-            "bandwidth), so anything on the spectrum is decoded.\n"
-            "250 kHz: one rtl_433, its own default width, at the tuner - the\n"
-            "orange channel - and following it; much less CPU. 1 MHz: the same,\n"
-            "for the wider FSK sensors of 868 and 915 MHz.")
-        self.rtl_width_combo.activated.connect(lambda _: self._rtl_restart())
-        form.addRow("Width:", self.rtl_width_combo)
-        self.rtl_args = Qt.QLineEdit(self.cfg['rtl433_args'])
-        self.rtl_args.setPlaceholderText("none: every decoder rtl_433 enables itself")
-        self.rtl_args.setToolTip(
-            "More options for rtl_433, as on its command line, for example:\n"
-            "  -R 40 -R 73       only those decoders (rtl_433 -R help lists them)\n"
-            "  -R -129          all but that one\n"
-            "  -X \"n=gate,m=OOK_PWM,s=400,l=1000,r=6000\"   a decoder of your own\n"
-            "  -Y minmax        FSK pulse detection for weak signals\n"
-            "The samples, format and levels are set here and not to be given.")
-        self.rtl_args.editingFinished.connect(self._rtl_args_changed)
-        form.addRow("Options:", self.rtl_args)
-        self.rtl_log_check = Qt.QCheckBox("Log to file")
-        self.rtl_log_check.setToolTip(
-            "Every message rtl_433 decodes, as a line of JSON, in the recordings\n"
-            "folder (rtl_433-<date>-<time>.jsonl), with the time it was heard.")
-        self.rtl_log_check.setChecked(bool(self.cfg['rtl433_log']))
-        self.rtl_log_check.toggled.connect(self._rtl_log_toggled)
-        form.addRow(self.rtl_log_check)
-        self.rtl_log_label = _wrapping(Qt.QLabel(""))
-        self.rtl_log_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        self.rtl_log_label.setVisible(False)
-        form.addRow(self.rtl_log_label)
-        self.rtl_lbl = {}
-
-        def value(key, caption, font=None):
-            label = _wrapping(Qt.QLabel("-"))
-            label.setTextFormat(QtCore.Qt.RichText)
-            if font is not None:
-                label.setFont(font)
-            label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-            self.rtl_lbl[key] = label
-            form.addRow(caption, label)
-
-        form.addRow(_hline())
-        value('band', "Decoding:")
-        value('signal', "Signal:")
-        value('input', "Samples:")
-        form.addRow(_hline())
-        value('device', "Device:", big)
-        value('id', "ID:")
-        value('freq', "Frequency:")
-        value('readings', "Readings:", _mono_font(15))
-        value('heard', "Heard:")
-        value('devices', "Devices:")
-        value('quality', "Decode quality:")
-        self.rtl_lbl['signal'].setToolTip(
-            "The last device's burst in the radio's dBFS (rtl_433's level, less\n"
-            "what its samples were raised by), and how far over the noise of\n"
-            "the slice that heard it.")
-        self._rtl_latest = None                  # the key of the device heard last
-        return self._foldable(box, form, 'rx_rtl433',
-                              keep=(self.rtl_lbl['device'], self.rtl_lbl['readings']))
-
     def _build_recordings_tab(self):
         """The recordings in the folder, newest first, and the player."""
         page = Qt.QWidget()
@@ -1093,27 +971,6 @@ class MainWindow(Qt.QWidget):
         self._lib_watch.directoryChanged.connect(lambda _path: self._lib_timer.start())
         return page
 
-    def _build_devices_table(self):
-        """rtl_433's devices, one row each, the latest heard on top."""
-        table = Qt.QTableWidget(0, len(DEVICE_COLUMNS))
-        table.setHorizontalHeaderLabels(DEVICE_COLUMNS)
-        table.setEditTriggers(Qt.QAbstractItemView.NoEditTriggers)
-        table.setSelectionBehavior(Qt.QAbstractItemView.SelectRows)
-        table.setSelectionMode(Qt.QAbstractItemView.SingleSelection)
-        table.verticalHeader().setVisible(False)
-        table.setWordWrap(False)
-        table.setAlternatingRowColors(False)
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(Qt.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(DEVICE_COLUMNS.index("Readings"), Qt.QHeaderView.Stretch)
-        table.setToolTip("Each device rtl_433 has decoded: when it was last heard, where "
-                         "(MHz: rtl_433's estimate;\nfor an on-off device, the middle of "
-                         "the slice that heard it, to about 200 kHz), what it said,\nhow "
-                         "strong, and how many messages. Hover over one for all it last "
-                         "sent.")
-        self.devices_table = table
-        return table
-
     def _build_gain(self):
         """The RF gain row, in its own box: the box sits in Sweep's tab or
         under the tabs, and in Receive the row leaves it for a row of the
@@ -1147,7 +1004,7 @@ class MainWindow(Qt.QWidget):
         self.mute_btn.setCheckable(True)
         self.mute_btn.setToolTip("Mute the speaker (Ctrl+M). Recording carries on.")
         self.mute_btn.toggled.connect(self._mute_toggled)
-        self.mute_btn.setChecked(bool(self.cfg['muted']))
+        self.mute_btn.setChecked(bool(self.cfg['muted']) or self._flag_muted)
         grid.addWidget(self.mute_btn, 0, 0, 2, 1)
         self.volume_knob = Knob('Volume', 0, 100, float(self.cfg['volume']),
                                 lambda v: f"{v:.0f}%", step=1, wheel=2,
@@ -1221,9 +1078,8 @@ class MainWindow(Qt.QWidget):
         self.right_split.addWidget(self.top_stack)
 
         # Under the RF spectrum in Receive: the multiplex (RDS is in the
-        # Receive tab), and while rtl_433 decodes a tab of the devices it
-        # has heard (_show_devices_tab). Sweeping, it is hidden and the
-        # spectrum has the height: the stations found are in the Sweep tab.
+        # Receive tab). Sweeping, it is hidden and the spectrum has the
+        # height: the stations found are in the Sweep tab.
         self.bottom = Qt.QTabWidget()
         self.bottom.setTabBarAutoHide(True)
         self.bottom.setDocumentMode(True)
@@ -1233,7 +1089,6 @@ class MainWindow(Qt.QWidget):
         self.mpx_view.averageChanged.connect(self._mpx_average_changed)
         self.rx_page = self.mpx_view
         self.bottom.addTab(self.mpx_view, "Multiplex")
-        self._build_devices_table()             # a tab while rtl_433 decodes
         self.right_split.addWidget(self.bottom)
         self.right_split.setStretchFactor(0, 3)
         self.right_split.setStretchFactor(1, 2)
@@ -1283,11 +1138,7 @@ class MainWindow(Qt.QWidget):
             self._set_tuner(self.args.freq * 1e6)
         if self.args.sweep:
             self._set_sweep_span(*(mhz * 1e6 for mhz in self.args.sweep))
-        # Set for rtl_433 there once the radio is open (_load_radio_settings).
-        self._rtl_start_hz = (self.args.rtl433_freq * 1e6 if self.args.rtl433_freq
-                              else None)
-        mode = self.args.mode or ('receive' if self.args.file or self._rtl_start_hz
-                                  else None)
+        mode = self.args.mode or ('receive' if self.args.file else None)
         if mode:
             self.tabs.blockSignals(True)
             self.tabs.setCurrentIndex(TAB_MODES.index(mode))
@@ -1405,10 +1256,6 @@ class MainWindow(Qt.QWidget):
         low, high = radio.freq_range_hz
         self._tuner_range(low, high)
         self.center_entry.set_range(low, high)
-        self._label_rtl_width()
-        if self._rtl_start_hz:
-            self._rtl_plan(self._rtl_start_hz, restart=False)   # --rtl433-freq
-            self._rtl_start_hz = None
         self._show_sweep_rows(radio.native_sweep)
         self.rt_btn.setVisible(radio.native_sweep and radio.has_realtime
                                and self.args.realtime)
@@ -1574,9 +1421,8 @@ class MainWindow(Qt.QWidget):
         self.rf_view.clear_density()
         # Receiving, the view is the band the radio streams: no limits.
         self.rf_view.set_pan_limits(None, None)
-        decode = self._rtl_decode() if mode == 'receive' else None
         self.engine.start_receive(
-            station_hz, rate, center_hz=center_hz, decode=decode,
+            station_hz, rate, center_hz=center_hz,
             channel_bw=self.chan_entry.value(),
             region=self.region_combo.currentData(),
             stereo=self.stereo_check.isChecked(),
@@ -1589,15 +1435,10 @@ class MainWindow(Qt.QWidget):
         rx.rf_probe.set_alpha(1.0 / max(1, self.rf_view.avg_knob.value()))
         rx.mpx_probe.set_alpha(1.0 / max(1, self.mpx_view.avg_knob.value()))
         self._place_receive_view()
-        self._show_devices_tab(self.engine.decoder is not None)
-        if self.engine.decoder is None:
-            self.bottom.setCurrentWidget(self.rx_page)
+        self.bottom.setCurrentWidget(self.rx_page)
         self.bottom.setVisible(True)
         self._clear_rds_labels()
         self._show_audio_note()
-        if self.engine.decoder is not None:
-            self._rtl_log_toggled(self.rtl_log_check.isChecked())
-        self._show_rx_rtl433()
 
     def _place_receive_view(self, recentre=True):
         """Draw the band, the centre, the tuner and its channel where the
@@ -1650,20 +1491,18 @@ class MainWindow(Qt.QWidget):
             return (f"{self.radio.describe()} - "
                     + what.format(_freq_text(plan.start_hz), _freq_text(plan.stop_hz)))
         what = 'Sweeping' if e.mode == 'sweep' else 'Receiving'
-        text = f"{self.radio.describe()} - {what} at {rate_label(e.rate)}"
-        if e.mode == 'receive' and e.decoder is not None:
-            d = e.decoder
-            text += (f", rtl_433 on {_freq_text(d.low_hz)} to {_freq_text(d.high_hz)}"
-                     + (f" in {len(d.slices)} slices" if len(d.slices) > 1 else ""))
-        return text
+        return f"{self.radio.describe()} - {what} at {rate_label(e.rate)}"
 
     def _show_audio_note(self):
-        if self.args.no_audio:
-            self.audio_note.setText("Sound output is off (started with the "
-                                    "no-audio option); recording still works.")
+        if self.args.no_sound_card:
+            self.audio_note.setText("No sound output (started without a sound "
+                                    "card); recording still works.")
         elif self.engine.audio_error:
             self.audio_note.setText(_coloured(
                 f"No sound output: {self.engine.audio_error}", 'warn'))
+        elif self._flag_muted:
+            # Not "--no-audio": the theme's fonts join the hyphens into a dash.
+            self.audio_note.setText("Muted at start: press Mute to hear it.")
         else:
             self.audio_note.setText("")
 
@@ -1869,278 +1708,6 @@ class MainWindow(Qt.QWidget):
         if self.engine.sweeper is not None:
             self.engine.sweeper.set_paused(paused)
 
-    # ---- rtl_433
-    def _rtl_width(self):
-        """The Width in Hz, or rtl433.WHOLE_BAND (0)."""
-        data = self.rtl_width_combo.currentData()
-        return float(data) if data is not None else rtl433.WHOLE_BAND
-
-    def _label_rtl_width(self):
-        """'Whole band - 1.50 MHz, 6 slices', at the IQ bandwidth picked."""
-        index = self.rtl_width_combo.findData(rtl433.WHOLE_BAND)
-        text = "Whole band"
-        if self.radio is not None:
-            _, w, centres = rtl433.band_slices(self.radio, self._receive_rate())
-            text += f" - {len(centres) * w / 1e6:.2f} MHz, {len(centres)} slices"
-        self.rtl_width_combo.setItemText(index, text)
-
-    def _rtl_preset_chosen(self, index):
-        hz = self.rtl_preset.itemData(index)
-        if hz is not None:
-            self._rtl_plan(hz)
-
-    def _rtl_plan(self, hz, restart=True):
-        """Receive set for rtl_433 at ``hz``, as the width wants it: the
-        whole band, at the widest rate that fits in 12 slices, the Center
-        on ``hz`` (rtl433.band_plan); one slice, at the lowest rate that
-        holds it clear of the LO, the tuner on ``hz`` (rtl433.plan).
-        Decoding is switched on. False, and said, if the radio can't."""
-        radio = self.radio
-        if radio is None:
-            return False
-        width = self._rtl_width()
-        try:
-            if width == rtl433.WHOLE_BAND:
-                rate, lo = rtl433.band_plan(radio, hz)[:2]
-                station = lo + radio.clamp_offset(0.0, rate, lo)
-            else:
-                rate, lo, offset = rtl433.plan(radio, hz, width)
-                station = lo + offset
-        except ValueError as exc:
-            self._set_status(str(exc), 'warn')
-            return False
-        index = self.rx_rate_combo.findData(float(rate))
-        if index >= 0:
-            self.rx_rate_combo.setCurrentIndex(index)
-        self.center_entry.setValue(lo)
-        self._set_tuner(station)
-        self.rx_rtl_check.blockSignals(True)
-        self.rx_rtl_check.setChecked(True)
-        self.rx_rtl_check.blockSignals(False)
-        self._label_rtl_width()
-        if restart:
-            self._restart_receive()
-        return True
-
-    def _rtl_extra(self):
-        """The Options box as arguments; ValueError for unmatched quotes."""
-        return tuple(shlex.split(self.rtl_args.text()))
-
-    def _rtl_args_changed(self):
-        if self.rtl_args.text().strip() != self._rtl_args_used:
-            self._rtl_restart()
-
-    def _rtl_restart(self):
-        """A width or options changed: Receive again, if it decodes."""
-        if self.rx_rtl_check.isChecked():
-            self._restart_receive()
-        self._show_rx_rtl433()
-
-    def _rtl_decode(self):
-        """(rtl_433, its options, the width) for Receive, or None."""
-        self._rx_rtl_note = None
-        if not self.rx_rtl_check.isChecked():
-            return None
-        program = rtl433.find_program()
-        if program is None:
-            return None
-        self._rtl_args_used = self.rtl_args.text().strip()
-        try:
-            extra = self._rtl_extra()
-        except ValueError as exc:
-            extra = ()
-            self._rx_rtl_note = f"Options left out: {exc}"
-        return program, extra, self._rtl_width()
-
-    def _show_devices_tab(self, on):
-        """The devices heard, a tab beside the multiplex while rtl_433
-        decodes (and shown, when it starts)."""
-        index = self.bottom.indexOf(self.devices_table)
-        if on and index < 0:
-            self.bottom.addTab(self.devices_table, "rtl_433 devices")
-            self.bottom.setCurrentWidget(self.devices_table)
-        elif not on and index >= 0:
-            self.bottom.removeTab(index)
-
-    def _rtl_log_toggled(self, on):
-        """A log file for this run of the window, appended to across
-        restarts; a new one each time the box is ticked."""
-        d = self.engine.decoder
-        if on and self._rtl_log is None:
-            name = time.strftime('rtl_433-%Y%m%d-%H%M%S.jsonl')
-            self._rtl_log = os.path.join(self._recording_dir(), name)
-            try:
-                os.makedirs(self._recording_dir(), exist_ok=True)
-            except OSError:
-                pass
-        elif not on:
-            self._rtl_log = None
-        if d is not None and d.proc is not None:
-            d.set_log(self._rtl_log)
-            error = d.log_error
-        else:
-            error = None
-        if error:
-            self.rtl_log_label.setText(_coloured(f"Could not log: {error}", 'bad'))
-        elif self._rtl_log:
-            self.rtl_log_label.setText(f"Logging to {self._rtl_log}")
-        else:
-            self.rtl_log_label.setText("")
-        self.rtl_log_label.setVisible(bool(self.rtl_log_label.text()))
-
-    def _refresh_rtl433(self):
-        """What rtl_433 decoded, into the list, and the card."""
-        d = self.engine.decoder
-        for heard, msg in d.take():
-            key = rtl433.device_key(msg)
-            seen = self._devices.get(key)
-            if seen is None:
-                seen = self._devices[key] = {'first': heard, 'count': 0}
-            seen.update(last=heard, msg=msg)
-            seen['count'] += 1
-            self._rtl_latest = key
-            self._devices_dirty = True
-        if self._devices_dirty:
-            self._devices_dirty = False
-            self._fill_devices()
-        if d.log_error:
-            self.rtl_log_label.setText(_coloured(f"Could not log: {d.log_error}", 'bad'))
-        self._show_rx_rtl433()
-
-    def _rx_rtl_toggled(self, _on):
-        self._restart_receive()
-        self._show_rx_rtl433()
-
-    @staticmethod
-    def _level_text(msg, where):
-        """'-19.3 dBFS in <where>, 58 dB above the floor', as RDS's Signal,
-        from a message's level in the radio's dBFS; rtl_433's own
-        figures when those are missing (a recording's log); None if none."""
-        level, floor = msg.get('level_dbfs'), msg.get('floor_dbfs')
-        if isinstance(level, (int, float)):
-            text = f"{level:.1f} dBFS in {where}"
-            snr = level - floor if isinstance(floor, (int, float)) else None
-        elif isinstance(msg.get('rssi'), (int, float)):
-            text = f"{msg['rssi']:.1f} dB (rtl_433's)"
-            snr = msg.get('snr') if isinstance(msg.get('snr'), (int, float)) else None
-        else:
-            return None
-        if snr is not None:
-            token = 'good' if snr > 30 else 'warn' if snr > 15 else 'bad'
-            text += f", {_coloured(f'{snr:.0f} dB', token)} above the floor"
-        return text
-
-    def _show_rx_rtl433(self):
-        """The Receive tab's rtl_433 card: the chain, and the device heard
-        last."""
-        lbl = self.rtl_lbl
-        e = self.engine
-        d = e.decoder if self._mode == 'receive' else None
-        on = self.rx_rtl_check.isChecked()
-        signal = samples = quality = '-'
-        if not on:
-            band = "Off"
-        elif rtl433.find_program() is None:
-            band = _coloured(f"rtl_433 is not installed ({rtl433.install_hint()})", 'warn')
-        elif d is None:
-            band = "With Receive, when it starts"
-        else:
-            span = f"{d.low_hz / 1e6:.3f} to {d.high_hz / 1e6:.3f} MHz"
-            if len(d.slices) > 1:
-                band = f"{span}, {len(d.slices)} slices of {d.width / 1e3:g} kHz"
-                if self.radio is not None and \
-                        len(d.slices) < 2 * rtl433.slicing(self.radio, e.rate)[2]:
-                    band += f" - the middle of the {rate_label(e.rate)} band"
-            else:
-                band = f"{span}, at the tuner"
-            problem = (f"rtl_433 did not start: {e.decode_error}" if e.decode_error
-                       else d.problem())
-            if problem:
-                quality = _coloured(problem, 'bad')
-            else:
-                quality = f"rtl_433 {rtl433.program_version(d.proc.path)}: {d.decoded} messages"
-                if d.duplicates:
-                    quality += f", {d.duplicates} heard by two slices and kept once"
-                if d.dropped:
-                    quality += "<br>" + _coloured(f"{d.dropped} samples dropped: rtl_433 "
-                                                  "fell behind", 'warn')
-            if self._rx_rtl_note:
-                quality += "<br>" + _coloured(self._rx_rtl_note, 'warn')
-            if d.gain and d.gain > 1.01:
-                samples = f"Raised {20 * math.log10(d.gain):.0f} dB to rtl_433's level"
-            elif d.gain:
-                samples = "As they are: already at rtl_433's level"
-            # The band preset it is on, if any.
-            at = next((i for i in range(self.rtl_preset.count())
-                       if self.rtl_preset.itemData(i) is not None
-                       and d.low_hz <= self.rtl_preset.itemData(i) <= d.high_hz),
-                      self.rtl_preset.count() - 1)
-            if at != self.rtl_preset.currentIndex():
-                self.rtl_preset.setCurrentIndex(at)
-        seen = self._devices.get(self._rtl_latest) if self._rtl_latest else None
-        msg = seen['msg'] if seen else {}
-        if seen:
-            signal = self._level_text(msg, 'slice') or '-'
-            ident = [f"{k} {msg[k]}" for k in ('id', 'channel') if k in msg]
-            freq = msg.get('freq')
-            heard = time.strftime('%H:%M:%S', time.localtime(seen['last']))
-            count = seen['count']
-            texts = {'device': msg.get('model', '?'), 'id': ', '.join(ident) or '-',
-                     'freq': f"{freq:.3f} MHz" if isinstance(freq, (int, float)) else '-',
-                     'readings': html.escape(rtl433.readings_text(msg), quote=False) or '-',
-                     'heard': f"{heard}, {count} message{'s' if count != 1 else ''}"}
-        else:
-            texts = {k: '-' for k in ('device', 'id', 'freq', 'readings', 'heard')}
-        n = len(self._devices)
-        texts.update(band=band, signal=signal, input=samples, quality=quality,
-                     devices=(f"{n}, listed under the spectrum" if n else "None yet"))
-        for key, text in texts.items():
-            if lbl[key].text() != text:
-                lbl[key].setText(text)
-
-    def _fill_devices(self):
-        table = self.devices_table
-        current = table.currentItem()
-        keep = table.item(current.row(), 0).data(QtCore.Qt.UserRole) if current else None
-        rows = sorted(self._devices.items(), key=lambda kv: kv[1]['last'], reverse=True)
-        table.blockSignals(True)
-        table.setRowCount(len(rows))
-        for r, (key, seen) in enumerate(rows):
-            msg = seen['msg']
-            level = ''
-            if isinstance(msg.get('level_dbfs'), (int, float)):
-                level = f"{msg['level_dbfs']:.1f} dBFS"
-                if isinstance(msg.get('floor_dbfs'), (int, float)):
-                    level += f", SNR {msg['level_dbfs'] - msg['floor_dbfs']:.0f}"
-            elif isinstance(msg.get('rssi'), (int, float)):
-                level = f"{msg['rssi']:.1f} dB"
-                if isinstance(msg.get('snr'), (int, float)):
-                    level += f", SNR {msg['snr']:.0f}"
-            freq = msg.get('freq')
-            freq = f"{freq:.3f}" if isinstance(freq, (int, float)) else ''
-            cells = (time.strftime('%H:%M:%S', time.localtime(seen['last'])), key[0],
-                     key[1], key[2], freq, rtl433.readings_text(msg), level,
-                     str(seen['count']))
-            # Everything it last sent, on hover.
-            first = time.strftime('%H:%M:%S', time.localtime(seen['first']))
-            tip = "\n".join([f"{k}: {v}" for k, v in msg.items()]
-                            + [f"first heard: {first}", f"messages: {seen['count']}"])
-            for c, text in enumerate(cells):
-                item = Qt.QTableWidgetItem(text)
-                item.setToolTip(tip)
-                if c == 0:
-                    item.setData(QtCore.Qt.UserRole, key)
-                table.setItem(r, c, item)
-            if key == keep:
-                table.setCurrentCell(r, 0)
-        table.blockSignals(False)
-
-    def _clear_devices(self):
-        self._devices = {}
-        self._rtl_latest = None
-        self.devices_table.setRowCount(0)
-        self._show_rx_rtl433()
-
     # ============================================================= tuning
     def _set_tuner(self, hz, emit=False):
         """One frequency, both faces of the tuner: Receive's digits and
@@ -2291,7 +1858,7 @@ class MainWindow(Qt.QWidget):
             down = ("the gain goes down 10% when the radio reports an overload\n"
                     "(an overloaded BB60D sends nothing at all)")
             cost = ("Each change leaves a gap of about 0.1 s in the samples: a click\n"
-                    "in the audio, a burst rtl_433 may miss.")
+                    "in the audio.")
         else:
             sweep = "Not in Sweep on this radio: the slider sets the gain there.\n\n"
             down = (f"the gain goes down 10% when over {CLIP_HEAVY:.0%} of the samples\n"
@@ -2419,6 +1986,9 @@ class MainWindow(Qt.QWidget):
         self.rf_view.snap_hz = self._step_hz() if on else None
 
     def _mute_toggled(self, muted):
+        if not muted:
+            self._flag_muted = False
+            self._show_audio_note()
         self.mute_btn.setText("Muted" if muted else "Mute")
         for chain in (self.engine.rx, self.engine.player):
             if chain is not None:
@@ -2570,6 +2140,7 @@ class MainWindow(Qt.QWidget):
                 saved.append(f"Description not saved: {exc}")
             self._rec_info = None
         self._rec_t0 = None
+        self._last_saved = files
         self.rec_btn.blockSignals(True)
         self.rec_btn.setChecked(False)
         self.rec_btn.blockSignals(False)
@@ -3155,8 +2726,6 @@ class MainWindow(Qt.QWidget):
             self._check_health()
             if self._mode in ('receive', 'playback') and self.engine.rx is not None:
                 self._refresh_receive()
-                if self._mode == 'receive' and self.engine.decoder is not None:
-                    self._refresh_rtl433()
             elif self._mode == 'playback' and self.engine.player is not None:
                 self._refresh_wav()
             elif self._mode == 'sweep' and self.engine.sweeper is not None:
@@ -3423,16 +2992,21 @@ class MainWindow(Qt.QWidget):
     def _signal_text(self, rx):
         power = rx.channel_power_db()
         text = f"{power:.1f} dBFS in channel"
-        if self._rx_sig is not None:
-            freqs, db = self._rx_sig
-            e = self.engine
-            bw = self.chan_entry.value()
-            inside = np.abs(freqs - e.station_hz) < bw / 2
-            if inside.any():
-                snr = 10 * np.log10(np.mean(10 ** (db[inside] / 10))) - np.median(db)
-                token = 'good' if snr > 30 else 'warn' if snr > 15 else 'bad'
-                text += f", {_coloured(f'{snr:.0f} dB', token)} above the floor"
+        snr = self._snr_db()
+        if snr is not None:
+            token = 'good' if snr > 30 else 'warn' if snr > 15 else 'bad'
+            text += f", {_coloured(f'{snr:.0f} dB', token)} above the floor"
         return text
+
+    def _snr_db(self):
+        """The channel's mean level over the spectrum's median, or None."""
+        if self._rx_sig is None or self.engine.station_hz is None:
+            return None
+        freqs, db = self._rx_sig
+        inside = np.abs(freqs - self.engine.station_hz) < self.chan_entry.value() / 2
+        if not inside.any():
+            return None
+        return float(10 * np.log10(np.mean(10 ** (db[inside] / 10))) - np.median(db))
 
     def _refresh_rds(self, snap):
         name = snap['station_short'] or snap['station_name'] or ''
@@ -3511,7 +3085,9 @@ class MainWindow(Qt.QWidget):
             'channel_bw_khz': int(round(self.chan_entry.value() / 1e3)),
             'region': self.region_combo.currentData(),
             'stereo': self.stereo_check.isChecked(),
-            'volume': self.volume_knob.value(), 'muted': self.mute_btn.isChecked(),
+            'volume': self.volume_knob.value(),
+            'muted': (bool(self.cfg['muted']) if self._flag_muted
+                      else self.mute_btn.isChecked()),
             'sweep_start_mhz': self.sweep_start.value() / 1e6,
             'sweep_stop_mhz': self.sweep_stop.value() / 1e6,
             'sweep_rbw_khz': (self.rbw_combo.currentData() or 0.0) / 1e3,
@@ -3526,10 +3102,6 @@ class MainWindow(Qt.QWidget):
             'record_iq_band': self.rec_band.isChecked(),
             'view_mpx': self.mpx_view.state(),
             'play_loop': self.loop_check.isChecked(),
-            'rtl433_width_khz': self._rtl_width() / 1e3,
-            'rtl433_log': self.rtl_log_check.isChecked(),
-            'rtl433_args': self.rtl_args.text().strip(),
-            'rx_rtl433': self.rx_rtl_check.isChecked(),
             'geometry': bytes(self.saveGeometry().toHex()).decode(),
             'splitters': {name: bytes(split.saveState().toHex()).decode()
                           for name, split in (('main', self.main_split),
@@ -3574,9 +3146,6 @@ def parse_args(argv=None):
     ap.add_argument('--file', help="play an IQ recording (implies --radio file)")
     ap.add_argument('--freq', type=float, metavar='MHZ', help="station to tune")
     ap.add_argument('--mode', choices=TAB_MODES, help="tab to start in")
-    ap.add_argument('--rtl433-freq', type=float, metavar='MHZ',
-                    help="start in Receive, set for rtl_433 at this frequency "
-                         "(433.92, 315, 868.3, 915...) and decoding")
     ap.add_argument('--sweep', type=float, nargs=2, metavar=('START', 'STOP'),
                     help="sweep span in MHz")
     ap.add_argument('--theme', choices=list(theme.NAMES))
@@ -3584,10 +3153,15 @@ def parse_args(argv=None):
                     help="show the Sweep tab's Real time button (a BB60D, not "
                          "on a Mac): 27 MHz with nothing missed, and a density "
                          "map - Receive at 40 MS/s is otherwise much the same")
-    ap.add_argument('--no-audio', action='store_true',
-                    help="no sound output (recording still works)")
+    ap.add_argument('--no-audio', '--mute', dest='no_audio', action='store_true',
+                    help="start muted; press Mute (Ctrl+M) to hear it. Not "
+                         "saved: the next run starts as the settings say")
+    # (testing) No sound card at all: the tests, and a computer without one.
+    ap.add_argument('--no-sound-card', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--no-save', action='store_true',
                     help="do not save settings on exit")
+    ap.add_argument('--no-control', action='store_true',
+                    help="no control socket: fmctl can't reach this window")
     ap.add_argument('--screenshot', metavar='PNG',
                     help="(testing) save a picture of the window and quit, "
                          "after --quit-after seconds")
@@ -3607,6 +3181,11 @@ def main(argv=None):
     window = MainWindow(args, config)
     window.show()
     Qt.QTimer.singleShot(50, window.start_initial)
+    control = None
+    if not args.no_control:
+        from .control import ControlServer
+        control = ControlServer(window)
+        control.start()
 
     # A Python signal handler only runs when Python does, and Qt's event
     # loop idles in C++: keep a timer ticking so Ctrl+C and SIGTERM close
@@ -3631,6 +3210,8 @@ def main(argv=None):
         code = app.exec_()
     finally:
         ticker.stop()
+        if control is not None:
+            control.close()
         # However the loop ended, stop the flowgraph before Python tears
         # down: collecting a Python block under a running flowgraph aborts.
         try:

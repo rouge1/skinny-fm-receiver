@@ -1,7 +1,7 @@
 # FM Receiver
 
 An FM broadcast receiver for SDRs (Signal Hound BB60D, HackRF One, RTL-SDR,
-Ettus USRP) in four tabs:
+Ettus USRP) in three tabs:
 
 - **Sweep (FFT)** covers a span wider than the radio can see at once (the
   whole FM band, or anything up to 6 GHz) as one spectrum and waterfall, and
@@ -11,11 +11,7 @@ Ettus USRP) in four tabs:
   `rtl_tcp` there over ssh.
 - **Receive (IQ)** runs the radio at an IQ bandwidth (up to 27 MHz on the
   BB60D) and demodulates one station: stereo audio, RDS/RBDS, the multiplex
-  spectrum. Its RTL433 box passes the band (around 433.92 MHz, 315, 868
-  or 915, or wherever it is tuned) to
-  [rtl_433](https://github.com/merbanan/rtl_433) at the same time, from any
-  of the radios, and lists the weather stations, sensors and remotes it
-  decodes.
+  spectrum.
 - **Recordings** lists what you recorded and plays it back.
 
 The Sweep and Receive views have dials for span, reference level, amplitude
@@ -27,6 +23,7 @@ recordings back as if they were a radio. The status line warns of overload
 ```sh
 ./fm-receiver                # opens straight into the window
 ./fm-receiver --help
+tools/fmctl status           # work the open window from a script (fmctl help)
 ```
 
 - [knowledge/usage.md](knowledge/usage.md): how to use it

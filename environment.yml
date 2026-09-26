@@ -5,8 +5,7 @@
 #
 # The versions are the ones it was tested with. The BB60D needs Signal
 # Hound's library and SoapySDR module as well, which are not conda
-# packages, and the rtl_433 tab needs rtl_433 (apt's rtl-433, Homebrew's
-# rtl_433): see "Setting up" in knowledge/usage.md.
+# packages: see "Setting up" in knowledge/usage.md.
 name: gnu
 channels:
   - conda-forge

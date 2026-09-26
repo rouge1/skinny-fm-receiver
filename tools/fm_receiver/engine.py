@@ -1,4 +1,4 @@
-"""The flowgraph: one radio, and the sweep or the receive chain (with rtl_433).
+"""The flowgraph: one radio, and the sweep or the receive chain.
 
 Sweep and Receive want the radio at different rates and share nothing
 downstream of it, so switching mode stops the flowgraph, disconnects
@@ -8,11 +8,7 @@ open across the switch (``halt(hold=True)``) - reopening it was 1.6 s. The
 BB60D sweeps in the device instead (``bb60_sweep``), with no flowgraph at
 all, on the same open device; Receive starts its stream again. What
 must *not* rebuild - retuning, channel bandwidth, volume, mute, stereo,
-region, recording - is done on the running blocks. Receive can carry
-rtl_433's chain (``rtl433.DecodeChain``) too, on the same samples as the
-station (the Receive tab's rtl_433 card): its rtl_433 processes start with
-the chain and end with it, and retuning moves its slices without a
-rebuild.
+region, recording - is done on the running blocks.
 
 Recordings play through here too, with no radio open. An IQ recording is
 a radio (``radios.IQFile``) and goes through Receive; a WAV has a chain
@@ -34,7 +30,6 @@ import time
 
 from gnuradio import audio, gr  # type: ignore
 
-from . import rtl433
 from .dsp import AUDIO_RATE, ReceiveChain, WavChain, data_clock
 from .sweep import sweep_sink
 
@@ -53,8 +48,6 @@ class Engine(gr.top_block):
         self.rx = None
         self.sweeper = None
         self.player = None
-        self.decoder = None
-        self.decode_error = None                 # why rtl_433 did not start in Receive
         self.rate = None
         self.lo_hz = None
         self.offset_hz = None
@@ -116,16 +109,13 @@ class Engine(gr.top_block):
         self.disconnect_all()
         if self.sweeper is not None:
             self.sweeper.detach()
-        if self.decoder is not None:
-            self.decoder.close()                 # rtl_433 ends with its chain
-        for chain in (self.rx, self.sweeper, self.player, self.decoder):
+        for chain in (self.rx, self.sweeper, self.player):
             if chain is not None:
                 self._retired.append(chain)
         del self._retired[:-self.RETIRED_KEPT]
         self.rx = None
         self.sweeper = None
         self.player = None
-        self.decoder = None
         self.mode = None
 
     def _started(self):
@@ -243,15 +233,11 @@ class Engine(gr.top_block):
         return self._audio_sink
 
     # ---------------------------------------------------------- receive
-    def start_receive(self, station_hz, rate, center_hz=None, decode=None, **settings):
+    def start_receive(self, station_hz, rate, center_hz=None, **settings):
         """Build the receive chain for ``station_hz`` at IQ rate ``rate``
         and start. The LO stays at ``center_hz`` if the station fits in the
         band around it, else it is placed for the station. ``settings`` go
-        to :class:`ReceiveChain`. ``decode``, (rtl_433's path, its extra
-        arguments, a width), passes rtl_433 the band too: with
-        ``rtl433.WHOLE_BAND``, in slices (:func:`rtl433.band_slices`), else
-        one slice that wide at the tuner. If rtl_433 cannot start,
-        ``decode_error`` says why and receiving goes on without it."""
+        to :class:`ReceiveChain`."""
         self.halt(hold=True)
         self._clear()
         radio = self.radio
@@ -263,27 +249,9 @@ class Engine(gr.top_block):
         self.station_hz = self.lo_hz + self.offset_hz
         self.rx = ReceiveChain(self, radio.block, self.rate, self.offset_hz,
                                audio_sink=self._audio(), **settings)
-        self.decode_error = None
-        if decode is not None:
-            program, extra_args, width = decode
-            whole = width == rtl433.WHOLE_BAND
-            self.decoder = rtl433.DecodeChain(
-                self, radio.block, self.rate, self.lo_hz, None,
-                offset_hz=self.offset_hz, width_hz=width,
-                band=rtl433.band_slices(radio, self.rate) if whole else None,
-                dc_notch_hz=getattr(radio, 'dc_notch_hz', 0.0))
-            try:
-                self.decoder.launch(program, extra_args)
-            except Exception as exc:
-                self.decode_error = str(exc) or type(exc).__name__
         self.connect(radio.block, self._clock)
         self.mode = 'receive'
-        try:
-            self._started()
-        except Exception:
-            if self.decoder is not None:
-                self.decoder.close()
-            raise
+        self._started()
 
     def tune(self, station_hz, follow=False):
         """Retune in Receive. The tuner stays inside the band around the LO,
@@ -326,8 +294,6 @@ class Engine(gr.top_block):
         self.offset_hz = offset
         self.station_hz = lo + offset
         self.rx.set_offset(offset)
-        if self.decoder is not None:
-            self.decoder.retune(lo, offset)      # rtl_433's slices follow
         self.rx.discard_stale(self.radio.block, moved, self.radio.settle_ms / 1e3)
         return moved
 

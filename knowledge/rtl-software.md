@@ -3,9 +3,9 @@
 This is a survey of the Linux software that decodes or displays what an
 RTL-SDR (and usually the HackRF and BB60D too) can receive. For each tool it
 gives the Ubuntu 24.04 (noble) package, where one exists, and how the tool
-takes its samples, because that decides whether it could be fed the way
-Receive's rtl_433 card is (`rtl433.py`: the radio's samples piped in, JSON
-read back). RF CTF challenges and the tools that solve them are in
+takes its samples, because that decides whether it could be fed from the
+window's IQ out (roadmap Round 21: ZeroMQ, an rtl_tcp server, or a pipe to
+a command). RF CTF challenges and the tools that solve them are in
 [rf-ctf.md](rf-ctf.md).
 
 Researched on 2026-09-25. The apt facts were checked with `apt-cache policy`
@@ -204,9 +204,10 @@ aptdec and noaa-apt only matter for old recordings or a CTF WAV. The live
 
 ## Fit with this app
 
-Receive's rtl_433 card pipes the radio's samples into a process and reads
-JSON back. These tools take IQ or MPX the same way and write JSON, so they
-could become cards like it:
+Receive had an rtl_433 card that piped the radio's samples into a process
+and read JSON back (removed 2026-09-25: the app finds signals and records
+IQ, it doesn't decode). These tools take IQ or MPX the same way, so the
+window's IQ out (roadmap Round 21) or a recording could feed them:
 
 | Tool | What it takes | What it writes |
 |---|---|---|

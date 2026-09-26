@@ -252,7 +252,7 @@ def window_check():
         return until() if until else True
 
     w = fmapp.MainWindow(fmapp.parse_args(['--radio', 'hackrf', '--mode', 'sweep',
-                                           '--freq', '89.3', '--no-audio']), {})
+                                           '--freq', '89.3', '--no-sound-card']), {})
     try:
         w.show()
         pump(0.2)

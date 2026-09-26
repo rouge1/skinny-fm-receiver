@@ -63,7 +63,7 @@ WINDOWS = []
 
 
 def make_window(argv, config=None):
-    args = fmapp.parse_args(argv + ['--no-audio'])
+    args = fmapp.parse_args(argv + ['--no-sound-card'])
     window = fmapp.MainWindow(args, config or {'recording_dir': FOLDER})
     WINDOWS.append(window)
     window.show()
@@ -1216,8 +1216,7 @@ def part6_rtl_address():
 
 def part7_lost_radio():
     """A radio that stops sending says so in the status line, whichever
-    radio it is: the samples stopping in Receive, in a LO-hopping sweep and
-    in rtl_433,
+    radio it is: the samples stopping in Receive, in a LO-hopping sweep,
     a radio's own sweep going quiet (but not while paused), and at once
     when the radio knows why (an RTL-SDR's closed connection). It clears
     when the samples come back."""
@@ -1339,121 +1338,6 @@ def part8_reopen():
     print("part 8 passed")
 
 
-def part9_rtl433():
-    """rtl_433 in Receive, its card (the tab it had went): off, nothing
-    extra runs and the multiplex is alone under the spectrum. The 433.92
-    preset sets the rate, Center and tuner for the whole band and decodes:
-    six 250 kHz slices beside the station, and a devices tab beside the
-    multiplex, shown. A message is shown as RDS shows a station, its level
-    in dBFS, and listed. The Center moves the slices without a restart;
-    one 250 kHz slice follows the tuner. Bad Options say why. Unticked,
-    rtl_433 ends and the devices tab goes. (Decoding itself: test_rtl433.)"""
-    original = fmapp.make_radio
-    try:
-        fmapp.make_radio = lambda kind, *a, **k: SimRadio()
-        w = make_window(['--radio', 'hackrf', '--mode', 'receive', '--freq', '89.3'])
-        e = w.engine
-        card = w.rtl_lbl
-        installed = fmapp.rtl433.find_program() is not None
-        assert fmapp.TAB_MODES == ('sweep', 'receive', 'recordings') and w.tabs.count() == 3
-        assert not w.rx_rtl_check.isChecked() and e.decoder is None
-        assert card['band'].text() == 'Off', card['band'].text()
-        assert w.bottom.indexOf(w.devices_table) < 0 and w.bottom.tabBar().isHidden()
-        # The 433.92 MHz preset: the LO on it, the whole band (2 MS/s, 75%
-        # usable) in six 250 kHz slices, one rtl_433 each.
-        i = w.rtl_preset.findData(433.92e6)
-        w.rtl_preset.setCurrentIndex(i)
-        w._rtl_preset_chosen(i)
-        assert pump(3, lambda: e.running and e.mode == 'receive' and e.decoder is not None)
-        d = e.decoder
-        assert w.rx_rtl_check.isChecked() and abs(e.lo_hz - 433.92e6) < 1, e.lo_hz
-        assert e.rx is not None and len(d.slices) == 6 and d.predecim == 1
-        assert w.rtl_width_combo.currentText() == 'Whole band - 1.50 MHz, 6 slices', \
-            w.rtl_width_combo.currentText()
-        assert w.bottom.currentWidget() is w.devices_table and not w.bottom.tabBar().isHidden()
-        assert w.audio_box.isVisible() and w.record_box.isVisible()
-        assert 'rtl_433 on 433.17 MHz to 434.67 MHz in 6 slices' in w.status.text(), \
-            w.status.text()
-        procs = [p.proc for p in d.procs]
-        if not installed:
-            assert 'not installed' in card['band'].text()
-        else:
-            assert len(d.procs) == 6 and e.decode_error is None, e.decode_error
-            assert '6 slices of 250 kHz' in card['band'].text(), card['band'].text()
-            assert 'middle' not in card['band'].text()
-            # Heard later than the samples flowing now: only this block counts.
-            later = time.time() + 100
-            d.slices[2][1].history.append((later - 0.5, 10.0, 1e-4, 0.05))
-            d.procs[2]._new.append((later, {
-                'model': 'Oregon-THGR122N', 'id': 77, 'channel': 1, 'freq': 433.9,
-                'temperature_C': 19.5, 'rssi': -3.0, 'snr': 20.0, 'noise': -23.0}))
-            assert pump(3, lambda: card['device'].text() == 'Oregon-THGR122N'), \
-                card['device'].text()
-            # rtl_433's -3 dB, of samples raised 20 dB: -23 dBFS, 57 over a -80 floor.
-            assert card['signal'].text().startswith('-23.0 dBFS in slice'), card['signal'].text()
-            assert '57 dB' in card['signal'].text() and 'above the floor' in card['signal'].text()
-            assert card['id'].text() == 'id 77, channel 1'
-            assert 'temperature_C 19.5' in card['readings'].text()
-            assert card['freq'].text() == '433.900 MHz' and card['devices'].text().startswith('1,')
-            table = w.devices_table
-            assert table.rowCount() == 1
-            cells = [table.item(0, c).text() for c in range(len(fmapp.DEVICE_COLUMNS))]
-            assert cells[1:5] == ['Oregon-THGR122N', '77', '1', '433.900'], cells
-            assert cells[6] == '-23.0 dBFS, SNR 57', cells
-            assert 'temperature_C: 19.5' in table.item(0, 0).toolTip()   # all it sent
-            # The Center moves 200 kHz: the slices go with it, rtl_433 is not
-            # restarted, and what it says from then on is put right.
-            low = d.low_hz
-            w.center_entry.setValue(e.lo_hz + 200e3, emit=True)
-            assert pump(2, lambda: abs(d.low_hz - low - 200e3) < 1), d.low_hz - low
-            assert e.decoder is d and all(p.poll() is None for p in procs)
-            d.procs[0]._new.append((later + 1, {'model': 'Moved', 'freq': 433.5}))
-            assert pump(3, lambda: card['device'].text() == 'Moved')
-            assert card['freq'].text() == '433.700 MHz', card['freq'].text()
-            assert w.rtl_preset.currentData() == 433.92e6       # still in the band decoded
-            w._clear_devices()
-            assert card['device'].text() == '-' and card['devices'].text() == 'None yet'
-            assert w.devices_table.rowCount() == 0
-        # One 250 kHz slice, at the tuner and following it.
-        w.rtl_width_combo.setCurrentIndex(w.rtl_width_combo.findData(250e3))
-        w._rtl_restart()
-        assert pump(3, lambda: e.running and e.decoder is not None and e.decoder is not d)
-        d = e.decoder
-        if installed:
-            assert all(p.poll() is not None for p in procs), "a slice's rtl_433 still runs"
-            assert 'at the tuner' in card['band'].text(), card['band'].text()
-        assert len(d.slices) == 1 and abs(d.freq_hz - e.station_hz) < 1
-        w.tune(e.station_hz + 100e3)
-        assert e.decoder is d and abs(d.freq_hz - e.station_hz) < 1, (d.freq_hz, e.station_hz)
-        # Options that do not parse say so, and are left out.
-        w.rtl_args.setText('-X "n=unfinished')
-        w._rtl_args_changed()
-        assert pump(3, lambda: e.running and e.decoder is not None and e.decoder is not d)
-        if installed:
-            assert pump(2, lambda: 'Options left out' in card['quality'].text()), \
-                card['quality'].text()
-        w.rtl_args.setText('')
-        w._rtl_args_changed()
-        assert pump(3, lambda: e.running and e.decoder is not None)
-        # Unticked: rtl_433 ends, the devices tab goes.
-        procs = [p.proc for p in e.decoder.procs]
-        w.rx_rtl_check.setChecked(False)
-        assert pump(3, lambda: e.running and e.mode == 'receive' and e.decoder is None)
-        assert all(p.poll() is not None for p in procs), "rtl_433 still runs, unticked"
-        assert w.bottom.indexOf(w.devices_table) < 0 and w.bottom.currentWidget() is w.rx_page
-        assert card['band'].text() == 'Off'
-        w.close()
-        # --rtl433-freq: Receive, set for rtl_433 there, decoding.
-        w = make_window(['--radio', 'hackrf', '--rtl433-freq', '433.92'])
-        e = w.engine
-        assert pump(3, lambda: e.running and e.decoder is not None), w.status.text()
-        assert w._mode == 'receive' and abs(e.lo_hz - 433.92e6) < 1
-        w.close()
-    finally:
-        fmapp.make_radio = original
-    print("part 9 passed")
-
-
 def iq_agc_steps():
     """IqAgc alone: down 10% once overloads show in two polls within 1.5 s, nothing
     judged within a second of a change, up 5% after a minute quiet, never
@@ -1527,7 +1411,7 @@ class ClipRadio(SimRadio):
 
 
 def part10_iq_agc():
-    """AGC in Receive, with rtl_433 decoding and without, on a radio that
+    """AGC in Receive, on a radio that
     overloads over 42%: the gain comes down by itself until it stops, the
     slider stays the ceiling,
     the silence is called an overload rather than a lost radio, and
@@ -1539,86 +1423,82 @@ def part10_iq_agc():
     fmapp.STALL_S = 1.0
     try:
         fmapp.make_radio = lambda kind, *a, **k: OverloadRadio()
-        for decode in (False, True):                  # and with rtl_433 decoding
-            w = make_window(['--radio', 'bb60', '--mode', 'receive', '--freq', '89.3'],
-                            config={'recording_dir': FOLDER, 'rx_rtl433': decode})
-            r = w.radio
-            assert w.agc_box.isVisible()
-            w.gain_slider.setValue(60)
-            w.agc_box.setChecked(True)
-            assert w._iq_agc_on() and w.gain_label.text() == 'AGC 60%', w.gain_label.text()
-            assert 'turn AGC off' in w.agc_box.toolTip()
-            seen_agc_status = []
-            ok = pump(10, lambda: (seen_agc_status.append('AGC is turning' in w.status.text())
-                                   or r.gain_percent <= r.limit and w.engine.running))
-            assert ok, (decode, r.gain_percent, r.applied)
-            assert r.gain_percent == 40 and r.applied[-2:] == [50, 40], r.applied
-            assert any(seen_agc_status), "the status line never said AGC was at work"
-            # The slider follows AGC; where it was put by hand is the limit.
-            assert w.gain_slider.value() == 40 and w.gain_label.text() == 'AGC 40%'
-            assert w._agc_ceiling == 60 and 'up to 60%' in w.gain_slider.toolTip()
-            pump(2.5)
-            text = w.status.text()
-            assert 'No samples' not in text and 'lost' not in text, text
-            assert r.gain_percent == 40, r.applied              # settled, no hunting
-            if not decode:
-                # Saved apart: the slider where AGC left it, the limit where
-                # it was put; a new window starts at the first, may go to the second.
-                w._remember_radio_settings()
-                assert w.cfg['gain']['bb60'] == 40 and w.cfg['agc_ceiling']['bb60'] == 60
-                again = make_window(['--radio', 'bb60', '--mode', 'sweep', '--freq', '89.3'],
-                                    config={'recording_dir': FOLDER, 'gain': {'bb60': 40},
-                                            'agc_ceiling': {'bb60': 60}})
-                assert again.gain_slider.value() == 40 and again._agc_ceiling == 60
-                again.close()
-                # A move by hand under AGC: the new limit, and the gain.
-                w.gain_slider.setValue(30)
-                assert w._agc_ceiling == 30 and r.gain_percent == 30
-                pump(1)
-                assert r.gain_percent == 30 and w.gain_slider.value() == 30
-            # Off: the gain stays where AGC put it, and the slider is there.
-            w.agc_box.setChecked(False)
-            assert w.gain_slider.value() == r.gain_percent, (w.gain_slider.value(), r.gain_percent)
-            assert w.gain_label.text() == f'{w.gain_slider.value()}%', w.gain_label.text()
-            w.close()
+        w = make_window(['--radio', 'bb60', '--mode', 'receive', '--freq', '89.3'],
+                        config={'recording_dir': FOLDER})
+        r = w.radio
+        assert w.agc_box.isVisible()
+        w.gain_slider.setValue(60)
+        w.agc_box.setChecked(True)
+        assert w._iq_agc_on() and w.gain_label.text() == 'AGC 60%', w.gain_label.text()
+        assert 'turn AGC off' in w.agc_box.toolTip()
+        seen_agc_status = []
+        ok = pump(10, lambda: (seen_agc_status.append('AGC is turning' in w.status.text())
+                               or r.gain_percent <= r.limit and w.engine.running))
+        assert ok, (r.gain_percent, r.applied)
+        assert r.gain_percent == 40 and r.applied[-2:] == [50, 40], r.applied
+        assert any(seen_agc_status), "the status line never said AGC was at work"
+        # The slider follows AGC; where it was put by hand is the limit.
+        assert w.gain_slider.value() == 40 and w.gain_label.text() == 'AGC 40%'
+        assert w._agc_ceiling == 60 and 'up to 60%' in w.gain_slider.toolTip()
+        pump(2.5)
+        text = w.status.text()
+        assert 'No samples' not in text and 'lost' not in text, text
+        assert r.gain_percent == 40, r.applied              # settled, no hunting
+        # Saved apart: the slider where AGC left it, the limit where
+        # it was put; a new window starts at the first, may go to the second.
+        w._remember_radio_settings()
+        assert w.cfg['gain']['bb60'] == 40 and w.cfg['agc_ceiling']['bb60'] == 60
+        again = make_window(['--radio', 'bb60', '--mode', 'sweep', '--freq', '89.3'],
+                            config={'recording_dir': FOLDER, 'gain': {'bb60': 40},
+                                    'agc_ceiling': {'bb60': 60}})
+        assert again.gain_slider.value() == 40 and again._agc_ceiling == 60
+        again.close()
+        # A move by hand under AGC: the new limit, and the gain.
+        w.gain_slider.setValue(30)
+        assert w._agc_ceiling == 30 and r.gain_percent == 30
+        pump(1)
+        assert r.gain_percent == 30 and w.gain_slider.value() == 30
+        # Off: the gain stays where AGC put it, and the slider is there.
+        w.agc_box.setChecked(False)
+        assert w.gain_slider.value() == r.gain_percent, (w.gain_slider.value(), r.gain_percent)
+        assert w.gain_label.text() == f'{w.gain_slider.value()}%', w.gain_label.text()
+        w.close()
         # A HackRF: its clipped share drives it; nothing in Sweep.
         fmapp.make_radio = lambda kind, *a, **k: ClipRadio()
-        for decode in (False, True):
-            w = make_window(['--radio', 'hackrf', '--mode', 'receive', '--freq', '89.3'],
-                            config={'recording_dir': FOLDER, 'rx_rtl433': decode})
-            r = w.radio
-            share = lambda: 0.5 if r.gain_percent > 42 else 0.0           # noqa: E731
-            w._clip_counts = lambda: ('receive', int(share() * 1e4), 10000)
-            w.gain_slider.setValue(60)
-            w.agc_box.setChecked(True)
-            assert w.agc_box.isVisible() and w.agc_box.isEnabled() and w._iq_agc_on()
-            tip = w.agc_box.toolTip()
-            assert '5% when over 1%' in tip and 'turn AGC off' in tip, tip
-            said = []
-            assert pump(10, lambda: said.append('AGC is turning the gain down' in w.status.text())
-                        or r.gain_percent == 40), (decode, r.gain_percent)
-            assert any(said), "the status line never said AGC was at work"
-            pump(2)
-            assert r.gain_percent == 40 and w.gain_slider.value() == 40 and w._agc_ceiling == 60
-            if not decode:
-                # A light overload (3%) takes a half step: 40 to 35.
-                w._iq_agc.changed_at = None
-                w._clip_counts = lambda: ('receive', 300, 10000)
-                assert pump(3, lambda: r.gain_percent == 35), r.gain_percent
-                w._clip_counts = lambda: ('receive', 0, 10000)
-                pump(1.2)
-                # Clipping a little (0.5%): held, and not called an overload.
-                w._iq_agc.quiet_since -= 120
-                w._clip_counts = lambda: ('receive', 50, 10000)
-                pump(1.5)
-                assert r.gain_percent == 35, r.gain_percent
-                # Sweep: the box keeps its tick, greyed; the slider is the gain.
-                w.tabs.setCurrentIndex(fmapp.TAB_MODES.index('sweep'))
-                pump(0.5)
-                assert w.agc_box.isChecked() and not w.agc_box.isEnabled()
-                assert w.gain_slider.isEnabled() and w.gain_label.text() == '35%', \
-                    w.gain_label.text()
-            w.close()
+        w = make_window(['--radio', 'hackrf', '--mode', 'receive', '--freq', '89.3'],
+                        config={'recording_dir': FOLDER})
+        r = w.radio
+        share = lambda: 0.5 if r.gain_percent > 42 else 0.0           # noqa: E731
+        w._clip_counts = lambda: ('receive', int(share() * 1e4), 10000)
+        w.gain_slider.setValue(60)
+        w.agc_box.setChecked(True)
+        assert w.agc_box.isVisible() and w.agc_box.isEnabled() and w._iq_agc_on()
+        tip = w.agc_box.toolTip()
+        assert '5% when over 1%' in tip and 'turn AGC off' in tip, tip
+        said = []
+        assert pump(10, lambda: said.append('AGC is turning the gain down' in w.status.text())
+                    or r.gain_percent == 40), r.gain_percent
+        assert any(said), "the status line never said AGC was at work"
+        pump(2)
+        assert r.gain_percent == 40 and w.gain_slider.value() == 40 and w._agc_ceiling == 60
+        # A light overload (3%) takes a half step: 40 to 35.
+        w._iq_agc.changed_at = None
+        w._clip_counts = lambda: ('receive', 300, 10000)
+        assert pump(3, lambda: r.gain_percent == 35), r.gain_percent
+        w._clip_counts = lambda: ('receive', 0, 10000)
+        pump(1.2)
+        # Clipping a little (0.5%): held, and not called an overload.
+        w._iq_agc.quiet_since -= 120
+        w._clip_counts = lambda: ('receive', 50, 10000)
+        pump(1.5)
+        assert r.gain_percent == 35, r.gain_percent
+        # Sweep: the box keeps its tick, greyed; the slider is the gain.
+        w.tabs.setCurrentIndex(fmapp.TAB_MODES.index('sweep'))
+        pump(0.5)
+        assert w.agc_box.isChecked() and not w.agc_box.isEnabled()
+        assert w.gain_slider.isEnabled() and w.gain_label.text() == '35%', \
+            w.gain_label.text()
+        w.close()
         # With AGC off, a silent overloaded radio still says overloaded, not lost.
         fmapp.make_radio = lambda kind, *a, **k: OverloadRadio()
         w = make_window(['--radio', 'bb60', '--mode', 'receive', '--freq', '89.3'])
@@ -1644,7 +1524,6 @@ if __name__ == '__main__':
         part6_rtl_address()
         part7_lost_radio()
         part8_reopen()
-        part9_rtl433()
         part10_iq_agc()
         print("GUI: all checks passed")
     finally:
