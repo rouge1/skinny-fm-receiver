@@ -127,7 +127,7 @@ Useful options (`./fm-receiver --help` lists them all):
 | `--sweep 87.5 108` | Set the sweep span (MHz) |
 | `--theme slate` / `reading-room` / `walnut` | Choose the colour theme |
 | `--realtime` | Show the Sweep tab's **Real time** button (BB60D, not on a Mac); it is hidden otherwise |
-| `--no-audio` | Don't use the sound card (recording still works) |
+| `--no-audio` (or `--mute`) | Start muted: press **Mute** (Ctrl+M) to hear it. Only for this run: the saved Mute setting is left as it was |
 | `--no-save` | Don't save settings when the window closes |
 | `--no-control` | No control socket: `tools/fmctl` can't reach this window (see [Controlling the window from a script](#controlling-the-window-from-a-script-fmctl)) |
 

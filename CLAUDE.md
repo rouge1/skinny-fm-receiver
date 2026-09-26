@@ -5,7 +5,8 @@ stereo/RDS reception with recording. It is a PyQt5 + GNU Radio 3.10 app
 with no launcher.
 
 - Run: `./fm-receiver` (activates the `gnu` conda env). Headless:
-  `QT_QPA_PLATFORM=offscreen ./fm-receiver --no-audio --quit-after 10 --screenshot out.png`
+  `QT_QPA_PLATFORM=offscreen ./fm-receiver --no-sound-card --quit-after 10 --screenshot out.png`
+  (`--no-sound-card` is hidden, for tests: `--no-audio` only starts muted)
 - Test: `python tools/tests/run_all.py` (no radio); add `--hw` when a BB60D
   is attached, `--hackrf` for a HackRF, `--rtl` for an RTL-SDR (with this
   app closed: the check starts and stops its own rtl_tcp). Other sessions on this machine (for

@@ -159,7 +159,8 @@ The BB60D's own sweep, for comparison (off air, 2026-09-22):
 | Mute (button, Ctrl+M) | 🧪 ✅ | Output gain goes to 0. The meters and any recording carry on. |
 | Volume (dial, Ctrl+Up/Down) | 🧪 | Square law, up to 1.5× at 100%. |
 | L/R level meters (peak, RMS, peak hold) | 🧪 ✅ | They show the level before the volume control. |
-| Runs without a sound card (`--no-audio`, or none found) | 🧪 | |
+| Runs without a sound card (none found, or the tests' hidden `--no-sound-card`) | 🧪 | |
+| `--no-audio` starts muted (asked for 2026-09-25) | 🧪 | It used to leave the sound card closed, so there was no way to listen without starting again. Now the sound card opens and Mute starts pressed; the Audio box says "Muted at start (--no-audio)". The flag's mute is not saved: until Mute is pressed by hand, closing keeps the saved setting (`test_control.py` part 3). `--mute` is the same flag. |
 
 ## Recording
 

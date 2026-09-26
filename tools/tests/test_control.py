@@ -15,6 +15,10 @@ span the whole radio there, so the band is the engine's), the range and
 AGC reported as the window has them, and AGC switched with its row hidden
 by the fold. Both went wrong off air on the BB60D before this part.
 
+Part 3 is ``--no-audio``: the window starts muted, says so, and unmutes
+from ``mute off``; the flag's mute is never saved, so the next run starts
+as the settings say.
+
 Run:  python tools/tests/test_control.py     (about half a minute)
 """
 
@@ -132,7 +136,7 @@ def part2_retuning_radio():
     original = fmapp.make_radio
     fmapp.make_radio = lambda kind, *a, **k: SimRadio()
     args = fmapp.parse_args(['--radio', 'hackrf', '--mode', 'receive', '--freq', '95.1',
-                             '--no-audio', '--no-save'])
+                             '--no-sound-card', '--no-save'])
     w = fmapp.MainWindow(args, {'recording_dir': FOLDER, 'folded': {'radio': True}})
     w.show()
     pump(0.2)
@@ -171,9 +175,39 @@ def part2_retuning_radio():
         fmapp.make_radio = original
 
 
+def part3_no_audio():
+    path = os.environ['FMRX_CONFIG']
+    station = os.path.join(FOLDER, 'synth.cfile')
+    for saved_muted in (False, True):
+        with open(path, 'w') as fh:
+            json.dump({'muted': saved_muted}, fh)
+        args = fmapp.parse_args(['--file', station, '--no-audio', '--no-sound-card'])
+        w = fmapp.MainWindow(args, {'recording_dir': FOLDER, 'muted': saved_muted})
+        w.show()
+        pump(0.2)
+        w.start_initial()
+        control = ControlServer(w)
+        assert control.start()
+        try:
+            c = Client()
+            assert w.mute_btn.isChecked() and c.ok('status')['muted']
+            assert w.engine.rx.muted, 'the flowgraph plays'
+            assert w._flag_muted
+            w.save_settings()                   # still muted by the flag: not saved
+            assert json.load(open(path))['muted'] is saved_muted
+            assert not c.ok('mute off')['muted']
+            assert not w._flag_muted and not w.engine.rx.muted
+            w.save_settings()                   # unmuted by hand: that is saved
+            assert json.load(open(path))['muted'] is False
+        finally:
+            control.close()
+            w.close()
+    print("--no-audio: muted at start, not saved, unmuted by mute off")
+
+
 def main():
     station = signals.write_station(os.path.join(FOLDER, 'synth'), seconds=12.0)
-    args = fmapp.parse_args(['--file', station, '--no-audio', '--no-save'])
+    args = fmapp.parse_args(['--file', station, '--no-sound-card', '--no-save'])
     w = fmapp.MainWindow(args, {'recording_dir': FOLDER})
     w.show()
     pump(0.2)
@@ -278,6 +312,7 @@ def main():
     code, _, err = fmctl('status')
     assert code == 2 and 'no FM receiver window' in err, (code, err)
     part2_retuning_radio()
+    part3_no_audio()
     print("control socket and fmctl: OK")
     return 0
 

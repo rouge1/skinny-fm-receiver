@@ -32,7 +32,7 @@ import time
 import numpy as np  # type: ignore
 from PyQt5 import Qt, QtCore  # type: ignore
 
-from . import __version__, library, theme
+from . import library, theme
 from .config import default_recording_dir, load_config, update_config
 from . import bb60_source, bb60_sweep
 from .bb60_sweep import RBW_LADDER, RT_MAX_SPAN_HZ
@@ -307,8 +307,11 @@ class MainWindow(Qt.QWidget):
         # Tooltips while another window - the terminal - has the focus: Qt
         # shows them only in the active window otherwise.
         self.setAttribute(QtCore.Qt.WA_AlwaysShowToolTips, True)
-        self.setWindowTitle(f"FM Receiver {__version__}")
-        self.engine = Engine(want_audio=not args.no_audio)
+        self.setWindowTitle("FM Receiver")
+        self.engine = Engine(want_audio=not args.no_sound_card)
+        #: Muted by --no-audio, and not yet unmuted: the saved setting is
+        #: left as it was, so the flag lasts only for this run.
+        self._flag_muted = bool(args.no_audio)
         self.radio = None
         self._mode = None
         self._wav = None
@@ -999,7 +1002,7 @@ class MainWindow(Qt.QWidget):
         self.mute_btn.setCheckable(True)
         self.mute_btn.setToolTip("Mute the speaker (Ctrl+M). Recording carries on.")
         self.mute_btn.toggled.connect(self._mute_toggled)
-        self.mute_btn.setChecked(bool(self.cfg['muted']))
+        self.mute_btn.setChecked(bool(self.cfg['muted']) or self._flag_muted)
         grid.addWidget(self.mute_btn, 0, 0, 2, 1)
         self.volume_knob = Knob('Volume', 0, 100, float(self.cfg['volume']),
                                 lambda v: f"{v:.0f}%", step=1, wheel=2,
@@ -1489,12 +1492,14 @@ class MainWindow(Qt.QWidget):
         return f"{self.radio.describe()} - {what} at {rate_label(e.rate)}"
 
     def _show_audio_note(self):
-        if self.args.no_audio:
-            self.audio_note.setText("Sound output is off (started with the "
-                                    "no-audio option); recording still works.")
+        if self.args.no_sound_card:
+            self.audio_note.setText("No sound output (started with "
+                                    "--no-sound-card); recording still works.")
         elif self.engine.audio_error:
             self.audio_note.setText(_coloured(
                 f"No sound output: {self.engine.audio_error}", 'warn'))
+        elif self._flag_muted:
+            self.audio_note.setText("Muted at start (--no-audio): press Mute to hear it.")
         else:
             self.audio_note.setText("")
 
@@ -1978,6 +1983,9 @@ class MainWindow(Qt.QWidget):
         self.rf_view.snap_hz = self._step_hz() if on else None
 
     def _mute_toggled(self, muted):
+        if not muted:
+            self._flag_muted = False
+            self._show_audio_note()
         self.mute_btn.setText("Muted" if muted else "Mute")
         for chain in (self.engine.rx, self.engine.player):
             if chain is not None:
@@ -3073,7 +3081,9 @@ class MainWindow(Qt.QWidget):
             'channel_bw_khz': int(round(self.chan_entry.value() / 1e3)),
             'region': self.region_combo.currentData(),
             'stereo': self.stereo_check.isChecked(),
-            'volume': self.volume_knob.value(), 'muted': self.mute_btn.isChecked(),
+            'volume': self.volume_knob.value(),
+            'muted': (bool(self.cfg['muted']) if self._flag_muted
+                      else self.mute_btn.isChecked()),
             'sweep_start_mhz': self.sweep_start.value() / 1e6,
             'sweep_stop_mhz': self.sweep_stop.value() / 1e6,
             'sweep_rbw_khz': (self.rbw_combo.currentData() or 0.0) / 1e3,
@@ -3139,8 +3149,11 @@ def parse_args(argv=None):
                     help="show the Sweep tab's Real time button (a BB60D, not "
                          "on a Mac): 27 MHz with nothing missed, and a density "
                          "map - Receive at 40 MS/s is otherwise much the same")
-    ap.add_argument('--no-audio', action='store_true',
-                    help="no sound output (recording still works)")
+    ap.add_argument('--no-audio', '--mute', dest='no_audio', action='store_true',
+                    help="start muted; press Mute (Ctrl+M) to hear it. Not "
+                         "saved: the next run starts as the settings say")
+    # (testing) No sound card at all: the tests, and a computer without one.
+    ap.add_argument('--no-sound-card', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--no-save', action='store_true',
                     help="do not save settings on exit")
     ap.add_argument('--no-control', action='store_true',

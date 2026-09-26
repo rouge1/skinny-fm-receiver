@@ -63,7 +63,7 @@ WINDOWS = []
 
 
 def make_window(argv, config=None):
-    args = fmapp.parse_args(argv + ['--no-audio'])
+    args = fmapp.parse_args(argv + ['--no-sound-card'])
     window = fmapp.MainWindow(args, config or {'recording_dir': FOLDER})
     WINDOWS.append(window)
     window.show()

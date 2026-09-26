@@ -169,7 +169,7 @@ def window_check():
             time.sleep(0.02)
         return until() if until else True
 
-    argv = ['--radio', 'rtlsdr', '--mode', 'sweep', '--no-audio']
+    argv = ['--radio', 'rtlsdr', '--mode', 'sweep', '--no-sound-card']
     if ADDRESS:
         argv += ['--rtl-address', ADDRESS]
     w = fmapp.MainWindow(fmapp.parse_args(argv), {})
