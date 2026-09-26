@@ -218,11 +218,19 @@ class Engine(gr.top_block):
         if not self.want_audio or self.audio_error:
             return None
         if self._audio_sink is None:
-            try:
-                self._audio_sink = audio.sink(AUDIO_RATE, '', True)
-            except Exception as exc:
-                self.audio_error = str(exc)
-                print(f"FM receiver: no audio output ({exc})", file=sys.stderr)
+            # FM receiver: conda's ALSA reads the system's conf.d, where
+            # PipeWire makes "default" its own plugin, which conda lacks.
+            # Its PulseAudio plugin reaches pipewire-pulse instead.
+            devices = ['', 'pulse'] if sys.platform.startswith('linux') else ['']
+            for device in devices:
+                try:
+                    self._audio_sink = audio.sink(AUDIO_RATE, device, True)
+                    break
+                except Exception as exc:
+                    error = exc
+            else:
+                self.audio_error = str(error)
+                print(f"FM receiver: no audio output ({error})", file=sys.stderr)
                 return None
         return self._audio_sink
 
