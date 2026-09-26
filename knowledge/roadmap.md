@@ -943,3 +943,60 @@ one frequency.
 - [x] **Tuner range inside the Tuner box**, right on top of the tuner
   digits and centred over them: "↔ 97.800 - 99.000 MHz", the DC gap moved to its tooltip. In
   sight folded or open.
+
+## Round 20: a control API for the running window (requested 2026-09-25, planned)
+
+Asked for so Claude can drive the radio while the window is open in front
+of the user: change any setting, see the result, read it back. Planned
+only; to be built later, on a feature branch.
+
+**How it works.** While the app runs it listens on a local control socket
+(`QLocalServer`: a Unix socket, the user's account only, mode 0600; never
+the network). A small command-line client, `tools/fmctl`, sends one JSON
+command a line and prints the reply. Every command runs on the Qt main
+thread and **works the same widgets a click does** (the tuner's digits,
+the gain slider, the tabs, the checkboxes), so the window moves in front
+of the user, settings are saved the usual way (`config.update_config`),
+and the window and the API can never disagree. Works on the Mac as on
+Linux (Qt's local sockets on both).
+
+**Commands** (the first version marked *):
+
+| Command | Does |
+|---|---|
+| `status` * | Radio, tab, Center, tuner, rate, gain/AGC, volume/mute, stereo, RDS (PI, PS, RadioText, % good), signal (dBFS, SNR), clipped %, the status line, what is recording, rtl_433's last device |
+| `tune 99.1` * | The tuner, as the digits do |
+| `center 433.92` * | The Radio box's Center |
+| `gain 45`, `agc on/off` * | RF gain and AGC |
+| `mode sweep/receive/recordings` * | The tabs |
+| `volume 40`, `mute on/off` * | Audio |
+| `screenshot out.png` * | The window, grabbed, so Claude sees what the user sees |
+| `radio rtlsdr/hackrf/bb60/...`, `start`, `stop` | The Radio list and Start/Stop |
+| `rate 2.4`, `filter 225`, `stereo on/off`, `step 200` | IQ bandwidth, channel filter, stereo, tuner step |
+| `sweep 87.5 108`, `threshold 15`, `pause`/`resume` | The Sweep tab |
+| `rtl433 on/off`, `rtl433 band 433.92`, `rtl433 width ...` | Receive's RTL433 card |
+| `record start/stop`, `record audio/iq-channel/iq-band on/off` | The Record box |
+| `stations` | The Sweep tab's station list |
+
+A setting the radio doesn't have (Real time on an RTL-SDR, say) gets the
+same answer the window would give, as an error line, not a crash. A command
+that would take a moment (opening a radio, a new sweep) replies once it has
+happened, or with a timeout.
+
+**Estimate:** 1.5 to 2 hours. The socket, the commands and `fmctl` about
+45 minutes; tests with no radio (a new `test_control.py` in `run_all.py`:
+each command against a window on a simulated radio or an IQ file, bad
+commands, a second client) about 30; off air on the RTL-SDR with the window
+open (tune, gain, switch to rtl_433, record), then `usage.md` and
+`capabilities.md`, about 30. The first version (the * commands) alone is
+about 45 minutes.
+
+- [ ] Control socket in the window, and `fmctl`
+- [ ] The first version's commands (*)
+- [ ] The rest of the commands
+- [ ] `test_control.py`, in `run_all.py`
+- [ ] Off air on the RTL-SDR with the window open
+- [ ] `usage.md` (a section on `fmctl`) and `capabilities.md`
+
+Open questions for then: on by default, or only with a flag
+(`--control`)? One client at a time, or several?
