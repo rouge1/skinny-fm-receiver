@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""fmctl: work the running FM receiver window from the command line.
+
+    tools/fmctl status
+    tools/fmctl tune 99.1
+    tools/fmctl 'tune 99.1; wait 3; status'     several, in turn
+    tools/fmctl help                             every command
+
+Each command goes to the window's control socket (fm_receiver/control.py)
+and its reply is printed as JSON. Exits 1 if any command failed, 2 if no
+window is listening. Plain Python: no Qt, no conda environment needed.
+"""
+
+import json
+import os
+import socket
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fm_receiver.config import control_path  # noqa: E402
+
+
+def absolute(line):
+    """A screenshot's path, made absolute here: the window has its own cwd."""
+    words = line.split(None, 1)
+    if len(words) == 2 and words[0].lower() == 'screenshot':
+        return f"screenshot {json.dumps(os.path.abspath(os.path.expanduser(words[1])))}"
+    return line
+
+
+def main(argv):
+    if not argv or argv[0] in ('-h', '--help'):
+        print(__doc__.strip())
+        return 0
+    lines = [absolute(part.strip()) for part in ' '.join(argv).split(';') if part.strip()]
+    path = control_path()
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(path)
+    except OSError as exc:
+        print(f"fmctl: no FM receiver window listening on {path} ({exc})", file=sys.stderr)
+        return 2
+    failed = False
+    with sock, sock.makefile('rwb') as stream:
+        for line in lines:
+            stream.write(line.encode() + b'\n')
+            stream.flush()
+            answer = stream.readline()
+            if not answer:
+                print("fmctl: the window closed the connection", file=sys.stderr)
+                return 2
+            reply = json.loads(answer)
+            if len(lines) > 1:
+                reply = {'command': line, **reply}
+            print(json.dumps(reply, indent=2))
+            failed |= not reply.get('ok')
+    return 1 if failed else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

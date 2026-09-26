@@ -137,6 +137,7 @@ Useful options (`./fm-receiver --help` lists them all):
 | `--realtime` | Show the Sweep tab's **Real time** button (BB60D, not on a Mac); it is hidden otherwise |
 | `--no-audio` | Don't use the sound card (recording still works) |
 | `--no-save` | Don't save settings when the window closes |
+| `--no-control` | No control socket: `tools/fmctl` can't reach this window (see [Controlling the window from a script](#controlling-the-window-from-a-script-fmctl)) |
 
 ## The window
 
@@ -708,6 +709,48 @@ On a Mac, Ctrl is the ⌘ Command key.
 | Ctrl+Up / Ctrl+Down | Volume ±5 |
 | Ctrl+R | Start/stop recording |
 | A | Auto scale the spectrum on show (not while typing in a box) |
+
+## Controlling the window from a script: `fmctl`
+
+While the window is open, `tools/fmctl` works it from a terminal, a script,
+or Claude. Each command works the control a click would, so you see it
+happen: the tuner's digits move, the tab changes. Settings are saved as
+usual when the window closes. The radio stays with the window, so nothing
+else has to open it.
+
+```sh
+tools/fmctl status                        # everything below, as JSON
+tools/fmctl tune 99.1
+tools/fmctl 'tune 99.1; wait 3; status'   # several, one after another
+tools/fmctl screenshot ~/window.png
+tools/fmctl help                          # every command
+```
+
+| Command | Does |
+|---|---|
+| `status` | Radio, tab, Tuner and its range, Center, IQ bandwidth, gain and AGC, volume and mute, channel filter, step, clipped %, recording; in Receive the signal (dBFS in the channel, SNR), stereo pilot and RDS (PI, call sign, PS, name, RadioText, PTY, % blocks good); rtl_433's last device when it decodes |
+| `tune MHZ` | The Tuner. Outside the band around the Center, the Center moves first, as **Center on tuner** does (not for an IQ file, whose band is fixed) |
+| `center MHZ` | The Radio box's Center (Receive tab only) |
+| `gain PERCENT` | The RF gain slider |
+| `agc on` / `off` | The AGC box |
+| `mode sweep` / `receive` / `recordings` | The tabs |
+| `volume PERCENT`, `mute on` / `off` | Audio |
+| `screenshot PATH.png` | A picture of the window, as it is on screen |
+| `wait SECONDS` | Replies after that long (up to 120 s) with the window running meanwhile, so a later command sees the result: RDS takes a few seconds |
+
+A command the window would refuse is refused, with the reason: `gain` while
+AGC is on, `agc` on a radio without it, `center` outside Receive, `tune`
+past what the radio can reach. Every reply ends with the status line, so a
+radio's complaint shows there. `fmctl` prints each reply as JSON and exits
+with 1 if a command failed, or 2 if no window is listening. It is plain
+Python, with no conda environment needed.
+
+It talks to the window over a Unix socket that only your account can open
+(`$XDG_RUNTIME_DIR/fm-receiver.sock` on Linux, under `$TMPDIR` on a Mac),
+never over the network. A second window finds the socket taken and runs
+without one. Commands from several clients run one at a time, in turn;
+a `wait` holds the others back until it ends. To use another socket path,
+set `FMRX_CONTROL=/path/to.sock` for both the window and `fmctl`.
 
 ## Settings
 

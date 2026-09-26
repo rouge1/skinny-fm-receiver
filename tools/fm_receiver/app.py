@@ -3423,16 +3423,21 @@ class MainWindow(Qt.QWidget):
     def _signal_text(self, rx):
         power = rx.channel_power_db()
         text = f"{power:.1f} dBFS in channel"
-        if self._rx_sig is not None:
-            freqs, db = self._rx_sig
-            e = self.engine
-            bw = self.chan_entry.value()
-            inside = np.abs(freqs - e.station_hz) < bw / 2
-            if inside.any():
-                snr = 10 * np.log10(np.mean(10 ** (db[inside] / 10))) - np.median(db)
-                token = 'good' if snr > 30 else 'warn' if snr > 15 else 'bad'
-                text += f", {_coloured(f'{snr:.0f} dB', token)} above the floor"
+        snr = self._snr_db()
+        if snr is not None:
+            token = 'good' if snr > 30 else 'warn' if snr > 15 else 'bad'
+            text += f", {_coloured(f'{snr:.0f} dB', token)} above the floor"
         return text
+
+    def _snr_db(self):
+        """The channel's mean level over the spectrum's median, or None."""
+        if self._rx_sig is None or self.engine.station_hz is None:
+            return None
+        freqs, db = self._rx_sig
+        inside = np.abs(freqs - self.engine.station_hz) < self.chan_entry.value() / 2
+        if not inside.any():
+            return None
+        return float(10 * np.log10(np.mean(10 ** (db[inside] / 10))) - np.median(db))
 
     def _refresh_rds(self, snap):
         name = snap['station_short'] or snap['station_name'] or ''
@@ -3588,6 +3593,8 @@ def parse_args(argv=None):
                     help="no sound output (recording still works)")
     ap.add_argument('--no-save', action='store_true',
                     help="do not save settings on exit")
+    ap.add_argument('--no-control', action='store_true',
+                    help="no control socket: fmctl can't reach this window")
     ap.add_argument('--screenshot', metavar='PNG',
                     help="(testing) save a picture of the window and quit, "
                          "after --quit-after seconds")
@@ -3607,6 +3614,11 @@ def main(argv=None):
     window = MainWindow(args, config)
     window.show()
     Qt.QTimer.singleShot(50, window.start_initial)
+    control = None
+    if not args.no_control:
+        from .control import ControlServer
+        control = ControlServer(window)
+        control.start()
 
     # A Python signal handler only runs when Python does, and Qt's event
     # loop idles in C++: keep a timer ticking so Ctrl+C and SIGTERM close
@@ -3631,6 +3643,8 @@ def main(argv=None):
         code = app.exec_()
     finally:
         ticker.stop()
+        if control is not None:
+            control.close()
         # However the loop ended, stop the flowgraph before Python tears
         # down: collecting a Python block under a running flowgraph aborts.
         try:

@@ -944,11 +944,12 @@ one frequency.
   digits and centred over them: "↔ 97.800 - 99.000 MHz", the DC gap moved to its tooltip. In
   sight folded or open.
 
-## Round 20: a control API for the running window (requested 2026-09-25, planned)
+## Round 20: a control API for the running window (requested 2026-09-25, first version built)
 
 Asked for so Claude can drive the radio while the window is open in front
-of the user: change any setting, see the result, read it back. Planned
-only; to be built later, on a feature branch.
+of the user: change any setting, see the result, read it back. The first
+version was built on 2026-09-25 on the `control-api` branch (`control.py`,
+`tools/fmctl`).
 
 **How it works.** While the app runs it listens on a local control socket
 (`QLocalServer`: a Unix socket, the user's account only, mode 0600; never
@@ -971,6 +972,7 @@ Linux (Qt's local sockets on both).
 | `mode sweep/receive/recordings` * | The tabs |
 | `volume 40`, `mute on/off` * | Audio |
 | `screenshot out.png` * | The window, grabbed, so Claude sees what the user sees |
+| `wait 3` * | Reply after 3 s, the window running meanwhile (added: Claude's shell can't sleep in the foreground, and RDS takes seconds) |
 | `radio rtlsdr/hackrf/bb60/...`, `start`, `stop` | The Radio list and Start/Stop |
 | `rate 2.4`, `filter 225`, `stereo on/off`, `step 200` | IQ bandwidth, channel filter, stereo, tuner step |
 | `sweep 87.5 108`, `threshold 15`, `pause`/`resume` | The Sweep tab |
@@ -991,12 +993,55 @@ open (tune, gain, switch to rtl_433, record), then `usage.md` and
 `capabilities.md`, about 30. The first version (the * commands) alone is
 about 45 minutes.
 
-- [ ] Control socket in the window, and `fmctl`
-- [ ] The first version's commands (*)
+- [x] Control socket in the window, and `fmctl`
+- [x] The first version's commands (*)
 - [ ] The rest of the commands
-- [ ] `test_control.py`, in `run_all.py`
+- [x] `test_control.py`, in `run_all.py`
 - [ ] Off air on the RTL-SDR with the window open
-- [ ] `usage.md` (a section on `fmctl`) and `capabilities.md`
+- [x] `usage.md` (a section on `fmctl`) and `capabilities.md`
 
-Open questions for then: on by default, or only with a flag
-(`--control`)? One client at a time, or several?
+Decided: **on by default**, `--no-control` to turn it off (a socket only the
+user's account can open, never the network). **Several clients**, their
+commands run one at a time in one queue. A second window finds the socket
+taken and runs without one.
+
+## Round 21: IQ out - the radio's samples to other programs, live (requested 2026-09-25, planned)
+
+Asked for with Round 20: the window keeps the radio, and other programs
+(GNU Radio, SDR++, gqrx, URH, rtl_433, Claude's own scripts) get its
+samples at the same time, so nobody fights over the device. Recordings
+already cover files: `.cfile` (cf32) with `.sigmf-meta`, read by GNU
+Radio's File Source, inspectrum, URH (rate by hand) and
+`rtl_433 -r cf32:FILE -s RATE`.
+
+**Which samples.** The whole band at the IQ bandwidth, or a slice around
+the tuner at a rate picked for it (the channel's 500 kS/s, or wider), cut
+down in the flowgraph as the rtl_433 chain does. Receive only: the BB60D's
+and HackRF's own sweeps make no IQ stream. The BB60D's whole band at
+40 MS/s is 320 MB/s: offered, but a slice is the usual choice.
+
+**Outputs**, each switched on from a card in Receive and from `fmctl`:
+
+| Output | For | Notes |
+|---|---|---|
+| ZeroMQ PUB (`gr-zeromq`, in the `gnu` env) | GNU Radio (ZMQ SUB Source), Python/numpy, Claude | cf32, any number of subscribers; a slow one loses samples, never stalls the radio. Rate, centre and tuner sent as a tag or a side channel |
+| An rtl_tcp server (port 1235) | SDR++, gqrx, URH / `urh_cli -d RTL-TCP`, `rtl_433 -d rtl_tcp:` | cu8, so 8 bits: the BB60D's range is lost. The client's set-frequency command moves the tuner (or the Center) through the window, as `fmctl tune` does; its rate and gain commands are refused or mapped |
+| A pipe to any command | csdr, rtl_433, one-off scripts | The rtl_433 chain's pipe, general: whole blocks dropped when the reader falls behind |
+
+`fmctl iq-out zmq on [--band|--slice WIDTH]`, `iq-out rtl_tcp on`,
+`iq-out off`, and in `status`: what is served, to how many, samples dropped.
+And `fmctl capture 2 [--band]`: a short IQ recording, replied to with its
+path, for Claude to measure.
+
+**Estimate:** 2 to 3 hours: ZeroMQ and the slice about 45 minutes, the
+rtl_tcp server (its 12-byte header and 5-byte commands) about an hour,
+`capture` and `fmctl` 20 minutes, tests with no radio (a subscriber and an
+rtl_tcp client reading the synthetic station back) 30, off air with SDR++
+and GNU Radio on the RTL-SDR 30.
+
+- [ ] The slice, and ZeroMQ out
+- [ ] The rtl_tcp server
+- [ ] A pipe to a command
+- [ ] `fmctl iq-out ...` and `capture`
+- [ ] Tests, no radio; off air with SDR++ and GNU Radio
+- [ ] `usage.md` and `capabilities.md`

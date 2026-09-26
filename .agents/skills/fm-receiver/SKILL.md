@@ -14,6 +14,13 @@ knowledge, workflows, commands and constraints:
   packages, and which could be fed like the rtl_433 card
 - knowledge/rf-ctf.md: RF CTF challenge types and the tools that decode them
 
+When the user has the window open, work it with `tools/fmctl` (`status`,
+`tune`, `gain`, `mode`, `screenshot`, `wait`...; `fmctl help` lists them)
+instead of opening the radio yourself: the window holds the device, and
+`fmctl` moves its controls where the user can see them. See usage.md,
+"Controlling the window from a script". `fmctl` exits 2 if no window is
+listening.
+
 Tools installed on this machine outside the app's `gnu` env (details in
 rtl-software.md, "What this machine already has"):
 

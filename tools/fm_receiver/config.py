@@ -27,6 +27,22 @@ def config_path():
     return os.path.join(base, 'fm-receiver', 'config.json')
 
 
+def control_path():
+    """The running window's control socket (``control.py``), for ``fmctl``
+    too - so this module stays free of Qt. ``FMRX_CONTROL`` names another:
+    the tests use it so they never meet a window the user has open."""
+    override = os.environ.get('FMRX_CONTROL')
+    if override:
+        return override
+    # Linux: the session's runtime folder, the user's only. macOS's TMPDIR
+    # is per user too.
+    base = os.environ.get('XDG_RUNTIME_DIR') if sys.platform.startswith('linux') else None
+    if base and os.path.isdir(base):
+        return os.path.join(base, 'fm-receiver.sock')
+    base = os.environ.get('TMPDIR') or '/tmp'
+    return os.path.join(base, f'fm-receiver-{os.getuid()}.sock')
+
+
 def default_recording_dir():
     return os.path.join(PROJECT_DIR, 'recordings')
 
