@@ -9,6 +9,12 @@ mute, the tabs, a screenshot, wait holding a second client's command
 behind it, JSON commands, bad commands, a second window finding the socket
 taken, and ``fmctl`` itself, as a separate process.
 
+Part 2 is a simulated radio that can retune, its Radio box folded: a tune
+outside the band around the Center moves the Center (the tuner's digits
+span the whole radio there, so the band is the engine's), the range and
+AGC reported as the window has them, and AGC switched with its row hidden
+by the fold. Both went wrong off air on the BB60D before this part.
+
 Run:  python tools/tests/test_control.py     (about half a minute)
 """
 
@@ -31,8 +37,10 @@ os.environ['FMRX_CONFIG'] = os.path.join(FOLDER, 'config.json')
 os.environ['FMRX_CONTROL'] = os.path.join(FOLDER, 'control.sock')
 
 from fm_receiver import app as fmapp  # noqa: E402
+from fm_receiver import radios  # noqa: E402
 from fm_receiver.control import ControlServer  # noqa: E402
 from tests import signals  # noqa: E402
+from tests.test_sweep import slow_radio  # noqa: E402
 
 QAPP = Qt.QApplication.instance() or Qt.QApplication(sys.argv[:1])
 FMCTL = os.path.join(os.path.dirname(HERE), 'fmctl')
@@ -93,6 +101,74 @@ def fmctl(*argv, timeout=15.0):
     assert pump(timeout, lambda: proc.poll() is not None), 'fmctl hung'
     out, err = proc.communicate()
     return proc.returncode, out, err
+
+
+class SimRadio(radios.Radio):
+    """A radio of tones that can retune and whose clipping is counted, so
+    the window offers AGC (as test_gui's)."""
+    kind = 'hackrf'
+    name = 'Simulated radio'
+    receive_rates = (2e6,)
+    sweep_rates = (10e6,)
+    default_receive_rate = 2e6
+    default_sweep_rate = 10e6
+    settle_ms = 30.0
+    clip_warn = True
+
+    def open(self):
+        self.block = slow_radio(2e6, [(95.1e6, 0.1), (101.7e6, 0.05)], latency=1000)
+        self.block.center = 94.8e6
+
+    def set_rate(self, rate):
+        super().set_rate(rate)
+        self.block.rate = self.rate
+
+    def set_center(self, hz):
+        super().set_center(hz)
+        self.block.set_center(hz)
+
+
+def part2_retuning_radio():
+    original = fmapp.make_radio
+    fmapp.make_radio = lambda kind, *a, **k: SimRadio()
+    args = fmapp.parse_args(['--radio', 'hackrf', '--mode', 'receive', '--freq', '95.1',
+                             '--no-audio', '--no-save'])
+    w = fmapp.MainWindow(args, {'recording_dir': FOLDER, 'folded': {'radio': True}})
+    w.show()
+    pump(0.2)
+    w.start_initial()
+    control = ControlServer(w)
+    assert control.start()
+    try:
+        c = Client()
+        e = w.engine
+        assert e.running and w._mode == 'receive', w.status.text()
+        s = c.ok('status')
+        low, high = s['tuner_range_mhz']
+        assert high - low < 2, f"the range is the band around the Center, not {low}-{high}"
+        assert s['agc_available'] and not s['agc'], s
+        # Far outside the band: the Center moves, as Center on tuner does.
+        r = c.ok('tune 101.7')
+        assert r['center_moved'] and abs(e.station_hz - 101.7e6) < 1, (r, e.station_hz)
+        assert abs(e.lo_hz - (101.7e6 - w.radio.lo_offset_hz)) < 1, e.lo_hz
+        assert abs(w.center_entry.value() - e.lo_hz) < 1
+        r = c.ok('tune 95.1')
+        assert r['center_moved'] and abs(e.station_hz - 95.1e6) < 1, r
+        # Inside the band: the Center stays.
+        lo = e.lo_hz
+        assert not c.ok('tune 95.2')['center_moved'] and e.lo_hz == lo
+        c.refused('tune 9000', 'outside')
+        assert abs(e.station_hz - 95.2e6) < 1, 'a refused tune moved the station'
+        # AGC with the gain row folded away, as the window has it.
+        assert not w.agc_box.isVisible()
+        assert c.ok('agc on')['agc'] and w.agc_box.isChecked() and c.ok('status')['agc']
+        assert not c.ok('agc off')['agc'] and not w.agc_box.isChecked()
+        assert c.ok('gain 30')['gain_percent'] == 30 and w.radio.gain_percent == 30
+        print("retuning radio: Center moved by tune, AGC with the Radio box folded")
+    finally:
+        control.close()
+        w.close()
+        fmapp.make_radio = original
 
 
 def main():
@@ -201,6 +277,7 @@ def main():
         w.close()
     code, _, err = fmctl('status')
     assert code == 2 and 'no FM receiver window' in err, (code, err)
+    part2_retuning_radio()
     print("control socket and fmctl: OK")
     return 0
 

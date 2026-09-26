@@ -107,6 +107,19 @@ def cmd_help(w, args):
     return {name: f"{usage} - {text}" for name, (usage, text) in HELP.items()}
 
 
+def _tuner_range(w):
+    """Where the tuner can go: in Receive, the band around the Center
+    (the engine's; the digits span the whole radio), else the digits'."""
+    if w._mode in ('receive', 'playback') and w.engine.rx is not None:
+        return w.engine.tuner_range()
+    return w.tuner.minimum(), w.tuner.maximum()
+
+
+def _agc_offered(w):
+    # Not isVisible(): a folded Radio box hides the gain row, AGC and all.
+    return bool(w._agc_available() and w.agc_box.isEnabled())
+
+
 @command('status', 'status', "What the window shows: radio, tab, frequencies, gain, "
          "audio, stereo, RDS, signal, clipping, recording.")
 def cmd_status(w, args):
@@ -119,13 +132,13 @@ def cmd_status(w, args):
         'tab': w._tab_mode(),
         'mode': w._mode,
         'tuner_mhz': _mhz(w.tuner.value()),
-        'tuner_range_mhz': [_mhz(w.tuner.minimum()), _mhz(w.tuner.maximum())],
+        'tuner_range_mhz': [_mhz(hz) for hz in _tuner_range(w)],
         'center_mhz': _mhz(e.lo_hz if w._mode == 'receive' else w.center_entry.value()),
         'station_mhz': _mhz(e.station_hz) if w._mode in ('receive', 'playback') else None,
         'rate_msps': round(e.rate / 1e6, 6) if e.rate else None,
         'gain_percent': w.gain_slider.value(),
-        'agc': bool(w.agc_box.isVisible() and w.agc_box.isChecked()),
-        'agc_available': bool(w.agc_box.isVisible() and w.agc_box.isEnabled()),
+        'agc': bool(w._agc_available() and w.agc_box.isChecked()),
+        'agc_available': _agc_offered(w),
         'volume': round(w.volume_knob.value()),
         'muted': w.mute_btn.isChecked(),
         'channel_filter_khz': round(w.chan_entry.value() / 1e3, 3),
@@ -169,7 +182,8 @@ def cmd_tune(w, args):
     radio = w.radio
 
     def inside():
-        return w.tuner.minimum() <= hz <= w.tuner.maximum()
+        low, high = _tuner_range(w)
+        return low <= hz <= high
 
     # An IQ file's band is where it was recorded: its Center can't move.
     if (not inside() and w._tab_mode() == 'receive' and w._mode == 'receive'
@@ -179,9 +193,9 @@ def cmd_tune(w, args):
         moved = True
     # Checked first: the digits would clamp it to the edge, and tune there.
     if not inside():
-        raise CommandError(
-            f"{mhz:g} MHz is outside the tuner's range, "
-            f"{w.tuner.minimum() / 1e6:.3f}-{w.tuner.maximum() / 1e6:.3f} MHz")
+        low, high = _tuner_range(w)
+        raise CommandError(f"{mhz:g} MHz is outside the tuner's range, "
+                           f"{low / 1e6:.3f}-{high / 1e6:.3f} MHz")
     w.tuner.setValue(hz, emit=True)
     return {'tuner_mhz': _mhz(w.tuner.value()), 'center_moved': moved,
             'center_mhz': _mhz(w.engine.lo_hz) if w._mode == 'receive' else None}
@@ -212,7 +226,7 @@ def cmd_gain(w, args):
 def cmd_agc(w, args):
     on = _on_off(_args(args, 1, 1, 'agc on|off')[0], 'agc')
     box = w.agc_box
-    if not (box.isVisible() and box.isEnabled()):
+    if not _agc_offered(w):
         raise CommandError("AGC isn't offered here"
                            + (f": {box.toolTip()}" if box.toolTip() else
                               " (not for this radio or this tab)"))

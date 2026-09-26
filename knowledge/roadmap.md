@@ -996,7 +996,7 @@ about 45 minutes.
 - [x] The first version's commands (*)
 - [ ] The rest of the commands
 - [x] `test_control.py`, in `run_all.py`
-- [ ] Off air on the RTL-SDR with the window open
+- [x] Off air with the window open: on the BB60D (2026-09-25; no RTL-SDR was plugged in), in capabilities.md
 - [x] `usage.md` (a section on `fmctl`) and `capabilities.md`
 
 Decided: **on by default**, `--no-control` to turn it off (a socket only the
