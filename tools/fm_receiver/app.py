@@ -1493,13 +1493,14 @@ class MainWindow(Qt.QWidget):
 
     def _show_audio_note(self):
         if self.args.no_sound_card:
-            self.audio_note.setText("No sound output (started with "
-                                    "--no-sound-card); recording still works.")
+            self.audio_note.setText("No sound output (started without a sound "
+                                    "card); recording still works.")
         elif self.engine.audio_error:
             self.audio_note.setText(_coloured(
                 f"No sound output: {self.engine.audio_error}", 'warn'))
         elif self._flag_muted:
-            self.audio_note.setText("Muted at start (--no-audio): press Mute to hear it.")
+            # Not "--no-audio": the theme's fonts join the hyphens into a dash.
+            self.audio_note.setText("Muted at start: press Mute to hear it.")
         else:
             self.audio_note.setText("")
 
