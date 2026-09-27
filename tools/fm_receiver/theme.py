@@ -468,9 +468,19 @@ QLineEdit:focus, QAbstractSpinBox:focus, QComboBox:focus {
     border-color: %(ink_3)s; }
 QLineEdit:disabled, QAbstractSpinBox:disabled, QComboBox:disabled {
     color: %(ink_3)s; border-color: %(rule_soft)s; }
+/* FM receiver: the list drops below the combo (combobox-popup: 0) rather
+   than over it: that popup kept a band above and below the items, left
+   for its scroll arrows, in the system's light colours, which no rule
+   here reaches, and cut off the last item in Reading Room. */
+QComboBox { combobox-popup: 0; }
+QComboBoxPrivateContainer { background: %(well)s; border: 1px solid %(rule)s; }
 QComboBox QAbstractItemView { background: %(well)s; color: %(ink)s;
-    border: 1px solid %(rule)s; selection-background-color: %(panel_2)s;
+    border: none; outline: none; selection-background-color: %(panel_2)s;
     selection-color: %(ink)s; }
+QComboBox QAbstractItemView::item { padding: 5px 9px; border: none; }
+QComboBox QAbstractItemView::item:selected,
+QComboBox QAbstractItemView::item:hover { background: %(panel_2)s; color: %(ink)s; }
+QComboBox QAbstractItemView::item:disabled { color: %(ink_3)s; }
 
 /* A spin box or combo that a stylesheet touches at all stops drawing its
    own arrows - they come out as empty rectangles - and Qt's CSS subset

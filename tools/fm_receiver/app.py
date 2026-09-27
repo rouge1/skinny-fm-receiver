@@ -387,6 +387,10 @@ class MainWindow(Qt.QWidget):
         self.main_split.setStretchFactor(1, 1)
         self.main_split.setSizes([self._left_width, 1560 - self._left_width])
         outer.addWidget(self.main_split, 1)
+        # A combo's list draws its rows with a delegate that ignores the
+        # theme's item rules (room around each row): a styled one keeps them.
+        for combo in self.findChildren(Qt.QComboBox):
+            combo.setItemDelegate(Qt.QStyledItemDelegate(combo))
 
     def _build_header(self):
         row = Qt.QHBoxLayout()
