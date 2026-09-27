@@ -181,7 +181,10 @@ def part2_retuning_radio():
         assert r == {'start_mhz': 90.0, 'stop_mhz': 105.0}, r
         assert w.tabs.currentIndex() == 0 and w._mode == 'sweep'
         c.ok('peakhold on')
-        assert pump(10, lambda: len(c.ok('peaks 15')['peaks']) >= 2), c.ok('peaks 15')
+        # Until the first sweep is drawn, peaks is refused: waited out.
+        held = lambda: (lambda r: r['ok'] and len(r['result']['peaks']) >= 2)(  # noqa: E731
+            c.ask('peaks 15'))
+        assert pump(10, held), c.ask('peaks 15')
         found = [p['freq_mhz'] for p in c.ok('peaks 15')['peaks']]
         for tone in (95.1, 101.7):
             assert any(abs(f - tone) < 0.1 for f in found), (tone, found)
@@ -333,6 +336,27 @@ def main():
         c.ok('peakhold clear')
         assert not c.ok('peakhold off')['peak_hold']
         assert c.ok('peaks')['trace'] == 'live'
+
+        # View: the spectrum's dials, set as a hand turns them, and read back.
+        views = c.ok('view')
+        assert set(views) == {'rf', 'mpx', 'audio'} and views['rf']['unit'] == 'MHz', views
+        v = c.ok('view rf span 0.4 center 98.7 ref -30 range 80 avg 10')
+        assert abs(v['span'] - 0.4) < 1e-6 and abs(v['center'] - 98.7) < 1e-3, v
+        assert abs(v['shown'][0] - 98.5) < 1e-3 and abs(v['shown'][1] - 98.9) < 1e-3, v
+        assert (v['ref_db'], v['range_db'], v['avg']) == (-30, 80, 10), v
+        assert w.rf_view.avg_knob.value() == 10 and w.rf_view.ref_knob.value() == -30
+        assert c.ok('view rf')['center'] == v['center'], 'no settings: only read'
+        full = c.ok('view rf span full')
+        assert abs(full['span'] - (full['full'][1] - full['full'][0])) < 1e-3, full
+        m = c.ok('view mpx span 20 center 57')
+        assert m['unit'] == 'kHz' and abs(m['shown'][0] - 47) < 0.01, m
+        c.refused('view rf avg 0', 'at least 1')
+        c.refused('view rf center 150', 'off the view')
+        c.refused('view rf span', 'usage')
+        c.refused('view rf zoom 2', 'unknown setting')
+        c.refused('view sky', 'rf, mpx or audio')
+        assert c.ok('view rf')['avg'] == 10, 'a refused command changed nothing'
+        c.ok('view rf avg 4 ref -20 range 100')
 
         # Rate: a file has the one rate it was recorded at.
         assert c.ok('rate 2.5')['rate_msps'] == 2.5 and w.engine.running

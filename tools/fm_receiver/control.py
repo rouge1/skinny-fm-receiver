@@ -308,6 +308,75 @@ def cmd_peakhold(w, args):
     return {'peak_hold': view.peak_check.isChecked()}
 
 
+#: The spectrum views ``view`` sets, by name: the attribute on the window.
+VIEWS = {'rf': 'rf_view', 'mpx': 'mpx_view', 'audio': 'audio_view'}
+VIEW_USAGE = ('view [rf|mpx|audio] [span X|full] [center X] [ref DB] [range DB] '
+              '[avg N]')
+
+
+def _view_state(view):
+    """A view's dials, frequencies in its own unit (MHz or kHz)."""
+    (x0, x1), _ = view.plot.getPlotItem().getViewBox().viewRange()
+    return {'unit': view.unit, 'span': round(view.span_knob.value() / view.scale, 6),
+            'center': round((x0 + x1) / 2, 6),
+            'shown': [round(x0, 6), round(x1, 6)],
+            'full': [round(hz / view.scale, 6) for hz in view.full],
+            'ref_db': round(view.ref_knob.value(), 1),
+            'range_db': round(view.range_knob.value(), 1),
+            'avg': int(view.avg_knob.value()), 'level_unit': view.level_unit}
+
+
+@command('view', VIEW_USAGE, "A spectrum view's dials: rf (the RF spectrum and its "
+         "waterfall), mpx (the multiplex), audio (a recording playing). Span and center "
+         "in the view's unit (MHz for rf, kHz for the others), full for the whole band; "
+         "ref and range set the level scale (display only, the waterfall's colours "
+         "too); avg is Average, which smooths the trace peaks reads. With no settings, "
+         "reports them; with no view, all three.")
+def cmd_view(w, args):
+    if not args:
+        return {name: _view_state(getattr(w, attr)) for name, attr in VIEWS.items()}
+    name, words = args[0].lower(), args[1:]
+    if name not in VIEWS:
+        raise CommandError(f"view: expected rf, mpx or audio, got {args[0]!r}")
+    if len(words) % 2:
+        raise CommandError(f"usage: {VIEW_USAGE}")
+    view = getattr(w, VIEWS[name])
+    pairs = [(words[i].lower(), words[i + 1]) for i in range(0, len(words), 2)]
+    for key, _ in pairs:
+        if key not in ('span', 'center', 'ref', 'range', 'avg'):
+            raise CommandError(f"view: unknown setting {key!r} ({VIEW_USAGE})")
+    # All checked first, so a bad one leaves the view as it was.
+    values = {key: (word if key == 'span' and word.lower() == 'full'
+                    else _number(word, f"view {key}")) for key, word in pairs}
+    if 'avg' in values and values['avg'] < 1:
+        raise CommandError("view avg: at least 1")
+    if 'range' in values and values['range'] <= 0:
+        raise CommandError("view range: more than 0 dB")
+    if isinstance(values.get('span'), float) and values['span'] <= 0:
+        raise CommandError("view span: more than 0")
+    if 'center' in values:
+        low, high = (hz / view.scale for hz in view.full)
+        if not low <= values['center'] <= high:
+            raise CommandError(f"view center: {values['center']:g} {view.unit} is off "
+                               f"the view ({low:g}-{high:g} {view.unit})")
+    # The dials themselves, as a hand turns them: clamped to theirs.
+    if 'ref' in values:
+        view.ref_knob.setValue(values['ref'])
+    if 'range' in values:
+        view.range_knob.setValue(values['range'])
+    if 'avg' in values:
+        view.avg_knob.setValue(round(values['avg']))
+    if 'center' in values:
+        view.center_hz = values['center'] * view.scale
+    if 'span' in values:
+        span = values['span']
+        view.span_knob.setValue(view.span_knob._max if span == 'full'
+                                else span * view.scale)
+    if 'center' in values:
+        view._apply_span()
+    return _view_state(view)
+
+
 #: Runs of bins over the threshold closer than this many bins (or
 #: PEAK_MERGE_HZ) are one signal.
 PEAK_MERGE_BINS = 3
