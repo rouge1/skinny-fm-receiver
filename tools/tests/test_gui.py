@@ -1069,8 +1069,13 @@ def folding(w):
     over = w.range_label.geometry().center().x() - w.tuner.geometry().center().x()
     assert abs(over) <= 1, ('centred over the digits', over)
     assert w.step_knob.isHidden() and w.chan_entry.isHidden()
+    assert w.range_room.isHidden(), 'no room kept under the digits'
+    pump(0.05)
+    level = w.roller.geometry().center().y() - w.tuner.geometry().center().y()
+    assert abs(level) <= 2, ('the roller level with the digits', level)
     tuner.set_folded(False)
     assert not w.step_knob.isHidden() and not w.chan_entry.isHidden()
+    assert not w.range_room.isHidden()
     assert not w.range_label.isHidden()
     rds.set_folded(True)                         # Now playing and RadioText
     assert not w.lbl['radiotext'].isHidden() and not w.lbl['nowplaying'].isHidden()

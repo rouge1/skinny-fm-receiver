@@ -780,7 +780,9 @@ class MainWindow(Qt.QWidget):
             self.snap_check.isChecked()))
         # Right on top of the tuner, its range, as wide as the digits and
         # centred over them; as much room under them keeps the tuner level
-        # with its label, its roller and the knob.
+        # with its label, its roller and the knob. Folded, that room goes
+        # with the knob, and the label and roller drop by the range's
+        # height to stay level.
         self.range_label = _wrapping(Qt.QLabel("-"))
         self.range_label.setTextFormat(QtCore.Qt.RichText)
         self.range_label.setAlignment(QtCore.Qt.AlignHCenter)
@@ -789,13 +791,18 @@ class MainWindow(Qt.QWidget):
         column.addStretch(1)
         column.addWidget(self.range_label)
         column.addWidget(self.tuner)
-        column.addSpacing(self.range_label.sizeHint().height() + column.spacing())
+        self.range_room = Qt.QWidget()
+        self.range_room.setFixedHeight(self.range_label.sizeHint().height())
+        column.addWidget(self.range_room)
         column.addStretch(1)
         tune.addLayout(column)
-        tune.addWidget(self.roller, 0, QtCore.Qt.AlignVCenter)
+        roller = Qt.QVBoxLayout()
+        roller.addWidget(self.roller, 0, QtCore.Qt.AlignVCenter)
+        tune.addLayout(roller)
         tune.addWidget(self.step_knob)
         tune.addStretch(1)
-        form.addRow("Tuner:", tune)
+        tune_label = Qt.QLabel("Tuner:")
+        form.addRow(tune_label, tune)
         chan = Qt.QHBoxLayout()
         chan.setSpacing(6)
         self.chan_entry = DigitEntry('kHz', 1e3, 3, 0, minimum_hz=CHANNEL_MIN_HZ,
@@ -820,8 +827,16 @@ class MainWindow(Qt.QWidget):
         chan.addWidget(self.chan_roller)
         chan.addStretch(1)
         form.addRow("Channel filter:", chan)
-        return self._foldable(box, form, 'tuner', keep=(self.tuner,),
-                              also=(self.step_knob,), center=True)
+        card = self._foldable(box, form, 'tuner', keep=(self.tuner,),
+                              also=(self.step_knob, self.range_room), center=True)
+
+        def level(folded):
+            drop = self.range_room.height() + column.spacing() if folded else 0
+            tune_label.setContentsMargins(0, drop, 0, 0)
+            roller.setContentsMargins(0, drop, 0, 0)
+        card.folded.connect(level)
+        level(card.is_folded())
+        return card
 
     def _build_rds_card(self):
         """The station as decoded: its name, how it is decoded, how well it
