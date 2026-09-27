@@ -11,3 +11,5 @@ recordings/
 .claude/
 # RF CTF challenge work: IQ recordings (tens of GB), scripts and write-ups.
 challenge/
+# Web summaries of signal work (pages and pictures), kept out of the public repo.
+web_summary/
