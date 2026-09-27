@@ -444,7 +444,7 @@ The **MPX view** (bottom right) is the demodulated multiplex from 0 to
 
 ## Views: bandwidth and amplitude
 
-Each spectrum has its own dials, at the right-hand end of the row under it;
+Each spectrum has its own dials, at the left-hand end of the row under it;
 the readout of the frequency and level under the pointer is in the
 bottom-left corner of the plot, on a small panel of its own so a busy trace
 can't wash it out; it goes when the pointer leaves the plot. The dials can
@@ -468,8 +468,11 @@ how much time it showed.
 **Hover over a dial and roll the mouse wheel** to turn it, or drag it up or
 down; hold Shift for fine steps. A dial under the pointer lights orange, and
 glows in Slate and Walnut or lifts on a shadow in Reading Room, so you can
-see which one the wheel will turn. Double-click a dial to reset it. The
-same goes for the Volume and Step knobs.
+see which one the wheel will turn. Zooming the plot or waterfall lights
+Span the same way, and the wheel or middle-drag on the level axis lights
+Ref level and Range, for a moment after the last change, so you can see
+which dials moved. Double-click a dial to reset it. The same goes for the
+Volume and Step knobs.
 
 | Dial | One wheel notch |
 |---|---|

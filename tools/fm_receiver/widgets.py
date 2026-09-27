@@ -42,6 +42,9 @@ class _Dial(Qt.QDial):
     and stays while the knob is dragged. Clicked focus does not light it -
     a clicked knob kept its light long after, and then showed no change
     under the pointer; a ring marks focus that came by Tab.
+
+    Turned from elsewhere - the spectrum's level axis or plot worked with
+    the mouse - it lights the same way, for ``HOLD_MS`` after the last turn.
     """
 
     reset = pyqtSignal()
@@ -50,6 +53,8 @@ class _Dial(Qt.QDial):
 
     #: The toolkit's tiles lift in 150 ms.
     GLOW_MS = 150
+    #: How long a knob turned from elsewhere stays lit after the last turn.
+    HOLD_MS = 600
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -70,10 +75,19 @@ class _Dial(Qt.QDial):
         self._glow_anim = QtCore.QVariantAnimation(self)
         self._glow_anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
         self._glow_anim.valueChanged.connect(self._set_glow)
+        self._held = Qt.QTimer(self)
+        self._held.setSingleShot(True)
+        self._held.timeout.connect(self._aim_glow)
 
     # -- the light under the pointer
+    def nudge(self):
+        """Light as if under the pointer: turned from elsewhere."""
+        self._held.start(self.HOLD_MS)
+        self._aim_glow()
+
     def _aim_glow(self):
-        on = self.isEnabled() and (self.underMouse() or self._press is not None)
+        on = self.isEnabled() and (self.underMouse() or self._press is not None
+                                   or self._held.isActive())
         target = 1.0 if on else 0.0
         if target == self._glow_to:
             return
@@ -311,6 +325,10 @@ class Knob(Qt.QWidget):
 
     def value(self):
         return self._value
+
+    def light(self):
+        """Light the dial for a moment: it was turned from elsewhere."""
+        self.dial.nudge()
 
     def setValue(self, v, emit=True):
         """Set the value exactly (not rounded to a dial position)."""
@@ -1797,10 +1815,11 @@ class SpectrumView(Qt.QWidget):
         self._axis_hot = False
         self._axis_drag = None            # (pointer y, Ref level) at the press
 
-        # Under the plot: the dials and switches, at the right-hand end.
+        # Under the plot: the dials and switches, their left edge under
+        # the plot's (the level axis's width in from the view's edge).
         controls = Qt.QHBoxLayout()
         controls.setSpacing(6)
-        controls.addStretch(1)
+        self._controls = controls
         for knob in (self.span_knob, self.ref_knob, self.range_knob, self.avg_knob):
             controls.addWidget(knob)
         checks = Qt.QVBoxLayout()
@@ -1808,6 +1827,7 @@ class SpectrumView(Qt.QWidget):
         checks.addWidget(self.wf_check)
         checks.addWidget(self.full_btn)
         controls.addLayout(checks)
+        controls.addStretch(1)
 
         layout = Qt.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1822,6 +1842,7 @@ class SpectrumView(Qt.QWidget):
         else:
             layout.addWidget(self.plot, 1)
         layout.addLayout(controls)
+        self.plot.getPlotItem().getViewBox().sigResized.connect(self._align_controls)
         self.restyle()
         self._apply_levels()
 
@@ -1888,6 +1909,16 @@ class SpectrumView(Qt.QWidget):
     def _match_axes(self):
         try:
             self.wf_plot.getAxis('left').setWidth(self.plot.getAxis('left').width())
+        except Exception as exc:                  # never abort the app
+            print(f"spectrum view: {exc}")
+
+    def _align_controls(self):
+        """The dials' left edge under the plot's."""
+        try:
+            box = self.plot.getPlotItem().getViewBox()
+            left = self.plot.mapFromScene(box.sceneBoundingRect().topLeft())
+            x = max(0, self.plot.mapTo(self, left).x())
+            self._controls.setContentsMargins(x, 0, 0, 0)
         except Exception as exc:                  # never abort the app
             print(f"spectrum view: {exc}")
 
@@ -2281,6 +2312,8 @@ class SpectrumView(Qt.QWidget):
         top, span = self.ref_knob.value(), self.range_knob.value()
         new_span = min(max(span * step ** -notches, self.range_knob._min), self.range_knob._max)
         new_top = level + (top - level) * new_span / span
+        self.range_knob.light()
+        self.ref_knob.light()
         self.range_knob.setValue(round(new_span, 1))
         self.ref_knob.setValue(min(max(round(new_top, 1), self.ref_knob._min),
                                    self.ref_knob._max))
@@ -2291,6 +2324,7 @@ class SpectrumView(Qt.QWidget):
         vb = self.plot.getPlotItem().getViewBox()
         per_pixel = self.range_knob.value() / max(1.0, vb.height())
         ref = round((ref0 + pixels * per_pixel) * 2) / 2
+        self.ref_knob.light()
         self.ref_knob.setValue(min(max(ref, self.ref_knob._min), self.ref_knob._max))
 
     def _over_band(self, scene_pos):
@@ -2436,9 +2470,12 @@ class SpectrumView(Qt.QWidget):
         if span <= 0:
             return
         # The mouse zoomed or panned: the dial follows, and so does the centre.
+        # A zoom lights the dial, as if it had been turned.
         self.center_hz = (x0 + x1) / 2 * self.scale
-        self.span_knob.setValue(min(max(span, self.span_knob._min), self.span_knob._max),
-                                emit=False)
+        span = min(max(span, self.span_knob._min), self.span_knob._max)
+        if abs(span - self.span_knob.value()) > 1e-3 * self.span_knob.value():
+            self.span_knob.light()
+        self.span_knob.setValue(span, emit=False)
 
     def _to_hz(self, scene_pos):
         for plot in (self.plot, self.wf_plot):
