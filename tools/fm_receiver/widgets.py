@@ -2146,12 +2146,15 @@ class SpectrumView(Qt.QWidget):
         try:
             kind = event.type()
             if obj is self.plot.viewport():
-                if kind == QtCore.QEvent.Leave and self._axis_drag is None:
-                    self._light_axis(False)
+                if kind == QtCore.QEvent.Leave:
+                    self._set_readout('')         # the pointer is gone
+                    if self._axis_drag is None:
+                        self._light_axis(False)
                 return False
             if self.wf_plot is not None:
                 if obj is self.wf_plot.viewport():
                     if kind == QtCore.QEvent.Leave:
+                        self._set_readout('')
                         self._light_time_axis(False)
                     return False
                 if obj is self.wf_plot.scene():

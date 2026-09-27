@@ -1013,6 +1013,9 @@ def level_axis(w):
     pump(0.1)
     assert not view._axis_hot
     print(f"level axis: lit, wheel to {span:.0f} dB about {level:.1f}, drag moved Ref {moved:+.1f} dB")
+    assert view.readout.isVisible(), 'the cursor readout over the plot'
+    _send(port, QtCore.QEvent(QtCore.QEvent.Leave))
+    assert not view.readout.isVisible(), 'the readout goes with the pointer'
     w.agc_box.setChecked(True)                   # as it was
 
 
