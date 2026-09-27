@@ -19,6 +19,9 @@ range and averaging (A fits the scale to the trace). The audio has mute and volu
 (WAV) and the IQ (channel or whole band, with SigMF metadata), and play IQ
 recordings back as if they were a radio. The status line warns of overload
 (on a HackRF or RTL-SDR it always shows the share of samples clipped).
+`tools/fmctl` works the open window from a script or an LLM: tuning, gain,
+sweeps, the view's dials (`view`), the signals on the spectrum as numbers
+(`peaks`), screenshots and IQ captures.
 
 ```sh
 ./fm-receiver                # opens straight into the window

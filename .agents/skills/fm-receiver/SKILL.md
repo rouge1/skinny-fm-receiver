@@ -41,6 +41,13 @@ user sees it, and is refused where the window would refuse it.
   spectrum's signals as numbers; from the held trace while `peakhold on`).
 - Move: `tune`, `center`, `gain`, `agc`, `rate`, `mode`, `sweep START STOP`,
   `volume`, `mute`.
+- View: `view rf|mpx|audio span X center X ref DB range DB avg N` (any of
+  them; none reports). Before a screenshot, zoom onto the signal and set
+  ref/range around it: at the default 100 dB range a weak signal is a few
+  pixels, and the waterfall's colours follow ref/range too. `avg` changes
+  the numbers: high (20-50) steadies levels and lifts weak steady carriers
+  out of the noise for `peaks`; low (1-2) keeps bursts from being averaged
+  away.
 - Record: `capture SECONDS [iq-band|iq-channel|audio]` replies with the
   files and their `.sigmf-meta`; `record ...` works the Record box.
 - `wait SECONDS` lets the window run between commands: your shell can't

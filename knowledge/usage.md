@@ -316,8 +316,8 @@ Each box has a **chevron** at the right of its title: click it, or the
 title, to fold the box away and again to open it; it slides shut or open,
 and the chevron turns. A folded **Radio** box
 still shows its **Center** and **Center on tuner**, and a folded **Tuner**
-box its **Tuner range** (↔) and tuner, each gliding to the middle of the box
-once it has folded
+box its **Tuner range** (↔) and tuner, and no taller than those, each
+gliding to the middle of the box once it has folded
 (the Step knob fades out as the Tuner box folds, and back in as it opens);
 and a folded **RDS** box shows its **Now playing** and **RadioText**. The app remembers
 which are folded.
@@ -447,7 +447,9 @@ The **MPX view** (bottom right) is the demodulated multiplex from 0 to
 Each spectrum has its own dials, at the right-hand end of the row under it;
 the readout of the frequency and level under the pointer is in the
 bottom-left corner of the plot, on a small panel of its own so a busy trace
-can't wash it out.
+can't wash it out; it goes when the pointer leaves the plot. The dials can
+be set from a script too: `fmctl view` (see
+[Controlling the window from a script](#controlling-the-window-from-a-script-fmctl)).
 
 **The level axis** (dBFS, or dBm on the BB60D's own sweep) is a handle too.
 Its numbers light orange under the pointer. Roll the wheel over it to zoom
@@ -659,6 +661,7 @@ tools/fmctl help                          # every command
 | `sweep START STOP` | The Sweep tab over START-STOP MHz (switching to it first) |
 | `peakhold on` / `off` / `clear` | The RF spectrum's **Peak hold**: the most each frequency reached, which catches short bursts |
 | `peaks [THRESHOLD_DB [START STOP]]` | The signals on the RF spectrum (the held trace while Peak hold is on) THRESHOLD_DB (default 10) over the floor, within START-STOP MHz if given: each one's frequency, level, height over the floor and width, the strongest 20 |
+| `view [rf` / `mpx` / `audio] [span X` / `full] [center X] [ref DB] [range DB] [avg N]` | A spectrum view's dials: **Span** and where it is centred (MHz for `rf`, kHz for `mpx` and `audio`), **Ref level** and **Range** (the level scale, the waterfall's colours too; display only), **Average** (smooths the trace, and so what `peaks` reads). With no settings it reports them, with no view all three |
 | `rate MSPS` | The IQ bandwidth |
 | `record audio` / `iq-channel` / `iq-band` `on` / `off`, `record start` / `stop` | The Record box. `stop` replies with the files saved, the `.sigmf-meta` beside each IQ file included |
 | `capture SECONDS [iq-band` / `iq-channel` / `audio]` | Records only that (IQ of the whole band by default) for SECONDS and replies with the files; the Record box's ticks are put back after. Refused over 4 GB: at 40 MS/s the whole band is 320 MB/s, so 12 s at most |
@@ -669,6 +672,7 @@ A survey of the ISM bands, for example (a BB60D, which sweeps itself):
 ```sh
 tools/fmctl 'sweep 300 1000; peakhold on; wait 90; peaks 8 433 435; peaks 8 902 928'
 tools/fmctl 'mode receive; tune 915; center 915; capture 5'    # the whole 27 MHz, 1.6 GB
+tools/fmctl 'view rf span 2 center 915.2 ref -40 range 60; screenshot /tmp/915.png'
 ```
 
 A command the window would refuse is refused, with the reason: `gain` while
