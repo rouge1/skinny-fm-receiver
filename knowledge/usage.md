@@ -347,7 +347,7 @@ The multiplex (MPX) spectrum fills the bottom right.
 |---|---|
 | **Center** | The radio's centre frequency (its LO), drawn as a **dashed line** on the spectrum (not the waterfall, which is left clear), thin and grey in every theme: it is a reference, and orange is kept for where you are tuned. Outside the tuner's reach the spectrum is dimmed. Moving it moves the band the tuner can reach. If the tuner is still inside the new band it stays where it is; if not, it is pulled in to the nearer edge. **While you move the Center the line fades away**, so you can see the spectrum under it, and it comes back once you stop. |
 | **Center on tuner** | Puts the Center 300 kHz below the tuner, so there is room to tune either way. |
-| **IQ bandwidth** | The radio's sample rate in Receive: how much of the band the spectrum shows, and the tuner can reach (BB60D 2.5/5/10/20/40 MS/s, 2.5 greyed out on a Mac; HackRF 2-20 MS/s; RTL-SDR 2 and 2.4 MS/s). Changing it rebuilds the receiver; the Center stays if the tuner still fits. |
+| **IQ bandwidth** | The radio's sample rate in Receive: how much of the band the spectrum shows, and the tuner can reach (BB60D 2.5/5/10/20/40 MS/s, 2.5 greyed out on a Mac; HackRF 2-20 MS/s; RTL-SDR 2 and 2.4 MS/s). The lowest is marked **(sharper)**: the spectrum's FFT is the same size over less band, so its bins are finer; the highest **(wider)**. Changing it rebuilds the receiver; the Center stays if the tuner still fits. Picking the rate already running does nothing. |
 | **RF gain** | The radio's gain, with **AGC** where the radio says when it overloads (see *RF gain* above). The same slider as in Sweep, and each radio remembers its own. |
 
 **The tuner stops at the edge of the band.** Rolling, stepping, typing,
