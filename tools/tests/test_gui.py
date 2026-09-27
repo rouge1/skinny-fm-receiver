@@ -330,6 +330,25 @@ def clipped_readout(w):
           "none just after opening")
 
 
+def repick_changes_nothing(w, *combos):
+    """Each combo's current item picked again (Qt says activated all the
+    same): nothing restarts, re-plans, reopens or clears."""
+    calls = []
+    names = ('_start_mode', '_use_radio', '_reset_sweep_display', '_clear_rds_labels')
+    saved = {n: getattr(w, n) for n in names}
+    for n in names:
+        setattr(w, n, lambda *a, _n=n, **k: (calls.append(_n), saved[_n](*a, **k)))
+    try:
+        for combo in combos:
+            combo.activated.emit(combo.currentIndex())
+            pump(0.05)
+            assert calls == [], (combo.currentText(), calls)
+    finally:
+        for n in names:
+            delattr(w, n)
+    assert w.engine.running
+
+
 def part1_file_receiver():
     path = signals.write_station(os.path.join(FOLDER, 'synth'), seconds=12.0)
     w = make_window(['--file', path])
@@ -383,6 +402,7 @@ def part1_file_receiver():
     w.region_combo.setCurrentIndex(0)
     w._region_changed(0)
     assert rx.region == 'RBDS' and rx.mid_de is b75
+    repick_changes_nothing(w, w.region_combo, w.radio_combo, w.rx_rate_combo)
 
     # Stereo off: mono at once, pilot or not.
     w.stereo_check.setChecked(False)
@@ -539,6 +559,8 @@ def part2_sweep():
         assert (w.sweep_start.value(), w.sweep_stop.value()) == (low, high)
         assert w.fft_combo.isVisible() and not w.rbw_combo.isVisible()
         assert w.rf_view.level_unit == 'dBFS'
+        repick_changes_nothing(w, w.preset_combo, w.fft_combo, w.sweep_rate_combo,
+                               w.radio_combo)
         # What the sweep is doing: at the foot of the tab, under RF gain.
         outer = w._sweep_outer
         assert outer.indexOf(w.sweep_info) == outer.indexOf(w.gain_box) + 1
@@ -832,6 +854,15 @@ def part3_native_sweep():
         assert sweeper.plan.rbw == 30e3 and sweeper.plan.raised, sweeper.plan.describe()
         w._preset_chosen(1)
         assert sweeper.plan.start_hz == 87.5e6 and sweeper.plan.rbw == 10e3
+        pump(0.5)                              # configured: the device's fields filled
+        repick_changes_nothing(w, w.rbw_combo, w.preset_combo)
+        # Another RBW does re-plan.
+        w.rbw_combo.setCurrentIndex(w.rbw_combo.findData(30e3))
+        w.rbw_combo.activated.emit(w.rbw_combo.currentIndex())
+        assert sweeper.plan.rbw == 30e3, sweeper.plan.describe()
+        w.rbw_combo.setCurrentIndex(w.rbw_combo.findData(10e3))
+        w.rbw_combo.activated.emit(w.rbw_combo.currentIndex())
+        assert sweeper.plan.rbw == 10e3
         # The channel band shows on the sweep too, on the tuner: a
         # middle-drag moves it, and that is where Listen and Real time will
         # start from. Nothing is retuned meanwhile - the radio is sweeping.
@@ -1176,6 +1207,15 @@ def part5_unavailable_rate():
         _wheel(combo, QtCore.QPoint(10, 10), -1)
         pump(0.3)
         assert combo.currentData() == 2e6 and w.engine.rate == 2e6, combo.currentData()
+        # Picking the rate already running (Qt says activated all the same)
+        # restarts nothing.
+        starts = []
+        start_mode = w._start_mode
+        w._start_mode = lambda mode: (starts.append(mode), start_mode(mode))
+        combo.activated.emit(combo.currentIndex())
+        pump(0.1)
+        assert starts == [] and w.engine.running, starts
+        w._start_mode = start_mode
         w.close()
     finally:
         fmapp.make_radio = original

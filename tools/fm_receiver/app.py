@@ -295,6 +295,28 @@ def _share_text(share):
     return f"{pct:.2f}%" if pct < 10 else f"{pct:.1f}%"
 
 
+def _same_plan(new, running):
+    """A plan just made would sweep as the running one does: the same kind,
+    and every setting the new one has equal (arrays element by element).
+    What the device fills in once configured (the BB60D's points and bin
+    width: None in a new plan) is not a setting."""
+    if type(new) is not type(running):
+        return False
+    va, vb = vars(new), vars(running)
+    for key, x in va.items():
+        if x is None or key.startswith('_'):
+            continue
+        if key not in vb:
+            return False
+        y = vb[key]
+        if isinstance(x, np.ndarray) or isinstance(y, np.ndarray):
+            if not np.array_equal(x, y):
+                return False
+        elif x != y:
+            return False
+    return True
+
+
 class MainWindow(Qt.QWidget):
 
     def __init__(self, args, config):
@@ -564,7 +586,7 @@ class MainWindow(Qt.QWidget):
             "Resolution bandwidth of the radio's own sweep. Auto keeps a sweep\n"
             "near 80,000 points; narrower shows more detail and a lower noise\n"
             "floor. Too narrow for the span is raised, to 1.5 million points.")
-        self.rbw_combo.activated.connect(lambda _: self._update_sweep_plan())
+        self.rbw_combo.activated.connect(lambda _: self._sweep_setting_picked())
         form.addRow("RBW:", self.rbw_combo)
         # The tuner, here as well as in Receive: the marker on the spectrum,
         # what Listen tunes to, and what Real time watches around. Its own
@@ -624,7 +646,7 @@ class MainWindow(Qt.QWidget):
         self.fft_combo.setCurrentIndex(max(0, FFT_SIZES.index(self.cfg['sweep_fft'])
                                            if self.cfg['sweep_fft'] in FFT_SIZES else 2))
         self.fft_combo.setToolTip("FFT size: sets the resolution bandwidth (RBW).")
-        self.fft_combo.activated.connect(lambda _: self._update_sweep_plan())
+        self.fft_combo.activated.connect(lambda _: self._sweep_setting_picked())
         form.addRow("FFT:", self.fft_combo)
         self.frames_spin = Qt.QSpinBox()
         self.frames_spin.setRange(1, 128)
@@ -1311,6 +1333,9 @@ class MainWindow(Qt.QWidget):
 
     def _radio_chosen(self, index):
         kind = self.radio_combo.itemData(index)
+        if (self.radio is not None and kind == self.radio.kind and self.engine.running
+                and self._lost is None):
+            return          # the radio already running: reopening it only stutters
         if kind == 'file' and not self.cfg.get('iq_file'):
             if not self._choose_file(start=False):
                 if self.radio is not None:
@@ -1501,8 +1526,18 @@ class MainWindow(Qt.QWidget):
         self.range_label.setToolTip(tip)
 
     def _restart_receive(self):
-        if self._mode == 'receive' and self.radio is not None:
+        if self._mode == 'receive' and self.radio is not None \
+                and not self._running_at(self.rx_rate_combo):
             self._start_mode('receive')
+
+    def _running_at(self, combo):
+        """The rate picked in ``combo`` is the one running: a pick of the
+        item already chosen (Qt's ``activated`` comes all the same) changes
+        nothing, so nothing restarts."""
+        data = combo.currentData()
+        rate = self.engine.rate
+        return (self.engine.running and data is not None and rate is not None
+                and abs(float(data) - rate) < 1)
 
     def _running_text(self):
         e = self.engine
@@ -1654,8 +1689,21 @@ class MainWindow(Qt.QWidget):
         self.rf_view.set_band(hz - bw / 2, hz + bw / 2)
 
     def _restart_sweep(self):
-        if self._mode == 'sweep' and self.radio is not None:
+        if self._mode == 'sweep' and self.radio is not None \
+                and not self._running_at(self.sweep_rate_combo):
             self._start_mode('sweep')
+
+    def _sweep_setting_picked(self):
+        """RBW or FFT picked: re-planned only if the plan changes - the
+        item already chosen, picked again, would clear the display."""
+        sweeper = self.engine.sweeper
+        if self._mode == 'sweep' and sweeper is not None:
+            try:
+                if _same_plan(self._sweep_plan(), sweeper.plan):
+                    return
+            except ValueError:
+                pass                              # _update_sweep_plan says why
+        self._update_sweep_plan()
 
     def _update_sweep_plan(self):
         """Span, FFT or frames changed: re-plan on the running sweep - only a
@@ -1692,10 +1740,20 @@ class MainWindow(Qt.QWidget):
     def _preset_chosen(self, index):
         _, start, stop = SWEEP_PRESETS[index]
         if start == 'full':
-            if self.radio is not None:
-                self._set_sweep_span(*self.radio.sweep_range_hz)
+            if self.radio is None:
+                return
+            span = self.radio.sweep_range_hz
         elif start is not None:
-            self._set_sweep_span(start * 1e6, stop * 1e6)
+            span = (start * 1e6, stop * 1e6)
+        else:
+            return
+        if self.radio is not None:
+            low, high = self.radio.sweep_range_hz
+            span = (max(span[0], low), min(span[1], high))
+        here = (self.sweep_start.value(), self.sweep_stop.value())
+        if all(abs(a - b) < 1 for a, b in zip(span, here)):
+            return                  # the span it is: the sweep carries on untouched
+        self._set_sweep_span(*span)
 
     def _select_preset(self, remember=True):
         """The preset the bounds are, or Custom; remembered as the band."""
@@ -1998,7 +2056,8 @@ class MainWindow(Qt.QWidget):
             self.rf_view.set_band(e.station_hz - hz / 2, e.station_hz + hz / 2)
 
     def _region_changed(self, _index):
-        if self.engine.rx is not None:
+        rx = self.engine.rx
+        if rx is not None and rx.region != self.region_combo.currentData():
             self.engine.rx.set_region(self.region_combo.currentData())
             self._clear_rds_labels()
 
