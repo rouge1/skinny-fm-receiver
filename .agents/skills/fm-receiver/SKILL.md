@@ -77,6 +77,16 @@ rtl_433 as a second decoder: apt's 23.11 predates some decoders
 file (filtered, about 250 kS/s, signal off DC) with no settings-like words
 in its name (`100k` reads as a sample rate).
 
+URH as a second opinion, headless, through its Python library (details in
+rtl-software.md, "URH"): cut the signal to a narrow cf32 file (signal at
+0 Hz, filtered, about 1 MS/s), then in `~/.local/share/pipx/venvs/urh/bin/python`
+with `QT_QPA_PLATFORM=offscreen`, `Signal.auto_detect()` measures the
+modulation, samples a symbol, centre and noise on its own, and
+`ProtocolAnalyzer.get_protocol_from_signal()` gives each packet's bits.
+Its baud guess can be double: set `samples_per_symbol` from the preamble and
+run it again. Its field finder needs packets that differ; with one repeated
+packet it has nothing to compare.
+
 ## Tools outside the gnu env
 
 Details in rtl-software.md, "What this machine already has".

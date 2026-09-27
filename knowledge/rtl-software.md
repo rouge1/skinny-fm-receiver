@@ -71,6 +71,31 @@ were run.
   `urh_cli -d RTL-TCP -f 433.92e6 -s 1e6 -g 30 -rx -mo ASK -sps 500 -rt 10`
   (start `rtl_tcp` first: urh_cli connects to 127.0.0.1:1234, the default
   in its RTL-TCP code; the numbers here are illustrative).
+- **The library, headless: a second decoder for a recording.** Its Python
+  API works without the GUI, which lets a script (or Claude) check a
+  demodulation independently (used on a 50 kbaud 2-FSK beacon,
+  2026-09-26):
+
+  ```sh
+  QT_QPA_PLATFORM=offscreen ~/.local/share/pipx/venvs/urh/bin/python - <<'EOF'
+  from urh.signalprocessing.Signal import Signal
+  from urh.signalprocessing.ProtocolAnalyzer import ProtocolAnalyzer
+  s = Signal('cut.complex', 'cut', sample_rate=1e6)   # cf32, signal at 0 Hz
+  s.auto_detect(detect_modulation=True, detect_noise=True)
+  print(s.modulation_type, s.samples_per_symbol, s.center, s.noise_threshold)
+  # s.samples_per_symbol = 20                      # if the guess is off
+  pa = ProtocolAnalyzer(s); pa.get_protocol_from_signal()
+  for m in pa.messages: print(len(m.plain_bits_str), m.plain_hex_str)
+  EOF
+  ```
+
+  Feed it a narrow cut, not the whole band: filter to the signal's width
+  and bring it to about 1 MS/s first. `auto_detect` measured the right
+  modulation and baud on one cut and double the baud on another, so check
+  its samples per symbol against the preamble. Its packets may start a bit
+  later than yours (a preamble `55...` reads as `AA...`): compare bits, not
+  hex. The field finder (sync, length, address, CRC) compares messages, so
+  it needs packets that differ.
 - A live radio in URH or `urh_cli` owns the device, the same as this app.
   Close the app's Receive first, and check the HackRF isn't in use (see
   CLAUDE.md).
