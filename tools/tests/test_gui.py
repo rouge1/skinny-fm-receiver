@@ -1160,7 +1160,10 @@ def part5_unavailable_rate():
                         {'recording_dir': FOLDER, 'receive_rate': {'hackrf': 1e6}})
         combo = w.rx_rate_combo
         assert w._mode == 'receive' and w.engine.running, w.status.text()
-        assert combo.count() == 2 and combo.itemText(0) == '1 MS/s', combo.itemText(0)
+        # The ends say what they are for.
+        assert combo.count() == 2 and combo.itemText(0) == '1 MS/s  (sharper)', \
+            combo.itemText(0)
+        assert combo.itemText(1) == '2 MS/s  (wider)', combo.itemText(1)
         assert not combo.model().item(0).isEnabled() and combo.model().item(1).isEnabled()
         assert 'Mac' in combo.itemData(0, QtCore.Qt.ToolTipRole)
         # Saved at the unusable rate: the default instead.

@@ -743,7 +743,8 @@ class MainWindow(Qt.QWidget):
         self.rx_rate_combo.setToolTip(
             "The radio's IQ bandwidth (sample rate) while receiving: how much of "
             "the band\nthe spectrum shows, and the tuner can reach, around the "
-            "Center.")
+            "Center. The lowest is\nthe sharpest: the same FFT over less band, "
+            "finer bins. The highest is the widest.")
         self.rx_rate_combo.activated.connect(lambda _: (self._update_folder_tip(),
                                                         self._restart_receive()))
         form.addRow("IQ bandwidth:", self.rx_rate_combo)
@@ -1236,13 +1237,17 @@ class MainWindow(Qt.QWidget):
         radio = self.radio
         kind = radio.kind
 
-        def fill(combo, rates, saved, default, unavailable=None):
+        def fill(combo, rates, saved, default, unavailable=None, ends=None):
             # Rates this computer can't use are listed, greyed out, with why.
+            # ``ends`` names what the lowest and the highest rate are for.
             unavailable = unavailable or {}
             combo.blockSignals(True)
             combo.clear()
             for rate in rates:
-                combo.addItem(rate_label(rate), float(rate))
+                label = rate_label(rate)
+                if ends and len(rates) > 1 and rate in (min(rates), max(rates)):
+                    label += f"  ({ends[0] if rate == min(rates) else ends[1]})"
+                combo.addItem(label, float(rate))
                 why = unavailable.get(rate)
                 if why:
                     combo.model().item(combo.count() - 1).setEnabled(False)
@@ -1255,7 +1260,7 @@ class MainWindow(Qt.QWidget):
 
         fill(self.rx_rate_combo, radio.receive_rates,
              self.cfg['receive_rate'].get(kind), radio.default_receive_rate,
-             radio.unavailable_rates)
+             radio.unavailable_rates, ends=('sharper', 'wider'))
         fill(self.sweep_rate_combo, radio.sweep_rates,
              self.cfg['sweep_rate'].get(kind), radio.default_sweep_rate)
         self.gain_slider.blockSignals(True)
