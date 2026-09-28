@@ -24,6 +24,20 @@ more things that conda doesn't have: Signal Hound's library
 Signal Hound's licence lets their library be copied only to people who own
 the hardware, and this repository is public.
 
+**HD Radio** (optional) needs the `nrsc5` program, which isn't in apt or
+conda. On Ubuntu:
+
+```sh
+sudo apt install build-essential cmake autoconf automake libtool pkg-config \
+                 libfftw3-dev libao-dev librtlsdr-dev libusb-1.0-0-dev git
+git clone https://github.com/theori-io/nrsc5 ~/src/nrsc5
+cd ~/src/nrsc5 && mkdir -p build && cd build
+cmake .. -DUSE_SSE=ON && make -j$(nproc) && sudo make install && sudo ldconfig
+```
+
+The window finds it on PATH, or in `/usr/local/bin`, Homebrew's bin or
+`~/.local/bin` (not yet tried on a Mac).
+
 ### The BB60D on Linux
 
 Install the library in `/usr/local/lib`, and build and install
@@ -308,9 +322,10 @@ it.
 ## Receive (IQ)
 
 In Receive the radio runs at a narrow IQ bandwidth, and the app demodulates
-one station, in three boxes: **Radio** sets the radio itself (with its
+one station, in four boxes: **Radio** sets the radio itself (with its
 **RF gain** and AGC), **Tuner** picks the station inside the
-radio's band, and **RDS** shows the station as decoded.
+radio's band, **RDS** shows the station as decoded, and **HD Radio**
+plays its digital programs (HD1-HD4) where it has them.
 
 Each box has a **chevron** at the right of its title: click it, or the
 title, to fold the box away and again to open it; it slides shut or open,
@@ -319,7 +334,8 @@ still shows its **Center** and **Center on tuner**, and a folded **Tuner**
 box its **Tuner range** (↔) and tuner, and no taller than those, each
 gliding to the middle of the box once it has folded
 (the Step knob fades out as the Tuner box folds, and back in as it opens);
-and a folded **RDS** box shows its **Now playing** and **RadioText**. The app remembers
+a folded **RDS** box shows its **Now playing** and **RadioText**, and a
+folded **HD Radio** box its **Digital** row and **Status**. The app remembers
 which are folded.
 
 ```
@@ -441,6 +457,45 @@ station, it probably has none. In testing, 102.1 was one of these.
 The **MPX view** (bottom right) is the demodulated multiplex from 0 to
 125 kHz: mono audio, the 19 kHz pilot, stereo around 38 kHz and RDS at
 57 kHz.
+
+### HD Radio
+
+Many US FM stations also send digital programs, HD Radio, in two flat
+shoulders either side of the station (130-198 kHz out) - see
+[digital-radio.md](digital-radio.md) for which ones here. This box plays
+them. It needs the **nrsc5** program installed (Setting up, below); without
+it the box says so and stays greyed.
+
+```
+┌ HD Radio ────────────────────────────────────┐
+│ ☑ Digital  [HD1] [HD2] [HD3] [HD4]           │
+│      Status: Playing HD2 (digital) - MP1,    │
+│              BER 0.114, 31 kbps              │
+│     Station: HOT - HOT 99.5                  │
+│    Programs: HD1 HOT 99.5 (Top 40) · HD2     │
+│              Pride Radio (Top 40)            │
+│ Now playing: Fisher - What A Life            │
+└──────────────────────────────────────────────┘
+```
+
+| Row | What it shows or does |
+|---|---|
+| **Digital** | Plays the station's digital audio in place of the analog. The station's IQ, sidebands and all (the channel filter doesn't matter), goes to nrsc5; its audio comes back through the same **Volume**, **Mute**, meters and **Audio** recording as the analog. |
+| **HD1-HD4** | The program. HD1 is the main one, usually the analog's own programme; HD2-HD4 are extra ones. Picking one starts the decoder again: 2-4 s to sync and play. A retune goes back to HD1. |
+| **Status** | *Searching for the digital signal*, *Digital signal found, waiting for HD2*, *Playing HD2 (digital)* with the service mode (MP1-MP3), the bit error rate (under ~0.05 is clean, ~0.2 is the edge) and the program's bit rate; *No HD Radio signal on this station* after 10 s without; *HD2 carries no audio* for a program the station lists but sends nothing on (94.7's HD2 on 2026-09-27). |
+| **Station** | The station's own name and slogan, from its digital data. |
+| **Programs** | What the station lists: each program's name and type; "no audio" for one it isn't sending. |
+| **Now playing** | Artist and title of the program playing, from its digital data (often ads and slogans between songs). |
+
+While it waits, HD1 plays the analog and HD2-HD4 are silent. The digital
+audio is a few seconds behind the analog (the decoder's own delay), so the
+switch from one to the other repeats a moment. If the digital signal
+drops, HD1 goes back to the analog after about a second.
+
+The IQ bandwidth must be at least 420 kS/s after the first stage, which
+every radio's Receive rates are. An **IQ – channel** recording (500 kS/s)
+plays with its HD Radio if its channel filter was 400 kHz when it was
+recorded; an **IQ – band** recording always does.
 
 ## Views: bandwidth and amplitude
 
@@ -653,13 +708,14 @@ tools/fmctl help                          # every command
 
 | Command | Does |
 |---|---|
-| `status` | Radio, tab, Tuner and its range, Center, IQ bandwidth, gain and AGC, volume and mute, channel filter, step, clipped %, recording; in Receive the signal (dBFS in the channel, SNR), stereo pilot and RDS (PI, call sign, PS, name, RadioText, PTY, % blocks good) |
+| `status` | Radio, tab, Tuner and its range, Center, IQ bandwidth, gain and AGC, volume and mute, channel filter, step, clipped %, recording; in Receive the signal (dBFS in the channel, SNR), stereo pilot, RDS (PI, call sign, PS, name, RadioText, PTY, % blocks good) and HD Radio (on, program, what is heard, sync, station, programs, BER, now playing, the status line) |
 | `tune MHZ` | The Tuner. Outside the band around the Center, the Center moves first, as **Center on tuner** does (not for an IQ file, whose band is fixed) |
 | `center MHZ` | The Radio box's Center (Receive tab only) |
 | `gain PERCENT` | The RF gain slider |
 | `agc on` / `off` | The AGC box |
 | `mode sweep` / `receive` / `recordings` | The tabs |
 | `volume PERCENT`, `mute on` / `off` | Audio |
+| `hd on` / `off` / `1`-`4` | The **HD Radio** box: the digital audio on or off, or the program to play (HD1-HD4, switching it on). Needs nrsc5 |
 | `screenshot PATH.png` | A picture of the window, as it is on screen |
 | `sweep START STOP` | The Sweep tab over START-STOP MHz (switching to it first) |
 | `peakhold on` / `off` / `clear` | The RF spectrum's **Peak hold**: the most each frequency reached, which catches short bursts |

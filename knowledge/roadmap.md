@@ -1013,6 +1013,12 @@ already cover files: `.cfile` (cf32) with `.sigmf-meta`, read by GNU
 Radio's File Source, inspectrum, URH (rate by hand) and
 `rtl_433 -r cf32:FILE -s RATE`.
 
+**A first one shipped (2026-09-27): HD Radio.** The tuner's slice after
+the channelizer's first stage, resampled to 744,187.5 S/s, goes as cf32
+down a pipe to the `nrsc5` program (`hdradio.py`: a Python sink that
+queues, a writer thread, at most a second queued before it drops). The
+general IQ out can reuse that path: the slice, the pipe, the dropping.
+
 **Which samples.** The whole band at the IQ bandwidth, or a slice around
 the tuner at a rate picked for it (the channel's 500 kS/s, or wider), cut
 down in the flowgraph (shift, low-pass, decimate, as the removed rtl_433

@@ -571,7 +571,9 @@ def part2_sweep():
         lo_mhz, hi_mhz = (x / 1e6 for x in fmapp.SWEEP_VIEW_HZ)
         view_boxes = [p.getPlotItem().getViewBox() for p in (w.rf_view.plot, w.rf_view.wf_plot)]
         spec, fall = (vb.sceneBoundingRect() for vb in view_boxes)
-        assert (spec.left(), spec.width()) == (fall.left(), fall.width()), (spec, fall)
+        # (To float noise: a layout can leave 1e-13 of a pixel between them.)
+        assert (abs(spec.left() - fall.left()) < 1e-6
+                and abs(spec.width() - fall.width()) < 1e-6), (spec, fall)
         for vb in view_boxes:
             vb.setXRange(90, 110, padding=0)
             vb.translateBy(x=-1000)

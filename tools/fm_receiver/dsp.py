@@ -6,6 +6,7 @@ RDS, spectra and levels.
     IQ (rate R, LO) ─┬─ xlate + decimate to ~1 MS/s ─ channel filter, resample
                      │    to 500 kS/s (channel BW is live) ─┬─ FM discriminator ─ /2 ─ MPX
                      │                                      └─ channel IQ recorder
+                     │    └─ (HD Radio) resample to 744,187.5 S/s ─ nrsc5 (hdradio.py)
                      ├─ RF spectrum tap ─ band IQ recorder
     MPX ─┬─ 19 kHz band-pass ─ PLL ─┬─ RDS decoder (rds_core)
          │                          └─ PLL² = 38 kHz ─ phase ─ x MPX ─ side (L-R)
@@ -13,6 +14,8 @@ RDS, spectra and levels.
          ├─ mid (L+R) ─┐
          └─ MPX spectrum tap         mid ± side ─ de-emphasis ─ L, R ─ audio tap
                                      (levels, WAV) ─ volume/mute ─ sound card
+    nrsc5's audio (HD Radio), 44.1 -> 48 kHz, takes the place of L, R
+    ahead of the audio tap when it plays (set_hd_audio).
 
 **The channel runs at 500 kS/s, the MPX at 250.** An FM station needs
 no more than 250 kS/s, but a channel filter opened past that - up to
@@ -67,6 +70,7 @@ from gnuradio.fft import window  # type: ignore
 from gnuradio.filter import firdes  # type: ignore
 from scipy import signal as sps  # type: ignore
 
+from .hdradio import IQ_RATE as HD_IQ_RATE, hd_audio_source, hd_iq_sink
 from .rds_core import RdsDemod, RdsProtocol
 from .sweep import full_scale_count
 
@@ -87,6 +91,11 @@ PILOT_LOCK_DB = 10.0
 PILOT_UNLOCK_DB = 6.0
 #: Taps of the audio low-pass-and-resample, 250 kHz -> 48 kHz (24/125).
 AUDIO_INTERP, AUDIO_DECIM = 24, 125
+#: The lowest rate after the first stage that still holds HD Radio's
+#: sidebands (+-198 kHz), with a little room.
+HD_MIN_MID_RATE = 420e3
+#: Items in each buffer between HD Radio's audio and the mix (~40 ms).
+HD_AUDIO_BUFFER = 2048
 #: The 38 kHz phase each convention needs, relative to twice the PLL's.
 PHASE_STANDARD = math.pi / 2          # pilot and subcarrier both sines
 PHASE_COSINE = 0.0                    # both cosines (the toolkit's transmitter)
@@ -480,7 +489,7 @@ class ReceiveChain:
 
     def __init__(self, tb, source, rate, offset_hz, *, channel_bw=200e3,
                  region='RBDS', stereo=True, volume=0.5, muted=False,
-                 audio_sink=None, rf_fft=None):
+                 audio_sink=None, rf_fft=None, hd=None):
         self.tb = tb
         self.rate = float(rate)
         self.region = region
@@ -506,6 +515,15 @@ class ReceiveChain:
         decim = int(round(CHANNEL_RATE / MPX_RATE))
         self.mpx = filter.fir_filter_fff(decim, mpx_taps())
         tb.connect(source, self.stage1, self.stage2, self.demod, self.mpx)
+
+        # HD Radio: the station at 0 Hz before the channel filter (which
+        # may be narrower than the sidebands), at nrsc5's rate. Always
+        # connected; nothing is sent until the decoder runs.
+        self.hd = hd if (hd is not None and mid >= HD_MIN_MID_RATE) else None
+        if self.hd is not None:
+            self.hd_rs = filter.pfb.arb_resampler_ccf(HD_IQ_RATE / mid)
+            self.hd_iq = hd_iq_sink(self.hd)
+            tb.connect(self.stage1, self.hd_rs, self.hd_iq)
 
         # Channel power, for the signal readout.
         self.ch_mag = blocks.complex_to_mag_squared(1)
@@ -576,14 +594,40 @@ class ReceiveChain:
         tb.connect(self.mid_de, (self.right, 0))
         tb.connect(self.side_de, (self.right, 1))
 
+        # HD Radio's audio beside the analog: one or the other is heard
+        # (set_hd_audio). Both run on the radio's clock - see hdradio.py.
+        out_l, out_r = self.left, self.right
+        if self.hd is not None:
+            self.hd_src = hd_audio_source(self.hd)
+            self.hd_rs_l = filter.rational_resampler_fff(160, 147)
+            self.hd_rs_r = filter.rational_resampler_fff(160, 147)
+            self.hd_gain_l = blocks.multiply_const_ff(0.0)
+            self.hd_gain_r = blocks.multiply_const_ff(0.0)
+            self.an_gain_l = blocks.multiply_const_ff(1.0)
+            self.an_gain_r = blocks.multiply_const_ff(1.0)
+            self.mix_l = blocks.add_ff(1)
+            self.mix_r = blocks.add_ff(1)
+            # The source is always ready (silence when there is nothing),
+            # so every buffer ahead of the mix stays full: kept small, or a
+            # new program would start with a second of the old one.
+            for block in (self.hd_src, self.hd_rs_l, self.hd_rs_r,
+                          self.hd_gain_l, self.hd_gain_r):
+                block.set_max_output_buffer(HD_AUDIO_BUFFER)
+            tb.connect((self.hd_src, 0), self.hd_rs_l, self.hd_gain_l, (self.mix_l, 1))
+            tb.connect((self.hd_src, 1), self.hd_rs_r, self.hd_gain_r, (self.mix_r, 1))
+            tb.connect(self.left, self.an_gain_l, (self.mix_l, 0))
+            tb.connect(self.right, self.an_gain_r, (self.mix_r, 0))
+            out_l, out_r = self.mix_l, self.mix_r
+        self.hd_heard = 'analog'
+
         self.tap = audio_tap()
-        tb.connect(self.left, (self.tap, 0))
-        tb.connect(self.right, (self.tap, 1))
+        tb.connect(out_l, (self.tap, 0))
+        tb.connect(out_r, (self.tap, 1))
 
         self.vol_l = blocks.multiply_const_ff(self._gain())
         self.vol_r = blocks.multiply_const_ff(self._gain())
-        tb.connect(self.left, self.vol_l)
-        tb.connect(self.right, self.vol_r)
+        tb.connect(out_l, self.vol_l)
+        tb.connect(out_r, self.vol_r)
         if audio_sink is not None:
             self.audio_sink = audio_sink
             tb.connect(self.vol_l, (audio_sink, 0))
@@ -642,6 +686,19 @@ class ReceiveChain:
     def set_offset(self, offset_hz):
         self.stage1.set_center_freq(float(offset_hz))
         self.reset_decoders()
+
+    def set_hd_audio(self, heard):
+        """What is heard: 'analog', 'digital' (nrsc5's audio) or 'none'
+        (an HD2-4 not playing yet has no analog to fall back on)."""
+        if self.hd is None or heard == self.hd_heard:
+            return
+        self.hd_heard = heard
+        analog = 1.0 if heard == 'analog' else 0.0
+        digital = 1.0 if heard == 'digital' else 0.0
+        self.an_gain_l.set_k(analog)
+        self.an_gain_r.set_k(analog)
+        self.hd_gain_l.set_k(digital)
+        self.hd_gain_r.set_k(digital)
 
     def set_channel_bw(self, bandwidth_hz):
         self.channel_bw = float(bandwidth_hz)

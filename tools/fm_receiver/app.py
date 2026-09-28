@@ -23,6 +23,7 @@ settings are saved when it closes (``config.py``).
 
 import argparse
 import concurrent.futures
+import html
 import math
 import os
 import signal
@@ -38,6 +39,7 @@ from . import bb60_source, bb60_sweep
 from .bb60_sweep import RBW_LADDER, RT_MAX_SPAN_HZ
 from .dsp import AUDIO_RATE, CHANNEL_MAX_BW, MPX_RATE, wav_source
 from .engine import Engine
+from .hdradio import PROGRAMS as HD_PROGRAMS
 from .radios import (RADIO_NAMES, IQFile, RadioError, detect_radios,
                      make_radio, plugged_in, rate_label)
 from .rds_core import clock_text
@@ -710,8 +712,8 @@ class MainWindow(Qt.QWidget):
         return page
 
     def _build_receive_tab(self):
-        """Three boxes, top to bottom: the radio itself, the tuner inside its
-        band, and the station as decoded."""
+        """Four boxes, top to bottom: the radio itself, the tuner inside its
+        band, the station as decoded, and its HD Radio."""
         page = Qt.QWidget()
         box = Qt.QVBoxLayout(page)
         box.setContentsMargins(6, 8, 6, 6)
@@ -719,6 +721,7 @@ class MainWindow(Qt.QWidget):
         box.addWidget(self._build_radio_card())
         box.addWidget(self._build_tuner_card())
         box.addWidget(self._build_rds_card())
+        box.addWidget(self._build_hd_card())
         box.addStretch(1)
         return page
 
@@ -925,6 +928,142 @@ class MainWindow(Qt.QWidget):
             form.addRow(caption, value(key, font))
         return self._foldable(box, form, 'rds',
                               keep=(self.lbl['nowplaying'], self.lbl['radiotext']))
+
+    def _build_hd_card(self):
+        """HD Radio: the station's digital programs, decoded by the nrsc5
+        program (see hdradio.py) and heard in place of the analog."""
+        box = Card("HD Radio")
+        form = self._form(box)
+        row = Qt.QWidget()
+        line = Qt.QHBoxLayout(row)
+        line.setContentsMargins(0, 0, 0, 0)
+        self.hd_check = Qt.QCheckBox("Digital")
+        self.hd_check.setToolTip(
+            "Play the station's HD Radio (digital) audio, decoded by nrsc5.\n"
+            "HD1 plays the analog until the digital comes in (a few seconds);\n"
+            "HD2-HD4 are silent until then. A retune goes back to HD1.")
+        self.hd_check.toggled.connect(self._hd_toggled)
+        line.addWidget(self.hd_check)
+        self.hd_group = Qt.QButtonGroup(self)
+        self.hd_group.setExclusive(True)
+        self.hd_buttons = []
+        for n in range(HD_PROGRAMS):
+            button = Qt.QPushButton(f"HD{n + 1}")
+            button.setCheckable(True)
+            button.setEnabled(False)
+            self.hd_group.addButton(button, n)
+            line.addWidget(button)
+            self.hd_buttons.append(button)
+        self.hd_buttons[0].setChecked(True)
+        self.hd_group.idClicked.connect(self._hd_program_picked)
+        line.addStretch(1)
+        form.addRow(row)
+        self.hd_lbl = {}
+        for key, caption in (('status', "Status:"), ('station', "Station:"),
+                             ('programs', "Programs:"), ('nowplaying', "Now playing:")):
+            label = _wrapping(Qt.QLabel("-"))
+            label.setTextFormat(QtCore.Qt.RichText)
+            label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            self.hd_lbl[key] = label
+            form.addRow(caption, label)
+        if not self.engine.hd.available:
+            self.hd_check.setEnabled(False)
+            self.hd_lbl['status'].setText(_coloured(
+                "nrsc5 is not installed (see knowledge/digital-radio.md)", 'warn'))
+        return self._foldable(box, form, 'hd', keep=(row, self.hd_lbl['status']))
+
+    def _hd_toggled(self, on):
+        try:
+            self.engine.hd.set_enabled(on)
+            if not on and self.engine.rx is not None:
+                self.engine.rx.set_hd_audio('analog')
+            self._refresh_hd()
+        except Exception:                         # a slot's exception aborts
+            self._report('HD Radio')
+
+    def _hd_program_picked(self, program):
+        try:
+            self.engine.hd.set_program(program)
+            self._refresh_hd()
+        except Exception:
+            self._report('HD Radio')
+
+    def _refresh_hd(self):
+        """Run from the slow timer in Receive: start, stop or restart the
+        decoder as wanted, pick what is heard, and show what it says."""
+        hd, rx = self.engine.hd, self.engine.rx
+        receiving = rx is not None and self._mode in ('receive', 'playback')
+        if receiving:
+            hd.poll()
+        s = hd.status()
+        program = s['program']
+        if receiving:
+            if not s['enabled']:
+                heard = 'analog'
+            elif s['playing']:
+                heard = 'digital'
+            else:
+                heard = 'analog' if program == 0 else 'none'
+            rx.set_hd_audio(heard)
+        for n, button in enumerate(self.hd_buttons):
+            button.setEnabled(s['enabled'])
+            if n == program and not button.isChecked():
+                button.setChecked(True)
+            name = s['names'].get(n)
+            button.setToolTip(f"HD{n + 1}" + (f": {name}" if name else ''))
+        if not s['available']:
+            return
+        self.hd_lbl['status'].setText(self._hd_status_text(s, rx))
+        station = s['station']
+        if s['slogan'] and s['slogan'] not in ('HD1', 'HD-1') and s['slogan'] != station:
+            station = f"{station} - {s['slogan']}" if station else s['slogan']
+        self.hd_lbl['station'].setText(html.escape(station) or '-')
+        self.hd_lbl['programs'].setText(self._hd_programs_text(s))
+        title, artist = s['title'], s['artist']
+        self.hd_lbl['nowplaying'].setText(html.escape(
+            ' - '.join(x for x in (artist, title) if x)) if (title or artist) else '-')
+
+    @staticmethod
+    def _hd_status_text(s, rx):
+        program = f"HD{s['program'] + 1}"
+        if rx is not None and rx.hd is None:
+            return _coloured("Not at this IQ rate: HD Radio needs 420 kS/s or more", 'warn')
+        if not s['enabled']:
+            return _coloured("Off - analog FM", 'ink_2')
+        if s['error'] and not s['running']:
+            return _coloured(html.escape(s['error']), 'bad')
+        waited = s['seconds'] or 0.0
+        if not s['synced']:
+            if s['running'] and waited > 10:
+                return _coloured("No HD Radio signal on this station", 'warn')
+            return "Searching for the digital signal..."
+        mode = f"MP{s['mode']}" if s['mode'] else ''
+        ber = f"BER {s['ber']:.3f}" if s['ber'] is not None else ''
+        extra = ', '.join(x for x in (mode, ber) if x)
+        if s['playing']:
+            kbps = f", {s['kbps']:.0f} kbps" if s['kbps'] else ''
+            return _coloured(f"Playing {program} (digital)", 'good') + f" - {extra}{kbps}"
+        if s['audio'] and s['program'] not in s['audio'] and waited > 8:
+            return _coloured(f"{program} carries no audio", 'warn') + f" - {extra}"
+        wait = " - the analog plays meanwhile" if s['program'] == 0 else ''
+        return f"Digital signal found, waiting for {program}{wait} ({extra})"
+
+    @staticmethod
+    def _hd_programs_text(s):
+        found = sorted(set(s['names']) | set(s['types']) | set(s['audio']))
+        parts = []
+        for n in found:
+            text = f"<b>HD{n + 1}</b>"
+            name = s['names'].get(n, '')
+            if name and name.upper().replace('-', '') != f"HD{n + 1}":
+                text += f" {html.escape(name)}"
+            kind = s['types'].get(n, '')
+            if kind and kind != 'None':
+                text += f" ({html.escape(kind)})"
+            if s['audio'] and n not in s['audio']:
+                text += " " + _coloured("no audio", 'ink_2')
+            parts.append(text)
+        return ' &nbsp;·&nbsp; '.join(parts) or '-'
 
     def _build_recordings_tab(self):
         """The recordings in the folder, newest first, and the player."""
@@ -3071,6 +3210,7 @@ class MainWindow(Qt.QWidget):
         self.stereo_label.setText(audio)
         self.sig_label.setText(self._signal_text(rx))
         self._refresh_rds(rx.rds.snapshot())
+        self._refresh_hd()
 
     def _signal_text(self, rx):
         power = rx.channel_power_db()

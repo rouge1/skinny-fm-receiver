@@ -31,6 +31,7 @@ import time
 from gnuradio import audio, gr  # type: ignore
 
 from .dsp import AUDIO_RATE, ReceiveChain, WavChain, data_clock
+from .hdradio import HdRadio
 from .sweep import sweep_sink
 
 
@@ -60,6 +61,9 @@ class Engine(gr.top_block):
         # so a stall is counted from there, not from before a mode switch.
         self._clock = data_clock()
         self._since = None
+        # HD Radio's decoder (the nrsc5 program), kept across rebuilds; the
+        # receive chain feeds it and plays its audio.
+        self.hd = HdRadio()
 
     # ---------------------------------------------------------- radio
     def use_radio(self, radio):
@@ -74,6 +78,7 @@ class Engine(gr.top_block):
         self.radio = radio
 
     def close(self):
+        self.hd.close()
         self.halt()
         self._clear()
         if self.radio is not None:
@@ -248,7 +253,8 @@ class Engine(gr.top_block):
         radio.set_center(self.lo_hz)
         self.station_hz = self.lo_hz + self.offset_hz
         self.rx = ReceiveChain(self, radio.block, self.rate, self.offset_hz,
-                               audio_sink=self._audio(), **settings)
+                               audio_sink=self._audio(), hd=self.hd, **settings)
+        self.hd.retuned()
         self.connect(radio.block, self._clock)
         self.mode = 'receive'
         self._started()
@@ -291,6 +297,8 @@ class Engine(gr.top_block):
             self.radio.set_center(lo)
             self.lo_hz = lo
 
+        if moved or abs(offset - (self.offset_hz or 0.0)) > 0.5:
+            self.hd.retuned()
         self.offset_hz = offset
         self.station_hz = lo + offset
         self.rx.set_offset(offset)

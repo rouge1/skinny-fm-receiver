@@ -122,7 +122,7 @@ def _agc_offered(w):
 
 
 @command('status', 'status', "What the window shows: radio, tab, frequencies, gain, "
-         "audio, stereo, RDS, signal, clipping, recording.")
+         "audio, stereo, RDS, HD Radio, signal, clipping, recording.")
 def cmd_status(w, args):
     e = w.engine
     radio = w.radio
@@ -171,7 +171,33 @@ def cmd_status(w, args):
             'groups': snap['groups'],
             'blocks_good_percent': good,
         }
+        out['hd'] = _hd_state(w)
     return out
+
+
+def _hd_state(w):
+    s = w.engine.hd.status()
+    rx = w.engine.rx
+    return {
+        'available': s['available'],
+        'enabled': s['enabled'],
+        'program': s['program'] + 1,
+        'heard': rx.hd_heard if rx is not None else None,
+        'synced': s['synced'],
+        'playing': s['playing'],
+        'station': s['station'] or None,
+        'slogan': s['slogan'] or None,
+        'mode': s['mode'],
+        'ber': s['ber'],
+        'kbps': s['kbps'],
+        'programs': {f"HD{n + 1}": {'name': s['names'].get(n),
+                                    'type': s['types'].get(n),
+                                    'audio': n in s['audio']}
+                     for n in sorted(set(s['names']) | set(s['types']) | set(s['audio']))},
+        'title': s['title'] or None,
+        'artist': s['artist'] or None,
+        'status': _plain(w.hd_lbl['status'].text()),
+    }
 
 
 @command('tune', 'tune MHZ', "The tuner, as its digits do. Outside the band around "
@@ -256,6 +282,23 @@ def cmd_volume(w, args):
 def cmd_mute(w, args):
     w.mute_btn.setChecked(_on_off(_args(args, 1, 1, 'mute on|off')[0], 'mute'))
     return {'muted': w.mute_btn.isChecked()}
+
+
+@command('hd', 'hd on|off|1|2|3|4', "The HD Radio box: the digital audio on or off, "
+         "or the program to play (HD1-HD4; this switches it on). Needs nrsc5 installed.")
+def cmd_hd(w, args):
+    word = _args(args, 1, 1, 'hd on|off|1|2|3|4')[0].lower()
+    if not w.engine.hd.available:
+        raise CommandError("hd: nrsc5 is not installed")
+    number = word[2:] if word.startswith('hd') else word
+    if number in ('1', '2', '3', '4'):
+        w.hd_check.setChecked(True)
+        w.hd_buttons[int(number) - 1].setChecked(True)
+        w._hd_program_picked(int(number) - 1)
+    else:
+        w.hd_check.setChecked(_on_off(word, 'hd'))
+    w._refresh_hd()
+    return _hd_state(w)
 
 
 @command('screenshot', 'screenshot PATH.png', "The window, grabbed, as the user sees it.")
