@@ -1042,7 +1042,13 @@ class MainWindow(Qt.QWidget):
         extra = ', '.join(x for x in (mode, ber) if x)
         if s['playing']:
             kbps = f", {s['kbps']:.0f} kbps" if s['kbps'] else ''
-            return _coloured(f"Playing {program} (digital)", 'good') + f" - {extra}{kbps}"
+            text = _coloured(f"Playing {program} (digital)", 'good') + f" - {extra}{kbps}"
+            if s['damaged_share'] > 0:
+                # Lost packets are gaps in the sound: the signal, not the app.
+                text += " - " + _coloured(
+                    f"{100 * s['damaged_share']:.0f}% of the audio damaged (weak signal)",
+                    'warn')
+            return text
         if s['audio'] and s['program'] not in s['audio'] and waited > 8:
             return _coloured(f"{program} carries no audio", 'warn') + f" - {extra}"
         wait = " - the analog plays meanwhile" if s['program'] == 0 else ''

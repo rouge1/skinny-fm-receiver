@@ -190,6 +190,12 @@ def _hd_state(w):
         'mode': s['mode'],
         'ber': s['ber'],
         'kbps': s['kbps'],
+        'decode_errors': s['decode_errors'],
+        'crc_errors': s['crc_errors'],
+        'damaged_percent': round(100 * s['damaged_share'], 1),
+        'underruns': s['underruns'],
+        'iq_dropped_s': s['iq_dropped_s'],
+        'buffer_s': s['buffer_s'],
         'programs': {f"HD{n + 1}": {'name': s['names'].get(n),
                                     'type': s['types'].get(n),
                                     'audio': n in s['audio']}

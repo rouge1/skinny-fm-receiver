@@ -82,6 +82,7 @@ _SERVICE = re.compile(r'^Audio service (\d+): (\w+), type: ([^,]*),')
 _BER = re.compile(r'^BER: [\d.]+, avg: ([\d.]+)')
 _MER = re.compile(r'^MER: (-?[\d.]+) dB \(lower\), (-?[\d.]+) dB \(upper\)')
 _RATE = re.compile(r'^Audio bit rate: ([\d.]+) kbps')
+_CRC = re.compile(r'^Audio packet CRC mismatches: (\d+)')
 
 
 def empty_state():
@@ -99,6 +100,9 @@ def empty_state():
         'ber': None,
         'mer': None,
         'kbps': None,
+        'decode_errors': 0,      # audio frames nrsc5 could not decode
+        'crc_errors': 0,         # audio packets that arrived damaged
+        'damaged': None,         # (share of the last 32 packets, when)
         'lines': 0,
     }
 
@@ -123,13 +127,16 @@ def parse_line(state, line):
         state['slogan'] = text[len('Slogan: '):].strip()
     elif text.startswith('Message: '):
         state['message'] = text[len('Message: '):].strip()
+    elif text == 'Audio decoding error':
+        state['decode_errors'] += 1
     elif text.startswith('Title: '):
         state['title'] = text[len('Title: '):].strip()
     elif text.startswith('Artist: '):
         state['artist'] = text[len('Artist: '):].strip()
     else:
         for pattern, key in ((_SIG, 'sig'), (_PROGRAM, 'program'), (_SERVICE, 'service'),
-                             (_BER, 'ber'), (_MER, 'mer'), (_RATE, 'kbps')):
+                             (_BER, 'ber'), (_MER, 'mer'), (_RATE, 'kbps'),
+                             (_CRC, 'crc')):
             m = pattern.match(text)
             if not m:
                 continue
@@ -144,6 +151,9 @@ def parse_line(state, line):
                 state['ber'] = float(m.group(1))
             elif key == 'mer':
                 state['mer'] = (float(m.group(1)), float(m.group(2)))
+            elif key == 'crc':
+                state['crc_errors'] += int(m.group(1))
+                state['damaged'] = (int(m.group(1)) / 32.0, time.monotonic())
             else:
                 state['kbps'] = float(m.group(1))
             break
@@ -178,6 +188,11 @@ class HdRadio:
         self._restart_at = None
         self._gain = None
         self._started_at = None
+        # Where a gap would come from: the buffer running dry while playing
+        # (this end), IQ dropped because the writer fell behind (this end),
+        # or nrsc5's own decode and CRC errors (the signal).
+        self.underruns = 0
+        self.iq_dropped_s = 0.0
 
     @property
     def available(self):
@@ -243,9 +258,15 @@ class HdRadio:
             s['names'] = dict(s['names'])
             s['types'] = dict(s['types'])
             s['audio'] = sorted(s['audio'])
+        damaged = s.pop('damaged')
+        # nrsc5 says so only for a group of 32 packets (~1.5 s) with damage.
+        s['damaged_share'] = (damaged[0] if damaged is not None
+                              and time.monotonic() - damaged[1] < 3.0 else 0.0)
         s.update(enabled=self.enabled, available=self.available, running=self.running,
                  program=self.program, playing=self.audio_live(), error=self.error,
                  starting=self._restart_at is not None,
+                 underruns=self.underruns, iq_dropped_s=round(self.iq_dropped_s, 3),
+                 buffer_s=round(self._audio_frames / AUDIO_RATE, 3),
                  seconds=(time.monotonic() - self._started_at
                           if self._started_at is not None else None))
         return s
@@ -271,6 +292,8 @@ class HdRadio:
         self._last_audio = None
         self._gain = None
         self.error = None
+        self.underruns = 0
+        self.iq_dropped_s = 0.0
         self._started_at = time.monotonic()
         self._proc = proc
         for target in (self._write_iq, self._read_audio, self._read_log):
@@ -319,6 +342,7 @@ class HdRadio:
         data = (samples * np.float32(self._gain)).astype(np.complex64).tobytes()
         with self._lock:
             if self._iq_bytes > IQ_RATE * 8:
+                self.iq_dropped_s += len(samples) / IQ_RATE
                 return
             self._iq.append(data)
             self._iq_bytes += len(data)
@@ -385,6 +409,7 @@ class HdRadio:
             self._audio_frames -= got
             if not self._audio:
                 self._playing = False
+                self.underruns += 1
         if got:
             self._last_audio = time.monotonic()
         return np.concatenate(parts) if parts else None

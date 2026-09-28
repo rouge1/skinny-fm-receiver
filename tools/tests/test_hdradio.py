@@ -100,6 +100,8 @@ LOG = """\
 19:51:52   Audio component: id=0 port=0000 type=7 mime=4DC66C5A
 19:51:52 SIG Service: type=audio number=2 name=Pride Radio
 19:51:52 Audio bit rate: 91.3 kbps
+19:51:52 Audio packet CRC mismatches: 4
+19:51:52 Audio decoding error
 19:51:53 Lost synchronization
 """
 
@@ -117,6 +119,8 @@ def test_parse_log():
     assert state['artist'] == '94.7 The Drive'
     assert abs(state['ber'] - 0.10368) < 1e-9 and state['mer'] == (-2.7, -1.4)
     assert state['kbps'] == 91.3
+    assert state['crc_errors'] == 4 and state['decode_errors'] == 1, state
+    assert state['damaged'][0] == 4 / 32
     parse_line(state, LOG.splitlines()[-1])
     assert not state['synced']
     print("    log: OK")
