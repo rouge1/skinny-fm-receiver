@@ -40,8 +40,9 @@ user sees it, and is refused where the window would refuse it.
 - Look: `status`, `screenshot PATH`, `peaks [DB [START STOP]]` (the
   spectrum's signals as numbers; from the held trace while `peakhold on`).
 - Move: `tune`, `center`, `gain`, `agc`, `rate`, `mode`, `sweep START STOP`,
-  `volume`, `mute`, `hd on|off|1-4` (HD Radio, needs nrsc5; `status`'s
-  `hd` says what plays).
+  `volume`, `mute`, `hd 1-4|analog|on|off` (HD Radio's program, or
+  analog FM; the decoder is always on where nrsc5 is installed;
+  `status`'s `hd` says what plays, what is chosen and the lamp).
 - View: `view rf|mpx|audio span X center X ref DB range DB avg N` (any of
   them; none reports). Before a screenshot, zoom onto the signal and set
   ref/range around it: at the default 100 dB range a weak signal is a few

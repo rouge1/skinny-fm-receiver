@@ -322,21 +322,23 @@ it.
 ## Receive (IQ)
 
 In Receive the radio runs at a narrow IQ bandwidth, and the app demodulates
-one station, in four boxes: **Radio** sets the radio itself (with its
-**RF gain** and AGC), **Tuner** picks the station inside the
-radio's band, **RDS** shows the station as decoded, and **HD Radio**
-plays its digital programs (HD1-HD4) where it has them.
+one station: **Radio** sets the radio itself (with its **RF gain** and
+AGC), **Tuner** picks the station inside the radio's band (and, where it
+has them, its HD Radio programs), and under them two tabs show the station
+as decoded: **RDS**, and **HD Radio**'s station, programs, now playing,
+pictures and signal. The tab on show is remembered, and changing tab
+glides the height and fades the page in.
 
-Each box has a **chevron** at the right of its title: click it, or the
+The Radio and Tuner boxes have a **chevron** at the right of the title: click it, or the
 title, to fold the box away and again to open it; it slides shut or open,
 and the chevron turns. A folded **Radio** box
 still shows its **Center** and **Center on tuner**, and a folded **Tuner**
 box its **Tuner range** (↔) and tuner, and no taller than those, each
 gliding to the middle of the box once it has folded
-(the Step knob fades out as the Tuner box folds, and back in as it opens);
-a folded **RDS** box shows its **Now playing** and **RadioText**, and a
-folded **HD Radio** box its **Digital** row and **Status**. The app remembers
-which are folded.
+(the Step and Channel filter knobs fade out as the Tuner box folds, and
+back in as it opens, and its HD Radio rows go). The **RDS / HD Radio**
+tabs have their chevron at the right of the tab bar: folded, only the tabs
+show; click a tab to open them again. The app remembers which are folded.
 
 ```
 ┌ Radio ───────────────────────────────────────┐
@@ -346,12 +348,14 @@ which are folded.
 └───────────────────────────────────────────────┘
 ┌ Tuner ───────────────────────────────────────┐
 │               ↔ 94.800 - 102.000 MHz          │   where the tuner can go
-│        Tuner: [0099.100 MHz] [▲▼]   (Step)    │   the station you hear
-│Channel filter: [200 kHz] [▲▼]                 │
+│  Tuner: [0099.100 MHz] [▲▼] (Step) (Channel   │   the station you hear,
+│                                     filter)   │   and what the analog hears
+│HD Radio: ● [HD1][HD2][HD3][HD4]               │   its digital programs
+│          Playing HD2 (digital) - MP1, ...     │   and how they come in
 └───────────────────────────────────────────────┘
-┌ RDS ─────────────────────────────────────────┐
-│ Station, Standard, Stereo / Snap to step,     │
-│ Clear RDS, Signal, Audio, then the RDS itself │
+┌[RDS]─[HD Radio]──────────────────────────────┐
+│ Station, Standard, Stereo / Snap to step,     │   RDS: the station as
+│ Clear RDS, Signal, Audio, then the RDS itself │   decoded
 └───────────────────────────────────────────────┘
 ```
 
@@ -401,7 +405,7 @@ those - or 5 MS/s (40 MB/s) on a Mac, where 2.5 is greyed out for the BB60D.
 | **▲ / ▼ beside the tuner** | Steps the tuner down or up by one **Step**. Click a half (hold it to repeat), or roll the wheel over it. Ctrl+Left and Ctrl+Right do the same from anywhere in the window. |
 | **Tuner range** (↔, right on top of the tuner, centred over its digits) | The lowest and highest the tuner can go around the radio's Center, in MHz. It is about three quarters of the IQ bandwidth, less half a channel at each end. It stays in sight when the box is folded. Its tooltip says how far it keeps clear of the Center on a HackRF or RTL-SDR. |
 | **Step** (knob) | Four settings: 10, 50, 100 and 200 kHz. It sets what the arrows and Ctrl+Left/Right move by, and what Snap rounds to. FM channels are 200 kHz apart in the Americas, on the odd tenths (88.1, 88.3 … 107.9), and a 200 kHz Step keeps to those; Europe's are 100 kHz apart. |
-| **Channel filter** | 60-400 kHz, applied live. (The **IQ – channel** recording is 500 kS/s; the filter stops at 400 kHz because the channel is sampled at 500 kS/s and the filter needs room to roll off inside it.) Hover a digit and roll the wheel, use its **▲ / ▼** (5 kHz a click), or roll the wheel over the orange band on the spectrum. A narrower filter rejects a strong neighbour, but below about 180 kHz stereo and RDS start to suffer. Wider than about 250 kHz the audio takes in any neighbour that close; the widths up to 400 kHz are for the **IQ – channel** recording, which then holds an HD Radio station's digital sidebands (±200 kHz). |
+| **Channel filter** (knob, right of Step) | 60-400 kHz, applied live. (The **IQ – channel** recording is 500 kS/s; the filter stops at 400 kHz because the channel is sampled at 500 kS/s and the filter needs room to roll off inside it.) Roll the wheel over the knob (5 kHz a notch, 1 kHz with Shift), drag it up or down, or roll the wheel over the orange band on the spectrum, which lights the knob. It is the analog's filter only: HD Radio gets the station's whole ±200 kHz at any width. A narrower filter rejects a strong neighbour, but below about 180 kHz stereo and RDS start to suffer. Wider than about 250 kHz the audio takes in any neighbour that close; the widths up to 400 kHz are for the **IQ – channel** recording, which then holds an HD Radio station's digital sidebands (±200 kHz). |
 
 **The tuner's marker** (the thin orange line at the tuner, on the spectrum
 only - the waterfall is left clear) is hidden while you are not tuning: the orange band
@@ -463,34 +467,65 @@ The **MPX view** (bottom right) is the demodulated multiplex from 0 to
 Many US FM stations also send digital programs, HD Radio, in two flat
 shoulders either side of the station (130-198 kHz out) - see
 [digital-radio.md](digital-radio.md) for which ones here. This box plays
-them. It needs the **nrsc5** program installed (Setting up, below); without
-it the box says so and stays greyed.
+them. It is **always on** where the **nrsc5** program is installed (Setting
+up, above); without it the status says so and only HD1, the analog, plays.
+
+The **HD Radio** row of the **Tuner** box holds a lamp, the program buttons
+and, under them, the status; the **HD Radio** tab under the Tuner shows the
+station's own name and what is playing.
 
 ```
-┌ HD Radio ────────────────────────────────────┐
-│ ☑ Digital  [HD1] [HD2] [HD3] [HD4]           │
-│      Status: Playing HD2 (digital) - MP1,    │
-│              BER 0.114, 31 kbps              │
-│     Station: HOT - HOT 99.5                  │
-│    Programs: HD1 HOT 99.5 (Top 40) · HD2     │
-│              Pride Radio (Top 40)            │
+┌ Tuner ───────────────────────────────────────┐
+│ ...                                           │
+│ HD Radio: ● [HD1] [HD2] [HD3] [HD4]           │
+│           Playing HD2 (digital) - MP1,        │
+│           BER 0.114, 31 kbps                  │
+└──────────────────────────────────────────────┘
+┌[RDS]─[HD Radio]──────────────────────────────┐
+│     Station: HOT - HOT 99.5     ┌──────────┐ │
+│     Message: (the station's own     │  album   │ │
+│              text)              │   art    │ │
+│       Alert: (only while one is └──────────┘ │
+│              on)                             │
+│    Programs: HD1 HOT 99.5 (Top 40) ·         │
+│              HD2 Pride Radio (Top 40)        │
 │ Now playing: Fisher - What A Life            │
+│       Album: ...                             │
+│       Genre: ...                             │
+│        Logo: [logo]                          │
+│      Signal: MP1 · BER 0.042 · MER 9.1 /     │
+│              8.7 dB · 31 kbps · offset +12 Hz│
 └──────────────────────────────────────────────┘
 ```
 
+The station's IQ, sidebands and all (the channel filter doesn't matter),
+goes to nrsc5; its audio comes back through the same **Volume**, **Mute**,
+meters and **Audio** recording as the analog.
+
 | Row | What it shows or does |
 |---|---|
-| **Digital** | Plays the station's digital audio in place of the analog. The station's IQ, sidebands and all (the channel filter doesn't matter), goes to nrsc5; its audio comes back through the same **Volume**, **Mute**, meters and **Audio** recording as the analog. |
-| **HD1-HD4** | The program. HD1 is the main one, usually the analog's own programme; HD2-HD4 are extra ones. Picking one starts the decoder again: 2-4 s to sync and play. A retune goes back to HD1. |
-| **Status** | *Searching for the digital signal*, *Digital signal found, waiting for HD2*, *Playing HD2 (digital)* with the service mode (MP1-MP3), the bit error rate (under ~0.05 is clean, ~0.2 is the edge) and the program's bit rate; *No HD Radio signal on this station* after 10 s without; *HD2 carries no audio* for a program the station lists but sends nothing on (94.7's HD2 on 2026-09-27). *N% of the audio damaged (weak signal)* when packets arrive corrupted: each one is a gap of about 46 ms, which sounds choppy. That is the reception, not the app - a better antenna or a stronger station fixes it (a car radio blends HD1 to the analog there; HD2-4 just drop out). |
-| **Station** | The station's own name and slogan, from its digital data. |
-| **Programs** | What the station lists: each program's name and type; "no audio" for one it isn't sending. |
-| **Now playing** | Artist and title of the program playing, from its digital data (often ads and slogans between songs). |
+| **Lamp** (Tuner box) | Whether the station has HD Radio here. A ring: no digital signal (none on this station, or not found yet). **Green**: it has, and it comes in clean. **Amber**: it has, but a tenth or more of it is being lost (weak here: HD2-4 would play with gaps, HD1 falls back to the analog). Its tooltip is the status. |
+| **HD1-HD8** (Tuner box) | The programs: a station can carry up to eight (HD1-HD8; most carry up to four, 107.7 here five). HD1-HD4 always have a button; HD5-HD8 appear only when the station lists them. A button is greyed until the station lists that program (its digital data says which it carries; a listed program with no audio stays grey). **Nothing lit is analog FM.** Click an available one and it lights orange: that program plays digitally. Click the lit one again and it goes out: back to analog FM. Click another to change program (the decoder starts again: 2-4 s to sync). A retune goes back to analog FM. HD1 is the main program, usually the analog's own; HD2-HD4 are extra ones. Their tooltips give each program's name and type. |
+| **Status** (Tuner box, under the buttons) | One line, short (the numbers are on the HD Radio tab's Status): what plays (*Playing analog FM*, *Playing HD2 (digital)*) stays put, and the rest scrolls through the room left when it does not fit; hover for the whole line. With nothing lit: *Playing analog FM*, and what the station has - *HD Radio here: HD1, HD2* (*weak here* if much is lost), *looking for HD Radio*, *no HD Radio on this station* after 10 s, *HD Radio signal lost (weak)*. With a program lit: *Digital signal found, waiting for HD2*, *Playing HD2 (digital)* with the service mode (MP1-MP3), the bit error rate (under ~0.05 is clean, ~0.2 is the edge) and the program's bit rate; *No HD Radio on this station* after 10 s without; *HD2 carries no audio* for a program the station lists but sends nothing on (94.7's HD2 on 2026-09-27). *N% of the digital audio lost (weak signal)*: each lost packet is a gap of about 46 ms, which sounds choppy on HD2-4. That is the reception, not the app; a better antenna or a stronger station fixes it. Whenever HD1 has gone back to the analog (below), the line starts *Playing analog FM* and says why: *HD1 too weak here*, *digital signal lost (weak)* (it had the digital and lost its sync), *waiting for HD1*. HD2-HD8 have no analog behind them (the analog FM is HD1's program), so while theirs is not playing you hear silence, and the line says so: *Tuning HD2... (silent)*, *Starting HD2... (silent)*, *HD2 lost - weak signal (silent)*, *HD2 is off the air (silent)*, *No HD Radio here (silent)*. They never switch to another program by themselves: going back to analog FM is your choice (click the lit button). *Playing HD2 (digital) - breaking up* means packets are being lost; the HD Radio tab's Status gives how many. |
+| **Status** (HD Radio tab) | The same status in full, with the numbers the Tuner box's line leaves out: how much of the digital audio was lost, the service mode, BER and bit rate. |
+| **Station** (HD Radio tab) | The station's own name and slogan, from its digital data, as large as RDS shows its name. |
+| **Message** (HD Radio tab) | A free-text message the station sends, if any. |
+| **Alert** (HD Radio tab) | An emergency alert, in red, with its category and the places it covers (SAME, FIPS or ZIP codes); the row shows only while one is on and goes when the station ends it. |
+| **Programs** (HD Radio tab) | Every program the station lists, with its name and type; the one playing in bold, *no audio* on one it lists but isn't sending. |
+| **Now playing** (HD Radio tab) | Artist and title of the program the decoder is on (HD1 until you pick another), from its digital data (often ads and slogans between songs). |
+| **Album art** (HD Radio tab, top right) | The album art of what is playing, when the station sends it; nothing there otherwise. It sits beside Station to Programs; the rows below it use the tab's full width. |
+| **Logo** (HD Radio tab) | The station's logo, once one has arrived (a logo can take minutes to come round); the row shows only then. Pictures come as files, kept in a temporary folder while the window is open; a program change on the same station keeps them. |
+| **Album**, **Genre** (HD Radio tab) | From the same data as Now playing, when the station sends them. |
+| **Signal** (HD Radio tab) | The service mode (MP1-MP3), the bit error rate (green under 0.05, amber to 0.15, red above), MER for the lower and upper sidebands (higher is better), the program's bit rate, how much of the digital signal was lost over the last 3 s (green at 0%, amber to 10%, red above: each lost packet is a gap in the sound), and the frequency offset the decoder corrected. |
 
-While it waits, HD1 plays the analog and HD2-HD4 are silent. The digital
-audio is a few seconds behind the analog (the decoder's own delay), so the
-switch from one to the other repeats a moment. If the digital signal
-drops, HD1 goes back to the analog after about a second.
+With a program lit, while it waits, HD1 plays the analog and HD2-HD4 are
+silent. **HD1 plays the digital only once it has run 3 s without a lost
+packet**, and goes back
+to the analog when more than a tenth of the last 1.5 s was lost, so a weak
+station (98.7 here) stays on the analog rather than chopping. The digital
+audio is a few seconds behind the analog (the decoder's own delay), so each
+switch jumps a moment; the waits keep switches rare. HD2-HD4 have no
+analog, so on a weak station they play with the gaps.
 
 The IQ bandwidth must be at least 420 kS/s after the first stage, which
 every radio's Receive rates are. An **IQ – channel** recording (500 kS/s)
@@ -526,8 +561,8 @@ glows in Slate and Walnut or lifts on a shadow in Reading Room, so you can
 see which one the wheel will turn. Zooming the plot or waterfall lights
 Span the same way, and the wheel or middle-drag on the level axis lights
 Ref level and Range, for a moment after the last change, so you can see
-which dials moved. Double-click a dial to reset it. The same goes for the
-Volume and Step knobs.
+which dials moved. The same goes for the Volume, Step and Channel filter
+knobs. A double-click does nothing to any knob (there is no reset).
 
 | Dial | One wheel notch |
 |---|---|
@@ -681,7 +716,7 @@ On a Mac, Ctrl is the ⌘ Command key.
 |---|---|
 | Ctrl+1 / Ctrl+2 / Ctrl+3 | Sweep / Receive / Recordings |
 | Ctrl+Left / Ctrl+Right | Step the tuner down / up by the Step |
-| Up / Down (pointer on a digit) | That digit of the Tuner, Center or Channel filter up / down |
+| Up / Down (pointer on a digit) | That digit of the Tuner or Center up / down |
 | PageUp / PageDown | The same digit by ten |
 | Left / Right (entry focused) | Choose the digit Up/Down change |
 | 0-9 or Enter (entry focused) | Type a value; Enter sets it, Escape cancels |
@@ -715,7 +750,7 @@ tools/fmctl help                          # every command
 | `agc on` / `off` | The AGC box |
 | `mode sweep` / `receive` / `recordings` | The tabs |
 | `volume PERCENT`, `mute on` / `off` | Audio |
-| `hd on` / `off` / `1`-`4` | The **HD Radio** box: the digital audio on or off, or the program to play (HD1-HD4, switching it on). Needs nrsc5 |
+| `hd 1`-`4` / `analog` / `on` / `off` | HD Radio: the program to play (lights that HD button), `analog` for analog FM (none lit), or the decoder on or off (on unless switched off here; the window has no switch). `status`'s `hd` has the lamp too. Needs nrsc5 |
 | `screenshot PATH.png` | A picture of the window, as it is on screen |
 | `sweep START STOP` | The Sweep tab over START-STOP MHz (switching to it first) |
 | `peakhold on` / `off` / `clear` | The RF spectrum's **Peak hold**: the most each frequency reached, which catches short bursts |

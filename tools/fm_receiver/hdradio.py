@@ -20,6 +20,20 @@ stays in its process; the window only sees a pipe close. nrsc5 can't change
 program while reading a pipe (its keys need a terminal), so a new program -
 and a new station - starts it again: about 2-4 s to sync.
 
+**The analog unless a program is chosen.** The decoder runs all the
+time (the window's lamp and buttons say what the station carries), but
+the digital is heard only once a program is chosen (:meth:`HdRadio.choose`,
+an HD button); choosing none, or a retune, goes back to the analog.
+
+**Lost audio is silence, and HD1 goes back to the analog for it.** For
+a packet that is damaged or missing, or while it has lost sync, nrsc5
+still writes its frame of 2048 samples, all exact zeros. Those frames are
+marked lost here. HD1 plays the analog once lost frames are more than
+``LOST_SHARE`` of the last ``LOST_WINDOW_S``, and the digital again only
+after ``CLEAN_S`` with none lost. The analog is not delayed to match the
+digital, so a switch jumps a few seconds; the hysteresis keeps that rare.
+HD2-4 have no analog: they play with the gaps.
+
 **The audio shares the radio's clock.** nrsc5's audio comes out of the
 radio's samples, so it arrives at exactly the rate the analog audio does
 and the mix (``ReceiveChain``) consumes both together. The source plays
@@ -36,6 +50,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -55,8 +70,21 @@ MAX_BUFFER_S = 3.0
 #: How long a retune must stand before nrsc5 starts again (a drag across
 #: the band would otherwise start it at every step).
 RESTART_DELAY_S = 0.6
-#: HD1-HD4, as nrsc5 numbers them 0-3.
-PROGRAMS = 4
+#: nrsc5's audio frame: 2048 stereo samples of 16 bits.
+FRAME_BYTES = 2048 * 4
+#: HD1 goes to the analog when more than this share of the frames played
+#: in the last LOST_WINDOW_S were lost, and back after CLEAN_S with none.
+LOST_SHARE = 0.10
+LOST_WINDOW_S = 1.5
+CLEAN_S = 3.0
+#: The window the lost share is reported over.
+REPORT_WINDOW_S = 3.0
+#: HD1-HD8, as nrsc5 numbers them 0-7: NRSC-5 allows a main program and
+#: seven more. Most stations carry up to four; 107.7 here lists five.
+PROGRAMS = 8
+#: The programs the window always shows a button for; HD5-HD8 appear only
+#: when a station lists them.
+PROGRAMS_SHOWN = 4
 
 _EXTRA_PATHS = ('/usr/local/bin', '/opt/homebrew/bin', os.path.expanduser('~/.local/bin'))
 
@@ -83,6 +111,16 @@ _BER = re.compile(r'^BER: [\d.]+, avg: ([\d.]+)')
 _MER = re.compile(r'^MER: (-?[\d.]+) dB \(lower\), (-?[\d.]+) dB \(upper\)')
 _RATE = re.compile(r'^Audio bit rate: ([\d.]+) kbps')
 _CRC = re.compile(r'^Audio packet CRC mismatches: (\d+)')
+_OFFSET = re.compile(r'^Frequency offset: (-?[\d.]+) Hz')
+_DATA = re.compile(r'^Data component: id=\d+ port=([0-9A-Fa-f]+) .*mime=([0-9A-Fa-f]{8})')
+_LOT = re.compile(r'^LOT file: port=([0-9A-Fa-f]+) lot=(\d+) name=(.*) size=\d+ '
+                  r'mime=[0-9A-Fa-f]{8} expiry=')
+_XHDR = re.compile(r'^XHDR: (-?\d+) ([0-9A-Fa-f]{8}) (-?\d+)')
+_ALERT = re.compile(r'^Alert: (Category=\[[^\]]*\] (?:\w+=)?\[[^\]]*\]) (.*)$')
+
+#: The MIME numbers of a program's pictures (nrsc5.h).
+MIME_ALBUM_ART = 0xBE4B7536
+MIME_STATION_LOGO = 0xD9C72536
 
 
 def empty_state():
@@ -97,12 +135,24 @@ def empty_state():
         'audio': set(),          # programs the station says carry audio
         'title': '',
         'artist': '',
+        'album': '',
+        'genre': '',
+        'alert': None,           # (message, its category and places) or None
         'ber': None,
         'mer': None,
         'kbps': None,
+        'offset_hz': None,       # the station's frequency as nrsc5 found it
         'decode_errors': 0,      # audio frames nrsc5 could not decode
         'crc_errors': 0,         # audio packets that arrived damaged
         'damaged': None,         # (share of the last 32 packets, when)
+        # Pictures: each program's data ports for album art and logo (from
+        # its SIG service), the files nrsc5 saved ((port, lot) -> name),
+        # the latest file per port, and the album art the song points at.
+        'ports': {},             # program -> {'art': port, 'logo': port}
+        'lots': {},
+        'latest': {},
+        'art_lot': None,
+        '_sig': None,            # the SIG service its components belong to
         'lines': 0,
     }
 
@@ -133,16 +183,44 @@ def parse_line(state, line):
         state['title'] = text[len('Title: '):].strip()
     elif text.startswith('Artist: '):
         state['artist'] = text[len('Artist: '):].strip()
+    elif text.startswith('Album: '):
+        state['album'] = text[len('Album: '):].strip()
+    elif text.startswith('Genre: '):
+        state['genre'] = text[len('Genre: '):].strip()
+    elif text == 'Alert ended':
+        state['alert'] = None
     else:
         for pattern, key in ((_SIG, 'sig'), (_PROGRAM, 'program'), (_SERVICE, 'service'),
                              (_BER, 'ber'), (_MER, 'mer'), (_RATE, 'kbps'),
-                             (_CRC, 'crc')):
+                             (_CRC, 'crc'), (_OFFSET, 'offset'), (_DATA, 'data'),
+                             (_LOT, 'lot'), (_XHDR, 'xhdr'), (_ALERT, 'alert')):
             m = pattern.match(text)
             if not m:
                 continue
             if key == 'sig':
+                state['_sig'] = None
                 if m.group(1) == 'audio':
-                    state['names'][int(m.group(2)) - 1] = m.group(3).strip()
+                    program = int(m.group(2)) - 1
+                    state['names'][program] = m.group(3).strip()
+                    state['_sig'] = program
+            elif key == 'data':
+                program, mime = state['_sig'], int(m.group(2), 16)
+                kind = {MIME_ALBUM_ART: 'art', MIME_STATION_LOGO: 'logo'}.get(mime)
+                if program is not None and kind:
+                    state['ports'].setdefault(program, {})[kind] = int(m.group(1), 16)
+            elif key == 'lot':
+                port, lot = int(m.group(1), 16), int(m.group(2))
+                name = f"{lot}_{m.group(3).strip()}"      # as nrsc5 saves it
+                state['lots'][(port, lot)] = name
+                state['latest'][port] = name
+            elif key == 'xhdr':
+                if int(m.group(2), 16) == MIME_ALBUM_ART:
+                    lot = int(m.group(3))
+                    state['art_lot'] = lot if lot >= 0 else None
+            elif key == 'alert':
+                state['alert'] = (m.group(2).strip(), m.group(1))
+            elif key == 'offset':
+                state['offset_hz'] = float(m.group(1))
             elif key == 'program':
                 state['types'][int(m.group(1))] = m.group(3).strip()
             elif key == 'service':
@@ -174,6 +252,10 @@ class HdRadio:
         self.path = path if path is not None else find_nrsc5()
         self.enabled = False
         self.program = 0
+        # Whether the digital is wanted (a lit HD button) or the analog is
+        # (none lit). The decoder runs either way, so the window can say
+        # what the station has.
+        self.chosen = False
         self.error = None
         self.state = empty_state()
         self._lock = threading.Lock()
@@ -193,6 +275,39 @@ class HdRadio:
         # or nrsc5's own decode and CRC errors (the signal).
         self.underruns = 0
         self.iq_dropped_s = 0.0
+        self._reset_judgement()
+        # Where nrsc5 saves the station's pictures (album art, logos): made
+        # on first start, removed on close. A program change on the same
+        # station keeps what it knows of them (a logo can take minutes to
+        # come round again); a retune does not.
+        self._files = None
+        self._new_station = True
+
+    def pictures(self, s=None):
+        """(album art, station logo) for the program playing, as paths to
+        the files nrsc5 saved, or None where there is none (yet)."""
+        s = s if s is not None else self.status()
+        folder = self._files
+        if folder is None:
+            return None, None
+        ports = s['ports'].get(self.program) or s['ports'].get(0) or {}
+
+        def path(name):
+            full = os.path.join(folder, name) if name else None
+            return full if full and os.path.exists(full) else None
+
+        art = None
+        if s['art_lot'] is not None and 'art' in ports:
+            art = path(s['lots'].get((ports['art'], s['art_lot'])))
+        logo = path(s['latest'].get(ports['logo'])) if 'logo' in ports else None
+        return art, logo
+
+    def _reset_judgement(self):
+        # (when played, frames, lost) for the last REPORT_WINDOW_S, and
+        # whether HD1's digital is good enough to hear (with hysteresis).
+        self._played = collections.deque()
+        self._clean_since = None
+        self._good = False
 
     @property
     def available(self):
@@ -218,10 +333,23 @@ class HdRadio:
             if self.enabled:
                 self._restart_at = time.monotonic()
 
+    def choose(self, program):
+        """Play ``program`` (0-3) digitally, or with None the analog. The
+        decoder keeps the last program it was given, so choosing it again
+        needs no restart."""
+        if program is None:
+            self.chosen = False
+            return
+        self.set_program(program)
+        self.chosen = True
+
     def retuned(self):
-        """A new station (or a new chain): start again once it settles,
-        at HD1 - the old station's programs mean nothing here."""
+        """A new station (or a new chain): the analog, and the decoder
+        again once it settles, at HD1 - the old station's programs mean
+        nothing here."""
         self.program = 0
+        self.chosen = False
+        self._new_station = True
         if self.enabled:
             self._stop()
             self._restart_at = time.monotonic() + RESTART_DELAY_S
@@ -230,6 +358,9 @@ class HdRadio:
         self.enabled = False
         self._restart_at = None
         self._stop()
+        folder, self._files = self._files, None
+        if folder is not None:
+            shutil.rmtree(folder, ignore_errors=True)
 
     # -- the window's timer
     def poll(self):
@@ -251,6 +382,40 @@ class HdRadio:
         last = self._last_audio
         return last is not None and time.monotonic() - last < within_s
 
+    def lost_share(self, window_s=REPORT_WINDOW_S):
+        """The share of the frames played in the last ``window_s`` that
+        nrsc5 had no audio for (0 when nothing played)."""
+        since = time.monotonic() - window_s
+        with self._lock:
+            total = lost = 0
+            for when, frames, gone in self._played:
+                if when >= since:
+                    total += frames
+                    lost += frames if gone else 0
+        return lost / total if total else 0.0
+
+    def digital_good(self):
+        """HD1's digital is good enough to hear rather than the analog:
+        see the module notes."""
+        now = time.monotonic()
+        if not self.audio_live():
+            self._good = False
+        elif self._good:
+            if self.lost_share(LOST_WINDOW_S) > LOST_SHARE:
+                self._good = False
+        else:
+            clean = self._clean_since
+            self._good = clean is not None and now - clean >= CLEAN_S
+        return self._good
+
+    def heard(self):
+        """What the mix should play: 'analog', 'digital' or 'none'."""
+        if not self.enabled or not self.chosen:
+            return 'analog'
+        if self.program == 0:
+            return 'digital' if self.digital_good() else 'analog'
+        return 'digital' if self.audio_live() else 'none'
+
     def status(self):
         """A copy of what nrsc5 has said, plus how this end stands."""
         with self._lock:
@@ -258,23 +423,38 @@ class HdRadio:
             s['names'] = dict(s['names'])
             s['types'] = dict(s['types'])
             s['audio'] = sorted(s['audio'])
+            s['ports'] = {k: dict(v) for k, v in s['ports'].items()}
+            s['lots'] = dict(s['lots'])
+            s['latest'] = dict(s['latest'])
+        s.pop('_sig', None)
         damaged = s.pop('damaged')
         # nrsc5 says so only for a group of 32 packets (~1.5 s) with damage.
         s['damaged_share'] = (damaged[0] if damaged is not None
                               and time.monotonic() - damaged[1] < 3.0 else 0.0)
+        s['lost_share'] = self.lost_share()
         s.update(enabled=self.enabled, available=self.available, running=self.running,
                  program=self.program, playing=self.audio_live(), error=self.error,
+                 heard=self.heard(), digital_good=self._good, chosen=self.chosen,
                  starting=self._restart_at is not None,
                  underruns=self.underruns, iq_dropped_s=round(self.iq_dropped_s, 3),
                  buffer_s=round(self._audio_frames / AUDIO_RATE, 3),
                  seconds=(time.monotonic() - self._started_at
                           if self._started_at is not None else None))
+        s['art_path'], s['logo_path'] = self.pictures(s)
         return s
 
     # -- process
     def _start(self):
+        if self._files is None:
+            try:
+                self._files = tempfile.mkdtemp(prefix='fmrx-hd-')
+            except OSError as exc:
+                print(f"FM receiver: HD Radio pictures: {exc}", file=sys.stderr)
         cmd = [self.path, '-r', '-', '--iq-input-format', 'cf32',
-               '-o', '-', '-t', 'raw', str(self.program)]
+               '-o', '-', '-t', 'raw']
+        if self._files is not None:
+            cmd += ['--dump-aas-files', self._files]
+        cmd.append(str(self.program))
         try:
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, bufsize=0)
@@ -283,13 +463,18 @@ class HdRadio:
             print(f"FM receiver: {self.error}", file=sys.stderr)
             return
         with self._lock:
-            self.state = empty_state()
+            old, self.state = self.state, empty_state()
+            if not self._new_station:
+                for key in ('ports', 'lots', 'latest'):
+                    self.state[key] = old[key]
+            self._new_station = False
             self._iq.clear()
             self._iq_bytes = 0
             self._audio.clear()
             self._audio_frames = 0
         self._playing = False
         self._last_audio = None
+        self._reset_judgement()
         self._gain = None
         self.error = None
         self.underruns = 0
@@ -325,6 +510,7 @@ class HdRadio:
             self._audio_frames = 0
         self._playing = False
         self._last_audio = None
+        self._reset_judgement()
 
     # -- IQ in (the flowgraph's thread)
     def feed(self, samples):
@@ -366,26 +552,34 @@ class HdRadio:
     # -- audio out
     def _read_audio(self, proc):
         out = proc.stdout
-        leftover = b''
+        pending = b''
         while True:
             try:
-                data = out.read(8192)
+                data = out.read(FRAME_BYTES)
             except (OSError, ValueError):
                 return
             if not data:
                 return
             if self._proc is not proc:
                 return
-            data = leftover + data
-            usable = len(data) - len(data) % 4
-            leftover = data[usable:]
-            pcm = np.frombuffer(data[:usable], dtype='<i2').astype(np.float32) / 32768.0
-            frames = pcm.reshape(-1, 2)
-            with self._lock:
-                self._audio.append(frames)
+            pending += data
+            usable = len(pending) - len(pending) % FRAME_BYTES
+            if usable:
+                self.put_audio(pending[:usable])
+                pending = pending[usable:]
+
+    def put_audio(self, data):
+        """Whole frames of nrsc5's raw audio, each marked lost when it is
+        all zeros (see the module notes)."""
+        with self._lock:
+            for start in range(0, len(data), FRAME_BYTES):
+                pcm = np.frombuffer(data[start:start + FRAME_BYTES], dtype='<i2')
+                lost = not pcm.any()
+                frames = (pcm.astype(np.float32) / 32768.0).reshape(-1, 2)
+                self._audio.append((frames, lost))
                 self._audio_frames += len(frames)
-                while self._audio_frames > MAX_BUFFER_S * AUDIO_RATE and len(self._audio) > 1:
-                    self._audio_frames -= len(self._audio.popleft())
+            while self._audio_frames > MAX_BUFFER_S * AUDIO_RATE and len(self._audio) > 1:
+                self._audio_frames -= len(self._audio.popleft()[0])
 
     def take_audio(self, n):
         """Up to ``n`` stereo frames for the flowgraph, as an (m, 2) array;
@@ -395,23 +589,30 @@ class HdRadio:
                 if self._audio_frames < PREFILL_S * AUDIO_RATE:
                     return None
                 self._playing = True
-            parts, got = [], 0
+            parts, got, now = [], 0, time.monotonic()
             while self._audio and got < n:
-                chunk = self._audio[0]
+                chunk, lost = self._audio[0]
                 need = n - got
                 if len(chunk) <= need:
-                    parts.append(self._audio.popleft())
-                    got += len(chunk)
+                    self._audio.popleft()
                 else:
-                    parts.append(chunk[:need])
-                    self._audio[0] = chunk[need:]
-                    got += need
+                    self._audio[0] = (chunk[need:], lost)
+                    chunk = chunk[:need]
+                parts.append(chunk)
+                got += len(chunk)
+                self._played.append((now, len(chunk), lost))
+                if lost:
+                    self._clean_since = None
+                elif self._clean_since is None:
+                    self._clean_since = now
+            while self._played and self._played[0][0] < now - REPORT_WINDOW_S:
+                self._played.popleft()
             self._audio_frames -= got
             if not self._audio:
                 self._playing = False
                 self.underruns += 1
         if got:
-            self._last_audio = time.monotonic()
+            self._last_audio = now
         return np.concatenate(parts) if parts else None
 
     # -- log

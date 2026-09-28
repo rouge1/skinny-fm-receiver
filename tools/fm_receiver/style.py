@@ -86,6 +86,7 @@ QPushButton:checked { background: %(live)s; color: %(ground)s;
     border-color: %(live)s; }
 QPushButton#mute:checked { background: %(bad)s; border-color: %(bad)s; }
 QPushButton#small { min-width: 0px; padding: 6px 10px; }
+QPushButton#hd { min-width: 0px; padding: 2px 6px; }
 QListWidget { background: %(well)s; color: %(ink)s;
     border: 1px solid %(rule)s; border-radius: 2px; }
 QListWidget::item { padding: 3px 6px; }

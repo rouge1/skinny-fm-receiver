@@ -26,6 +26,7 @@ import concurrent.futures
 import html
 import math
 import os
+import re
 import signal
 import sys
 import time
@@ -39,7 +40,8 @@ from . import bb60_source, bb60_sweep
 from .bb60_sweep import RBW_LADDER, RT_MAX_SPAN_HZ
 from .dsp import AUDIO_RATE, CHANNEL_MAX_BW, MPX_RATE, wav_source
 from .engine import Engine
-from .hdradio import PROGRAMS as HD_PROGRAMS
+from .hdradio import (LOST_SHARE as HD_LOST_SHARE, PROGRAMS as HD_PROGRAMS,
+                      PROGRAMS_SHOWN as HD_PROGRAMS_SHOWN)
 from .radios import (RADIO_NAMES, IQFile, RadioError, detect_radios,
                      make_radio, plugged_in, rate_label)
 from .rds_core import clock_text
@@ -47,7 +49,7 @@ from .recording import (NAME_STEADY_S, IqRecording, RecordingInfo, WavWriter,
                         session_base)
 from .style import apply_window_theme
 from .sweep import SweepPlan, find_stations, to_db
-from .widgets import (Card, DigitEntry, Form, PageTabs, Knob, LevelMeter, SpectrumView, StepRoller,
+from .widgets import (Card, DigitEntry, Form, PageTabs, Knob, LevelMeter, Marquee, Orb, SpectrumView, StepRoller,
                       ThemeDisc, TimelineStrip, on_raster)
 
 #: (name, start MHz, stop MHz); 'full' is the whole of the radio's sweep
@@ -74,8 +76,12 @@ STEPS_KHZ = (10, 50, 100, 200)
 CHANNEL_MIN_HZ, CHANNEL_MAX_HZ = 60e3, CHANNEL_MAX_BW
 #: How much a wheel notch over the channel band on the spectrum widens it.
 BAND_WHEEL_HZ, BAND_WHEEL_FINE_HZ = 5e3, 1e3
-#: What the channel filter's arrows move it by.
+#: What a wheel notch on the channel filter's knob moves it by (Shift: 1 kHz).
 CHANNEL_STEP_HZ = 5e3
+#: The side of the HD Radio tab's logo and of its album art (top right),
+#: in pixels.
+HD_PICTURE_PX = 64
+HD_ART_PX = 120
 #: The share of IQ samples at full scale past which a radio with no overload
 #: flag (a HackRF) is overloaded. On the bench a HackRF at 47% gain clipped
 #: 77% of them, and at 54% all, with RDS lost; at 40% a strong station
@@ -133,6 +139,8 @@ DEFAULTS = {
     'sweep_realtime': False,
     # The cards folded to their title (the Radio card to its Center).
     'folded': {},
+    # Under the Tuner: the RDS tab (0) or HD Radio's (1).
+    'station_tab': 0,
     'sweep_fft': 4096, 'sweep_frames': 16,
     'min_snr_db': 15, 'snap': True, 'record_audio': True,
     'record_iq_channel': False, 'record_iq_band': False, 'recording_dir': '',
@@ -263,6 +271,31 @@ def _coloured(text, token):
     return f"<span style='color:{theme.TOKENS[token]}'>{text}</span>"
 
 
+class _Follow(QtCore.QObject):
+    """Calls ``callback`` when a watched widget moves, resizes or shows."""
+
+    EVENTS = (QtCore.QEvent.Move, QtCore.QEvent.Resize, QtCore.QEvent.Show)
+
+    def __init__(self, callback, *widgets):
+        super().__init__(widgets[0])
+        self._callback = callback
+        for widget in widgets:
+            widget.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() in self.EVENTS:
+            try:
+                self._callback()
+            except Exception as exc:               # never abort the app
+                print(f"FM receiver: layout: {exc}", file=sys.stderr)
+        return False
+
+
+def _plain_text(rich):
+    """A rich-text label's words, for a tooltip."""
+    return html.unescape(re.sub(r'<[^>]+>', '', rich))
+
+
 class Playback:
     """What the Recordings tab has loaded: an IQ track on its file radio,
     or a WAV track on its source block."""
@@ -389,6 +422,9 @@ class MainWindow(Qt.QWidget):
         self._edge_timer.setSingleShot(True)
         self._edge_timer.timeout.connect(self._show_range)
         self._build()
+        # HD Radio is always on where nrsc5 is installed: HD1 plays the
+        # analog until the digital is clean, and the lamp says which.
+        self.engine.hd.set_enabled(True)
         self._restore_geometry()
         self.fast_timer = Qt.QTimer(self)
         self.fast_timer.timeout.connect(self._tick_fast)
@@ -712,16 +748,16 @@ class MainWindow(Qt.QWidget):
         return page
 
     def _build_receive_tab(self):
-        """Four boxes, top to bottom: the radio itself, the tuner inside its
-        band, the station as decoded, and its HD Radio."""
+        """Top to bottom: the radio itself, the tuner inside its band (and
+        HD Radio's programs), and the station as decoded, as RDS and HD
+        Radio tabs."""
         page = Qt.QWidget()
         box = Qt.QVBoxLayout(page)
         box.setContentsMargins(6, 8, 6, 6)
         box.setSpacing(10)
         box.addWidget(self._build_radio_card())
         box.addWidget(self._build_tuner_card())
-        box.addWidget(self._build_rds_card())
-        box.addWidget(self._build_hd_card())
+        box.addWidget(self._build_station_tabs())
         box.addStretch(1)
         return page
 
@@ -781,7 +817,8 @@ class MainWindow(Qt.QWidget):
         return self._foldable(box, form, 'radio', keep=(self.center_entry,), center=True)
 
     def _build_tuner_card(self):
-        """The station you hear, its step, and its channel filter."""
+        """The station you hear, its step and channel filter, and which of
+        its HD Radio programs."""
         box = Card("Tuner")
         form = self._form(box)
         # The Step knob makes the tuner's row tall: its label sits mid-row.
@@ -830,35 +867,30 @@ class MainWindow(Qt.QWidget):
         roller.addWidget(self.roller, 0, QtCore.Qt.AlignVCenter)
         tune.addLayout(roller)
         tune.addWidget(self.step_knob)
+        self.chan_knob = Knob(
+            'Channel filter', CHANNEL_MIN_HZ, CHANNEL_MAX_HZ,
+            float(self.cfg['channel_bw_khz']) * 1e3, lambda hz: f"{hz / 1e3:.0f} kHz",
+            step=1e3, wheel=CHANNEL_STEP_HZ,
+            tooltip="Channel filter bandwidth, 60-400 kHz: what the analog FM\n"
+            "hears. Narrower rejects a strong neighbour; below ~180 kHz stereo\n"
+            "and RDS start to suffer, and past ~250 kHz the audio takes in any\n"
+            "neighbour that close. HD Radio doesn't go through it: its sidebands\n"
+            "reach the decoder at any width. (400 kHz keeps them in the\n"
+            "IQ - channel recording.) The wheel over the orange band on the\n"
+            "spectrum turns it too.")
+        self.chan_knob.valueChanged.connect(self._chan_bw_changed)
+        tune.addWidget(self.chan_knob)
         tune.addStretch(1)
         tune_label = Qt.QLabel("Tuner:")
         form.addRow(tune_label, tune)
-        chan = Qt.QHBoxLayout()
-        chan.setSpacing(6)
-        self.chan_entry = DigitEntry('kHz', 1e3, 3, 0, minimum_hz=CHANNEL_MIN_HZ,
-                                     maximum_hz=CHANNEL_MAX_HZ,
-                                     value_hz=float(self.cfg['channel_bw_khz']) * 1e3,
-                                     pixel_size=18, bold=False, default_place=0,
-                                     caption='Channel filter')
-        self.chan_entry.setToolTip(
-            "Channel filter bandwidth, 60-400 kHz. Narrower rejects a strong\n"
-            "neighbour; below ~180 kHz stereo and RDS start to suffer, and past\n"
-            "~250 kHz the audio takes in any neighbour that close (400 kHz holds\n"
-            "an HD Radio station's digital sidebands, for the channel recording).\n"
-            "Hover a digit and roll the wheel, use the arrows, or roll the wheel\n"
-            "over the orange band on the spectrum.")
-        self.chan_entry.valueChanged.connect(self._chan_bw_changed)
-        self.chan_roller = StepRoller(height=self.chan_entry.sizeHint().height())
-        self.chan_roller.setToolTip(f"Channel filter {CHANNEL_STEP_HZ / 1e3:.0f} kHz "
-                                    "wider or narrower: click, hold, or roll the wheel.")
-        self.chan_roller.stepped.connect(lambda steps: self.chan_entry.setValue(
-            self.chan_entry.value() + steps * CHANNEL_STEP_HZ, emit=True))
-        chan.addWidget(self.chan_entry)
-        chan.addWidget(self.chan_roller)
-        chan.addStretch(1)
-        form.addRow("Channel filter:", chan)
+        hd_row, hd_status = self._build_hd_row()
+        form.addRow("HD Radio:", hd_row)
+        form.addRow("", hd_status)
+        # The HD buttons reach as far as the Channel filter knob's right edge.
+        self._hd_follow = _Follow(self._fit_hd_row, self.chan_knob, hd_row)
         card = self._foldable(box, form, 'tuner', keep=(self.tuner,),
-                              also=(self.step_knob, self.range_room), center=True)
+                              also=(self.step_knob, self.chan_knob, self.range_room),
+                              center=True)
 
         def level(folded):
             drop = self.range_room.height() + column.spacing() if folded else 0
@@ -868,11 +900,11 @@ class MainWindow(Qt.QWidget):
         level(card.is_folded())
         return card
 
-    def _build_rds_card(self):
+    def _build_rds_page(self):
         """The station as decoded: its name, how it is decoded, how well it
         is received, and the RDS in full."""
-        box = Card("RDS")
-        form = self._form(box)
+        page = Qt.QWidget()
+        form = self._form(page)
         big = Qt.QFont()
         big.setPixelSize(19)
         big.setBold(True)
@@ -926,71 +958,190 @@ class MainWindow(Qt.QWidget):
                                    ('clock', "Station clock:", None),
                                    ('quality', "Decode quality:", None)):
             form.addRow(caption, value(key, font))
-        return self._foldable(box, form, 'rds',
-                              keep=(self.lbl['nowplaying'], self.lbl['radiotext']))
+        return page
 
-    def _build_hd_card(self):
-        """HD Radio: the station's digital programs, decoded by the nrsc5
-        program (see hdradio.py) and heard in place of the analog."""
-        box = Card("HD Radio")
-        form = self._form(box)
+    def _build_station_tabs(self):
+        """The station as decoded, as tabs: RDS, and HD Radio's own name and
+        now playing. The tab on show is remembered."""
+        self.station_tabs = PageTabs(animate_ms=220)
+        self.station_tabs.addTab(self._build_rds_page(), "RDS")
+        self.station_tabs.addTab(self._build_hd_page(), "HD Radio")
+        self.station_tabs.setCurrentIndex(1 if self.cfg.get('station_tab') == 1 else 0)
+        # Folds on a chevron, as the boxes above do; remembered with theirs.
+        self.station_tabs.foldable(folded=bool(self.cfg['folded'].get('station')))
+        self.station_tabs.folded.connect(
+            lambda folded: self.cfg['folded'].__setitem__('station', folded))
+        return self.station_tabs
+
+    def _build_hd_page(self):
+        """What the station's digital data says (the buttons and the status
+        are the Tuner box's): the station, as large as RDS shows it, its
+        message and any alert, its programs, what is playing, the logo, and
+        how the signal is received. The album art sits in the top right
+        corner, beside the first rows only: the rows below it run the full
+        width. It, the alert and the logo show only when there is one."""
+        page = Qt.QWidget()
+        form = self._form(page)
+        form.setColumnStretch(1, 1)          # the room goes to the text, not the labels
+        self._hd_form = form
+        big = Qt.QFont()
+        big.setPixelSize(19)
+        big.setBold(True)
+        rows = (('station', "Station:"), ('status_full', "Status:"),
+                ('message', "Message:"), ('alert', "Alert:"),
+                ('programs', "Programs:"), ('nowplaying', "Now playing:"),
+                ('album', "Album:"), ('genre', "Genre:"), ('logo', "Logo:"),
+                ('signal', "Signal:"))
+        for key, caption in rows:
+            if key == 'logo':
+                picture = Qt.QLabel()
+                picture.setFixedSize(HD_PICTURE_PX, HD_PICTURE_PX)
+                picture.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+                picture.setToolTip("The station's logo")
+                picture.path = None
+                self.hd_logo = picture
+                # In a holder that grows: a fixed-size field would hold the
+                # whole text column to its width.
+                label = Qt.QWidget()
+                label.setObjectName('hdLogo')
+                label.setStyleSheet("QWidget#hdLogo { background: transparent; }")
+                label.setSizePolicy(Qt.QSizePolicy.Expanding, Qt.QSizePolicy.Fixed)
+                holder = Qt.QHBoxLayout(label)
+                holder.setContentsMargins(0, 2, 0, 2)
+                holder.addWidget(picture)
+                holder.addStretch(1)
+            else:
+                label = _wrapping(Qt.QLabel("-"))
+                label.setTextFormat(QtCore.Qt.RichText)
+                label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+                if key == 'station':                  # as RDS shows its name
+                    label.setFont(big)
+            self.hd_lbl[key] = label
+            form.addRow(caption, label)
+        # The art: a third column, beside Station to Programs. The rows
+        # after those span the text and art columns both; the height the
+        # art needs beyond its rows goes under Programs, not between them.
+        art = Qt.QLabel()
+        art.setFixedSize(HD_ART_PX, HD_ART_PX)
+        art.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignTop)
+        art.setToolTip("The album art of what is playing")
+        art.path = None
+        art.hide()
+        self.hd_art = art
+        beside = [k for k, _ in rows].index('programs') + 1
+        form.addWidget(art, 0, 2, beside, 1, QtCore.Qt.AlignRight | QtCore.Qt.AlignTop)
+        form.setRowStretch(beside - 1, 1)
+        # That row can be taller than its text: the text at its top, level
+        # with its label.
+        self.hd_lbl['programs'].setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        for row, (key, _) in enumerate(rows[beside:], start=beside):
+            field = self.hd_lbl[key]
+            form.removeWidget(field)
+            form.addWidget(field, row, 1, 1, 2)
+        for key in ('alert', 'logo'):
+            self._hd_row_shown(key, False)
+        return page
+
+    def _hd_row_shown(self, key, shown):
+        """Show or hide a row of the HD Radio tab, its label with it."""
+        field = self.hd_lbl[key]
+        label = self._hd_form.labelForField(field)
+        for widget in (field, label):
+            if widget is not None and widget.isHidden() == shown:
+                widget.setVisible(shown)
+
+    @staticmethod
+    def _hd_picture(picture, path, size):
+        """Put the picture at ``path`` in its place (scaled to fit ``size``);
+        returns whether there is one. Read again only when the file
+        changes."""
+        if path != picture.path:
+            picture.path = path
+            image = Qt.QPixmap(path) if path else Qt.QPixmap()
+            if image.isNull():
+                picture.clear()
+                picture.path = None
+            else:
+                picture.setPixmap(image.scaled(size, size, QtCore.Qt.KeepAspectRatio,
+                                               QtCore.Qt.SmoothTransformation))
+        return picture.path is not None
+
+    def _build_hd_row(self):
+        """HD Radio in the Tuner box: a lamp for the digital signal (green:
+        the station has HD Radio here), the programs HD1-HD4 (greyed until
+        the station lists them; HD5-HD8 appear only when it does), and under
+        them the status on one line. The decoder is always on; a click on a
+        program plays it (the button lit), a click on the lit one goes back
+        to the analog. See hdradio.py."""
         row = Qt.QWidget()
         line = Qt.QHBoxLayout(row)
         line.setContentsMargins(0, 0, 0, 0)
-        self.hd_check = Qt.QCheckBox("Digital")
-        self.hd_check.setToolTip(
-            "Play the station's HD Radio (digital) audio, decoded by nrsc5.\n"
-            "HD1 plays the analog until the digital comes in (a few seconds);\n"
-            "HD2-HD4 are silent until then. A retune goes back to HD1.")
-        self.hd_check.toggled.connect(self._hd_toggled)
-        line.addWidget(self.hd_check)
+        line.setSpacing(4)
+        self.hd_orb = Orb()
+        line.addWidget(self.hd_orb, 0, QtCore.Qt.AlignVCenter)
+        line.addSpacing(4)
         self.hd_group = Qt.QButtonGroup(self)
-        self.hd_group.setExclusive(True)
+        self.hd_group.setExclusive(False)       # none lit: the analog
         self.hd_buttons = []
         for n in range(HD_PROGRAMS):
             button = Qt.QPushButton(f"HD{n + 1}")
             button.setCheckable(True)
             button.setEnabled(False)
+            button.setObjectName('hd')             # small: see style.py
+            button.setSizePolicy(Qt.QSizePolicy.Expanding, Qt.QSizePolicy.Fixed)
+            button.setVisible(n < HD_PROGRAMS_SHOWN)
             self.hd_group.addButton(button, n)
             line.addWidget(button)
             self.hd_buttons.append(button)
-        self.hd_buttons[0].setChecked(True)
         self.hd_group.idClicked.connect(self._hd_program_picked)
-        line.addStretch(1)
-        form.addRow(row)
-        self.hd_lbl = {}
-        for key, caption in (('status', "Status:"), ('station', "Station:"),
-                             ('programs', "Programs:"), ('nowplaying', "Now playing:")):
-            label = _wrapping(Qt.QLabel("-"))
-            label.setTextFormat(QtCore.Qt.RichText)
-            label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-            self.hd_lbl[key] = label
-            form.addRow(caption, label)
+        self.hd_row = row
+        # One line: "Playing analog FM" (or what plays) stays put, and the
+        # rest scrolls through what is left of the column.
+        status = Marquee()
+        self.hd_lbl = {'status': status}
         if not self.engine.hd.available:
-            self.hd_check.setEnabled(False)
-            self.hd_lbl['status'].setText(_coloured(
+            status.set_parts("Playing analog FM", _coloured(
                 "nrsc5 is not installed (see knowledge/digital-radio.md)", 'warn'))
-        return self._foldable(box, form, 'hd', keep=(row, self.hd_lbl['status']))
+            self.hd_orb.set_state('off', "HD Radio: nrsc5 is not installed")
+        return row, status
 
-    def _hd_toggled(self, on):
+    def _fit_hd_row(self):
+        """The HD row as wide as from its left edge to the Channel filter
+        knob's right edge (both are in the Tuner card)."""
+        row, knob = self.hd_row, self.chan_knob
+        parent = row.parentWidget()
+        if parent is None or not knob.isVisible():
+            return
+        right = knob.mapTo(parent, QtCore.QPoint(knob.width(), 0)).x()
+        width = max(row.minimumSizeHint().width(), right - row.x())
+        if row.width() != width or row.minimumWidth() != width:
+            row.setFixedWidth(width)
+
+    def _hd_program_picked(self, program):
+        """A click on an HD button: that program, or off (the analog) if it
+        was the one playing."""
         try:
-            self.engine.hd.set_enabled(on)
-            if not on and self.engine.rx is not None:
-                self.engine.rx.set_hd_audio('analog')
+            hd = self.engine.hd
+            if hd.chosen and hd.program == program:
+                hd.choose(None)
+            else:
+                hd.choose(program)
             self._refresh_hd()
         except Exception:                         # a slot's exception aborts
             self._report('HD Radio')
 
-    def _hd_program_picked(self, program):
-        try:
-            self.engine.hd.set_program(program)
-            self._refresh_hd()
-        except Exception:
-            self._report('HD Radio')
+    @staticmethod
+    def _hd_programs(s):
+        """The programs the station has: its audio services, or failing
+        those, what it names (not a program whose type is None)."""
+        if s['audio']:
+            return set(s['audio'])
+        return {n for n in set(s['names']) | set(s['types'])
+                if s['types'].get(n) != 'None'}
 
     def _refresh_hd(self):
-        """Run from the slow timer in Receive: start, stop or restart the
-        decoder as wanted, pick what is heard, and show what it says."""
+        """Run from the slow timer in Receive: start or restart the decoder
+        as due, pick what is heard, and show what it says."""
         hd, rx = self.engine.hd, self.engine.rx
         receiving = rx is not None and self._mode in ('receive', 'playback')
         if receiving:
@@ -998,78 +1149,197 @@ class MainWindow(Qt.QWidget):
         s = hd.status()
         program = s['program']
         if receiving:
-            if not s['enabled']:
-                heard = 'analog'
-            elif s['playing']:
-                heard = 'digital'
-            else:
-                heard = 'analog' if program == 0 else 'none'
-            rx.set_hd_audio(heard)
+            rx.set_hd_audio(s['heard'])
+        has = self._hd_programs(s) if s['synced'] else set()
+        listed = set(s['names']) | set(s['types']) | set(s['audio'])
         for n, button in enumerate(self.hd_buttons):
-            button.setEnabled(s['enabled'])
-            if n == program and not button.isChecked():
-                button.setChecked(True)
-            name = s['names'].get(n)
-            button.setToolTip(f"HD{n + 1}" + (f": {name}" if name else ''))
+            lit = s['chosen'] and n == program
+            button.setEnabled(s['enabled'] and (n in has or lit))
+            if button.isChecked() != lit:
+                button.setChecked(lit)
+            shown = n < HD_PROGRAMS_SHOWN or n in listed or lit
+            if button.isHidden() == shown:
+                button.setVisible(shown)
+            name = s['names'].get(n, '')
+            kind = s['types'].get(n, '')
+            tip = f"HD{n + 1}"
+            if name and name.upper().replace('-', '') != tip:
+                tip += f": {name}"
+            if kind and kind != 'None':
+                tip += f" ({kind})"
+            if n not in has and n:
+                tip += " - not on this station"
+            button.setToolTip(tip)
         if not s['available']:
             return
-        self.hd_lbl['status'].setText(self._hd_status_text(s, rx))
+        head, rest = self._hd_status_parts(s, rx, detail=False)
+        self.hd_lbl['status'].set_parts(head, rest)
+        self.hd_lbl['status_full'].setText(self._hd_status_text(s, rx))
+        # The lamp: whether the station has HD Radio here, and how well.
+        if not s['enabled'] or not s['synced'] or (rx is not None and rx.hd is None):
+            lamp = 'off'
+        elif s['lost_share'] > HD_LOST_SHARE:
+            lamp = 'weak'
+        else:
+            lamp = 'good'
+        self.hd_orb.set_state(lamp, "HD Radio: " + _plain_text(self.hd_lbl['status'].text()))
         station = s['station']
         if s['slogan'] and s['slogan'] not in ('HD1', 'HD-1') and s['slogan'] != station:
             station = f"{station} - {s['slogan']}" if station else s['slogan']
         self.hd_lbl['station'].setText(html.escape(station) or '-')
+        self.hd_lbl['message'].setText(html.escape(s['message']) or '-')
+        alert = s['alert']
+        if alert:
+            message, details = alert
+            self.hd_lbl['alert'].setText(_coloured(html.escape(message), 'bad')
+                                         + f"<br>{html.escape(details)}")
+        self._hd_row_shown('alert', bool(alert))
         self.hd_lbl['programs'].setText(self._hd_programs_text(s))
         title, artist = s['title'], s['artist']
         self.hd_lbl['nowplaying'].setText(html.escape(
             ' - '.join(x for x in (artist, title) if x)) if (title or artist) else '-')
-
-    @staticmethod
-    def _hd_status_text(s, rx):
-        program = f"HD{s['program'] + 1}"
-        if rx is not None and rx.hd is None:
-            return _coloured("Not at this IQ rate: HD Radio needs 420 kS/s or more", 'warn')
-        if not s['enabled']:
-            return _coloured("Off - analog FM", 'ink_2')
-        if s['error'] and not s['running']:
-            return _coloured(html.escape(s['error']), 'bad')
-        waited = s['seconds'] or 0.0
-        if not s['synced']:
-            if s['running'] and waited > 10:
-                return _coloured("No HD Radio signal on this station", 'warn')
-            return "Searching for the digital signal..."
-        mode = f"MP{s['mode']}" if s['mode'] else ''
-        ber = f"BER {s['ber']:.3f}" if s['ber'] is not None else ''
-        extra = ', '.join(x for x in (mode, ber) if x)
-        if s['playing']:
-            kbps = f", {s['kbps']:.0f} kbps" if s['kbps'] else ''
-            text = _coloured(f"Playing {program} (digital)", 'good') + f" - {extra}{kbps}"
-            if s['damaged_share'] > 0:
-                # Lost packets are gaps in the sound: the signal, not the app.
-                text += " - " + _coloured(
-                    f"{100 * s['damaged_share']:.0f}% of the audio damaged (weak signal)",
-                    'warn')
-            return text
-        if s['audio'] and s['program'] not in s['audio'] and waited > 8:
-            return _coloured(f"{program} carries no audio", 'warn') + f" - {extra}"
-        wait = " - the analog plays meanwhile" if s['program'] == 0 else ''
-        return f"Digital signal found, waiting for {program}{wait} ({extra})"
+        self.hd_lbl['album'].setText(html.escape(s['album']) or '-')
+        self.hd_lbl['genre'].setText(html.escape(s['genre']) or '-')
+        self.hd_lbl['signal'].setText(self._hd_signal_text(s))
+        has_logo = self._hd_picture(self.hd_logo, s['logo_path'], HD_PICTURE_PX)
+        self._hd_row_shown('logo', has_logo)
+        has_art = self._hd_picture(self.hd_art, s['art_path'], HD_ART_PX)
+        if self.hd_art.isHidden() == has_art:
+            self.hd_art.setVisible(has_art)
 
     @staticmethod
     def _hd_programs_text(s):
+        """Each program the station lists: its name and type; the one
+        playing in bold, one not sending audio marked so."""
         found = sorted(set(s['names']) | set(s['types']) | set(s['audio']))
         parts = []
         for n in found:
-            text = f"<b>HD{n + 1}</b>"
+            text = f"HD{n + 1}"
             name = s['names'].get(n, '')
-            if name and name.upper().replace('-', '') != f"HD{n + 1}":
+            if name and name.upper().replace('-', '') != text:
                 text += f" {html.escape(name)}"
             kind = s['types'].get(n, '')
             if kind and kind != 'None':
                 text += f" ({html.escape(kind)})"
+            if s['chosen'] and n == s['program']:
+                text = f"<b>{text}</b>"
             if s['audio'] and n not in s['audio']:
                 text += " " + _coloured("no audio", 'ink_2')
             parts.append(text)
         return ' &nbsp;·&nbsp; '.join(parts) or '-'
+
+    @staticmethod
+    def _hd_signal_text(s):
+        """How the digital signal is received: mode, errors, quality, rate
+        and the frequency offset nrsc5 corrected."""
+        if not s['synced']:
+            return '-'
+        parts = []
+        if s['mode']:
+            parts.append(f"MP{s['mode']}")
+        if s['ber'] is not None:
+            token = 'good' if s['ber'] < 0.05 else 'warn' if s['ber'] < 0.15 else 'bad'
+            parts.append("BER " + _coloured(f"{s['ber']:.3f}", token))
+        if s['mer'] is not None:
+            parts.append(f"MER {s['mer'][0]:.1f} / {s['mer'][1]:.1f} dB")
+        if s['kbps']:
+            parts.append(f"{s['kbps']:.0f} kbps")
+        if s['offset_hz'] is not None:
+            parts.append(f"offset {s['offset_hz']:+.0f} Hz")
+        # Under them, how much of the digital audio was lost over the last
+        # few seconds: each lost packet is a gap (the signal, not the app).
+        lost = 100 * s['lost_share']
+        token = 'good' if lost == 0 else 'warn' if lost <= 100 * HD_LOST_SHARE else 'bad'
+        return (' · '.join(parts) + '<br>'
+                + _coloured(f"{lost:.0f}% of the digital signal lost", token))
+
+    @classmethod
+    def _hd_status_text(cls, s, rx, detail=True):
+        """The whole status line, as rich text."""
+        head, rest = cls._hd_status_parts(s, rx, detail)
+        return head + (f" - {rest}" if rest else '')
+
+    @classmethod
+    def _hd_status_parts(cls, s, rx, detail=True):
+        """The status as (head, rest), rich text: the head is what plays,
+        which the Tuner box keeps in place; the rest scrolls if it does not
+        fit. Without ``detail`` (the Tuner box) it leaves out the numbers -
+        how much was lost, the mode, BER and bit rate - which the HD Radio
+        tab's status shows."""
+        program = f"HD{s['program'] + 1}"
+        analog_fm = "Playing analog FM"
+        if rx is not None and rx.hd is None:
+            return analog_fm, _coloured("HD Radio needs an IQ rate of 420 kS/s or more", 'warn')
+        if not s['enabled']:
+            return analog_fm, _coloured("HD Radio switched off", 'ink_2')
+        if s['error'] and not s['running']:
+            return analog_fm, _coloured(html.escape(s['error']), 'bad')
+        waited = s['seconds'] or 0.0
+        if not s['chosen']:
+            if s['synced']:
+                has = ', '.join(f"HD{n + 1}" for n in sorted(cls._hd_programs(s)))
+                weak = (_coloured(" (weak here)", 'warn')
+                        if s['lost_share'] > HD_LOST_SHARE else '')
+                return analog_fm, f"HD Radio here: {has or 'HD1'}{weak}"
+            if s['station']:
+                return analog_fm, _coloured("HD Radio signal lost (weak)", 'warn')
+            if s['running'] and waited > 10:
+                return analog_fm, "no HD Radio on this station"
+            return analog_fm, "looking for HD Radio..."
+
+        # HD1 falls back to the analog while its digital is not there or
+        # not clean: then the line says so first, as with nothing chosen.
+        # HD2-HD4 have no analog behind them: their state is the head.
+        fallback = s['program'] == 0
+        # HD2-HD8 have no analog: while theirs is not playing there is
+        # silence, and the line says so. They never switch to another
+        # program by themselves - leaving is the listener's choice.
+        silent = " (silent)"
+        mode = f"MP{s['mode']}" if s['mode'] else ''
+        ber = f"BER {s['ber']:.3f}" if s['ber'] is not None else ''
+        extra = ', '.join(x for x in (mode, ber) if x)
+        # Lost frames are gaps in the sound: the signal, not the app.
+        lost = (f"{100 * s['lost_share']:.0f}% of the digital audio lost (weak signal)"
+                if s['lost_share'] > 0 else '')
+        if not detail:
+            extra = ''
+
+        def more(text, *parts):
+            return ' - '.join(x for x in (text,) + parts if x)
+
+        if not s['synced']:
+            if s['station']:                     # it had it, and lost it
+                if fallback:
+                    return analog_fm, _coloured("digital signal lost (weak)", 'warn')
+                return _coloured(f"{program} lost - weak signal{silent}", 'warn'), ''
+            if s['running'] and waited > 10:
+                if fallback:
+                    return analog_fm, _coloured("no HD Radio on this station", 'ink_2')
+                return _coloured(f"No HD Radio here{silent}", 'ink_2'), ''
+            if fallback:
+                return analog_fm, f"looking for {program}..."
+            return f"Tuning {program}...{silent}", ''
+        if s['playing'] and s['heard'] == 'analog':
+            weak = _coloured(f"{program} too weak here", 'warn')
+            if not detail:
+                return analog_fm, weak
+            return analog_fm, more(weak, f"{lost or 'waiting for a clean stretch'} ({extra})")
+        if s['playing']:
+            kbps = f", {s['kbps']:.0f} kbps" if s['kbps'] and detail else ''
+            if detail:
+                gaps = _coloured(lost, 'warn') if lost else ''
+            else:
+                gaps = _coloured("breaking up", 'warn') if lost else ''
+            return (_coloured(f"Playing {program} (digital)", 'good'),
+                    more(f"{extra}{kbps}", gaps))
+        if s['audio'] and s['program'] not in s['audio'] and waited > 8:
+            if fallback:
+                return analog_fm, more(_coloured(f"{program} is off the air", 'warn'), extra)
+            return _coloured(f"{program} is off the air{silent}", 'warn'), extra
+        found = f"digital signal found ({extra})" if detail else ''
+        if fallback:
+            return analog_fm, more(f"waiting for {program}", found)
+        return f"Starting {program}...{silent}", found
 
     def _build_recordings_tab(self):
         """The recordings in the folder, newest first, and the player."""
@@ -1617,7 +1887,7 @@ class MainWindow(Qt.QWidget):
         self.rf_view.set_pan_limits(None, None)
         self.engine.start_receive(
             station_hz, rate, center_hz=center_hz,
-            channel_bw=self.chan_entry.value(),
+            channel_bw=self.chan_knob.value(),
             region=self.region_combo.currentData(),
             stereo=self.stereo_check.isChecked(),
             volume=self.volume_knob.value() / 100.0,
@@ -1642,7 +1912,7 @@ class MainWindow(Qt.QWidget):
         self.rf_view.set_extent(e.lo_hz - e.rate / 2, e.lo_hz + e.rate / 2,
                                 center_hz=e.station_hz if recentre else None)
         self.rf_view.set_marker(e.station_hz)
-        bw = self.chan_entry.value()
+        bw = self.chan_knob.value()
         self.rf_view.set_band(e.station_hz - bw / 2, e.station_hz + bw / 2)
         self.rf_view.set_center_line(e.lo_hz)
         self.rf_view.set_tuner_range(*e.tuner_range())
@@ -1829,7 +2099,7 @@ class MainWindow(Qt.QWidget):
         orange bar says where Listen, the Receive tab and Real time will
         start from, and middle-dragging it moves them. Nothing is retuned
         meanwhile - the radio is sweeping."""
-        bw = self.chan_entry.value()
+        bw = self.chan_knob.value()
         hz = self.tuner.value()
         self.rf_view.set_band(hz - bw / 2, hz + bw / 2)
 
@@ -2029,7 +2299,8 @@ class MainWindow(Qt.QWidget):
 
     def _band_wheel(self, steps, fine):
         step = BAND_WHEEL_FINE_HZ if fine else BAND_WHEEL_HZ
-        self.chan_entry.setValue(self.chan_entry.value() + steps * step, emit=True)
+        self.chan_knob.setValue(self.chan_knob.value() + steps * step, emit=True)
+        self.chan_knob.light()
 
     def _band_dragged(self, hz):
         if self.snap_check.isChecked():
@@ -2257,8 +2528,7 @@ class MainWindow(Qt.QWidget):
         apply_window_theme(self, self.cfg['theme'])
         for view in (self.rf_view, self.mpx_view, self.audio_view):
             view.restyle()
-        for entry in (self.tuner, self.sweep_tuner, self.center_entry,
-                      self.chan_entry):
+        for entry in (self.tuner, self.sweep_tuner, self.center_entry):
             entry.restyle()
         self.timeline.update()
         self.theme_disc.describe()
@@ -3232,7 +3502,7 @@ class MainWindow(Qt.QWidget):
         if self._rx_sig is None or self.engine.station_hz is None:
             return None
         freqs, db = self._rx_sig
-        inside = np.abs(freqs - self.engine.station_hz) < self.chan_entry.value() / 2
+        inside = np.abs(freqs - self.engine.station_hz) < self.chan_knob.value() / 2
         if not inside.any():
             return None
         return float(10 * np.log10(np.mean(10 ** (db[inside] / 10))) - np.median(db))
@@ -3311,7 +3581,8 @@ class MainWindow(Qt.QWidget):
             'center_mhz': live.get('center', self.center_entry.value()) / 1e6,
             'step_khz': STEPS_KHZ[int(round(self.step_knob.value()))],
             'usrp_address': self.usrp_edit.text().strip(),
-            'channel_bw_khz': int(round(self.chan_entry.value() / 1e3)),
+            'channel_bw_khz': int(round(self.chan_knob.value() / 1e3)),
+            'station_tab': self.station_tabs.currentIndex(),
             'region': self.region_combo.currentData(),
             'stereo': self.stereo_check.isChecked(),
             'volume': self.volume_knob.value(),

@@ -47,7 +47,6 @@ class _Dial(Qt.QDial):
     the mouse - it lights the same way, for ``HOLD_MS`` after the last turn.
     """
 
-    reset = pyqtSignal()
     #: Whole wheel notches over the knob, and whether Shift was held.
     wheeled = pyqtSignal(int, bool)
 
@@ -176,13 +175,15 @@ class _Dial(Qt.QDial):
             self._press = None
             self.setSliderDown(False)
             self._aim_glow()
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
+        # Never QDial's own release: it sets the value to the angle under
+        # the pointer, so the release after a double-click made the knob
+        # jump to wherever it was clicked (found 2026-09-28).
+        event.accept()
 
     def mouseDoubleClickEvent(self, event):
-        self.reset.emit()
-        event.accept()
+        # A double-click is a second press (a drag can start from it), no
+        # more: no reset (taken out 2026-09-28, for every knob) and no jump.
+        self.mousePressEvent(event)
 
     def paintEvent(self, event):
         try:
@@ -235,7 +236,7 @@ class Knob(Qt.QWidget):
     kilohertz to tens of megahertz). ``fmt`` turns the value into text.
     The mouse wheel over it turns it by ``wheel`` a notch - an amount, or
     on a log knob a factor - and a fifth of that with Shift (never less
-    than ``step``).
+    than ``step``). A double-click does nothing.
     """
 
     valueChanged = pyqtSignal(float)
@@ -248,7 +249,6 @@ class Knob(Qt.QWidget):
         self._min, self._max = float(minimum), float(maximum)
         self._log = bool(log)
         self._fmt = fmt or (lambda v: f"{v:g}")
-        self._default = float(value)
         self._step = step
         if wheel is None:
             wheel = 2 ** 0.25 if log else (step or (self._max - self._min) / 100)
@@ -268,12 +268,11 @@ class Knob(Qt.QWidget):
         box.addWidget(self.text)
         if tooltip:
             self.setToolTip(tooltip + "\nRoll the wheel over it or drag up/down "
-                            "(Shift: fine); double-click to reset.")
+                            "(Shift: fine).")
         self._quiet = False
         self._exact = None
         self._value = float(value)
         self.dial.valueChanged.connect(self._changed)
-        self.dial.reset.connect(lambda: self.setValue(self._default))
         self.dial.wheeled.connect(self._wheeled)
         self.setValue(value)
 
@@ -344,6 +343,179 @@ class Knob(Qt.QWidget):
         finally:
             self._quiet = False
             self._exact = None
+
+
+# ------------------------------------------------------------ marquee
+
+class Marquee(Qt.QWidget):
+    """One line of rich text that never wraps: a head that stays put, and
+    the rest after it, which scrolls through the room left when it does not
+    fit (asked for on the Tuner box's HD status, 2026-09-28: it had jumped
+    between one line and two). The whole text is its tooltip."""
+
+    SEP = " - "
+    GAP_PX = 48                      # between the end of the rest and its start again
+    SPEED = 30.0                     # px a second
+    PAUSE_S = 1.5                    # at the start of each pass
+    TICK_MS = 33
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSizePolicy(Qt.QSizePolicy.Ignored, Qt.QSizePolicy.Fixed)
+        self.setMinimumWidth(1)
+        self.setFixedHeight(self.fontMetrics().height() + 4)
+        self._head = self._rest = ''
+        self._docs = (None, None)
+        self._offset = 0.0
+        self._paused_until = 0.0
+        self._last = None
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(self.TICK_MS)
+        self._timer.timeout.connect(self._tick)
+
+    def set_parts(self, head, rest=''):
+        """``head`` and ``rest`` as rich text; unchanged text keeps its
+        place in the scroll."""
+        if (head, rest) == (self._head, self._rest):
+            return
+        self._head, self._rest = head, rest
+        self._docs = (None, None)
+        self._offset = 0.0
+        self._paused_until = time.monotonic() + self.PAUSE_S
+        tip = Qt.QTextDocument()
+        tip.setHtml(self.text())
+        self.setToolTip(tip.toPlainText())
+        self._fit_timer()
+        self.update()
+
+    def setText(self, text):
+        self.set_parts(text, '')
+
+    def text(self):
+        """The whole line as rich text."""
+        return self._head + (self.SEP + self._rest if self._rest else '')
+
+    def _doc(self, html):
+        doc = Qt.QTextDocument()
+        doc.setDefaultFont(self.font())
+        doc.setDocumentMargin(0)
+        doc.setHtml(html)
+        return doc
+
+    def _documents(self):
+        if self._docs[0] is None:
+            head = self._head + (self.SEP if self._rest else '')
+            self._docs = (self._doc(head), self._doc(self._rest) if self._rest else None)
+        return self._docs
+
+    def _overflow(self):
+        head, rest = self._documents()
+        return rest is not None and head.idealWidth() + rest.idealWidth() > self.width()
+
+    def _fit_timer(self):
+        running = self.isVisible() and self._overflow()
+        if running and not self._timer.isActive():
+            self._last = time.monotonic()
+            self._timer.start()
+        elif not running:
+            self._timer.stop()
+            self._offset = 0.0
+
+    def _tick(self):
+        try:
+            now = time.monotonic()
+            step, self._last = now - (self._last or now), now
+            if now < self._paused_until:
+                return
+            rest = self._documents()[1]
+            loop = (rest.idealWidth() if rest is not None else 0) + self.GAP_PX
+            self._offset += self.SPEED * step
+            if self._offset >= loop:
+                self._offset = 0.0
+                self._paused_until = now + self.PAUSE_S
+            self.update()
+        except Exception as exc:                       # never abort the app
+            print(f"marquee: {exc}")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_timer()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fit_timer()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._timer.stop()
+
+    def _draw(self, painter, doc, x, clip):
+        painter.save()
+        painter.setClipRect(clip)
+        painter.translate(x, (self.height() - doc.size().height()) / 2)
+        context = Qt.QAbstractTextDocumentLayout.PaintContext()
+        context.palette.setColor(Qt.QPalette.Text, Qt.QColor(theme.TOKENS['ink']))
+        doc.documentLayout().draw(painter, context)
+        painter.restore()
+
+    def paintEvent(self, event):
+        try:
+            painter = Qt.QPainter(self)
+            head, rest = self._documents()
+            full = QtCore.QRectF(self.rect())
+            self._draw(painter, head, 0, full)
+            if rest is not None:
+                start = head.idealWidth()
+                room = QtCore.QRectF(start, 0, max(0.0, self.width() - start), self.height())
+                if not self._overflow():
+                    self._draw(painter, rest, start, room)
+                else:
+                    loop = rest.idealWidth() + self.GAP_PX
+                    self._draw(painter, rest, start - self._offset, room)
+                    self._draw(painter, rest, start - self._offset + loop, room)
+            painter.end()
+        except Exception as exc:                       # never abort the app
+            print(f"marquee: {exc}")
+
+
+# ------------------------------------------------------------ orb
+
+class Orb(Qt.QWidget):
+    """A small lamp: 'off' (a ring - nothing there), 'weak' (amber - there,
+    not good enough) or 'good' (green). Its tooltip says why."""
+
+    COLOURS = {'weak': 'warn', 'good': 'good'}
+
+    def __init__(self, size=14, parent=None):
+        super().__init__(parent)
+        self.state = 'off'
+        self.setFixedSize(size + 4, size + 4)
+
+    def set_state(self, state, tip=None):
+        if tip is not None and tip != self.toolTip():
+            self.setToolTip(tip)
+        if state != self.state:
+            self.state = state
+            self.update()
+
+    def paintEvent(self, event):
+        try:
+            painter = Qt.QPainter(self)
+            painter.setRenderHint(Qt.QPainter.Antialiasing)
+            rect = QtCore.QRectF(self.rect()).adjusted(2.5, 2.5, -2.5, -2.5)
+            token = self.COLOURS.get(self.state)
+            if token is None:
+                pen = Qt.QPen(Qt.QColor(theme.TOKENS['ink_2']), 1.5)
+                painter.setPen(pen)
+                painter.setBrush(QtCore.Qt.NoBrush)
+            else:
+                colour = Qt.QColor(theme.TOKENS[token])
+                painter.setPen(Qt.QPen(colour.darker(130), 1.0))
+                painter.setBrush(colour)
+            painter.drawEllipse(rect)
+            painter.end()
+        except Exception as exc:                       # never abort the app
+            print(f"orb: {exc}")
 
 
 # ------------------------------------------------------------ digit entry
@@ -921,14 +1093,157 @@ class PageTabs(Qt.QTabWidget):
     """Tabs as tall as the page on show. Qt 5's are as tall as the tallest
     page, whatever the others' size policies say, so Receive's folded boxes
     sat over a gap the height of Sweep's page. As wide as the widest, still:
-    the left column is sized to fit every page."""
+    the left column is sized to fit every page.
 
-    def __init__(self, parent=None):
+    With ``animate_ms``, a change of tab glides the height from the old
+    page's to the new one's while the new page fades in, rather than
+    jumping (asked for on the RDS / HD Radio tabs, 2026-09-28).
+
+    :meth:`foldable` puts a chevron in the tab bar's corner, as a
+    :class:`Card` has on its title: folded, only the tabs show, and a
+    click on a tab opens it again.
+    """
+
+    #: Folded (True) or opened, by the chevron or a tab.
+    folded = pyqtSignal(bool)
+
+    def __init__(self, parent=None, animate_ms=0):
         super().__init__(parent)
         # Not Expanding (a tab widget's default): the room under the page on
         # show goes to the boxes below it, not to empty tab.
         self.setSizePolicy(Qt.QSizePolicy.Preferred, Qt.QSizePolicy.Preferred)
         self.currentChanged.connect(lambda _: self.updateGeometry())
+        self._animate_ms = int(animate_ms)
+        self._glide = None
+        self._fade = None
+        self._fade_page = None
+        self._folded = False
+        self.chevron = None
+        if self._animate_ms > 0:
+            self.currentChanged.connect(self._animate)
+
+    # -- folding
+    def foldable(self, folded=False):
+        self.chevron = _Chevron()
+        self.chevron.setToolTip("Fold or open these tabs.")
+        corner = Qt.QWidget()
+        box = Qt.QHBoxLayout(corner)
+        box.setContentsMargins(0, 0, 8, 0)
+        box.addWidget(self.chevron, 0, QtCore.Qt.AlignVCenter)
+        self.setCornerWidget(corner, QtCore.Qt.TopRightCorner)
+        ms = self._animate_ms or Card.FOLD_MS
+        self.chevron.clicked.connect(lambda opened: self.set_folded(not opened, ms))
+        # A tab clicked while folded opens it (before the page changes).
+        self.tabBarClicked.connect(lambda _: self._folded and self.set_folded(False, ms))
+        self.set_folded(folded)
+        return self
+
+    def is_folded(self):
+        return self._folded
+
+    def set_folded(self, folded, ms=0):
+        try:
+            folded = bool(folded)
+            changed = folded != self._folded
+            self._folded = folded
+            if self.chevron is not None:
+                self.chevron.setChecked(not folded)
+                self.chevron.turn_to(folded, ms)
+            end = (self._folded_height() if folded else self._open_height())
+            if ms > 0 and self.isVisible():
+                self._glide_to(end, ms, release=not folded)
+            elif folded:
+                self._stop_glide()
+                self.setMaximumHeight(end)
+            else:
+                self._stop_glide()
+                self._let_height_go()
+            self.updateGeometry()
+            if changed:
+                self.folded.emit(folded)
+        except Exception as exc:                   # never abort the app
+            print(f"tabs: {exc}")
+
+    def _folded_height(self):
+        return self.tabBar().sizeHint().height()
+
+    def _open_height(self):
+        return (self.heightForWidth(self.width()) if self.hasHeightForWidth()
+                else self.sizeHint().height())
+
+    def _stop_glide(self):
+        if self._glide is not None:
+            self._glide.stop()
+
+    def _glide_to(self, end, ms, release):
+        """The height from where it is to ``end`` over ``ms``; let go at
+        the end (open) or held there (folded)."""
+        self._stop_glide()
+        start = self.height()
+        glide = QtCore.QVariantAnimation(self)
+        glide.setDuration(ms)
+        glide.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+        glide.setStartValue(start)
+        glide.setEndValue(max(int(end), 1))
+        glide.valueChanged.connect(self._glided)
+        if release:
+            glide.finished.connect(self._let_height_go)
+        self.setMaximumHeight(start)
+        self._glide = glide
+        glide.start()
+
+    def _animate(self, index):
+        try:
+            page = self.widget(index)
+            if page is None or not self.isVisible() or self._folded:
+                return
+            for anim in (self._glide, self._fade):
+                if anim is not None:
+                    anim.stop()
+            if self._fade_page is not None and self._fade_page is not page:
+                self._faded_in(self._fade_page)      # a change cut short
+            self._fade_page = page
+            self._glide_to(self._open_height(), self._animate_ms, release=True)
+            effect = Qt.QGraphicsOpacityEffect(page)
+            effect.setOpacity(0.0)
+            page.setGraphicsEffect(effect)
+            fade = QtCore.QVariantAnimation(self)
+            fade.setDuration(self._animate_ms)
+            fade.setStartValue(0.0)
+            fade.setEndValue(1.0)
+            fade.valueChanged.connect(lambda v: self._faded(effect, v))
+            fade.finished.connect(lambda: self._faded_in(page))
+            self._fade = fade
+            fade.start()
+        except Exception as exc:                   # never abort the app
+            print(f"tabs: {exc}")
+            self._let_height_go()
+
+    def _glided(self, value):
+        try:
+            self.setMaximumHeight(int(value))
+        except Exception as exc:
+            print(f"tabs: {exc}")
+
+    def _let_height_go(self):
+        if self._folded:
+            return
+        self.setMaximumHeight(16777215)             # QWIDGETSIZE_MAX
+        self.updateGeometry()
+
+    @staticmethod
+    def _faded(effect, value):
+        try:
+            effect.setOpacity(float(value))
+        except Exception as exc:                   # the effect may be gone
+            print(f"tabs: {exc}")
+
+    @staticmethod
+    def _faded_in(page):
+        try:
+            page.setGraphicsEffect(None)            # no cost once it is in
+        except Exception as exc:
+            print(f"tabs: {exc}")
 
     def _fit(self, size, page_size):
         page = self.currentWidget()

@@ -136,15 +136,15 @@ def spectrum_mouse(w):
     _move(port, band)
     assert view.band.hovered, 'the band should light up under the pointer'
     _wheel(port, band, 1)
-    assert abs(w.chan_entry.value() - 205e3) < 1 and abs(e.rx.channel_bw - 205e3) < 1
+    assert abs(w.chan_knob.value() - 205e3) < 1 and abs(e.rx.channel_bw - 205e3) < 1
     _wheel(port, band, -2, QtCore.Qt.ShiftModifier)
-    assert abs(w.chan_entry.value() - 203e3) < 1, w.chan_entry.value()
+    assert abs(w.chan_knob.value() - 203e3) < 1, w.chan_knob.value()
     # Anywhere else the wheel still zooms, and the filter stays.
     span = view.span_knob.value()
     away = _plot_point(view, 98.55e6)
     _move(port, away)
     _wheel(port, away, 1)
-    assert view.span_knob.value() < span * 0.99 and abs(w.chan_entry.value() - 203e3) < 1
+    assert view.span_knob.value() < span * 0.99 and abs(w.chan_knob.value() - 203e3) < 1
     view.span_knob.setValue(400e3)
     view.set_center(98.7e6)
     (x0, x1), _ = view.plot.getPlotItem().getViewBox().viewRange()
@@ -176,7 +176,7 @@ def spectrum_mouse(w):
     assert abs(e.station_hz - 98.7e6) < 1, e.station_hz
     view.span_knob.setValue(400e3)
     view.set_center(98.7e6)
-    w.chan_entry.setValue(200e3, emit=True)
+    w.chan_knob.setValue(200e3, emit=True)
     print("spectrum mouse, digits and roller: ok")
 
 
@@ -242,12 +242,12 @@ def knobs_and_fades(w):
     assert w._step_hz() == 200e3 and view.snap_hz == 200e3
     _wheel(w.step_knob.dial, mid, -1)
     assert w._step_hz() == 100e3
-    _wheel(w.chan_roller, QtCore.QPoint(10, 5), 1)
+    _wheel(w.chan_knob.dial, mid, 1)
     assert abs(e.rx.channel_bw - 205e3) < 1, e.rx.channel_bw
-    w.chan_entry.setValue(400e3, emit=True)
+    w.chan_knob.setValue(400e3, emit=True)
     lo, hi = view.band.getRegion()
     assert abs(e.rx.channel_bw - 400e3) < 1 and abs((hi - lo) - 0.4) < 1e-6
-    w.chan_entry.setValue(200e3, emit=True)
+    w.chan_knob.setValue(200e3, emit=True)
     # The marker: gone once the tuner is still, back while it moves.
     assert view.marker_auto
     assert pump(3, lambda: view.marker.opacity() < 0.01), view.marker.opacity()
@@ -412,11 +412,11 @@ def part1_file_receiver():
 
     # Channel filter: new taps on the running filter.
     before = len(rx.stage2.taps())
-    w.chan_entry.setValue(120e3, emit=True)
+    w.chan_knob.setValue(120e3, emit=True)
     assert len(rx.stage2.taps()) != before or rx.channel_bw == 120e3
     lo, hi = view.band.getRegion()
     assert abs((hi - lo) - 0.12) < 1e-6, (lo, hi)
-    w.chan_entry.setValue(200e3, emit=True)
+    w.chan_knob.setValue(200e3, emit=True)
 
     spectrum_mouse(w)
     knobs_and_fades(w)
@@ -873,7 +873,7 @@ def part3_native_sweep():
         w.tune(98.7e6)
         low, high = view._band_hz
         assert abs((low + high) / 2 - 98.7e6) < 1, (low, high)
-        assert abs(high - low - w.chan_entry.value()) < 1, (low, high)
+        assert abs(high - low - w.chan_knob.value()) < 1, (low, high)
         view.span_knob.setValue(4e6)
         view.set_center(98.7e6)
         pump(0.3)
@@ -980,7 +980,9 @@ def part3_native_sweep():
         # Real time left its own window on the tuner, so the band is custom.
         assert saved['sweep_rbw_khz'] == 10 and saved['sweep_band'] == 'custom', saved
         assert saved['sweep_realtime'] is True, saved
-        assert saved['folded'] == {'radio': True, 'tuner': False, 'rds': True}, saved['folded']
+        assert saved['folded'] == {'radio': True, 'tuner': False, 'station': False}, \
+            saved['folded']
+        assert saved['station_tab'] == 1, saved['station_tab']
         assert saved['gain_auto'] == {NativeRadio.kind: True}, saved['gain_auto']
         assert abs(saved['sweep_stop_mhz'] - saved['sweep_start_mhz']
                    - RT_MAX_SPAN_HZ / 1e6) < 1e-3, saved
@@ -1085,12 +1087,13 @@ def time_axis(w):
 def folding(w):
     """The Receive cards fold on their chevron; the Radio card keeps its
     Center in sight, the Tuner card its tuner and range."""
-    radio, tuner, rds = (w._cards[k] for k in ('radio', 'tuner', 'rds'))
+    radio, tuner = (w._cards[k] for k in ('radio', 'tuner'))
     w.tabs.setCurrentIndex(1)
     pump(0.3)
     full = radio.height()
     radio.chevron.click()                        # slides shut over 0.2 s
-    pump(0.1)
+    # Mid-slide (waited for, not timed: a loaded machine draws late).
+    pump(0.15, lambda: radio.maximumHeight() < full)
     assert radio.is_folded() and radio.maximumHeight() < full, (radio.maximumHeight(), full)
     pump(0.4)
     assert w.rx_gain_slot.isHidden() and w.rx_rate_combo.isHidden()
@@ -1104,18 +1107,116 @@ def folding(w):
     assert 0 < gap < 8, ('right on top of the tuner', gap)
     over = w.range_label.geometry().center().x() - w.tuner.geometry().center().x()
     assert abs(over) <= 1, ('centred over the digits', over)
-    assert w.step_knob.isHidden() and w.chan_entry.isHidden()
+    assert w.step_knob.isHidden() and w.chan_knob.isHidden()
     assert w.range_room.isHidden(), 'no room kept under the digits'
     pump(0.05)
     level = w.roller.geometry().center().y() - w.tuner.geometry().center().y()
     assert abs(level) <= 2, ('the roller level with the digits', level)
     tuner.set_folded(False)
-    assert not w.step_knob.isHidden() and not w.chan_entry.isHidden()
+    assert not w.step_knob.isHidden() and not w.chan_knob.isHidden()
     assert not w.range_room.isHidden()
     assert not w.range_label.isHidden()
-    rds.set_folded(True)                         # Now playing and RadioText
-    assert not w.lbl['radiotext'].isHidden() and not w.lbl['nowplaying'].isHidden()
-    assert w.lbl['pi'].isHidden() and w.clear_btn.isHidden()
+    # Folded, the Tuner card hides HD Radio's row too.
+    tuner.set_folded(True)
+    assert not w.hd_buttons[0].isVisibleTo(tuner) and not w.hd_lbl['status'].isVisibleTo(tuner)
+    tuner.set_folded(False)
+    assert w.hd_buttons[0].isVisibleTo(tuner) and w.hd_orb.isVisibleTo(tuner)
+    pump(0.3)
+    # The HD buttons reach the Channel filter knob's right edge.
+    last = [b for b in w.hd_buttons if not b.isHidden()][-1]   # HD4: no HD5-8 here
+    knob = w.chan_knob
+    ends = [x.mapTo(tuner, QtCore.QPoint(x.width(), 0)).x() for x in (last, knob)]
+    assert abs(ends[0] - ends[1]) <= 3, ends
+    # Under the Tuner, RDS and HD Radio are tabs, HD Radio's left on show.
+    # A change glides the height and fades the page in.
+    tabs = w.station_tabs
+    assert [tabs.tabText(i) for i in range(tabs.count())] == ['RDS', 'HD Radio']
+    tabs.setCurrentIndex(0)
+    pump(0.4)
+    before = tabs.height()
+    tabs.setCurrentIndex(1)
+    # Mid-glide (waited for, not timed: a loaded machine draws late).
+    pump(0.2, lambda: tabs.maximumHeight() != before)
+    mid = tabs.maximumHeight()
+    assert tabs.widget(1).graphicsEffect() is not None, 'fading in'
+    pump(0.4)
+    after = tabs.height()
+    assert tabs.maximumHeight() == 16777215 and tabs.widget(1).graphicsEffect() is None
+    # Part way between the two pages' heights, whichever is taller.
+    assert after != before, (before, after)
+    assert min(before, after) < mid < max(before, after), (before, mid, after)
+    assert w.hd_lbl['station'].isVisibleTo(tabs) and not w.lbl['pi'].isVisibleTo(tabs)
+    # No alert and no pictures from a station with no HD Radio: those rows
+    # stay hidden, the rest show "-". The station is as large as RDS's.
+    assert w.hd_lbl['station'].isVisibleTo(tabs) and w.hd_lbl['signal'].isVisibleTo(tabs)
+    assert not w.hd_lbl['alert'].isVisibleTo(tabs)
+    assert not w.hd_lbl['logo'].isVisibleTo(tabs) and not w.hd_art.isVisibleTo(tabs)
+    assert w.hd_lbl['station'].font().pixelSize() == w.lbl['station_name'].font().pixelSize()
+    # HD5-HD8 only for a station that lists them.
+    assert all(b.isHidden() for b in w.hd_buttons[4:])
+    assert not any(b.isHidden() for b in w.hd_buttons[:4])
+    # The Tuner box's status is one line: the head stays, the rest scrolls
+    # when the two do not fit, and the height never changes.
+    # (Checked at once: the window's timer puts the real status back.)
+    status = w.hd_lbl['status']
+    height = status.height()
+    status.set_parts("Playing analog FM", "HD Radio here: HD1, HD2, HD3, HD4, HD5 "
+                     "and a great deal more text than any column is wide")
+    assert status.height() == height and status._timer.isActive()
+    status.set_parts("Playing analog FM", "short")
+    assert status.height() == height and not status._timer.isActive()
+    assert 'Playing analog FM' in status.text() and 'short' in status.toolTip()
+    # The tabs fold on their chevron to just the tab bar, and a click on a
+    # tab opens them again.
+    bar = tabs.tabBar().sizeHint().height()
+    tabs.chevron.click()
+    pump(0.5)
+    assert tabs.is_folded() and tabs.height() <= bar + 2, (tabs.height(), bar)
+    assert w.cfg['folded']['station'] is True
+    tabs.tabBarClicked.emit(0)
+    tabs.setCurrentIndex(0)
+    pump(0.5)
+    assert not tabs.is_folded() and tabs.maximumHeight() == 16777215
+    assert tabs.height() > bar + 40 and w.cfg['folded']['station'] is False
+    tabs.setCurrentIndex(1)
+    pump(0.4)
+    # HD buttons: a click plays that program, a click on the lit one goes
+    # back to the analog; nothing lit is analog FM.
+    hd = w.engine.hd
+    if hd.available:
+        assert 'Playing analog FM' in w.hd_lbl['status'].text() and not hd.chosen
+        w._hd_program_picked(1)
+        assert hd.chosen and hd.program == 1 and w.hd_buttons[1].isChecked()
+        w._hd_program_picked(1)
+        assert not hd.chosen and not any(b.isChecked() for b in w.hd_buttons)
+        assert 'Playing analog FM' in w.hd_lbl['status'].text()
+    # A double-click on a knob's scale neither resets it nor jumps it to the
+    # number clicked (QDial's own release did that, 2026-09-28). The events
+    # are the ones a mouse sends - press, release, double-click, release -
+    # which QTest.mouseDClick does not send.
+    def double_click(dial, pos):
+        for kind in (QtCore.QEvent.MouseButtonPress, QtCore.QEvent.MouseButtonRelease,
+                     QtCore.QEvent.MouseButtonDblClick, QtCore.QEvent.MouseButtonRelease):
+            buttons = (QtCore.Qt.NoButton if kind == QtCore.QEvent.MouseButtonRelease
+                       else QtCore.Qt.LeftButton)
+            event = QtGui.QMouseEvent(kind, QtCore.QPointF(pos), QtCore.Qt.LeftButton,
+                                      buttons, QtCore.Qt.NoModifier)
+            QAPP.sendEvent(dial, event)
+        pump(0.05)
+
+    for knob in (w.chan_knob, w.step_knob, w.volume_knob, w.rf_view.span_knob):
+        before = knob.value()
+        knob.setValue(knob._max if abs(before - knob._max) > 1e-9 else knob._min)
+        moved = knob.value()
+        r = knob.dial.rect()
+        # Numbers left, right and top of the scale, far from either end.
+        for pos in (QtCore.QPoint(r.left() + 3, r.center().y()),
+                    QtCore.QPoint(r.right() - 3, r.center().y()),
+                    QtCore.QPoint(r.center().x(), r.top() + 3)):
+            double_click(knob.dial, pos)
+            assert abs(knob.value() - moved) < 1e-9, (knob.caption.text(), pos,
+                                                      knob.value(), moved)
+        knob.setValue(before)
     # RF gain is its box in the Sweep tab while sweeping, a row of the
     # Radio card in Receive, and its box under the tabs elsewhere; Audio
     # and Record are hidden in Sweep. The tabs are as tall as the page on

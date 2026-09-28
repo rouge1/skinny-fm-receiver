@@ -142,7 +142,7 @@ def cmd_status(w, args):
         'agc_available': _agc_offered(w),
         'volume': round(w.volume_knob.value()),
         'muted': w.mute_btn.isChecked(),
-        'channel_filter_khz': round(w.chan_entry.value() / 1e3, 3),
+        'channel_filter_khz': round(w.chan_knob.value() / 1e3, 3),
         'step_khz': w._step_hz() / 1e3,
         'clipped_percent': (round(100 * w._clip_smooth, 3)
                             if w._clip_smooth is not None else None),
@@ -183,6 +183,7 @@ def _hd_state(w):
         'enabled': s['enabled'],
         'program': s['program'] + 1,
         'heard': rx.hd_heard if rx is not None else None,
+        'chosen': s['chosen'],
         'synced': s['synced'],
         'playing': s['playing'],
         'station': s['station'] or None,
@@ -193,15 +194,27 @@ def _hd_state(w):
         'decode_errors': s['decode_errors'],
         'crc_errors': s['crc_errors'],
         'damaged_percent': round(100 * s['damaged_share'], 1),
+        'lost_percent': round(100 * s['lost_share'], 1),
+        'digital_good': s['digital_good'],
         'underruns': s['underruns'],
         'iq_dropped_s': s['iq_dropped_s'],
         'buffer_s': s['buffer_s'],
+        'lamp': w.hd_orb.state,
         'programs': {f"HD{n + 1}": {'name': s['names'].get(n),
                                     'type': s['types'].get(n),
                                     'audio': n in s['audio']}
                      for n in sorted(set(s['names']) | set(s['types']) | set(s['audio']))},
         'title': s['title'] or None,
         'artist': s['artist'] or None,
+        'album': s['album'] or None,
+        'genre': s['genre'] or None,
+        'message': s['message'] or None,
+        'alert': ({'message': s['alert'][0], 'details': s['alert'][1]}
+                  if s['alert'] else None),
+        'mer_db': list(s['mer']) if s['mer'] else None,
+        'offset_hz': s['offset_hz'],
+        'art_path': s['art_path'],
+        'logo_path': s['logo_path'],
         'status': _plain(w.hd_lbl['status'].text()),
     }
 
@@ -290,19 +303,24 @@ def cmd_mute(w, args):
     return {'muted': w.mute_btn.isChecked()}
 
 
-@command('hd', 'hd on|off|1|2|3|4', "The HD Radio box: the digital audio on or off, "
-         "or the program to play (HD1-HD4; this switches it on). Needs nrsc5 installed.")
+@command('hd', 'hd 1|2|3|4|analog|on|off', "HD Radio: the program to play (HD1-HD4, "
+         "the Tuner box's buttons), analog to go back to analog FM, or the decoder on or "
+         "off (on unless switched off here). Needs nrsc5.")
 def cmd_hd(w, args):
-    word = _args(args, 1, 1, 'hd on|off|1|2|3|4')[0].lower()
-    if not w.engine.hd.available:
+    word = _args(args, 1, 1, 'hd 1|2|3|4|analog|on|off')[0].lower()
+    hd = w.engine.hd
+    if not hd.available:
         raise CommandError("hd: nrsc5 is not installed")
     number = word[2:] if word.startswith('hd') else word
     if number in ('1', '2', '3', '4'):
-        w.hd_check.setChecked(True)
-        w.hd_buttons[int(number) - 1].setChecked(True)
-        w._hd_program_picked(int(number) - 1)
+        hd.set_enabled(True)
+        hd.choose(int(number) - 1)
+    elif word == 'analog':
+        hd.choose(None)
     else:
-        w.hd_check.setChecked(_on_off(word, 'hd'))
+        hd.set_enabled(_on_off(word, 'hd'))
+        if not hd.enabled and w.engine.rx is not None:
+            w.engine.rx.set_hd_audio('analog')
     w._refresh_hd()
     return _hd_state(w)
 
