@@ -359,6 +359,7 @@ def test_through_the_chain():
         proc = tb.hd._proc
         tb.close()
         assert proc.poll() is not None, 'the decoder outlived the engine'
+        assert tb.hd.enabled and not tb.hd.chosen, 'closing the engine switched HD off'
         print("    chain: OK")
     finally:
         if tb is not None:

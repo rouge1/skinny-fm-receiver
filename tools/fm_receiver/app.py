@@ -49,8 +49,8 @@ from .recording import (NAME_STEADY_S, IqRecording, RecordingInfo, WavWriter,
                         session_base)
 from .style import apply_window_theme
 from .sweep import SweepPlan, find_stations, to_db
-from .widgets import (Card, DigitEntry, Form, PageTabs, Knob, LevelMeter, Marquee, Orb, SpectrumView, StepRoller,
-                      ThemeDisc, TimelineStrip, on_raster)
+from .widgets import (Card, DigitEntry, Form, PageTabs, Knob, LevelMeter, Marquee, Orb,
+                      SpectrumView, StepRoller, ThemeDisc, TimelineStrip, fade, on_raster)
 
 #: (name, start MHz, stop MHz); 'full' is the whole of the radio's sweep
 #: range, whichever radio it is (9 kHz-6 GHz on the BB60D).
@@ -776,6 +776,16 @@ class MainWindow(Qt.QWidget):
         form.setLabelAlignment(QtCore.Qt.AlignRight)
         return form
 
+    @staticmethod
+    def _level_label(form, field):
+        """A field in other type (a station's name in large type, the PS
+        and RadioText monospaced): its label lowered so the two sit on one
+        baseline, with the first line when it wraps."""
+        label = form.labelForField(field)
+        if label is not None:
+            drop = field.fontMetrics().ascent() - label.fontMetrics().ascent()
+            label.setContentsMargins(0, max(0, drop), 0, 0)
+
     def _build_radio_card(self):
         """The radio itself: where it is tuned and how much it takes in. The
         tuner moves inside that band."""
@@ -937,17 +947,16 @@ class MainWindow(Qt.QWidget):
         self.snap_check.setChecked(bool(self.cfg['snap']))
         self.snap_check.toggled.connect(self._snap_toggled)
         opts.addWidget(self.snap_check)
-        form.addRow(opts)
-        self.clear_btn = Qt.QPushButton("Clear RDS")
-        self.clear_btn.clicked.connect(self._clear_rds)
-        form.addRow(self.clear_btn)
+        opts.addStretch(1)
+        form.addRow("", opts)                     # under the Standard list
         form.addRow(_hline())
-        self.sig_label = _wrapping(Qt.QLabel("-"))
-        self.sig_label.setTextFormat(QtCore.Qt.RichText)
-        form.addRow("Signal:", self.sig_label)
         self.stereo_label = _wrapping(Qt.QLabel("-"))
         self.stereo_label.setTextFormat(QtCore.Qt.RichText)
         form.addRow("Audio:", self.stereo_label)
+        self.sig_label = _wrapping(Qt.QLabel("-"))
+        self.sig_label.setTextFormat(QtCore.Qt.RichText)
+        form.addRow("Signal:", self.sig_label)
+        form.addRow("Decode quality:", value('quality'))
         form.addRow(_hline())
         for key, caption, font in (('pi', "Station ID (PI):", None),
                                    ('pty', "Program type:", None),
@@ -955,9 +964,14 @@ class MainWindow(Qt.QWidget):
                                    ('nowplaying', "Now playing:", big),
                                    ('radiotext', "RadioText:", mono),
                                    ('flags', "Flags:", None),
-                                   ('clock', "Station clock:", None),
-                                   ('quality', "Decode quality:", None)):
+                                   ('clock', "Station clock:", None)):
             form.addRow(caption, value(key, font))
+        # Rows in other type (large, or monospaced): label on their baseline.
+        for key in ('station_name', 'nowplaying', 'ps', 'radiotext'):
+            self._level_label(form, self.lbl[key])
+        self.clear_btn = Qt.QPushButton("Clear RDS")
+        self.clear_btn.clicked.connect(self._clear_rds)
+        form.addRow(self.clear_btn)               # last, under everything it clears
         return page
 
     def _build_station_tabs(self):
@@ -987,11 +1001,10 @@ class MainWindow(Qt.QWidget):
         big = Qt.QFont()
         big.setPixelSize(19)
         big.setBold(True)
-        rows = (('station', "Station:"), ('status_full', "Status:"),
-                ('message', "Message:"), ('alert', "Alert:"),
-                ('programs', "Programs:"), ('nowplaying', "Now playing:"),
-                ('album', "Album:"), ('genre', "Genre:"), ('logo', "Logo:"),
-                ('signal', "Signal:"))
+        rows = (('station', "Station:"), ('signal', "Signal:"), ('message', "Message:"),
+                ('alert', "Alert:"), ('programs', "Programs:"),
+                ('nowplaying', "Now playing:"), ('album', "Album:"), ('genre', "Genre:"),
+                ('logo', "Logo:"))
         for key, caption in rows:
             if key == 'logo':
                 picture = Qt.QLabel()
@@ -1018,6 +1031,7 @@ class MainWindow(Qt.QWidget):
                     label.setFont(big)
             self.hd_lbl[key] = label
             form.addRow(caption, label)
+        self._level_label(form, self.hd_lbl['station'])
         # The art: a third column, beside Station to Programs. The rows
         # after those span the text and art columns both; the height the
         # art needs beyond its rows goes under Programs, not between them.
@@ -1045,10 +1059,30 @@ class MainWindow(Qt.QWidget):
     def _hd_row_shown(self, key, shown):
         """Show or hide a row of the HD Radio tab, its label with it."""
         field = self.hd_lbl[key]
-        label = self._hd_form.labelForField(field)
-        for widget in (field, label):
-            if widget is not None and widget.isHidden() == shown:
-                widget.setVisible(shown)
+        self._hd_reveal([field, self._hd_form.labelForField(field)], shown)
+
+    def _hd_reveal(self, widgets, shown):
+        """Bring widgets of the HD Radio tab in or out: faded, with the tabs
+        gliding to the new height, when the tab is on show (see the note in
+        widgets.fade); at once when it is not, or before the window shows."""
+        widgets = [w for w in widgets if w is not None]
+        tabs = getattr(self, 'station_tabs', None)
+        on_show = (tabs is not None and tabs.isVisible() and not tabs.is_folded()
+                   and tabs.currentWidget() is not None
+                   and all(tabs.currentWidget().isAncestorOf(w) for w in widgets))
+        if not on_show:
+            for widget in widgets:
+                widget._fade_target = bool(shown)
+                if widget.isHidden() == bool(shown):
+                    widget.setVisible(bool(shown))
+            return
+        if shown:
+            for widget in widgets:
+                fade(widget, True)
+            tabs.refit()                              # grows as it fades in
+        else:
+            for i, widget in enumerate(widgets):
+                fade(widget, False, done=tabs.refit if i == len(widgets) - 1 else None)
 
     @staticmethod
     def _hd_picture(picture, path, size):
@@ -1158,8 +1192,7 @@ class MainWindow(Qt.QWidget):
             if button.isChecked() != lit:
                 button.setChecked(lit)
             shown = n < HD_PROGRAMS_SHOWN or n in listed or lit
-            if button.isHidden() == shown:
-                button.setVisible(shown)
+            fade(button, shown)                       # HD5-HD8 come and go softly
             name = s['names'].get(n, '')
             kind = s['types'].get(n, '')
             tip = f"HD{n + 1}"
@@ -1174,7 +1207,6 @@ class MainWindow(Qt.QWidget):
             return
         head, rest = self._hd_status_parts(s, rx, detail=False)
         self.hd_lbl['status'].set_parts(head, rest)
-        self.hd_lbl['status_full'].setText(self._hd_status_text(s, rx))
         # The lamp: whether the station has HD Radio here, and how well.
         if not s['enabled'] or not s['synced'] or (rx is not None and rx.hd is None):
             lamp = 'off'
@@ -1204,8 +1236,11 @@ class MainWindow(Qt.QWidget):
         has_logo = self._hd_picture(self.hd_logo, s['logo_path'], HD_PICTURE_PX)
         self._hd_row_shown('logo', has_logo)
         has_art = self._hd_picture(self.hd_art, s['art_path'], HD_ART_PX)
-        if self.hd_art.isHidden() == has_art:
-            self.hd_art.setVisible(has_art)
+        self._hd_reveal([self.hd_art], has_art)
+        # Text that wrapped onto more lines (or fewer) changes the height
+        # too: glide to it rather than jump.
+        if self.station_tabs.currentIndex() == 1:
+            self.station_tabs.refit()
 
     @staticmethod
     def _hd_programs_text(s):

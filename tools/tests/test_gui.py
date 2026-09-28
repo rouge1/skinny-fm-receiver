@@ -463,10 +463,14 @@ def part1_file_receiver():
         assert w.main_split.sizes()[0] >= needs, (name, w.main_split.sizes(), needs)
     assert w.testAttribute(QtCore.Qt.WA_AlwaysShowToolTips), 'tooltips with the terminal focused'
     assert seen == set(fmapp.theme.NAMES) and fmapp.theme.current() == first, seen
+    hd_on = w.engine.hd.enabled
     w.run_btn.click()
     assert not e.running and w.radio is None and w.run_btn.text() == 'Start'
+    # Stop closes the engine; HD Radio stays on (it had switched itself off).
+    assert w.engine.hd.enabled == hd_on == w.engine.hd.available
     w.run_btn.click()
     assert w.engine.running and w.radio is not None
+    assert w.engine.hd.enabled == w.engine.hd.available
     pump(1.0)
     shot = os.path.join(FOLDER, 'receive.png')
     w.grab().save(shot)
@@ -1150,6 +1154,24 @@ def folding(w):
     # stay hidden, the rest show "-". The station is as large as RDS's.
     assert w.hd_lbl['station'].isVisibleTo(tabs) and w.hd_lbl['signal'].isVisibleTo(tabs)
     assert not w.hd_lbl['alert'].isVisibleTo(tabs)
+    # A row that comes (an alert) fades in while the tabs glide taller, and
+    # fades out before the tabs glide back - never a jump.
+    # (The window's refresh is held meanwhile: it would put the row back
+    # as the station's data has it - no alert.)
+    w.slow_timer.stop()
+    alert = w.hd_lbl['alert']
+    low = tabs.height()
+    w._hd_row_shown('alert', True)
+    assert alert.isVisibleTo(tabs) and alert.graphicsEffect() is not None, 'fading in'
+    pump(0.6)
+    assert alert.graphicsEffect() is None and tabs.height() > low, (tabs.height(), low)
+    w._hd_row_shown('alert', False)
+    pump(0.1)
+    assert alert.isVisibleTo(tabs), 'still fading out'
+    pump(0.8)
+    assert not alert.isVisibleTo(tabs) and alert.graphicsEffect() is None
+    assert abs(tabs.height() - low) <= 1, (tabs.height(), low)
+    w.slow_timer.start()
     assert not w.hd_lbl['logo'].isVisibleTo(tabs) and not w.hd_art.isVisibleTo(tabs)
     assert w.hd_lbl['station'].font().pixelSize() == w.lbl['station_name'].font().pixelSize()
     # HD5-HD8 only for a station that lists them.

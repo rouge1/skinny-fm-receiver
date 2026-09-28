@@ -303,24 +303,21 @@ def cmd_mute(w, args):
     return {'muted': w.mute_btn.isChecked()}
 
 
-@command('hd', 'hd 1|2|3|4|analog|on|off', "HD Radio: the program to play (HD1-HD4, "
-         "the Tuner box's buttons), analog to go back to analog FM, or the decoder on or "
-         "off (on unless switched off here). Needs nrsc5.")
+@command('hd', 'hd 1-8|analog', "HD Radio: the program to play (HD1-HD8, as the Tuner "
+         "box's buttons), or analog to go back to analog FM. HD Radio is always on; there "
+         "is no off. Needs nrsc5.")
 def cmd_hd(w, args):
-    word = _args(args, 1, 1, 'hd 1|2|3|4|analog|on|off')[0].lower()
+    word = _args(args, 1, 1, 'hd 1-8|analog')[0].lower()
     hd = w.engine.hd
     if not hd.available:
         raise CommandError("hd: nrsc5 is not installed")
     number = word[2:] if word.startswith('hd') else word
-    if number in ('1', '2', '3', '4'):
-        hd.set_enabled(True)
+    if number.isdigit() and 1 <= int(number) <= len(w.hd_buttons):
         hd.choose(int(number) - 1)
     elif word == 'analog':
         hd.choose(None)
     else:
-        hd.set_enabled(_on_off(word, 'hd'))
-        if not hd.enabled and w.engine.rx is not None:
-            w.engine.rx.set_hd_audio('analog')
+        raise CommandError(f"hd: expected 1-{len(w.hd_buttons)} or analog, got {word!r}")
     w._refresh_hd()
     return _hd_state(w)
 

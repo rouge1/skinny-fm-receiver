@@ -446,14 +446,15 @@ Top to bottom:
 |---|---|
 | **Station** | The most consistent PS name, or the RT+ station name. |
 | **Standard** | RBDS with 75 µs de-emphasis for the Americas, or RDS with 50 µs for Europe and elsewhere. |
-| **Stereo** | Turn it off for mono, which is quieter on a weak station. With no pilot, the audio is mono anyway. |
-| **Snap to step** | Clicks, right-click picks and middle-drags on the spectrum tune to the nearest multiple of the Step. Off, they tune to where the pointer is, to the kHz. |
-| **Clear RDS** | Clears the decoded data and starts decoding again. |
-| **Signal** | The power in the channel and how far the station stands above the floor: green above 30 dB, amber above 15 dB, red below that. |
+| **Stereo** (under Standard) | Turn it off for mono, which is quieter on a weak station. With no pilot, the audio is mono anyway. |
+| **Snap to step** (beside Stereo) | Clicks, right-click picks and middle-drags on the spectrum tune to the nearest multiple of the Step. Off, they tune to where the pointer is, to the kHz. |
 | **Audio** | *Stereo – pilot locked (standard phase)*, or *Mono – no stereo pilot*. Stereo needs a pilot that stands 10 dB over the noise beside it, so an empty channel, a mono station, or a station tuned slightly off reads *Mono*. *Standard phase* is what broadcasters send; *cosine phase* is what the RF bench toolkit's own transmitter sends. The app detects which by itself. |
+| **Signal** | The power in the channel and how far the station stands above the floor: green above 30 dB, amber above 15 dB, red below that. |
+| **Decode quality** | How many RDS groups have arrived, and how many blocks were good. |
 | **Station ID (PI)** | With the call sign, if the station's own text confirms it; otherwise it says "maybe". |
 | **Program type**, **Now showing (PS)**, **Now playing**, **RadioText** | As they arrive. Now playing is the RT+ artist and title. |
-| **Flags**, **Station clock**, **Decode quality** | TP, TA and TMC; the station's clock; how many groups, and how many blocks were good. |
+| **Flags**, **Station clock** | TP, TA and TMC; the station's clock. |
+| **Clear RDS** (at the bottom) | Clears the decoded data and starts decoding again. |
 
 Not every station sends RDS. If the PI stays at "-" for 20 s on a strong
 station, it probably has none. In testing, 102.1 was one of these.
@@ -483,18 +484,18 @@ station's own name and what is playing.
 └──────────────────────────────────────────────┘
 ┌[RDS]─[HD Radio]──────────────────────────────┐
 │     Station: HOT - HOT 99.5     ┌──────────┐ │
-│     Message: (the station's own     │  album   │ │
-│              text)              │   art    │ │
-│       Alert: (only while one is └──────────┘ │
-│              on)                             │
+│      Signal: MP1 · BER 0.042 ·  │          │ │
+│              31 kbps ...        │  album   │ │
+│              0% ... lost        │   art    │ │
+│     Message: (the station's     │          │ │
+│              own text)          └──────────┘ │
+│       Alert: (only while one is on)          │
 │    Programs: HD1 HOT 99.5 (Top 40) ·         │
 │              HD2 Pride Radio (Top 40)        │
 │ Now playing: Fisher - What A Life            │
 │       Album: ...                             │
 │       Genre: ...                             │
 │        Logo: [logo]                          │
-│      Signal: MP1 · BER 0.042 · MER 9.1 /     │
-│              8.7 dB · 31 kbps · offset +12 Hz│
 └──────────────────────────────────────────────┘
 ```
 
@@ -506,8 +507,9 @@ meters and **Audio** recording as the analog.
 |---|---|
 | **Lamp** (Tuner box) | Whether the station has HD Radio here. A ring: no digital signal (none on this station, or not found yet). **Green**: it has, and it comes in clean. **Amber**: it has, but a tenth or more of it is being lost (weak here: HD2-4 would play with gaps, HD1 falls back to the analog). Its tooltip is the status. |
 | **HD1-HD8** (Tuner box) | The programs: a station can carry up to eight (HD1-HD8; most carry up to four, 107.7 here five). HD1-HD4 always have a button; HD5-HD8 appear only when the station lists them. A button is greyed until the station lists that program (its digital data says which it carries; a listed program with no audio stays grey). **Nothing lit is analog FM.** Click an available one and it lights orange: that program plays digitally. Click the lit one again and it goes out: back to analog FM. Click another to change program (the decoder starts again: 2-4 s to sync). A retune goes back to analog FM. HD1 is the main program, usually the analog's own; HD2-HD4 are extra ones. Their tooltips give each program's name and type. |
-| **Status** (Tuner box, under the buttons) | One line, short (the numbers are on the HD Radio tab's Status): what plays (*Playing analog FM*, *Playing HD2 (digital)*) stays put, and the rest scrolls through the room left when it does not fit; hover for the whole line. With nothing lit: *Playing analog FM*, and what the station has - *HD Radio here: HD1, HD2* (*weak here* if much is lost), *looking for HD Radio*, *no HD Radio on this station* after 10 s, *HD Radio signal lost (weak)*. With a program lit: *Digital signal found, waiting for HD2*, *Playing HD2 (digital)* with the service mode (MP1-MP3), the bit error rate (under ~0.05 is clean, ~0.2 is the edge) and the program's bit rate; *No HD Radio on this station* after 10 s without; *HD2 carries no audio* for a program the station lists but sends nothing on (94.7's HD2 on 2026-09-27). *N% of the digital audio lost (weak signal)*: each lost packet is a gap of about 46 ms, which sounds choppy on HD2-4. That is the reception, not the app; a better antenna or a stronger station fixes it. Whenever HD1 has gone back to the analog (below), the line starts *Playing analog FM* and says why: *HD1 too weak here*, *digital signal lost (weak)* (it had the digital and lost its sync), *waiting for HD1*. HD2-HD8 have no analog behind them (the analog FM is HD1's program), so while theirs is not playing you hear silence, and the line says so: *Tuning HD2... (silent)*, *Starting HD2... (silent)*, *HD2 lost - weak signal (silent)*, *HD2 is off the air (silent)*, *No HD Radio here (silent)*. They never switch to another program by themselves: going back to analog FM is your choice (click the lit button). *Playing HD2 (digital) - breaking up* means packets are being lost; the HD Radio tab's Status gives how many. |
-| **Status** (HD Radio tab) | The same status in full, with the numbers the Tuner box's line leaves out: how much of the digital audio was lost, the service mode, BER and bit rate. |
+| **Status** (Tuner box, under the buttons) | One line, short (the numbers are in the HD Radio tab's Signal): what plays (*Playing analog FM*, *Playing HD2 (digital)*) stays put, and the rest scrolls through the room left when it does not fit; hover for the whole line. With nothing lit: *Playing analog FM*, and what the station has - *HD Radio here: HD1, HD2* (*weak here* if much is lost), *looking for HD Radio*, *no HD Radio on this station* after 10 s, *HD Radio signal lost (weak)*. With a program lit: *Digital signal found, waiting for HD2*, *Playing HD2 (digital)* with the service mode (MP1-MP3), the bit error rate (under ~0.05 is clean, ~0.2 is the edge) and the program's bit rate; *No HD Radio on this station* after 10 s without; *HD2 carries no audio* for a program the station lists but sends nothing on (94.7's HD2 on 2026-09-27). *N% of the digital audio lost (weak signal)*: each lost packet is a gap of about 46 ms, which sounds choppy on HD2-4. That is the reception, not the app; a better antenna or a stronger station fixes it. Whenever HD1 has gone back to the analog (below), the line starts *Playing analog FM* and says why: *HD1 too weak here*, *digital signal lost (weak)* (it had the digital and lost its sync), *waiting for HD1*. HD2-HD8 have no analog behind them (the analog FM is HD1's program), so while theirs is not playing you hear silence, and the line says so: *Tuning HD2... (silent)*, *Starting HD2... (silent)*, *HD2 lost - weak signal (silent)*, *HD2 is off the air (silent)*, *No HD Radio here (silent)*. They never switch to another program by themselves: going back to analog FM is your choice (click the lit button). *Playing HD2 (digital) - breaking up* means packets are being lost; the HD Radio tab's Signal gives how many.
+
+Rows, pictures and buttons that come and go (an alert, the logo, the album art, HD5-HD8) fade in and out, and the tabs glide to their new height rather than jumping. |
 | **Station** (HD Radio tab) | The station's own name and slogan, from its digital data, as large as RDS shows its name. |
 | **Message** (HD Radio tab) | A free-text message the station sends, if any. |
 | **Alert** (HD Radio tab) | An emergency alert, in red, with its category and the places it covers (SAME, FIPS or ZIP codes); the row shows only while one is on and goes when the station ends it. |
@@ -750,7 +752,7 @@ tools/fmctl help                          # every command
 | `agc on` / `off` | The AGC box |
 | `mode sweep` / `receive` / `recordings` | The tabs |
 | `volume PERCENT`, `mute on` / `off` | Audio |
-| `hd 1`-`4` / `analog` / `on` / `off` | HD Radio: the program to play (lights that HD button), `analog` for analog FM (none lit), or the decoder on or off (on unless switched off here; the window has no switch). `status`'s `hd` has the lamp too. Needs nrsc5 |
+| `hd 1`-`8` / `analog` | HD Radio: the program to play (lights that HD button), or `analog` for analog FM (none lit). HD Radio is always on: there is no off, in the window or here. `status`'s `hd` has the lamp too. Needs nrsc5 |
 | `screenshot PATH.png` | A picture of the window, as it is on screen |
 | `sweep START STOP` | The Sweep tab over START-STOP MHz (switching to it first) |
 | `peakhold on` / `off` / `clear` | The RF spectrum's **Peak hold**: the most each frequency reached, which catches short bursts |

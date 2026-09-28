@@ -355,8 +355,12 @@ class HdRadio:
             self._restart_at = time.monotonic() + RESTART_DELAY_S
 
     def close(self):
-        self.enabled = False
+        """The engine closed (Stop, another radio, a recording, the window
+        closing): stop the decoder and drop its pictures. HD Radio stays
+        on - it is always on - and starts again with the next receive
+        chain. (It had switched itself off here for good, 2026-09-28.)"""
         self._restart_at = None
+        self.chosen = False
         self._stop()
         folder, self._files = self._files, None
         if folder is not None:

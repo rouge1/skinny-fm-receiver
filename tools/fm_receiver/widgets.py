@@ -345,6 +345,69 @@ class Knob(Qt.QWidget):
             self._exact = None
 
 
+# ------------------------------------------------------------ fading
+
+#: How long a widget takes to fade in or out when it comes or goes.
+FADE_MS = 280
+
+
+def fade(widget, shown, ms=FADE_MS, done=None):
+    """Show or hide ``widget`` by fading it (an opacity effect, dropped once
+    it is done), rather than making it appear or vanish at once - asked for
+    2026-09-28: sudden changes to the layout are not liked. Hiding, it is
+    hidden only at the end of the fade. ``done`` is called when it has
+    finished. Idempotent: asking again for where it is going does nothing."""
+    try:
+        target = bool(shown)
+        if getattr(widget, '_fade_target', None) == target:
+            return
+        if getattr(widget, '_fade_target', None) is None and widget.isHidden() != target:
+            widget._fade_target = target               # already there
+            if done is not None:
+                done()
+            return
+        widget._fade_target = target
+        old = getattr(widget, '_fade_anim', None)
+        if old is not None:
+            old.stop()
+        effect = widget.graphicsEffect()
+        if not isinstance(effect, Qt.QGraphicsOpacityEffect):
+            effect = Qt.QGraphicsOpacityEffect(widget)
+            effect.setOpacity(0.0 if target else 1.0)
+            widget.setGraphicsEffect(effect)
+        if target:
+            widget.show()
+        anim = QtCore.QVariantAnimation(widget)
+        anim.setDuration(ms)
+        anim.setEasingCurve(QtCore.QEasingCurve.InOutCubic)
+        anim.setStartValue(effect.opacity())
+        anim.setEndValue(1.0 if target else 0.0)
+
+        def step(value):
+            try:
+                effect.setOpacity(float(value))
+            except Exception as exc:                   # never abort the app
+                print(f"fade: {exc}")
+
+        def finished():
+            try:
+                if not target:
+                    widget.hide()
+                widget.setGraphicsEffect(None)
+                if done is not None:
+                    done()
+            except Exception as exc:
+                print(f"fade: {exc}")
+
+        anim.valueChanged.connect(step)
+        anim.finished.connect(finished)
+        widget._fade_anim = anim
+        anim.start()
+    except Exception as exc:
+        print(f"fade: {exc}")
+        widget.setVisible(bool(shown))
+
+
 # ------------------------------------------------------------ marquee
 
 class Marquee(Qt.QWidget):
@@ -1161,6 +1224,18 @@ class PageTabs(Qt.QTabWidget):
             self.updateGeometry()
             if changed:
                 self.folded.emit(folded)
+        except Exception as exc:                   # never abort the app
+            print(f"tabs: {exc}")
+
+    def refit(self, ms=FADE_MS):
+        """The page on show has grown or shrunk (a row came or went): glide
+        to its new height rather than jumping. Nothing while folded."""
+        try:
+            if self._folded or not self.isVisible():
+                return
+            end = self._open_height()
+            if abs(end - self.height()) > 1:
+                self._glide_to(end, ms, release=True)
         except Exception as exc:                   # never abort the app
             print(f"tabs: {exc}")
 
