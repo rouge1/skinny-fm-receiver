@@ -189,9 +189,12 @@ Useful options (`./fm-receiver --help` lists them all):
   device in its own sweep: the slider greys out, and AGC sets the device's
   reference level to 5 dB over the strongest signal, which is how Signal
   Hound recommends setting it. It rises at once and falls only when the
-  signals have dropped 10 dB. If the device overloads anyway (a WiFi radio
-  next to it bursting in, say), AGC puts 5 dB more headroom on, up to 30 dB,
-  and takes it off again only after ten quiet minutes. The **Ref level** knob
+  strongest input of the last minute has dropped 10 dB, so a burst that comes
+  and goes (a WiFi radio next to the device) keeps its level between bursts.
+  If the device overloads at a level that is already covered, AGC puts 5 dB
+  more headroom on, up to 30 dB, and takes it off again only after ten quiet
+  minutes. The label beside the slider reads the reference level
+  (*ref -10 dBm*): the BB60D has no gain percentage there. The **Ref level** knob
   is only the view's: turn it (and Range) as you like, and AGC leaves it
   alone and does not blank the display when it moves the device's level.
 - **AGC in Receive** (BB60D, HackRF, RTL-SDR, USRP): the app

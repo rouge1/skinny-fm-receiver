@@ -140,6 +140,14 @@ def cmd_status(w, args):
         'gain_percent': w.gain_slider.value(),
         'agc': bool(w._agc_available() and w.agc_box.isChecked()),
         'agc_available': _agc_offered(w),
+        # Sweep AGC's own numbers: the device's reference level, the extra
+        # headroom overloads asked for, the strongest input it sees, and the
+        # overloads the sweeper has counted.
+        'agc_ref_dbm': w._agc_ref if w._agc_on() else None,
+        'agc_extra_db': w._agc_extra if w._agc_on() else None,
+        'agc_level_dbm': (round(max(v for _, v in w._agc_levels), 1)
+                          if w._agc_on() and w._agc_levels else None),
+        'sweep_overflows': getattr(w.engine.sweeper, 'overflows', None),
         'volume': round(w.volume_knob.value()),
         'muted': w.mute_btn.isChecked(),
         'channel_filter_khz': round(w.chan_knob.value() / 1e3, 3),

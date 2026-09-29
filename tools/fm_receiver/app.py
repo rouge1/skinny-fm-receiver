@@ -2417,14 +2417,29 @@ class MainWindow(Qt.QWidget):
         if self._iq_agc_on():
             ceiling = self._agc_ceiling if self._agc_ceiling is not None \
                 else self.gain_slider.value()
+            self.gain_label.setMinimumWidth(40)
             self.gain_label.setText(f"AGC {radio.gain_percent:.0f}%")
             self.gain_slider.setToolTip(
                 f"With AGC the slider follows the gain AGC sets, up to {ceiling:.0f}%:\n"
                 "where you last put it. Moving it sets a new limit, and the gain.\n"
                 "Once the gain has settled, turn AGC off to keep it there.")
         else:
-            self.gain_label.setText("AGC" if agc else f"{self.gain_slider.value()}%")
-            self.gain_slider.setToolTip("")
+            self.gain_label.setText(self._agc_ref_text() if agc
+                                    else f"{self.gain_slider.value()}%")
+            # Wide enough for the reference level, so the slider doesn't
+            # shift as it changes.
+            self.gain_label.setMinimumWidth(
+                self.gain_label.fontMetrics().horizontalAdvance("ref -130 dBm") if agc else 40)
+            self.gain_slider.setToolTip(
+                "The BB60D sets its own gain and attenuation from the reference level\n"
+                "AGC keeps (5 dB over the strongest input); the number is that level."
+                if agc else "")
+
+    def _agc_ref_text(self):
+        """The label beside the slider in the BB60D's own sweep under AGC:
+        the device has no percentage there, its reference level is the gain."""
+        ref = self._agc_ref
+        return "auto" if ref is None else f"ref {ref:.0f} dBm"
 
     def _agc_toggled(self, on):
         self._agc_levels = []
@@ -2447,11 +2462,12 @@ class MainWindow(Qt.QWidget):
                 level = bb60_sweep.strongest_input(done, sweeper.plan.bin_hz,
                                                    sweeper.plan.rbw)
                 self._agc_ref = bb60_sweep.agc_ref(level, REF_FLOOR_DB)
+            self._show_gain()
             self._update_sweep_plan()
 
     def _follow_agc(self, done):
         """AGC: the device's reference level to 5 dB over the strongest
-        input (the most power in 27 MHz, over the last few seconds' sweeps),
+        input (the most power in 27 MHz, over the last minute's sweeps),
         when that has risen past it or fallen well below, and more where the
         device has overloaded anyway. It is AGC's own, not the Ref level
         knob's, which is only the view: the device is set again without
@@ -2463,33 +2479,39 @@ class MainWindow(Qt.QWidget):
         now = time.monotonic()
         if self._agc_ref is None:
             self._agc_ref = plan.device_ref_db
+            self.gain_label.setText(self._agc_ref_text())
+        self._agc_levels = [(t, v) for t, v in self._agc_levels
+                            if now - t < bb60_sweep.AGC_HOLD_S]
+        self._agc_levels.append((now, bb60_sweep.strongest_input(done, plan.bin_hz, plan.rbw)))
+        level = max(v for _, v in self._agc_levels)
         over = getattr(sweeper, 'overflows', 0)
         if self._agc_over_seen is None or over < self._agc_over_seen:
             self._agc_over_seen = over              # a new sweeper counts afresh
         if over > self._agc_over_seen:
             self._agc_over_seen = over
-            if now - self._agc_over_at > bb60_sweep.AGC_WINDOW_S:
+            # More headroom only where the level is already covered: below
+            # it, the level's own rise answers the overload.
+            covered = self._agc_ref >= bb60_sweep.agc_ref(level + self._agc_extra,
+                                                          REF_FLOOR_DB)
+            if covered and now - self._agc_over_at > bb60_sweep.AGC_WINDOW_S:
                 self._agc_over_at = now
                 self._agc_extra = min(self._agc_extra + bb60_sweep.AGC_STEP_DB,
                                       bb60_sweep.AGC_EXTRA_MAX_DB)
         elif self._agc_extra and now - self._agc_over_at > bb60_sweep.AGC_RELAX_S:
             self._agc_over_at = now
             self._agc_extra = max(self._agc_extra - bb60_sweep.AGC_STEP_DB, 0.0)
-        self._agc_levels = [(t, v) for t, v in self._agc_levels
-                            if now - t < bb60_sweep.AGC_WINDOW_S]
-        self._agc_levels.append((now, bb60_sweep.strongest_input(done, plan.bin_hz, plan.rbw)))
-        ref = bb60_sweep.agc_ref(max(v for _, v in self._agc_levels) + self._agc_extra,
-                                 self._agc_ref)
+        ref = bb60_sweep.agc_ref(level + self._agc_extra, self._agc_ref)
         if ref is not None and ref != self._agc_ref:
             self._agc_ref = ref
             sweeper.set_agc_ref(ref)
             self.sweep_info.setText(plan.describe())
+            self.gain_label.setText(self._agc_ref_text())
 
     def _gain_changed(self, value):
         # Moved by hand (AGC moves it quietly): with AGC, a new ceiling.
         self._agc_ceiling = float(value)
         self._iq_agc = None
-        self.gain_label.setText("AGC" if self._agc_on() else f"{value}%")
+        self.gain_label.setText(self._agc_ref_text() if self._agc_on() else f"{value}%")
         if self.radio is not None:
             self.radio.gain_percent = float(value)
             if self.engine.running:

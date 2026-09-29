@@ -806,7 +806,8 @@ def agc(w):
     assert not w.agc_box.isChecked() and w.agc_box.isVisible()
     assert w.gain_slider.isEnabled() and not w.engine.sweeper.plan.auto_gain
     w.agc_box.setChecked(True)
-    assert not w.gain_slider.isEnabled() and w.gain_label.text() == 'AGC'
+    assert not w.gain_slider.isEnabled() and w.gain_label.text().startswith('ref '), \
+        w.gain_label.text()
     sweeper = w.engine.sweeper
     assert pump(3, lambda: sweeper.plan.auto_gain and sweeper.plan.device_ref_db != -90.0), \
         'AGC should set the device reference level'
@@ -816,6 +817,7 @@ def agc(w):
     ref = plan.device_ref_db
     assert ref % 5 == 0 and level + 4 < ref < level + 12, (level, ref)
     assert knob.value() == -90.0, 'the Ref level knob is the view\'s: AGC leaves it'
+    assert w.gain_label.text() == f'ref {ref:.0f} dBm', (w.gain_label.text(), ref)
     assert 'AGC to' in plan.describe(), plan.describe()
     # Turning the Ref level is the view's business: nothing fights it, and
     # the sweep is not re-planned (a re-plan blanks the screen).
@@ -831,6 +833,28 @@ def agc(w):
     assert pump(3, lambda: sweeper.plan.device_ref_db > ref), 'an overload should raise it'
     raised = sweeper.plan.device_ref_db
     assert raised == ref + bb60_sweep.AGC_STEP_DB, (ref, raised)
+    # A burst (a WiFi radio beside the device): the level jumps 25 dB and the
+    # device overloads with it. The level's rise answers that - no extra
+    # headroom on top - and a quiet gap afterwards leaves the reference where
+    # it is (AGC remembers the strongest input for AGC_HOLD_S).
+    w.agc_box.setChecked(False)
+    w.agc_box.setChecked(True)
+    pump(0.5)
+    w._agc_levels, w._agc_extra, w._agc_over_at = [], 0.0, 0.0
+    base = sweeper.plan.device_ref_db
+    quiet = np.full(len(sweeper.plan.freqs()), -100.0)
+    burst = quiet.copy()
+    burst[len(burst) // 2] = base + 25 - 5          # the strongest input: 20 dB over the reference
+    w._follow_agc(quiet)
+    sweeper.overflows += 1
+    w._follow_agc(burst)
+    assert w._agc_extra == 0.0, ('the level covers the overload', w._agc_extra)
+    up = w._agc_ref
+    assert up > base + 10, (base, up)
+    for _ in range(20):
+        w._follow_agc(quiet)
+    assert w._agc_ref == up, ('a quiet gap must not drop the reference', up, w._agc_ref)
+    print(f"AGC burst: reference {base:.0f} -> {up:.0f} dBm on the level alone, held through a gap")
     # Receive: the window's own AGC there, the slider its ceiling (part 10).
     w.tabs.setCurrentIndex(1)
     pump(0.3)

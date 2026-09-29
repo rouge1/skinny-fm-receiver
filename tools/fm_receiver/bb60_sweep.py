@@ -187,12 +187,18 @@ AGC_STEP_DB = 5.0
 #: signal has dropped this far, so a station fading doesn't retune it.
 AGC_FALL_DB = 10.0
 #: The strongest input is the most any sweep reached over this long, so a
-#: burst that comes and goes doesn't drop the reference level between.
+#: burst that comes and goes doesn't drop the reference level between. A
+#: WiFi radio beside the device bursts to -18 dBm (in 27 MHz) and idles at
+#: -45, with gaps of ten seconds and more: at 3 s AGC fell between bursts,
+#: and every burst overloaded the device again (2026-09-29).
+AGC_HOLD_S = 60.0
+#: An overload adds headroom (below) once per this long at most.
 AGC_WINDOW_S = 3.0
-#: An overload the reference level didn't foresee (the band's power looked
-#: safe, and the front end overloaded anyway: interference bursting in from
-#: a WiFi radio beside the device, 2026-09-28) puts this much more headroom
-#: on, once per :data:`AGC_WINDOW_S` at most, up to :data:`AGC_EXTRA_MAX_DB`;
+#: An overload the reference level didn't foresee (it was already 5 dB over
+#: the strongest input, and the front end overloaded anyway) puts this much
+#: more headroom on, once per :data:`AGC_WINDOW_S` at most, up to
+#: :data:`AGC_EXTRA_MAX_DB`. An overload at a reference the input has passed
+#: is the level's to answer: counting it as well doubled the rise;
 #: and it comes off, a step at a time, only after this long without one.
 AGC_EXTRA_MAX_DB = 30.0
 AGC_RELAX_S = 600.0
