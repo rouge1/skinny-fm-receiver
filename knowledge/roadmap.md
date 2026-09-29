@@ -785,6 +785,8 @@ Both on the HackRF, handed over from ble-scanner for the session.
   spectrum (Round 8 had put it at the top of the row under the plot).
 - [x] **Stations found in the Sweep tab**, under the Sweep box; while
   sweeping, the spectrum and waterfall take the whole right-hand side.
+  (Taken out again on 2026-09-28, at the user's request; RF gain took its
+  place at the top of the Sweep box.)
 - [x] **Folding slides**: 0.2 s, the chevron turning with it. Found on the
   way: squeezed by the layout, the rows piled on top of each other
   mid-slide, and the left column (sized to its minimums, and told of a
@@ -977,7 +979,7 @@ Linux (Qt's local sockets on both).
 | `rate 2.4`, `filter 225`, `stereo on/off`, `step 200` | IQ bandwidth, channel filter, stereo, tuner step |
 | `sweep 87.5 108`, `threshold 15`, `pause`/`resume` | The Sweep tab |
 | `record start/stop`, `record audio/iq-channel/iq-band on/off` | The Record box |
-| `stations` | The Sweep tab's station list |
+| `stations` | (dropped: the Sweep tab's station list was removed, 2026-09-28) |
 
 A setting the radio doesn't have (Real time on an RTL-SDR, say) gets the
 same answer the window would give, as an error line, not a crash. A command

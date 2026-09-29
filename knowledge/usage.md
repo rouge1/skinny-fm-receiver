@@ -181,15 +181,19 @@ Useful options (`./fm-receiver --help` lists them all):
 - **The third tab, Recordings,** plays back what you recorded. The radio is
   closed while it is open, and opens again when you go back.
 - **RF gain** applies to the radio in every mode, and each radio remembers its
-  own setting. In Receive it is a row of the Radio box, under IQ
-  bandwidth. In Sweep it has a box inside the tab, under the Sweep and Tuner
-  boxes; elsewhere its box is under the tabs, above **Audio** and **Record**,
-  which are hidden in Sweep since there is nothing to hear or record while
-  the radio sweeps. On a BB60D the **AGC** box beside it hands the gain to the
-  device in its own sweep: the slider greys out, and the **Ref level** knob
-  moves to 5 dB over the strongest signal, which is how Signal Hound
-  recommends setting it. Turn the knob by hand to hold a higher level; AGC
-  takes over again when the signals rise past it or fall 10 dB below.
+  own setting. It is the top row of the tab's first box: in Receive a row of
+  the Radio box, in Sweep the first row of the Sweep box; elsewhere its box is
+  under the tabs, above **Audio** and **Record**. Audio and Record are hidden
+  in Sweep since there is nothing to hear or record while the radio sweeps.
+  On a BB60D the **AGC** box beside it hands the gain to the
+  device in its own sweep: the slider greys out, and AGC sets the device's
+  reference level to 5 dB over the strongest signal, which is how Signal
+  Hound recommends setting it. It rises at once and falls only when the
+  signals have dropped 10 dB. If the device overloads anyway (a WiFi radio
+  next to it bursting in, say), AGC puts 5 dB more headroom on, up to 30 dB,
+  and takes it off again only after ten quiet minutes. The **Ref level** knob
+  is only the view's: turn it (and Range) as you like, and AGC leaves it
+  alone and does not blank the display when it moves the device's level.
 - **AGC in Receive** (BB60D, HackRF, RTL-SDR, USRP): the app
   moves the gain itself, and **the slider moves with it**. When the radio
   overloads (a BB60D says so; on the others, over 1% of the samples clip)
@@ -217,10 +221,9 @@ Useful options (`./fm-receiver --help` lists them all):
 
 1. **Sweep the band.** Open the **Sweep (FFT)** tab. It starts on *Full
    range of the radio*: 9 kHz to 6 GHz on a BB60D, about four times a second.
-   **Stations found** lists every FM station standing clear of the noise.
    Choose *FM broadcast 87.5-108* for a closer look at the band.
-2. **Pick a station.** Double-click it in the list, or double-click its peak
-   in the spectrum. The app switches to **Receive (IQ)** tuned to it.
+2. **Pick a station.** Double-click its peak in the spectrum, or click it and
+   press **Listen**. The app switches to **Receive (IQ)** tuned to it.
 3. **Listen.** Audio starts at once. Stereo and RDS lock within a few seconds:
    station name, PI and call sign, program type, RadioText, Now Playing and
    the clock.
@@ -242,10 +245,10 @@ demodulated. There are two kinds:
 - **A USRP hops its LO** across the span. Each step's FFT is stitched into
   one picture, with levels in dBFS.
 
-The tab has four boxes: **Sweep** (the band, how it is swept, Pause, the
-station threshold), **Stations found**, **Tuner** (where the receiver will
-tune, with **Listen** to its right) and **RF gain**. While sweeping, the RF
-spectrum and waterfall take the whole right-hand side.
+The tab has two boxes: **Sweep** (RF gain at the top, as in Receive, then the
+band and how it is swept, Pause) and **Tuner** (where the receiver will
+tune, with **Listen** to its right). While sweeping, the RF spectrum and
+waterfall take the whole right-hand side.
 
 | Control | What it does |
 |---|---|
@@ -259,10 +262,9 @@ spectrum and waterfall take the whole right-hand side.
 | **Frames per step** *(USRP, RTL-SDR)* | FFT frames averaged at each step. More gives a smoother trace and a slower sweep. |
 | **Settle** *(USRP, RTL-SDR)* | How long to wait after each retune before trusting the samples; 5 ms by default on a USRP, 100 ms on an RTL-SDR (a retune arrives 30-70 ms later over the network). **If a signal appears twice, or shows where there is nothing, increase this.** |
 | **Pause / Resume** | Freezes the sweep, for example to study the trace. |
-| **Listen** | Receive the station the **Tuner** is on - the selected station, or wherever the marker is. |
-| **Station threshold** | How far above the noise floor a channel must be to go in the list (default 15 dB). |
+| **Listen** | Receive the station the **Tuner** is on - wherever the marker is. |
 
-The line at the foot of the tab, under RF gain, shows the plan and the
+The line at the foot of the tab shows the plan and the
 measured speed, for example
 "The BB60D's own sweep, RBW 300 kHz (auto), 76,801 points – 233 ms per sweep
 (4.3/s, 25.8 GHz/s)".
@@ -314,10 +316,6 @@ not calibrated. The RBW list sets its bin width (2.4 kHz at the finest);
 there is no real time and no AGC on it. Over the whole range at a gain that
 suits FM, a strong TV or phone transmitter clips its step: the status line
 says so, and names it.
-
-In the **station list**, one click moves the marker and a double-click starts
-listening. Once you have listened to a station, its RDS name appears next to
-it.
 
 ## Receive (IQ)
 

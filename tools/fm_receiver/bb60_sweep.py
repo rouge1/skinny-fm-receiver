@@ -189,6 +189,13 @@ AGC_FALL_DB = 10.0
 #: The strongest input is the most any sweep reached over this long, so a
 #: burst that comes and goes doesn't drop the reference level between.
 AGC_WINDOW_S = 3.0
+#: An overload the reference level didn't foresee (the band's power looked
+#: safe, and the front end overloaded anyway: interference bursting in from
+#: a WiFi radio beside the device, 2026-09-28) puts this much more headroom
+#: on, once per :data:`AGC_WINDOW_S` at most, up to :data:`AGC_EXTRA_MAX_DB`;
+#: and it comes off, a step at a time, only after this long without one.
+AGC_EXTRA_MAX_DB = 30.0
+AGC_RELAX_S = 600.0
 #: The input level is the power the front end takes in at once, the IF's
 #: width: 27 MHz, the widest real-time span. Measured on 2026-09-22, a
 #: sweep's peak is no measure of it: at 1 kHz RBW an FM station's peak
@@ -292,7 +299,7 @@ class NativeSweepPlan:
     unit = 'dBm'
 
     def __init__(self, start_hz, stop_hz, rbw_hz=None, realtime=False,
-                 ref_db=-20.0, scale_db=100.0, auto_gain=False):
+                 ref_db=-20.0, scale_db=100.0, auto_gain=False, agc_ref_db=None):
         start_hz = max(float(start_hz), MIN_HZ)
         stop_hz = min(float(stop_hz), MAX_HZ)
         if stop_hz - start_hz < MIN_SPAN_HZ:
@@ -313,13 +320,24 @@ class NativeSweepPlan:
         self.raised = bool(rbw_hz) and abs(self.rbw - float(rbw_hz)) > 1
         self.ref_db = min(max(float(ref_db), REF_RANGE_DB[0]), REF_RANGE_DB[1])
         self.scale_db = min(max(float(scale_db), SCALE_RANGE_DB[0]), SCALE_RANGE_DB[1])
-        #: Gain and attenuation left to the device, set by ``ref_db``.
+        #: Gain and attenuation left to the device, set by the reference
+        #: level: with AGC, the one AGC keeps (``agc_ref_db``), so the Ref
+        #: level knob is only the view's; without it, ``ref_db``.
         self.auto_gain = bool(auto_gain)
+        self.agc_ref_db = None if agc_ref_db is None else min(
+            max(float(agc_ref_db), REF_RANGE_DB[0]), REF_RANGE_DB[1])
         self.points = None
         self.bin_hz = None
         self.poi_s = None
         self.trace_span = None
         self._freqs = None
+
+    @property
+    def device_ref_db(self):
+        """The reference level the device is set to."""
+        if self.auto_gain and self.agc_ref_db is not None:
+            return self.agc_ref_db
+        return self.ref_db
 
     def set_trace(self, first_hz, bin_hz, count):
         """What the device will return: ``count`` points ``bin_hz`` apart
@@ -347,10 +365,10 @@ class NativeSweepPlan:
         if self.realtime:
             poi = (f": nothing longer than {self.poi_s * 1e6:.0f} us is missed"
                    if self.poi_s else "")
-            agc = f", AGC to {self.ref_db:.0f} dBm" if self.auto_gain else ""
+            agc = f", AGC to {self.device_ref_db:.0f} dBm" if self.auto_gain else ""
             return f"The BB60D in real time, {rbw}{poi}{points}{agc}"
         wide = (" (real time takes 27 MHz at most)" if self.too_wide else "")
-        agc = f", AGC to {self.ref_db:.0f} dBm" if self.auto_gain else ""
+        agc = f", AGC to {self.device_ref_db:.0f} dBm" if self.auto_gain else ""
         return f"The BB60D's own sweep{wide}, {rbw}{points}{agc}"
 
 
@@ -423,6 +441,14 @@ class bb60_sweeper:
             self._completed = None
             self._density = None
             self._held = None
+            self._configure = True
+
+    def set_agc_ref(self, ref_db):
+        """AGC's new reference level: the device is set again, and what
+        the window shows stays - a re-plan would blank it."""
+        with self._lock:
+            self.plan.agc_ref_db = min(max(float(ref_db), REF_RANGE_DB[0]),
+                                       REF_RANGE_DB[1])
             self._configure = True
 
     def set_gain_percent(self, percent):
@@ -516,8 +542,8 @@ class bb60_sweeper:
             gain, atten = BB_AUTO_GAIN, BB_AUTO_ATTEN
         else:
             gain, atten = gain_atten(percent)
-        _check(lib.bbConfigureRefLevel(h, plan.ref_db if plan.realtime or plan.auto_gain
-                                       else -20.0), 'reference level')
+        _check(lib.bbConfigureRefLevel(h, plan.device_ref_db if plan.realtime
+                                       or plan.auto_gain else -20.0), 'reference level')
         _check(lib.bbConfigureGainAtten(h, gain, atten), 'gain')
         _check(lib.bbConfigureCenterSpan(h, (plan.start_hz + plan.stop_hz) / 2,
                                          plan.stop_hz - plan.start_hz), 'span')
@@ -591,8 +617,9 @@ class bb60_sweeper:
                     if frame is not None:
                         low_hz, high_hz = plan.trace_span
                         self._density = (frame.reshape(self._frame_shape).copy(),
-                                         (low_hz, high_hz, plan.ref_db - plan.scale_db,
-                                          plan.ref_db),
+                                         (low_hz, high_hz,
+                                          plan.device_ref_db - plan.scale_db,
+                                          plan.device_ref_db),
                                          self._alpha.reshape(self._frame_shape).copy())
                     self._completed_serial += 1
                     self.sweeps += 1

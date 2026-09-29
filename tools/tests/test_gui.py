@@ -565,9 +565,12 @@ def part2_sweep():
         assert w.rf_view.level_unit == 'dBFS'
         repick_changes_nothing(w, w.preset_combo, w.fft_combo, w.sweep_rate_combo,
                                w.radio_combo)
-        # What the sweep is doing: at the foot of the tab, under RF gain.
-        outer = w._sweep_outer
-        assert outer.indexOf(w.sweep_info) == outer.indexOf(w.gain_box) + 1
+        # RF gain is the first row of the Sweep card, as in Receive's top
+        # card; there is no list of stations or threshold for one.
+        assert w.sweep_form.labelForField(w.sw_gain_slot).text() == 'RF gain:'
+        assert w.sweep_form.getItemPosition(w.sweep_form.indexOf(w.sw_gain_slot))[0] == 0
+        assert w.sw_gain_slot.isAncestorOf(w.gain_row) and w.gain_box.isHidden()
+        assert not hasattr(w, 'station_list') and not hasattr(w, 'snr_spin')
         # Dragged or zoomed out (what the mouse calls), the view stops at
         # 0 Hz and 6 GHz - the waterfall's too, which pans both. The two
         # plots are lined up on screen (linked views go by that), and the
@@ -596,13 +599,14 @@ def part2_sweep():
         w.preset_combo.setCurrentIndex(1)
         w._preset_chosen(1)                              # FM broadcast 87.5-108
         assert w.engine.sweeper.plan.steps == 3, w.engine.sweeper.plan.describe()
-        ok = pump(20, lambda: w.station_list.count() >= 3)
-        found = [w.station_list.item(i).data(QtCore.Qt.UserRole)
-                 for i in range(w.station_list.count())]
-        print("stations found:", [f / 1e6 for f in found], '|', w.sweep_info.text())
-        assert ok, found
+        assert pump(20, lambda: w._sweep_db is not None and w.engine.sweeper.sweeps > 2)
+        freqs, db = w.engine.sweeper.plan.freqs(), np.asarray(w._sweep_db)
+        floor = float(np.median(db))
         for f, _ in SimRadio.TONES:
-            assert any(abs(f - g) < 1 for g in found), (f, found)
+            near = np.abs(freqs - f) < 150e3
+            if near.any():
+                assert db[near].max() > floor + 15, (f, db[near].max(), floor)
+        print("sweep shows the stations:", w.sweep_info.text())
         assert not w.rec_btn.isEnabled(), 'recording is for Receive'
         # Pause stops the sweep advancing; Resume starts it again.
         w.pause_btn.click()
@@ -625,10 +629,9 @@ def part2_sweep():
         assert sweeper.plan.start_hz == 88e6
         shot = os.path.join(FOLDER, 'sweep.png')
         w.grab().save(shot)
-        # Double-click the 95.1 station: Receive, tuned to it.
-        item = [w.station_list.item(i) for i in range(w.station_list.count())
-                if abs(w.station_list.item(i).data(QtCore.Qt.UserRole) - 95.1e6) < 1][0]
-        w._station_activated(item)
+        # The tuner on the 95.1 station, then Listen: Receive, tuned to it.
+        w.tune(95.1e6)
+        w.listen_btn.click()
         pump(0.5)
         assert w._mode == 'receive' and w.tabs.currentIndex() == 1
         assert abs(w.engine.station_hz - 95.1e6) < 1, w.engine.station_hz
@@ -668,6 +671,10 @@ class FakeNativeSweeper:
         if plan.realtime:
             plan.poi_s = 307.2e-6
         self.plan = plan
+
+    def set_agc_ref(self, ref_db):
+        self.plan.agc_ref_db = ref_db
+        self.agc_sets = getattr(self, 'agc_sets', 0) + 1
 
     def density(self):
         """In real time, a map with the noise spread near the floor."""
@@ -788,9 +795,11 @@ def realtime_polish(w):
 
 def agc(w):
     """AGC in the radio's own sweep: the slider greys and reads AGC, the plan
-    leaves the gain to the device, and the Ref level knob moves to 5 dB over
-    the strongest input, rounded up to 5 dB. In Receive the slider is back,
-    saying why."""
+    leaves the gain to the device, and AGC keeps its own reference level: 5 dB
+    over the strongest input, rounded up to 5 dB - while the Ref level knob is
+    only the view's, and turning it (or the Range) neither fights AGC nor
+    re-plans the sweep. An overload the level didn't foresee raises it more.
+    In Receive the slider is back, saying why."""
     knob = w.rf_view.ref_knob
     knob.setValue(-90.0)                         # far below the -40 dBm station
     pump(0.3)
@@ -798,20 +807,30 @@ def agc(w):
     assert w.gain_slider.isEnabled() and not w.engine.sweeper.plan.auto_gain
     w.agc_box.setChecked(True)
     assert not w.gain_slider.isEnabled() and w.gain_label.text() == 'AGC'
-    assert pump(3, lambda: knob.value() != -90.0), 'the Ref level knob should move'
-    plan = w.engine.sweeper.plan
-    freqs, db, _, _ = w.engine.sweeper.snapshot()
+    sweeper = w.engine.sweeper
+    assert pump(3, lambda: sweeper.plan.auto_gain and sweeper.plan.device_ref_db != -90.0), \
+        'AGC should set the device reference level'
+    plan = sweeper.plan
+    freqs, db, _, _ = sweeper.snapshot()
     level = bb60_sweep.strongest_input(db, plan.bin_hz, plan.rbw)
-    assert pump(1, lambda: w.engine.sweeper.plan.ref_db == knob.value())
-    plan = w.engine.sweeper.plan
-    assert plan.auto_gain and knob.value() % 5 == 0, (plan.auto_gain, knob.value())
-    assert level + 4 < knob.value() < level + 12, (level, knob.value())
+    ref = plan.device_ref_db
+    assert ref % 5 == 0 and level + 4 < ref < level + 12, (level, ref)
+    assert knob.value() == -90.0, 'the Ref level knob is the view\'s: AGC leaves it'
     assert 'AGC to' in plan.describe(), plan.describe()
-    # A hand turn a little higher holds: nothing has risen past it.
-    held = knob.value() + 5
-    knob.setValue(held)
-    pump(1)
-    assert knob.value() == held, knob.value()
+    # Turning the Ref level is the view's business: nothing fights it, and
+    # the sweep is not re-planned (a re-plan blanks the screen).
+    plan_before = sweeper.plan
+    for value in (-60.0, -30.0, -10.0):
+        knob.setValue(value)
+        pump(0.6)
+        assert knob.value() == value, ('AGC moved the knob', value, knob.value())
+    assert sweeper.plan is plan_before and sweeper.plan.device_ref_db == ref, \
+        (sweeper.plan is plan_before, sweeper.plan.realtime, ref, sweeper.plan.device_ref_db)
+    # An overload the level didn't foresee: more headroom, once per window.
+    sweeper.overflows += 1
+    assert pump(3, lambda: sweeper.plan.device_ref_db > ref), 'an overload should raise it'
+    raised = sweeper.plan.device_ref_db
+    assert raised == ref + bb60_sweep.AGC_STEP_DB, (ref, raised)
     # Receive: the window's own AGC there, the slider its ceiling (part 10).
     w.tabs.setCurrentIndex(1)
     pump(0.3)
@@ -822,8 +841,9 @@ def agc(w):
     pump(0.3)
     assert w._mode == 'sweep' and not w.gain_slider.isEnabled()
     assert w.engine.sweeper.plan.auto_gain
-    print(f"AGC: the Ref level moved from -90 to {held - 5:.0f} dBm for an input of "
-          f"{level:.1f} dBm")
+    knob.setValue(-10.0)                         # as the other checks expect it
+    print(f"AGC: the device reference {ref:.0f} dBm for an input of {level:.1f} dBm, "
+          f"{raised:.0f} after an overload; the Ref level knob left alone")
 
 
 def part3_native_sweep():
@@ -843,13 +863,11 @@ def part3_native_sweep():
         assert w.rbw_combo.isVisible() and not w.fft_combo.isVisible()
         assert not w.settle_spin.isVisible() and not w.sweep_rate_combo.isVisible()
         assert w.rf_view.level_unit == 'dBm'
-        assert pump(5, lambda: w.station_list.count() >= 2)
-        found = [w.station_list.item(i).data(QtCore.Qt.UserRole)
-                 for i in range(w.station_list.count())]
+        assert pump(5, lambda: w._sweep_db is not None)
         # Within a channel: at the automatic 300 kHz RBW, points are 94 kHz apart.
-        assert any(abs(f - 95.1e6) <= 100e3 for f in found), found
-        assert all(f < 108.1e6 for f in found), found
-        assert 'dBm' in w.station_list.item(0).text()
+        freqs, db = w.engine.sweeper.plan.freqs(), np.asarray(w._sweep_db)
+        near = np.abs(freqs - 95.1e6) <= 100e3
+        assert near.any() and db[near].max() > np.median(db) + 15
         pump(0.5)
         assert 'own sweep' in w.sweep_info.text() and 'GHz/s' in w.sweep_info.text()
         assert 'in the radio' in w.status.text(), w.status.text()
@@ -960,12 +978,7 @@ def part3_native_sweep():
         w.rt_btn.setChecked(True)
         assert sweeper.plan.realtime
         # To Receive: the sweep stops, levels are dBFS again; and back.
-        def listed(hz):
-            return [w.station_list.item(i) for i in range(w.station_list.count())
-                    if abs(w.station_list.item(i).data(QtCore.Qt.UserRole) - hz) < 1]
-        assert pump(5, lambda: listed(95.1e6)), 'the list fills again on the new span'
-        item = listed(95.1e6)[0]
-        w._station_activated(item)
+        w.listen_btn.click()
         pump(0.5)
         assert w._mode == 'receive' and sweeper.stopped and w.rf_view.level_unit == 'dBFS'
         assert not w.rf_view.density_item.isVisible()
@@ -997,14 +1010,13 @@ def part3_native_sweep():
 
 def auto_scale(w):
     """A fits the scale to the trace on show: floor to peak, centred, with a
-    margin; under AGC only the Range, the Ref level being the radio's."""
+    margin - under AGC too: the Ref level is only the view's there."""
     view = w.rf_view
     view.set_data(np.linspace(95e6, 100e6, 1000),
                   np.where(np.arange(1000) == 500, -40.0, -100.0))
-    ref = view.ref_knob.value()
     w._auto_scale()                              # AGC is on here
-    assert view.ref_knob.value() == ref and view.range_knob.value() == 5 * np.ceil(
-        max(2 * (ref + 70), 30) / 5), (ref, view.range_knob.value())
+    assert view.range_knob.value() == 80 and view.ref_knob.value() == -30, \
+        (view.ref_knob.value(), view.range_knob.value())
     assert view.auto_scale()
     top, span = view.ref_knob.value(), view.range_knob.value()
     assert span == 80 and top == -30, (top, span)       # -100..-40, 10 dB either side
@@ -1239,14 +1251,14 @@ def folding(w):
             assert abs(knob.value() - moved) < 1e-9, (knob.caption.text(), pos,
                                                       knob.value(), moved)
         knob.setValue(before)
-    # RF gain is its box in the Sweep tab while sweeping, a row of the
+    # RF gain is the top row of the Sweep card while sweeping, a row of the
     # Radio card in Receive, and its box under the tabs elsewhere; Audio
     # and Record are hidden in Sweep. The tabs are as tall as the page on
     # show.
     w.tabs.setCurrentIndex(0)
     pump(0.3)
-    assert w.tabs.widget(0).isAncestorOf(w.gain_box) and w.gain_box.isAncestorOf(w.gain_row)
-    assert not w.gain_box.isHidden()
+    assert w.tabs.widget(0).isAncestorOf(w.gain_row) and w.gain_box.isHidden()
+    assert w.sw_gain_slot.isAncestorOf(w.gain_row)
     assert w.audio_box.isHidden() and w.record_box.isHidden()
     w.tabs.setCurrentIndex(1)
     pump(0.3)

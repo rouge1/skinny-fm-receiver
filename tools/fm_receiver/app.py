@@ -5,8 +5,7 @@ spectrum view:
 
 - **Sweep (FFT)** hops the radio across a span wider than it can see at
   once and stitches the FFTs (``sweep.py``). No demodulation, so it is
-  cheap. The stations it finds are listed; double-click one, or the
-  spectrum, to listen.
+  cheap. Click the spectrum to put the tuner on a station, then Listen.
 - **Receive (IQ)** runs the radio at a narrow IQ bandwidth and demodulates
   one station: stereo audio, RDS, the multiplex spectrum (``dsp.py``).
 
@@ -48,7 +47,7 @@ from .rds_core import clock_text
 from .recording import (NAME_STEADY_S, IqRecording, RecordingInfo, WavWriter,
                         session_base)
 from .style import apply_window_theme
-from .sweep import SweepPlan, find_stations, to_db
+from .sweep import SweepPlan, to_db
 from .widgets import (Card, DigitEntry, Form, PageTabs, Knob, LevelMeter, Marquee, Orb,
                       SpectrumView, StepRoller, ThemeDisc, TimelineStrip, fade, on_raster)
 
@@ -67,9 +66,6 @@ FFT_SIZES = (1024, 2048, 4096, 8192, 16384)
 #: The sweep's bounds are kept at least this far apart: Signal Hound's
 #: suggested minimum span for the BB60D's own sweep, and ample for the rest.
 MIN_SWEEP_SPAN_HZ = 200e3
-#: Stations are listed only where FM broadcasting is - 65.8 MHz (OIRT) to
-#: 108 - however much more the sweep covers.
-FM_BROADCAST_HZ = (65.8e6, 108e6)
 STEPS_KHZ = (10, 50, 100, 200)
 #: The channel filter's range: below 60 kHz it cuts into the audio itself;
 #: 400 kHz takes in an HD Radio station's sidebands (see dsp.py).
@@ -142,7 +138,7 @@ DEFAULTS = {
     # Under the Tuner: the RDS tab (0) or HD Radio's (1).
     'station_tab': 0,
     'sweep_fft': 4096, 'sweep_frames': 16,
-    'min_snr_db': 15, 'snap': True, 'record_audio': True,
+    'snap': True, 'record_audio': True,
     'record_iq_channel': False, 'record_iq_band': False, 'recording_dir': '',
     'view_receive': {'span_hz': 1.2e6, 'ref_db': -10, 'range_db': 110, 'avg': 4},
     # A span wider than any sweep: the Span dial clamps it to the whole sweep.
@@ -375,7 +371,6 @@ class MainWindow(Qt.QWidget):
         self._iq_recs = []
         self._rec_t0 = None
         self._last_serial = -1
-        self._list_serial = -1
         self._sweep_avg = None
         self._sweep_db = None
         self._wf_hold = None
@@ -399,7 +394,13 @@ class MainWindow(Qt.QWidget):
         self._clip_t = time.monotonic()
         self._opened_at = None
         self._agc_levels = []
-        self._names = {}
+        #: The BB60D's reference level under AGC (the Ref level knob is only
+        #: the view's), the extra headroom overloads have asked for, the
+        #: overloads counted so far, and when AGC last acted on one.
+        self._agc_ref = None
+        self._agc_extra = 0.0
+        self._agc_over_seen = None
+        self._agc_over_at = 0.0
         self._rx_sig = None
         self._starting = False
         # Recording: its description (RDS and all), for the Recordings tab.
@@ -589,6 +590,12 @@ class MainWindow(Qt.QWidget):
         sweep_card = Card("Sweep")
         form = self._form(sweep_card)
         self.sweep_form = form
+        # RF gain's row comes here in Sweep (:meth:`_place_side_boxes`), at
+        # the top of the tab as Receive has it.
+        self.sw_gain_slot = Qt.QWidget()
+        slot = Qt.QHBoxLayout(self.sw_gain_slot)
+        slot.setContentsMargins(0, 0, 0, 0)
+        form.addRow("RF gain:", self.sw_gain_slot)
         self.preset_combo = Qt.QComboBox()
         for name, _, _ in SWEEP_PRESETS:
             self.preset_combo.addItem(name)
@@ -713,38 +720,19 @@ class MainWindow(Qt.QWidget):
         self.listen_btn.setToolTip("Receive the selected station (or the marker).")
         self.listen_btn.clicked.connect(self._listen_selected)
         tune.addWidget(self.listen_btn, 1, QtCore.Qt.AlignVCenter)   # beside it
-        # What the sweep is doing: at the foot of the tab, under RF gain.
+        # What the sweep is doing: at the foot of the tab.
         self.sweep_info = _wrapping(Qt.QLabel(""))
         self.sweep_info.setContentsMargins(4, 0, 4, 0)
-        self.snr_spin = Qt.QSpinBox()
-        self.snr_spin.setRange(3, 60)
-        self.snr_spin.setSuffix(" dB")
-        self.snr_spin.setValue(int(self.cfg['min_snr_db']))
-        self.snr_spin.setToolTip("How far above the noise floor a channel must "
-                                 "stand to be listed as a station.")
-        self.snr_spin.valueChanged.connect(lambda _: self._force_station_list())
-        form.addRow("Station threshold:", self.snr_spin)
         # With no radio yet, only the saved band says whether it is the full
         # range; the radio's own range comes with it (_load_radio_settings).
         if self.cfg['sweep_band'] == 'full':
             self.preset_combo.setCurrentIndex(0)
         else:
             self._select_preset(remember=False)
-        # The stations found, under the sweep that found them.
-        stations = Qt.QGroupBox("Stations found (double-click to listen)")
-        sbox = Qt.QVBoxLayout(stations)
-        self.station_list = Qt.QListWidget()
-        self.station_list.setFont(_mono_font())
-        self.station_list.setMinimumHeight(160)
-        self.station_list.itemDoubleClicked.connect(self._station_activated)
-        self.station_list.currentItemChanged.connect(self._station_selected)
-        sbox.addWidget(self.station_list)
         outer.addWidget(sweep_card)
-        outer.addWidget(stations)
         outer.addWidget(tuner_card)
         outer.addWidget(self.sweep_info)
         outer.addStretch(1)
-        self._sweep_outer = outer       # RF gain joins it in Sweep
         return page
 
     def _build_receive_tab(self):
@@ -1464,9 +1452,9 @@ class MainWindow(Qt.QWidget):
         return page
 
     def _build_gain(self):
-        """The RF gain row, in its own box: the box sits in Sweep's tab or
-        under the tabs, and in Receive the row leaves it for a row of the
-        Radio card (:meth:`_place_side_boxes`)."""
+        """The RF gain row, in its own box under the tabs (Recordings); in
+        Sweep and Receive the row leaves it for a row of the tab's top card
+        (:meth:`_place_side_boxes`)."""
         box = Qt.QGroupBox("RF gain")
         self._gain_box_layout = Qt.QVBoxLayout(box)
         self.gain_row = Qt.QWidget()
@@ -1571,7 +1559,7 @@ class MainWindow(Qt.QWidget):
 
         # Under the RF spectrum in Receive: the multiplex (RDS is in the
         # Receive tab). Sweeping, it is hidden and the spectrum has the
-        # height: the stations found are in the Sweep tab.
+        # height.
         self.bottom = Qt.QTabWidget()
         self.bottom.setTabBarAutoHide(True)
         self.bottom.setDocumentMode(True)
@@ -1609,10 +1597,9 @@ class MainWindow(Qt.QWidget):
 
     def _auto_scale(self):
         """Fit the Ref level and Range to the spectrum on show - the RF
-        spectrum, or a WAV's sound. Under AGC the Ref level is the radio's
-        reference, so only the Range moves."""
+        spectrum, or a WAV's sound."""
         view = self.top_stack.currentWidget()
-        if not view.auto_scale(keep_ref=view is self.rf_view and self._agc_on()):
+        if not view.auto_scale():
             self._set_status("Auto scale: no spectrum on show yet.")
 
     # ============================================================ startup
@@ -1841,21 +1828,19 @@ class MainWindow(Qt.QWidget):
         return TAB_MODES[max(0, self.tabs.currentIndex())]
 
     def _place_side_boxes(self):
-        """In Receive the RF gain is a row of the Radio card. In Sweep its box goes into the tab, under its boxes, and
-        Audio and Record are hidden: there is nothing to hear or record
-        while the radio sweeps. Elsewhere all three sit under the tabs."""
+        """RF gain is a row at the top of the tab: of the Sweep card in
+        Sweep, of the Radio card in Receive. In Sweep, Audio and Record are
+        hidden: there is nothing to hear or record while the radio sweeps.
+        In Recordings all three sit under the tabs."""
         mode = self._tab_mode()
-        receive = mode == 'receive'
-        if receive:
+        if mode == 'receive':
             self.rx_gain_slot.layout().addWidget(self.gain_row)
+        elif mode == 'sweep':
+            self.sw_gain_slot.layout().addWidget(self.gain_row)
         else:
             self._gain_box_layout.addWidget(self.gain_row)
-        self.gain_box.setVisible(not receive)
-        if mode == 'sweep':
-            self._sweep_outer.insertWidget(self._sweep_outer.indexOf(self.sweep_info),
-                                           self.gain_box)
-        else:
-            self._left_box.insertWidget(1, self.gain_box)
+        self.gain_box.setVisible(mode not in ('receive', 'sweep'))
+        self._left_box.insertWidget(1, self.gain_box)
         quiet = mode == 'sweep'                  # nothing to hear or record
         self.audio_box.setVisible(not quiet)
         self.record_box.setVisible(not quiet)
@@ -2025,7 +2010,8 @@ class MainWindow(Qt.QWidget):
                                      realtime=self.rt_btn.isChecked() and radio.has_realtime,
                                      ref_db=view.ref_knob.value(),
                                      scale_db=view.range_knob.value(),
-                                     auto_gain=self.agc_box.isChecked() and radio.has_agc)
+                                     auto_gain=self.agc_box.isChecked() and radio.has_agc,
+                                     agc_ref_db=self._agc_ref)
         rate = float(self.sweep_rate_combo.currentData() or self.radio.default_sweep_rate)
         return SweepPlan(start, stop, rate, int(self.fft_combo.currentData()),
                          self.radio.usable_fraction(rate), self.radio.dc_notch_hz)
@@ -2114,7 +2100,6 @@ class MainWindow(Qt.QWidget):
         self._sweep_db = None
         self._wf_hold = None
         self._last_serial = -1
-        self._list_serial = -1
         self.rf_view.set_pan_limits(*SWEEP_VIEW_HZ)
         self.rf_view.set_extent(plan.start_hz, plan.stop_hz, keep_span=not full_span)
         self._show_sweep_band()
@@ -2226,10 +2211,14 @@ class MainWindow(Qt.QWidget):
     def _view_scale_changed(self, _value):
         plan = getattr(self.engine.sweeper, 'plan', None)
         # The device uses the Ref level in real time (the density map's
-        # top) and under AGC (the gain it picks).
-        if self._mode == 'sweep' and (getattr(plan, 'realtime', False)
-                                      or getattr(plan, 'auto_gain', False)):
-            self._bounds_timer.start()
+        # top), and the Range there. Under AGC the reference level is AGC's
+        # own: turning the Ref level leaves it, and the sweep, alone.
+        if self._mode == 'sweep' and getattr(plan, 'realtime', False):
+            view = self.rf_view
+            if (abs(view.range_knob.value() - plan.scale_db) > 1e-6
+                    or (not plan.auto_gain
+                        and abs(view.ref_knob.value() - plan.ref_db) > 1e-6)):
+                self._bounds_timer.start()
 
     def _settle_changed(self, ms):
         if self.engine.sweeper is not None:
@@ -2348,17 +2337,7 @@ class MainWindow(Qt.QWidget):
         self._follow_realtime(self.tuner.value())
 
     def _listen_selected(self):
-        item = self.station_list.currentItem()
-        if item is not None:
-            self.tune(item.data(QtCore.Qt.UserRole))
-        self.tabs.setCurrentIndex(1)
-
-    def _station_selected(self, item, _previous=None):
-        if item is not None:
-            self.tune(item.data(QtCore.Qt.UserRole))
-
-    def _station_activated(self, item):
-        self.tune(item.data(QtCore.Qt.UserRole))
+        """Listen: Receive, at the tuner - the marker on the sweep."""
         self.tabs.setCurrentIndex(1)
 
     # ========================================================= live controls
@@ -2460,30 +2439,51 @@ class MainWindow(Qt.QWidget):
         sweeper = self.engine.sweeper
         if self._mode == 'sweep' and getattr(sweeper, 'native', False):
             done = sweeper.snapshot()[2]
+            self._agc_ref, self._agc_extra = None, 0.0
+            self._agc_over_seen = None
             if on and done is not None and sweeper.plan.bin_hz:
-                # The Ref level from the last sweep first: the knob may be
-                # anywhere, and the device's gain follows it at once.
+                # The reference level from the last sweep first: the device's
+                # gain follows it at once.
                 level = bb60_sweep.strongest_input(done, sweeper.plan.bin_hz,
                                                    sweeper.plan.rbw)
-                self.rf_view.ref_knob.setValue(bb60_sweep.agc_ref(level, REF_FLOOR_DB))
+                self._agc_ref = bb60_sweep.agc_ref(level, REF_FLOOR_DB)
             self._update_sweep_plan()
 
     def _follow_agc(self, done):
-        """AGC: the Ref level knob to 5 dB over the strongest input (the
-        most power in 200 kHz, over the last few seconds' sweeps), when that
-        has risen past it or fallen well below; turning the knob re-plans
-        the sweep at the new reference level."""
-        plan = self.engine.sweeper.plan
+        """AGC: the device's reference level to 5 dB over the strongest
+        input (the most power in 27 MHz, over the last few seconds' sweeps),
+        when that has risen past it or fallen well below, and more where the
+        device has overloaded anyway. It is AGC's own, not the Ref level
+        knob's, which is only the view: the device is set again without
+        blanking the display."""
+        sweeper = self.engine.sweeper
+        plan = sweeper.plan
         if not plan.bin_hz:
             return
-        knob = self.rf_view.ref_knob
         now = time.monotonic()
+        if self._agc_ref is None:
+            self._agc_ref = plan.device_ref_db
+        over = getattr(sweeper, 'overflows', 0)
+        if self._agc_over_seen is None or over < self._agc_over_seen:
+            self._agc_over_seen = over              # a new sweeper counts afresh
+        if over > self._agc_over_seen:
+            self._agc_over_seen = over
+            if now - self._agc_over_at > bb60_sweep.AGC_WINDOW_S:
+                self._agc_over_at = now
+                self._agc_extra = min(self._agc_extra + bb60_sweep.AGC_STEP_DB,
+                                      bb60_sweep.AGC_EXTRA_MAX_DB)
+        elif self._agc_extra and now - self._agc_over_at > bb60_sweep.AGC_RELAX_S:
+            self._agc_over_at = now
+            self._agc_extra = max(self._agc_extra - bb60_sweep.AGC_STEP_DB, 0.0)
         self._agc_levels = [(t, v) for t, v in self._agc_levels
                             if now - t < bb60_sweep.AGC_WINDOW_S]
         self._agc_levels.append((now, bb60_sweep.strongest_input(done, plan.bin_hz, plan.rbw)))
-        ref = bb60_sweep.agc_ref(max(v for _, v in self._agc_levels), knob.value())
-        if ref is not None:
-            knob.setValue(ref)
+        ref = bb60_sweep.agc_ref(max(v for _, v in self._agc_levels) + self._agc_extra,
+                                 self._agc_ref)
+        if ref is not None and ref != self._agc_ref:
+            self._agc_ref = ref
+            sweeper.set_agc_ref(ref)
+            self.sweep_info.setText(plan.describe())
 
     def _gain_changed(self, value):
         # Moved by hand (AGC moves it quietly): with AGC, a new ceiling.
@@ -3352,7 +3352,10 @@ class MainWindow(Qt.QWidget):
                 token = 'warn'
         if now < self._overload_until:
             text, token = "Input overloaded - turn the RF gain down", 'bad'
-            if self._iq_agc is not None and self._iq_agc.gain > 0:
+            if self._agc_on() and self._agc_ref is not None:
+                text = ("Input overloaded - AGC is raising the reference level "
+                        f"({self._agc_ref:.0f} dBm)")
+            elif self._iq_agc is not None and self._iq_agc.gain > 0:
                 text = ("Input overloaded - AGC is turning the gain down "
                         f"({self.radio.gain_percent:.0f}%)")
             if self._clipped:
@@ -3471,39 +3474,6 @@ class MainWindow(Qt.QWidget):
             self.sweep_info.setText(
                 f"{plan.describe()}<br>{s.sweep_seconds * 1e3:.0f} ms per sweep "
                 f"({rate:.1f}/s, {speed})")
-        if self._sweep_db is not None and self._last_serial != self._list_serial:
-            self._list_serial = self._last_serial
-            self._update_station_list(plan.freqs(), self._sweep_db)
-
-    def _force_station_list(self):
-        self._list_serial = -1
-
-    def _update_station_list(self, freqs, db):
-        # Only where FM broadcasting is: the floor is measured there too, not
-        # over the gigahertz of a full-range sweep.
-        freqs, db = np.asarray(freqs), np.asarray(db)
-        if len(freqs) != len(db):
-            return                                  # a sweep of the last plan
-        fm = (freqs >= FM_BROADCAST_HZ[0]) & (freqs <= FM_BROADCAST_HZ[1])
-        found = find_stations(freqs[fm], db[fm], min_snr_db=self.snr_spin.value()) \
-            if fm.any() else []
-        found.sort(key=lambda s: s[0])
-        unit = self.rf_view.level_unit
-        current = self.station_list.currentItem()
-        keep = current.data(QtCore.Qt.UserRole) if current else None
-        self.station_list.blockSignals(True)
-        self.station_list.clear()
-        for f, snr, level in found:
-            name = self._names.get(round(f / 1e5))
-            text = f"{f / 1e6:7.1f} MHz  {snr:5.1f} dB  {level:6.1f} {unit}"
-            if name:
-                text += f"  {name}"
-            item = Qt.QListWidgetItem(text)
-            item.setData(QtCore.Qt.UserRole, float(f))
-            self.station_list.addItem(item)
-            if keep is not None and abs(keep - f) < 1:
-                self.station_list.setCurrentItem(item)
-        self.station_list.blockSignals(False)
 
     def _refresh_receive(self):
         rx = self.engine.rx
@@ -3545,8 +3515,6 @@ class MainWindow(Qt.QWidget):
     def _refresh_rds(self, snap):
         name = snap['station_short'] or snap['station_name'] or ''
         self.lbl['station_name'].setText(name or '(waiting)')
-        if name:
-            self._names[round(self.engine.station_hz / 1e5)] = name
         title, artist = snap['title'], snap['artist']
         self.lbl['nowplaying'].setText(
             ' - '.join(x for x in (artist, title) if x) if (title or artist) else '-')
@@ -3631,7 +3599,7 @@ class MainWindow(Qt.QWidget):
                                else self.cfg['sweep_realtime']),
             'sweep_fft': self.fft_combo.currentData(),
             'sweep_frames': self.frames_spin.value(),
-            'min_snr_db': self.snr_spin.value(), 'snap': self.snap_check.isChecked(),
+            'snap': self.snap_check.isChecked(),
             'record_audio': self.rec_audio.isChecked(),
             'record_iq_channel': self.rec_channel.isChecked(),
             'record_iq_band': self.rec_band.isChecked(),
