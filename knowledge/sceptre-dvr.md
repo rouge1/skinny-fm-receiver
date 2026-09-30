@@ -129,10 +129,12 @@ correlation, 0.04 dB), so a `.cdif` is only needed for its metadata.
   reference level of -40 dBm; how the reference level enters is not known.
   The minimum and maximum Sceptre lists for an export (about -210 and
   -40 dBm) are the export's own extremes, not the byte range.
-- **Whether the scale is exact.** See "The IQ's level in dBm" below: it is
-  checked to about 1 dB against the BB60D's own calibrated sweep, not against a
-  test tone of known level, and the 3 dB between a peak and an rms reading of a
-  complex sample was settled by the same check, not by Sceptre's documentation.
+- **A test tone.** The IQ's scale ("The IQ's level in dBm" below) is Sceptre's
+  own, in two places that agree to 0.00 dB, and within about 1 dB of the
+  BB60D's calibrated sweep. It has not been checked against a source of known
+  level (the toolkit's VSG60 is calibrated), and the 3 dB between a peak and an
+  rms reading of a complex sample was settled by the sweep check, not by
+  Sceptre's documentation.
 - **Other stream types.** Only an IQ tab's DVR and a sweep DVR have been seen.
 - **Whether the header checksum matters** to Sceptre itself: this reader
   ignores it, and never writes the file.

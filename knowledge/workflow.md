@@ -18,4 +18,6 @@ every signal (occupied bandwidth, the envelope's levels and timing, the
 instantaneous frequency's levels, tones, symbol rate, burst length and repeat
 interval, level in dBm) and let those name it, before any decoder is written.
 There are too many modulations and protocols to write a decoder for each; see
-the roadmap, Round 19.
+the roadmap, Round 22. The RF bench toolkit (`/data/python/SDR`) can make
+signals of known parameters to check the measurements on: ISM sensor frames
+(OOK, PPM, PWM, Manchester), NTSC, RDS and FM video.

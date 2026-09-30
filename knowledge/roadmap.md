@@ -1054,7 +1054,7 @@ and GNU Radio on the RTL-SDR 30.
 - [ ] Tests, no radio; off air with SDR++ and GNU Radio
 - [ ] `usage.md` and `capabilities.md`
 
-## Round 19: Sceptre's DVR (requested 2026-09-29)
+## Round 22: Sceptre's DVR, and telling signals apart (requested 2026-09-29)
 
 Signal Hound's Sceptre keeps what the BB60D received in a ring file
 (`dvr.sdvr`). Its IQ plays here; its sweep bytes are next.
@@ -1074,7 +1074,8 @@ Signal Hound's Sceptre keeps what the BB60D received in a ring file
 - [x] `dvr-hd` on a real FM capture: 20 stereo stations found, HD Radio decoded on six
 - [ ] The same in the app, for any long IQ file (a play-once mode, no loop)
 - [ ] A narrower IQ DVR in Sceptre, to hold more than 8.6 s (untried)
-- [x] A dBm scale for the IQ: read from each run's header (full scale = reference level + 10 dBm), checked to about 1 dB against a calibrated sweep (`sceptre-dvr.md`)
+- [x] A dBm scale for the IQ: read from each run's header (full scale = reference level + 10 dBm); it matches a `.cdif` Sceptre extracted (0.00 dB) and the BB60D's calibrated sweep (about 1 dB) (`sceptre-dvr.md`)
+- [ ] Check the dBm against a test tone of known level: the toolkit's VSG60 is calibrated (-120 to +10 dBm); through a cable and a pad, not an antenna (asked first)
 - [x] The DVR-to-IQ converter, `tools/dvr-to-iq`, and a reader for Sceptre's BLUE
   recordings (`sceptre_blue.py`); `test_dvr_iq.py`; matched to Sceptre's own
   `.cdif` extraction (0.998, 0.04 dB)
@@ -1088,8 +1089,14 @@ Signal Hound's Sceptre keeps what the BB60D received in a ring file
   the level in dBm now that a DVR has one. What comes out is a description, and
   a decoder is written only when a class is worth decoding
 - [ ] Known signals to test the classifier on: the RF bench toolkit
-  (`/data/python/SDR`) has encoders for ISM sensors (OOK/PPM/PWM/Manchester),
-  NTSC, RDS and FM video, and ASK/FSK/PSK generators
+  (`/data/python/SDR`, decided useful 2026-09-30). Its pure functions make
+  signals whose parameters are known exactly, with no radio: `apps/ism_frame.py`
+  (`nexus_th`, `acurite_609txc`, `lacrosse_tx141th_bv2`, `ev1527`; ppm, pwm, pcm
+  and manchester pulse trains; `render()` to IQ, `write_capture()` to a file),
+  `ntsc_encode.py` (NTSC/PAL composite), `rds_encode.py`, `fm_video_core.py`.
+  Its ASK, FSK, PSK and PPM-OOK generators are GNU Radio apps with dialogs, so
+  their modulation would be taken into a test rather than the apps run. A bench
+  of known signals, each measured, checks that the measurements name the class
 - [ ] The sweep DVR: read its tiles (16 sweeps of 1,228,800 signed bytes) as a
   waterfall in the Sweep tab, once their dBm is pinned. A float export of the
   same capture is the exact route (`sceptre-dvr.md`)
