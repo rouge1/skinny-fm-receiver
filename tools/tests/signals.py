@@ -20,6 +20,7 @@ import json
 import math
 import os
 import struct
+import time
 
 import numpy as np
 from scipy import signal as sps
@@ -126,7 +127,8 @@ def write_station(path_base, seconds=8.0, rate=2.5e6, center_hz=98.4e6,
     return path_base + '.cfile'
 
 
-def _sdvr_header(tag, when, interval, count, centre=0.0, bins=0, scale=0.0):
+def _sdvr_header(tag, when, interval, count, centre=0.0, bins=0, scale=0.0,
+                 start_hz=0.0, bin_hz=0.0):
     """One chunk's header page of a Sceptre DVR file (see sceptre_dvr.py)."""
     page = bytearray(4096)
     struct.pack_into('<d', page, 0, centre)
@@ -137,6 +139,7 @@ def _sdvr_header(tag, when, interval, count, centre=0.0, bins=0, scale=0.0):
     struct.pack_into('<d', page, 0x24, interval)
     struct.pack_into('<I', page, 0x2c, count)
     if tag == b'SB':
+        struct.pack_into('<dd', page, 0x34, start_hz, bin_hz)
         struct.pack_into('<I', page, 0x44, bins)
     return bytes(page)
 
@@ -146,7 +149,8 @@ def _pad(data):
 
 
 def write_sdvr(path, iq, rate, center_hz, run=1 << 15, rotate=True, stale=True,
-               tiles=True, start=1.7907e9 + 0.25, ref_dbm=-20.0):
+               tiles=True, start=1.7907e9 + 0.25, ref_dbm=-20.0, window=None,
+               age=60.0):
     """Write ``iq`` (complex, |x| < 1) as a Sceptre DVR file, ``path``.
 
     Made the way the real ones are: runs of ``run`` samples as int16 I, Q,
@@ -156,6 +160,9 @@ def write_sdvr(path, iq, rate, center_hz, run=1 << 15, rotate=True, stale=True,
     from before the window the file describes. Returns the samples it holds
     as they will be read: quantised, scaled to 1.0 = full scale. The scale
     the runs carry makes full scale ``ref_dbm + 10`` dBm, as Sceptre's do.
+    ``window`` (start, end) replaces the time window on page 1, as a live
+    file's can be left from before. The file is made ``age`` seconds old, a
+    paused DVR's; None leaves it as new as one Sceptre is writing.
     """
     n = len(iq) // run * run
     q = np.empty((n, 2), dtype='<i2')
@@ -182,14 +189,69 @@ def write_sdvr(path, iq, rate, center_hz, run=1 << 15, rotate=True, stale=True,
     head = bytearray(4096)
     head[:4] = b'SDVR'
     stream = bytearray(4096)
-    struct.pack_into('<dd', stream, 0, math.floor(start), start - math.floor(start))
-    struct.pack_into('<dd', stream, 16, math.floor(end), end - math.floor(end))
+    w0, w1 = window or (start, end)
+    struct.pack_into('<dd', stream, 0, math.floor(w0), w0 - math.floor(w0))
+    struct.pack_into('<dd', stream, 16, math.floor(w1), w1 - math.floor(w1))
     struct.pack_into('<dd', stream, 32, center_hz - rate / 2, center_hz + rate / 2)
     with open(path, 'wb') as fh:
         fh.write(bytes(head) + bytes(stream) + bytes(stream) + bytes(4096))
         for c in chunks:
             fh.write(c)
+    _age(path, age)
     return (q[:, 0] + 1j * q[:, 1]).astype(np.complex64) / 32768.0
+
+
+def _age(path, seconds):
+    if seconds is not None:
+        then = time.time() - seconds
+        os.utime(path, (then, then))
+
+
+def sweep_tile_bytes(k, bins, sweeps=16):
+    """The signed bytes of test tile ``k``: a different value for every bin,
+    sweep and tile, as an int8 array of ``sweeps`` rows."""
+    b = np.arange(bins)[None, :]
+    w = np.arange(sweeps)[:, None]
+    return ((b * 3 + w * 5 + k * 7) % 251 - 125).astype(np.int8)
+
+
+def write_sweep_sdvr(path, tiles=8, bins=4096, start_hz=4882.8125, bin_hz=4882.8125,
+                     interval=0.2325, sweeps=16, start=1.7907e9 + 0.25,
+                     rotate=True, stale=True, age=60.0):
+    """Write a sweep DVR: ``tiles`` tiles of ``sweeps`` sweeps of ``bins``
+    signed bytes (:func:`sweep_tile_bytes`), stored bin by bin, one after
+    another in time, as Sceptre's are. The page-1 window is left from an
+    earlier IQ recording, as a real sweep DVR's is; the ring is wrapped; and
+    ``stale`` adds, from before, a tile of the same kind and one of another
+    (an IQ DVR's 16384 bins). ``age`` as for :func:`write_sdvr`."""
+    chunks = []
+    for k in range(tiles):
+        when = start + k * sweeps * interval
+        chunks.append(_sdvr_header(b'SB', when, interval, sweeps, bins=bins,
+                                   start_hz=start_hz, bin_hz=bin_hz)
+                      + _pad(sweep_tile_bytes(k, bins, sweeps).T.tobytes()))
+    if rotate:
+        cut = len(chunks) * 2 // 3
+        chunks = chunks[cut:] + chunks[:cut]
+    if stale:
+        chunks.append(_sdvr_header(b'SB', start - 3600.0, interval, sweeps, bins=bins,
+                                   start_hz=start_hz, bin_hz=bin_hz)
+                      + _pad(bytes(bins * sweeps)))
+        chunks.append(_sdvr_header(b'SB', start - 7200.0, 2.34e-3, 16, bins=64,
+                                   start_hz=86e6, bin_hz=1709.0)
+                      + _pad(bytes(16 * 64)))
+    head = bytearray(4096)
+    head[:4] = b'SDVR'
+    stream = bytearray(4096)
+    old = start - 20000.0                       # what an IQ recording left
+    struct.pack_into('<dd', stream, 0, math.floor(old), 0.0)
+    struct.pack_into('<dd', stream, 16, math.floor(old) + 8, 0.0)
+    struct.pack_into('<dd', stream, 32, 86e6, 114e6)
+    with open(path, 'wb') as fh:
+        fh.write(bytes(head) + bytes(stream) + bytes(stream) + bytes(4096))
+        for c in chunks:
+            fh.write(c)
+    _age(path, age)
 
 
 def write_blue(path, data, rate, fmt='CF', keywords=None, epoch='2026-09-30T10:44:21Z',

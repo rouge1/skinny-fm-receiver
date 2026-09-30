@@ -12,6 +12,11 @@ before. It must:
   short - with a message that says what to do;
 - play the samples exactly (int16 to float32, full scale 1.0), from a seek
   and around the end when it repeats, through ``IQFile``;
+- read the spectrum tiles (``Sweeps``): a sweep DVR's, in time order, by band,
+  with what an earlier recording left out, and refuse an IQ-only file;
+- and cope with a file Sceptre is still writing: trust its chunks, not the
+  window it left on page 1, leave out the newest chunk, and say when a chunk
+  was overwritten after it was scanned;
 - and, played through the real receive chain, decode the station's PI and
   name, so what a DVR holds is a working recording.
 
@@ -21,6 +26,7 @@ Run:  python tools/tests/test_sceptre_dvr.py [--keep]     (about 25 s)
 import os
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import time
@@ -93,9 +99,129 @@ def layout_checks(folder):
     with open(holed, 'r+b') as fh:                 # break run 4's header tag
         fh.seek((4 + 4 * (1 + RUN * 4 // 4096)) * 4096 + 0x10)
         fh.write(b'XX')
-    lay = sceptre_dvr.scan(holed)
+    lay = sceptre_dvr.scan(holed, live=False)      # edited just now, but paused
     assert len(lay['runs']) == 8 and lay['gaps'] == 1, lay
     print(f"a lost run: {len(lay['runs'])} runs, {lay['gaps']} gap counted")
+
+
+def sweep_checks(folder):
+    bins, sweeps, tiles = 4096, 16, 8
+    path = os.path.join(folder, 'sweep.sdvr')
+    signals.write_sweep_sdvr(path, tiles=tiles, bins=bins)
+    lay = sceptre_dvr.scan_sweeps(path)
+    print(f"sweeps: {len(lay['tiles'])} tiles of {lay['sweeps']} x {lay['bins']} bins, "
+          f"{lay['gaps']} gaps, {lay['end'] - lay['start']:.1f} s")
+    # The stale tile of the same kind and the IQ-mode one are left out; so is
+    # a window left from IQ.
+    assert len(lay['tiles']) == tiles and lay['gaps'] == 0 and not lay['live'], lay
+    assert lay['bins'] == bins and lay['sweeps'] == sweeps, lay
+    assert lay['bin_hz'] == 4882.8125 and lay['start_hz'] == 4882.8125, lay
+    assert [w for _, w in lay['tiles']] == sorted(w for _, w in lay['tiles'])
+    sw = sceptre_dvr.Sweeps(path)
+    times, freqs, db = sw.read()
+    assert db.shape == (tiles * sweeps, bins) and db.dtype == np.int8, db.shape
+    want = np.concatenate([signals.sweep_tile_bytes(k, bins) for k in range(tiles)])
+    assert np.array_equal(db, want), 'bytes differ (bin-major, time order?)'
+    assert np.allclose(np.diff(times), 0.2325), np.diff(times)[:3]
+    assert freqs[0] == 4882.8125 and abs(freqs[1] - freqs[0] - 4882.8125) < 1e-6
+    # A band: bins whose frequencies lie in it, and only them.
+    lo, hi = 3.0e6, 3.1e6
+    t2, f2, d2 = sw.read(lo, hi, first=2, stop=4)
+    assert f2[0] <= lo and f2[-1] >= hi and f2[1] > lo and f2[-2] < hi, (f2[0], f2[-1])
+    i0 = int(np.searchsorted(freqs, f2[0]))
+    assert np.array_equal(d2, want[2 * sweeps:4 * sweeps, i0:i0 + len(f2)])
+    assert len(t2) == 2 * sweeps
+    try:
+        sw.bin_range(9e9, 9.1e9)
+        raise AssertionError('a band outside the DVR should be refused')
+    except sceptre_dvr.SdvrError as exc:
+        assert 'outside' in str(exc)
+    print("Sweeps: bytes, times and a band are right; the leftovers are left out")
+
+    # The tool: the report, and a picture of a band.
+    tool = os.path.join(os.path.dirname(HERE), 'dvr-sweep')
+    png = os.path.join(folder, 'sweep.png')
+    out = subprocess.run([sys.executable, tool, path, '--band', '0.5', '10',
+                          '--png', png], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert '8 tiles of 16 sweeps' in out.stdout and 'wrote' in out.stdout, out.stdout
+    assert os.path.getsize(png) > 5000, 'no picture'
+    with open(os.path.join(folder, 'junk.sdvr'), 'wb') as fh:
+        fh.write(bytes(40960))
+    bad = subprocess.run([sys.executable, tool, os.path.join(folder, 'junk.sdvr')],
+                         capture_output=True, text=True)
+    assert bad.returncode != 0 and 'dvr-sweep:' in bad.stderr, bad
+
+    # An IQ DVR's tiles read the same way, over its band.
+    iq = np.zeros(RUN * 4, dtype=np.complex64)
+    both = os.path.join(folder, 'iqtiles.sdvr')
+    signals.write_sdvr(both, iq, RATE, CENTRE, run=RUN)
+    assert sceptre_dvr.scan_sweeps(both)['bins'] == 64
+    # ... and an IQ DVR with no tiles is refused, saying what it holds.
+    plain = os.path.join(folder, 'notiles.sdvr')
+    signals.write_sdvr(plain, iq, RATE, CENTRE, run=RUN, tiles=False)
+    try:
+        sceptre_dvr.scan_sweeps(plain)
+        raise AssertionError('no tiles should be refused')
+    except sceptre_dvr.SdvrError as exc:
+        assert 'no spectrum tiles' in str(exc), exc
+
+
+def live_checks(folder):
+    """A file Sceptre is writing: new to the clock, its window from before."""
+    rng = np.random.default_rng(5)
+    iq = (0.3 * (rng.standard_normal(RUN * 9) + 1j * rng.standard_normal(RUN * 9))
+          ).astype(np.complex64)
+    start = 1.7907e9 + 0.25
+    path = os.path.join(folder, 'live.sdvr')
+    want = signals.write_sdvr(path, iq, RATE, CENTRE, run=RUN, start=start,
+                              window=(start - 500, start - 490), age=None)
+    lay = sceptre_dvr.scan(path)
+    assert lay['live'], 'a file just written should count as live'
+    # The window (from before) would drop every run; the chunks are trusted,
+    # the leftover run is dropped, and the newest run (perhaps half written)
+    # is left out.
+    assert len(lay['runs']) == 8 and lay['samples'] == RUN * 8, lay
+    assert lay['gaps'] == 0 and lay['start'] == start, lay
+    got = sceptre_dvr.Reader(path, lay).read(0, RUN * 8)
+    assert np.array_equal(got, want[:RUN * 8]), 'a live file read wrong'
+    print(f"live: window from before ignored, newest run left out, "
+          f"{len(lay['runs'])} runs exact")
+    # The same file, paused (old): nothing is dropped, and its window, which
+    # holds none of the runs, is not believed either.
+    old = time.time() - 60
+    os.utime(path, (old, old))
+    paused = sceptre_dvr.scan(path)
+    assert not paused['live'] and paused['samples'] == RUN * 9, paused
+    assert sceptre_dvr.scan(path, live=True)['samples'] == RUN * 8
+
+    # Sceptre overwrites a run after the scan: counted, and only then.
+    reader = sceptre_dvr.Reader(path, lay)
+    reader.read(0, RUN * 8)
+    assert reader.overwritten == 0, reader.overwritten
+    with open(path, 'r+b') as fh:
+        fh.seek(lay['runs'][2][0] - 4096 + 0x14)
+        fh.write(struct.pack('<dd', 1.7907e9 + 99, 0.5))
+    reader.read(RUN * 2, RUN * 3)
+    assert reader.overwritten == 1, reader.overwritten
+    reader.read(RUN * 5, RUN * 6)
+    assert reader.overwritten == 1, 'an untouched run was counted'
+    print("live: a run overwritten after the scan is counted")
+
+    # A sweep DVR being written: the newest tile is left out; an overwritten
+    # one is left out of a read, and counted.
+    sweep = os.path.join(folder, 'livesweep.sdvr')
+    signals.write_sweep_sdvr(sweep, tiles=6, bins=512, age=None)
+    slay = sceptre_dvr.scan_sweeps(sweep)
+    assert slay['live'] and len(slay['tiles']) == 5, slay
+    sw = sceptre_dvr.Sweeps(sweep, slay)
+    assert len(sw.read()[0]) == 5 * 16 and sw.overwritten == 0
+    with open(sweep, 'r+b') as fh:
+        fh.seek(slay['tiles'][1][0] - 4096 + 0x14)
+        fh.write(struct.pack('<dd', 1.7907e9 + 999, 0.0))
+    times, _, db = sw.read()
+    assert len(times) == 4 * 16 and sw.overwritten == 1, (len(times), sw.overwritten)
+    print("live: newest tile left out; an overwritten tile is dropped and counted")
 
 
 def refusal_checks(folder):
@@ -132,7 +258,7 @@ def refusal_checks(folder):
                        stale=False)
     with open(cut, 'r+b') as fh:                   # lose the end of the last run
         fh.truncate(os.path.getsize(cut) - 8192)
-    lay = sceptre_dvr.scan(cut)
+    lay = sceptre_dvr.scan(cut, live=False)
     assert len(lay['runs']) == 1, lay              # the whole run before it only
     print("refused: not a DVR, too short, sweeps only; a cut-short run is left out")
 
@@ -165,6 +291,8 @@ def main():
     folder = tempfile.mkdtemp(prefix='fmrx-sdvr-')
     try:
         layout_checks(folder)
+        sweep_checks(folder)
+        live_checks(folder)
         refusal_checks(folder)
         end_to_end(folder)
     finally:

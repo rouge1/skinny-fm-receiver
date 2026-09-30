@@ -10,7 +10,9 @@ disassembled, as Signal Hound's licence forbids. The code that reads it is
 `tools/fm_receiver/sceptre_dvr.py`; the test is `tools/tests/test_sceptre_dvr.py`
 (synthetic files: no Sceptre data is kept in this repository).
 
-Sceptre may be writing the file while it is read. **Pause the DVR first.**
+Sceptre may be writing the file while it is read. Pausing the DVR first is
+still the surest read, but a running one can be read too (see "A DVR that is
+still recording"): the reader copes with what a live file does.
 
 ## What is settled
 
@@ -53,6 +55,44 @@ Sceptre may be writing the file while it is read. **Pause the DVR first.**
 - **Reading it.** Walk chunk by chunk from page 4 (a header says how long its
   data is), and step a page at a time where no header is found. Count a run
   that does not follow on from the one before as a gap.
+
+## A DVR that is still recording (2026-09-30)
+
+Read on a live sweep DVR (52 tiles of 16 sweeps, one every 3.7 s, about 190 s
+in the ring) and tested on synthetic files; not yet tried on a live IQ DVR.
+What a file being written does, and what the reader does about it
+(`sceptre_dvr.scan`, `scan_sweeps`, `Reader`, `Sweeps`):
+
+- **A file counts as live** if it was written in the last 8 s (a sweep DVR
+  writes a tile every 3.7 s); `live=True/False` overrides.
+- **Page 1's window is not to be believed.** A sweep DVR's still described an
+  earlier IQ recording (hours old), so a live file, or one whose window holds
+  none of its chunks, is read by its chunks: the newest unbroken stretch in
+  time (no gap over a second, or twice a chunk's length plus half a second) is
+  the recording, and what lies before a break is left over. A paused IQ DVR
+  whose window fits is read by the window, as before.
+- **The recording's kind is the newest chunk's**: its interval and centre for
+  IQ, its start, bin width, bin count and sweeps for tiles. An old recording
+  of another kind left in the ring (an IQ mode's 16384-bin tile beside a sweep
+  DVR's 1,228,800) is left out.
+- **The newest chunk is left out**, in case it is half written. (Seen: a tile
+  appears whole about 10 s after its timestamp, and tiles already in the ring
+  do not change; a half-written one has not been caught, so this is
+  cautious, not observed.)
+- **Overwrites are counted.** The oldest chunk is the next one Sceptre
+  overwrites. `Reader.fill` and `Sweeps.read` compare each chunk's header time
+  with what the scan saw, after copying, and count a change in `overwritten`;
+  `Sweeps` also leaves that tile out. A scan is a snapshot: rescan for the
+  chunks written since, and expect the oldest to go.
+- **Sweep tiles.** `Sweeps.read(f_lo, f_hi, first, stop)` gives `(times,
+  freqs, bytes)`: every sweep of the tiles, in time order, cropped to the
+  band, as int8 rows of bins (the stored bin-by-bin order undone). `tools/
+  dvr-sweep DVR [--band LO HI] [--png FILE]` reports what a DVR holds and
+  draws it. The bytes are the DVR's own log power, uncalibrated (below).
+- **Seen in a live sweep DVR**: whole-span dark bands across the waterfall,
+  every few to twenty seconds, at once at every frequency (the level of the
+  sweeps drops together). Not investigated: it could be Sceptre's or the
+  BB60D's gain changing, or the environment.
 
 ## The IQ's level in dBm (2026-09-30)
 
@@ -135,6 +175,10 @@ correlation, 0.04 dB), so a `.cdif` is only needed for its metadata.
   level (the toolkit's VSG60 is calibrated), and the 3 dB between a peak and an
   rms reading of a complex sample was settled by the sweep check, not by
   Sceptre's documentation.
+- **A live IQ DVR.** The live handling was written from a live sweep DVR and
+  synthetic files. A running IQ DVR has yet to be read (Sceptre was on the
+  Sweep tab): whether its window is kept current, and whether its newest run
+  is ever seen half written.
 - **Other stream types.** Only an IQ tab's DVR and a sweep DVR have been seen.
 - **Whether the header checksum matters** to Sceptre itself: this reader
   ignores it, and never writes the file.

@@ -1079,6 +1079,14 @@ Signal Hound's Sceptre keeps what the BB60D received in a ring file
 - [x] The DVR-to-IQ converter, `tools/dvr-to-iq`, and a reader for Sceptre's BLUE
   recordings (`sceptre_blue.py`); `test_dvr_iq.py`; matched to Sceptre's own
   `.cdif` extraction (0.998, 0.04 dB)
+- [x] Read a DVR while Sceptre is recording it, and a sweep DVR's tiles:
+  `sceptre_dvr.Sweeps`, `tools/dvr-sweep`, live handling in `scan` (stale
+  window, newest chunk, overwrites counted); tested synthetic and on a running
+  sweep DVR
+- [ ] Try it on a running **IQ** DVR (Sceptre on the IQ tab, recording): is its
+  window kept current, is the newest run ever half written
+- [ ] Calibrate the sweep DVR's bytes to dBm (a `.fft` float export of the
+  same capture is the exact route), then draw the tiles in the Sweep tab
 - [ ] Show dBm in the app for a DVR (the offset is `full_scale_dbm`)
 - [ ] **A way to classify what is seen, not a decoder per signal** (decided
   2026-09-30, since the signals to come are OOK, FSK, ASK, NTSC and more, and

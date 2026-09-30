@@ -36,7 +36,8 @@ with no launcher.
   sweep mode through libhackrf, on the device the SoapySDR module lets go),
   `rtl_tcp.py` the RTL-SDR (an rtl_tcp client; rtl_tcp started here, or on
   another computer over ssh), `sceptre_dvr.py` Signal Hound Sceptre's DVR
-  file (`.sdvr`) read as IQ (numpy only, so `tools/dvr-hd` runs anywhere),
+  file (`.sdvr`) read as IQ or as spectrum tiles, running or paused (numpy
+  only, so `tools/dvr-hd` and `tools/dvr-sweep` run anywhere),
   `dvr_iq.py` a DVR cut to any channel (`tools/dvr-to-iq`), `dvr_hd.py` HD
   Radio from one, offline with nrsc5 (`tools/dvr-hd`), `sceptre_blue.py`
   Sceptre's BLUE recordings (`.cdif`, `.fft`),

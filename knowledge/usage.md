@@ -701,11 +701,13 @@ as SigMF or the RF bench toolkit's captures, choose **IQ recording
 from its **IQ** tab (a BB60D at the widest, 28 MS/s, 27 MHz around the
 centre), the file plays here as it is: choose it in the same way (the
 **`.sdvr`** filter), or `--file /path/to/dvr.sdvr`. Pause the DVR in Sceptre
-first, so the file stops changing while it is read. It holds about 8.6 s in
+first, so the file stops changing while it is read (a running one can be
+opened, and the newest run is then left out). It holds about 8.6 s in
 a 1 GB ring, played on a loop, and the tuner reaches the whole 27 MHz, so
 every station in it can be tuned in turn (a lower reference level in
 Sceptre, -20 to -30 dBm, gives a better signal than 0). A DVR made from
-Sceptre's **Sweep** tab holds spectra, not IQ, and is refused. How the file
+Sceptre's **Sweep** tab holds spectra, not IQ, and is refused here (see
+`tools/dvr-sweep` below). How the file
 is laid out: [sceptre-dvr.md](sceptre-dvr.md).
 
 HD Radio works on a DVR (the **HD Radio** row lights on the stations that
@@ -727,6 +729,22 @@ MER, BER). About 12 s a station and a few minutes for a whole band. Plain
 Python with numpy, scipy and `nrsc5`: no GNU Radio environment needed, and
 the DVR is only read. See [digital-radio.md](digital-radio.md), "Offline,
 from a Sceptre DVR", for what it does.
+
+**The spectrum a DVR holds: `tools/dvr-sweep`.** A sweep DVR (Sceptre's Sweep
+tab, 9 kHz to 6 GHz) is spectra, not IQ; this reads and draws it, running or
+not:
+
+```
+tools/dvr-sweep dvr.sdvr                        what it holds: tiles, bins, times, gaps
+tools/dvr-sweep dvr.sdvr --png all.png          a waterfall of all of it
+tools/dvr-sweep dvr.sdvr --band 88 108 --png fm.png
+```
+
+From Python: `sceptre_dvr.Sweeps(path).read(f_lo, f_hi)` gives `(times, freqs,
+bytes)`, one row a sweep. While Sceptre is still recording, the newest tile is
+left out and an overwritten one dropped (the report says so). The levels are
+the DVR's signed bytes, a log power of about 0.4 dB a count and **not
+calibrated to dBm** yet, so the picture ranks levels but does not measure them.
 
 **A DVR as a plain IQ file: `tools/dvr-to-iq`.** For anything else that reads
 IQ (SDR++, GNU Radio, inspectrum, URH), or to keep a DVR before Sceptre
