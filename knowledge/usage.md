@@ -728,6 +728,26 @@ Python with numpy, scipy and `nrsc5`: no GNU Radio environment needed, and
 the DVR is only read. See [digital-radio.md](digital-radio.md), "Offline,
 from a Sceptre DVR", for what it does.
 
+**A DVR as a plain IQ file: `tools/dvr-to-iq`.** For anything else that reads
+IQ (SDR++, GNU Radio, inspectrum, URH), or to keep a DVR before Sceptre
+records over it (it is a 1 GB ring):
+
+```
+tools/dvr-to-iq dvr.sdvr                                the whole band, 28 MS/s (about 1.9 GB)
+tools/dvr-to-iq dvr.sdvr --center 99.269 --rate 3.5     a 3 MHz channel at 3.5 MS/s
+tools/dvr-to-iq dvr.sdvr --center 100.3 --rate 0.5 --station 100.3 -o fm100
+                --start 2 --seconds 3 (a piece)   --units mw   --force
+```
+
+It writes `BASE.cfile` (complex float32), `BASE.sigmf-meta` and `BASE.json`,
+as this app's recordings have, so `./fm-receiver --file BASE.sigmf-meta` plays
+it (`--station` is where the app tunes on open). Values are in units of the
+ADC's full scale (1.0), and the metadata says how many dBm that is; `--units
+mw` writes Sceptre's square root of milliwatts, so `|x|²` is power in mW. The
+channel is mixed to 0 Hz, low-passed and resampled (it matches Sceptre's own
+extraction of a channel to 0.04 dB); the whole band is an exact copy. Plain
+Python with numpy and scipy, and the DVR is only read.
+
 The recording plays in real time on a loop, as if it were a radio, and it
 opens tuned to the station it was recorded on. Tuning moves the channel
 within the recorded band. A whole-band recording therefore lets you listen to

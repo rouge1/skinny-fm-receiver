@@ -93,7 +93,7 @@ def library_checks(path):
     dvr = dvr_hd.Dvr(path)
     lo, hi = dvr.usable()
     assert abs(lo - (CENTRE - RATE / 2 + 400e3)) < 1 and abs(hi - (CENTRE + RATE / 2 - 400e3)) < 1
-    out = dvr.channelize(STATION)
+    out = dvr_hd.channelize(dvr, STATION)
     want = dvr.samples / dvr.rate * dvr_hd.NRSC5_RATE
     assert abs(len(out) - want) < 4, (len(out), want)
     d = demod(out, dvr_hd.NRSC5_RATE)
@@ -103,11 +103,11 @@ def library_checks(path):
     print(f"channelized: {len(out) / dvr_hd.NRSC5_RATE:.2f} s, mean {np.mean(d):.0f} Hz, "
           f"pilot deviation {pilot / 1e3:.2f} kHz")
     assert 6.0e3 < pilot < 7.5e3, pilot
-    wrong = dvr.channelize(STATION - 600e3)
+    wrong = dvr_hd.channelize(dvr, STATION - 600e3)
     dw = demod(wrong, dvr_hd.NRSC5_RATE)[int(0.3 * dvr_hd.NRSC5_RATE):]
     assert tone_dev(dw, dvr_hd.NRSC5_RATE, 19000.0) < 1.0e3, 'a pilot where there is no station'
     try:
-        dvr.channelize(CENTRE + RATE / 2)
+        dvr_hd.channelize(dvr, CENTRE + RATE / 2)
     except ValueError as exc:
         assert 'outside' in str(exc), exc
     else:
@@ -115,7 +115,7 @@ def library_checks(path):
 
     chans = dvr_hd.raster(lo, hi)
     assert STATION in chans and all(abs(c / 1e5 - round(c / 1e5)) < 1e-6 for c in chans), chans
-    rows = dvr.pilot_scan(chans)
+    rows = dvr_hd.pilot_scan(dvr, chans)
     best = max(rows, key=lambda r: r[1])
     others = [r[1] for r in rows if r[0] != STATION]
     print(f"pilot scan: {len(chans)} channels; best {best[0] / 1e6:.1f} MHz "

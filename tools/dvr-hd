@@ -78,7 +78,7 @@ def main(argv=None):
         stations = [round(s * 1e6, 1) for s in args.stations]
     else:
         t0 = time.time()
-        rows = dvr.pilot_scan(dvr_hd.raster(lo, hi))
+        rows = dvr_hd.pilot_scan(dvr, dvr_hd.raster(lo, hi))
         stations = [hz for hz, snr, _ in rows if snr >= args.min_pilot_db]
         print(f"scanned {len(rows)} channels in {time.time() - t0:.0f} s: "
               f"{len(stations)} with a stereo pilot")
@@ -95,7 +95,7 @@ def main(argv=None):
         mhz = hz / 1e6
         iq = os.path.join(out, f"iq_{mhz:.1f}.cf32")
         try:
-            dvr.channelize(hz, iq)
+            dvr_hd.channelize(dvr, hz, iq)
         except ValueError as exc:
             print(f"{mhz:.1f} MHz: {exc}")
             continue

@@ -1075,7 +1075,21 @@ Signal Hound's Sceptre keeps what the BB60D received in a ring file
 - [ ] The same in the app, for any long IQ file (a play-once mode, no loop)
 - [ ] A narrower IQ DVR in Sceptre, to hold more than 8.6 s (untried)
 - [x] A dBm scale for the IQ: read from each run's header (full scale = reference level + 10 dBm), checked to about 1 dB against a calibrated sweep (`sceptre-dvr.md`)
-- [ ] Check it against a test tone of known level; show dBm in the app for a DVR
+- [x] The DVR-to-IQ converter, `tools/dvr-to-iq`, and a reader for Sceptre's BLUE
+  recordings (`sceptre_blue.py`); `test_dvr_iq.py`; matched to Sceptre's own
+  `.cdif` extraction (0.998, 0.04 dB)
+- [ ] Show dBm in the app for a DVR (the offset is `full_scale_dbm`)
+- [ ] **A way to classify what is seen, not a decoder per signal** (decided
+  2026-09-30, since the signals to come are OOK, FSK, ASK, NTSC and more, and
+  a decoder for each has no end). The workflow's steps 3-4 as measurements
+  that give a signal a label: occupied bandwidth and where its energy sits,
+  the envelope's levels and timing (keying), the instantaneous frequency's
+  levels (FSK, FM), tones, symbol rate, burst length and repeat interval, and
+  the level in dBm now that a DVR has one. What comes out is a description, and
+  a decoder is written only when a class is worth decoding
+- [ ] Known signals to test the classifier on: the RF bench toolkit
+  (`/data/python/SDR`) has encoders for ISM sensors (OOK/PPM/PWM/Manchester),
+  NTSC, RDS and FM video, and ASK/FSK/PSK generators
 - [ ] The sweep DVR: read its tiles (16 sweeps of 1,228,800 signed bytes) as a
   waterfall in the Sweep tab, once their dBm is pinned. A float export of the
   same capture is the exact route (`sceptre-dvr.md`)

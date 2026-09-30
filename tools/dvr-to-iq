@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""dvr-to-iq: a channel of a Sceptre DVR (.sdvr) as a plain IQ recording.
+
+    tools/dvr-to-iq DVR.sdvr                        the whole band, as it is
+    tools/dvr-to-iq DVR.sdvr --center 99.269 --rate 3.5
+    tools/dvr-to-iq DVR.sdvr --center 100.3 --rate 0.5 --station 100.3 -o out/fm100
+    tools/dvr-to-iq DVR.sdvr --start 2 --seconds 3 --units mw
+
+Writes ``BASE.cfile`` (complex float32), ``BASE.sigmf-meta`` (SigMF) and
+``BASE.json`` (the RF bench toolkit's), as this app's own recordings have, so
+this app (``--file BASE.sigmf-meta``), SDR++, GNU Radio, inspectrum and URH
+can read a Sceptre capture. The DVR must have been made from Sceptre's IQ tab.
+The channel (``--center``, ``--rate``, in MHz and MS/s) is mixed to 0 Hz,
+low-passed and resampled; the default is the whole band at the DVR's rate
+(about 224 MB/s of output: 28 MS/s of complex float32).
+
+Values are in units of the ADC's full scale (1.0), which the DVR says is
+some dBm (``--info`` on ``dvr-hd`` prints it; it is in the metadata), or with
+``--units mw`` in Sceptre's square root of milliwatts, so ``|x|**2`` is
+power in mW. Plain Python with numpy and scipy: no GNU Radio needed. The DVR
+is only read.
+"""
+
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fm_receiver import dvr_iq, sceptre_dvr  # noqa: E402
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('dvr', help="the Sceptre DVR file (.sdvr), from its IQ tab")
+    ap.add_argument('-o', '--out', metavar='BASE',
+                    help="output path without the extension "
+                    "(default: <DVR name>-<centre MHz>MHz here)")
+    ap.add_argument('--center', type=float, metavar='MHZ',
+                    help="the channel's centre (default: the DVR's)")
+    ap.add_argument('--rate', type=float, metavar='MSPS',
+                    help="the channel's sample rate (default: the DVR's); "
+                    "its width, in effect")
+    ap.add_argument('--start', type=float, default=0.0, metavar='S',
+                    help="seconds into the DVR to start from (default 0)")
+    ap.add_argument('--seconds', type=float, metavar='S',
+                    help="how much to write (default: to the end)")
+    ap.add_argument('--station', type=float, metavar='MHZ',
+                    help="a station in the channel, for this app to tune on open")
+    ap.add_argument('--units', choices=('full', 'mw'), default='full',
+                    help="full: 1.0 is the ADC's full scale (default); "
+                    "mw: |x|**2 is power in milliwatts")
+    ap.add_argument('--force', action='store_true', help="replace existing files")
+    args = ap.parse_args(argv)
+    try:
+        dvr = dvr_iq.Dvr(args.dvr)
+    except (sceptre_dvr.SdvrError, OSError) as exc:
+        sys.exit(f"dvr-to-iq: {exc}")
+    center = (args.center * 1e6) if args.center else dvr.center_hz
+    rate = (args.rate * 1e6) if args.rate else dvr.rate
+    name = os.path.splitext(os.path.basename(args.dvr))[0]
+    base = args.out or f"{name}-{center / 1e6:g}MHz"
+    seconds = args.seconds if args.seconds else max(0.0, dvr.seconds - args.start)
+    print(f"{os.path.basename(args.dvr)}: {dvr.seconds:.1f} s at {dvr.rate / 1e6:g} MS/s "
+          f"around {dvr.center_hz / 1e6:g} MHz; writing {seconds:.2f} s of "
+          f"{rate / 1e6:g} MS/s at {center / 1e6:.6g} MHz "
+          f"(about {seconds * rate * 8 / 1e6:.0f} MB)")
+    try:
+        path, samples = dvr_iq.write_iq(
+            base, dvr, center, rate, start=args.start, seconds=seconds,
+            station_hz=(args.station * 1e6) if args.station else None,
+            units=args.units, force=args.force)
+    except (ValueError, FileExistsError) as exc:
+        sys.exit(f"dvr-to-iq: {exc}")
+    print(f"wrote {path} ({samples} samples, {samples / rate:.2f} s) and its "
+          ".sigmf-meta and .json")
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

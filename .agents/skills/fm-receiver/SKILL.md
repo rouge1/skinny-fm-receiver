@@ -22,7 +22,8 @@ workflows, commands and constraints. Read the file that fits before acting:
 - knowledge/sceptre-dvr.md: the layout of Sceptre's DVR file (`.sdvr`), which
   the app plays as IQ, and what is not yet known of its sweep bytes
   (`tools/dvr-hd DVR.sdvr` decodes HD Radio from one, offline; `--info` and
-  `--scan` say what is in it)
+  `--scan` say what is in it; `tools/dvr-to-iq` makes a channel of one a
+  plain `.cfile` + SigMF; `sceptre_blue.py` reads Sceptre's `.cdif` and `.fft`)
 
 ## The radio
 

@@ -192,6 +192,47 @@ def write_sdvr(path, iq, rate, center_hz, run=1 << 15, rotate=True, stale=True,
     return (q[:, 0] + 1j * q[:, 1]).astype(np.complex64) / 32768.0
 
 
+def write_blue(path, data, rate, fmt='CF', keywords=None, epoch='2026-09-30T10:44:21Z',
+               subsize=0):
+    """Write ``data`` as a little-endian BLUE file the way Sceptre's are laid out
+    (see sceptre_blue.py): 512-byte header, data, keyword records. Complex
+    ``data`` is written as float32 pairs; ``subsize`` makes it 2-D (type 2001).
+    ``keywords`` maps a tag to a float, an int or a string."""
+    raw = np.asarray(data)
+    if fmt[0] == 'C':
+        raw = np.column_stack([raw.real, raw.imag])
+    raw = raw.astype('<f4').tobytes()
+    ext = bytearray()
+    for tag, value in (keywords or {}).items():
+        if isinstance(value, str):
+            kind, body = b'A', value.encode() + b'\0'
+        elif isinstance(value, int):
+            kind, body = b'L', struct.pack('<i', value)
+        else:
+            kind, body = b'D', struct.pack('<d', value)
+        t = tag.encode()
+        lkey = -(-(8 + len(body) + len(t)) // 8) * 8
+        ext += struct.pack('<ihbc', lkey, lkey - len(body), len(t), kind)
+        ext += body + t + bytes(lkey - 8 - len(body) - len(t))
+    head = bytearray(512)
+    head[:4] = b'BLUE'
+    head[4:12] = b'EEEIEEEI'
+    ext_start = -(-(512 + len(raw)) // 512)
+    struct.pack_into('<ii', head, 24, ext_start, len(ext))
+    struct.pack_into('<dd', head, 32, 512.0, float(len(raw)))
+    struct.pack_into('<i', head, 48, 2001 if subsize else 1001)
+    head[52:54] = fmt.encode()
+    struct.pack_into('<d', head, 56, 2421917061.0)            # 2026-09-30 10:44:21
+    struct.pack_into('<dd', head, 256, 0.855, 1.0 / rate)
+    struct.pack_into('<i', head, 272, 1)
+    struct.pack_into('<i', head, 276, subsize)
+    with open(path, 'wb') as fh:
+        fh.write(head + raw)
+        fh.write(bytes(ext_start * 512 - 512 - len(raw)))
+        fh.write(bytes(ext))
+    return path
+
+
 def tone_level(x, fs, hz):
     """Amplitude of the ``hz`` component of ``x`` (windowed single bin)."""
     x = np.asarray(x, dtype=np.float64)

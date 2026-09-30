@@ -69,14 +69,21 @@ with a sweep, or a level with a limit. A DVR carries what turns it into dBm:
   more for each 20 dB of reference level, seen at 0 and -20 dBm).
   `sceptre_dvr.scan` returns `scale` and `full_scale_dbm`; `dvr-hd --info`
   prints it.
-- **Checked** on a capture at -20 dBm (full scale -10 dBm) against levels the
+- **Checked twice.** (1) A `.cdif` Sceptre extracted from the same DVR (a
+  3 MHz channel at 99.269 MHz, 3.5 MS/s) is the DVR's counts (matched 0.995,
+  -0.04 dB, correlation 0.998 sample for sample), and its `DATA_GAIN` keyword
+  (100.309 dB) is exactly `-20*log10(scale)` from the DVR's header: the power in
+  the same 2.5 MHz came out -50.8 dBm from the `.cdif` (`10*log10(|x|²) -
+  DATA_GAIN`) and -50.8 dBm from the DVR's own header scale, a difference of
+  0.00 dB. So the header scale is Sceptre's own calibration, in two places.
+  (2) Against the BB60D's sweep, on a capture at -20 dBm (full scale -10 dBm) against levels the
   BB60D's own calibrated sweep gave for the same band earlier (the reference
   level there was -40 dBm; the environment the same): a strong station's carrier
   in a 21 kHz slice -61.8 dBm against -61 to -62 read by the sweep, and the
   floor above the band -96.7 dBm against -93 to -101. The other reading (a
   complex sample's power as half its squared magnitude) would be 3 dB lower and
-  did not fit. Not yet checked with a test tone of known level, so call it good
-  to a few dB until it is.
+  did not fit. Not checked with a test tone of known level: the calibration is
+  Sceptre's, and it agrees with itself and with the sweep to about 1 dB.
 - The app still shows dBFS for a DVR; adding the offset there is on the roadmap.
 
 ## Sceptre's recordings (`.cdif` and `.fft`)
@@ -89,10 +96,13 @@ little-endian), data at byte 512, then a keyword block after the data
 (`SAMPLE_RATE`, `RF_FREQ`, `PRETUNED_CENTER_FREQ`, `DATA_BANDWIDTH`,
 `DATA_GAIN`, `TIME_EPOCH`, `SCEPTRE_MIN_VAL`/`MAX_VAL`, and the stream it came
 from, e.g. `.../rawcorrector/CorrectedRaw/DVR/Channel 1`). One extracted from
-a DVR (a 5 MHz channel at 7 MS/s, 5.35 s) read straight: the floats are
-calibrated units, with `DATA_GAIN` (100.3 dB there) the gain the numbers carry;
-`10*log10(mean(|x|²)) - DATA_GAIN` gave -80.5 dBm over the 5 MHz, which is a
-reading, not checked. The app does not read them.
+a DVR is the DVR's counts, mixed to the channel, filtered and resampled (to
+0.995 of the raw count, its flatness correction): so the floats are counts,
+`dBm = 10*log10(|x|²) - DATA_GAIN`, and `DATA_GAIN` is the DVR's header scale
+in dB (100.309 at a -20 dBm reference level). `sceptre_blue.py` reads them
+(`Blue`: format, rate, centre, start, keywords, samples); `tools/dvr-to-iq`
+makes the same kind of channel from a DVR, and matches Sceptre's own (0.998
+correlation, 0.04 dB), so a `.cdif` is only needed for its metadata.
 
 ## What can be done with an IQ DVR
 

@@ -12,3 +12,10 @@
 7)Recover the message/data
   Decode to text, then confirm it by agreement across repeats, by the packet's
   own CRC or BCH check, and other programs like rtl_433 decoder.
+
+Steps 3 and 4 are the ones to make repeatable: measure the same things of
+every signal (occupied bandwidth, the envelope's levels and timing, the
+instantaneous frequency's levels, tones, symbol rate, burst length and repeat
+interval, level in dBm) and let those name it, before any decoder is written.
+There are too many modulations and protocols to write a decoder for each; see
+the roadmap, Round 19.

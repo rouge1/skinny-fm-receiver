@@ -17,12 +17,11 @@ import os
 import re
 import shutil
 import subprocess
-from fractions import Fraction
 
 import numpy as np
 from scipy import signal
 
-from . import sceptre_dvr
+from .dvr_iq import Dvr, EDGE_HZ  # noqa: F401
 
 #: nrsc5's input rate for cf32 and cs16, FM.
 NRSC5_RATE = 744187.5
@@ -30,8 +29,6 @@ NRSC5_RATE = 744187.5
 MID_RATE = 2e6
 #: The stereo pilot's frequency, and where to look for it (Hz).
 PILOT_HZ = 19000.0
-#: An FM channel's edge: the tuner must keep this far from the band's edge.
-EDGE_HZ = 400e3
 _EXTRA = ('/usr/local/bin', '/opt/homebrew/bin', os.path.expanduser('~/.local/bin'))
 
 
@@ -59,86 +56,41 @@ def raster(lo_hz, hi_hz, first=87.9e6, step=200e3):
     return out
 
 
-class Dvr:
-    """A scanned Sceptre DVR, ready to be channelized."""
+def channelize(dvr, station_hz, out_path=None, seconds=None):
+    """The station at 0 Hz at NRSC5_RATE, as complex64 (the whole-number stage
+    leaves at least 2 MS/s); written to ``out_path`` if given."""
+    lo, hi = dvr.usable()
+    if not lo <= station_hz <= hi:
+        raise ValueError(f"{station_hz / 1e6:.1f} MHz is outside the DVR's "
+                         f"usable band, {lo / 1e6:.2f} to {hi / 1e6:.2f} MHz")
+    return dvr.extract(station_hz, NRSC5_RATE, out_path, seconds=seconds,
+                       min_mid=MID_RATE)
 
-    def __init__(self, path):
-        self.path = path
-        self.layout = sceptre_dvr.scan(path)
-        self.reader = sceptre_dvr.Reader(path, self.layout)
-        self.rate = self.layout['rate']
-        self.center_hz = self.layout['center_hz']
-        self.samples = self.layout['samples']
 
-    @property
-    def seconds(self):
-        return self.samples / self.rate
-
-    def usable(self):
-        """(low, high) in Hz: where a station's whole channel is in the band."""
-        half = self.rate / 2 - EDGE_HZ
-        return self.center_hz - half, self.center_hz + half
-
-    def channelize(self, station_hz, out_path=None, seconds=None):
-        """The station at 0 Hz, at NRSC5_RATE, as complex64; written to
-        ``out_path`` if given (the array is then not kept). ``seconds``
-        limits how much of the start is used."""
-        lo, hi = self.usable()
-        if not lo <= station_hz <= hi:
-            raise ValueError(f"{station_hz / 1e6:.1f} MHz is outside the DVR's "
-                             f"usable band, {lo / 1e6:.2f} to {hi / 1e6:.2f} MHz")
-        total = self.samples if seconds is None else min(
-            self.samples, int(seconds * self.rate))
-        decim = max(1, int(self.rate // MID_RATE))
-        mid = self.rate / decim
-        ratio = Fraction(NRSC5_RATE / mid).limit_denominator(1 << 17)
-        step = decim * 1_000_000
-        overlap = decim * 65536
-        w = 2 * np.pi * (station_hz - self.center_hz) / self.rate
-        parts = []
-        pos = 0
-        while pos < total:
-            a, b = max(0, pos - overlap), min(total, pos + step + overlap)
-            x = self.reader.read(a, b)
-            phase = (w * np.arange(a, a + len(x), dtype=np.float64)) % (2 * np.pi)
-            x *= np.exp(-1j * phase).astype(np.complex64)
-            y = signal.resample_poly(x, 1, decim, window=('kaiser', 7.0)) \
-                if decim > 1 else x
-            lo_i = (pos - a) // decim
-            parts.append(y[lo_i:lo_i + min(step, total - pos) // decim]
-                         .astype(np.complex64))
-            pos += step
-        mid_iq = np.concatenate(parts)
-        out = signal.resample_poly(mid_iq, ratio.numerator, ratio.denominator,
-                                   window=('kaiser', 7.0)).astype(np.complex64)
-        if out_path:
-            out.tofile(out_path)
-        return out
-
-    def pilot_scan(self, channels, seconds=0.75):
-        """For each channel (Hz), the stereo pilot's SNR in dB and deviation
-        in kHz, from the first ``seconds``: ``[(hz, snr_db, dev_khz)]``."""
-        decim = 120 if self.rate > 20e6 else max(1, int(self.rate // 233e3))
-        n = min(self.samples, int(seconds * self.rate))
-        x = self.reader.read(0, n)
-        t = np.arange(n, dtype=np.float64)
-        rows = []
-        for hz in channels:
-            w = 2 * np.pi * (hz - self.center_hz) / self.rate
-            y = signal.resample_poly(
-                x * np.exp(-1j * ((w * t) % (2 * np.pi))).astype(np.complex64),
-                1, decim, window=('kaiser', 7.0))
-            fs = self.rate / decim
-            d = np.angle(y[1:] * np.conj(y[:-1])) * fs / (2 * np.pi)
-            f, p = signal.welch(d, fs, nperseg=1 << 14)
-            sel = (f > 18.6e3) & (f < 19.4e3)
-            k = int(np.argmax(p[sel]))
-            fp = f[sel][k]
-            tone = (f > fp - 60) & (f < fp + 60)
-            noise = np.median(p[(f > fp - 1500) & (f < fp + 1500) & ~tone])
-            rows.append((hz, float(10 * np.log10(p[sel][k] / noise)),
-                         float(np.sqrt(2 * (p[tone] - noise).clip(0).sum() * f[1]) / 1e3)))
-        return rows
+def pilot_scan(dvr, channels, seconds=0.75):
+    """For each channel (Hz), the stereo pilot's SNR in dB and deviation
+    in kHz, from the first ``seconds``: ``[(hz, snr_db, dev_khz)]``."""
+    decim = 120 if dvr.rate > 20e6 else max(1, int(dvr.rate // 233e3))
+    n = min(dvr.samples, int(seconds * dvr.rate))
+    x = dvr.reader.read(0, n)
+    t = np.arange(n, dtype=np.float64)
+    rows = []
+    for hz in channels:
+        w = 2 * np.pi * (hz - dvr.center_hz) / dvr.rate
+        y = signal.resample_poly(
+            x * np.exp(-1j * ((w * t) % (2 * np.pi))).astype(np.complex64),
+            1, decim, window=('kaiser', 7.0))
+        fs = dvr.rate / decim
+        d = np.angle(y[1:] * np.conj(y[:-1])) * fs / (2 * np.pi)
+        f, p = signal.welch(d, fs, nperseg=1 << 14)
+        sel = (f > 18.6e3) & (f < 19.4e3)
+        k = int(np.argmax(p[sel]))
+        fp = f[sel][k]
+        tone = (f > fp - 60) & (f < fp + 60)
+        noise = np.median(p[(f > fp - 1500) & (f < fp + 1500) & ~tone])
+        rows.append((hz, float(10 * np.log10(p[sel][k] / noise)),
+                     float(np.sqrt(2 * (p[tone] - noise).clip(0).sum() * f[1]) / 1e3)))
+    return rows
 
 
 _SERVICE = re.compile(r'SIG Service: type=audio number=(\d+) name=(.*)')
