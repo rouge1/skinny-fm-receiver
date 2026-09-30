@@ -17,7 +17,9 @@ RF bench toolkit's FM + RDS transmitter sends).
 """
 
 import json
+import math
 import os
+import struct
 
 import numpy as np
 from scipy import signal as sps
@@ -122,6 +124,69 @@ def write_station(path_base, seconds=8.0, rate=2.5e6, center_hz=98.4e6,
         json.dump({'rate': rate, 'offset_hz': station_hz - center_hz,
                    'station_hz': station_hz, 'center_hz': center_hz}, fh)
     return path_base + '.cfile'
+
+
+def _sdvr_header(tag, when, interval, count, centre=0.0, bins=0):
+    """One chunk's header page of a Sceptre DVR file (see sceptre_dvr.py)."""
+    page = bytearray(4096)
+    struct.pack_into('<d', page, 0, centre)
+    page[0x10:0x12] = tag
+    page[0x12:0x14] = b'\x00\x01' if tag == b'CI' else b'\x00\x02'
+    struct.pack_into('<dd', page, 0x14, math.floor(when), when - math.floor(when))
+    struct.pack_into('<d', page, 0x24, interval)
+    struct.pack_into('<I', page, 0x2c, count)
+    if tag == b'SB':
+        struct.pack_into('<I', page, 0x44, bins)
+    return bytes(page)
+
+
+def _pad(data):
+    return data + bytes(-len(data) % 4096)
+
+
+def write_sdvr(path, iq, rate, center_hz, run=1 << 15, rotate=True, stale=True,
+               tiles=True, start=1.7907e9 + 0.25):
+    """Write ``iq`` (complex, |x| < 1) as a Sceptre DVR file, ``path``.
+
+    Made the way the real ones are: runs of ``run`` samples as int16 I, Q,
+    each a header page and its data; spectrum tiles between them at an
+    uneven rhythm (none, one or two after a run); the ring wrapped, so the
+    newest chunks come first; and, if ``stale``, an old run left at the end
+    from before the window the file describes. Returns the samples it holds
+    as they will be read: quantised, scaled to 1.0 = full scale.
+    """
+    n = len(iq) // run * run
+    q = np.empty((n, 2), dtype='<i2')
+    q[:, 0] = np.clip(np.round(iq[:n].real * 32768.0), -32768, 32767)
+    q[:, 1] = np.clip(np.round(iq[:n].imag * 32768.0), -32768, 32767)
+    interval = 1.0 / rate
+    chunks = []
+    for k in range(n // run):
+        when = start + k * run * interval
+        chunks.append(_sdvr_header(b'CI', when, interval, run, center_hz)
+                      + _pad(q[k * run:(k + 1) * run].tobytes()))
+        if tiles:
+            for j in range((0, 1, 2)[k % 3]):
+                chunks.append(_sdvr_header(b'SB', when, 2.34e-3, 16, bins=64)
+                              + _pad(bytes((k * 7 + j) % 251 for _ in range(16 * 64))))
+    if rotate:
+        cut = len(chunks) * 2 // 3
+        chunks = chunks[cut:] + chunks[:cut]
+    if stale:
+        chunks.append(_sdvr_header(b'CI', 1.6e9, interval, run, center_hz)
+                      + _pad(bytes(run * 4)))
+    end = start + n * interval
+    head = bytearray(4096)
+    head[:4] = b'SDVR'
+    stream = bytearray(4096)
+    struct.pack_into('<dd', stream, 0, math.floor(start), start - math.floor(start))
+    struct.pack_into('<dd', stream, 16, math.floor(end), end - math.floor(end))
+    struct.pack_into('<dd', stream, 32, center_hz - rate / 2, center_hz + rate / 2)
+    with open(path, 'wb') as fh:
+        fh.write(bytes(head) + bytes(stream) + bytes(stream) + bytes(4096))
+        for c in chunks:
+            fh.write(c)
+    return (q[:, 0] + 1j * q[:, 1]).astype(np.complex64) / 32768.0
 
 
 def tone_level(x, fs, hz):

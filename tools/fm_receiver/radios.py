@@ -36,6 +36,7 @@ import sys
 from gnuradio import blocks, gr  # type: ignore
 
 from . import bb60_source as _bb60
+from . import sceptre_dvr
 
 # SoapySDR loads its driver modules once, on first use, from the paths it
 # knows then. The BB60D's module is a system one, found only through
@@ -566,9 +567,20 @@ def read_iq_metadata(path):
     (``.sigmf-meta`` / ``.sigmf-data``) or the RF bench toolkit's capture
     format (``.cfile`` with a ``.json`` sidecar holding ``rate``,
     ``offset_hz`` and ``station_hz``). This app writes both for every IQ
-    recording. Only complex float32 is read.
+    recording. Only complex float32 is read - and, alone, a Sceptre DVR file
+    (``.sdvr``) recorded from its IQ tab, whose layout is read in place
+    (``sceptre_dvr``): the reply then has a ``layout`` in place of a plain
+    data file's samples.
     """
     base, ext = os.path.splitext(path)
+    if ext == '.sdvr':
+        try:
+            layout = sceptre_dvr.scan(path)
+        except sceptre_dvr.SdvrError as exc:
+            raise RadioError(str(exc)) from exc
+        return {'data': path, 'rate': layout['rate'],
+                'center_hz': layout['center_hz'], 'station_hz': None,
+                'layout': layout}
     meta_file = None
     if ext in ('.sigmf-meta', '.sigmf-data'):
         meta_file = base + '.sigmf-meta'
@@ -612,6 +624,21 @@ class _file_source(gr.hier_block2):
                                 gr.io_signature(0, 0, 0),
                                 gr.io_signature(1, 1, gr.sizeof_gr_complex))
         self.file = blocks.file_source(gr.sizeof_gr_complex, data, repeat)
+        if throttle:
+            self.throttle = blocks.throttle(gr.sizeof_gr_complex, rate, True)
+            self.connect(self.file, self.throttle, self)
+        else:
+            self.connect(self.file, self)
+
+
+class _sdvr_file_source(gr.hier_block2):
+    """The same block as :class:`_file_source`, for a Sceptre DVR's IQ."""
+
+    def __init__(self, path, layout, rate, repeat=True, throttle=True):
+        gr.hier_block2.__init__(self, 'iq_sdvr_source',
+                                gr.io_signature(0, 0, 0),
+                                gr.io_signature(1, 1, gr.sizeof_gr_complex))
+        self.file = sceptre_dvr.sdvr_source(path, layout, repeat)
         if throttle:
             self.throttle = blocks.throttle(gr.sizeof_gr_complex, rate, True)
             self.connect(self.file, self.throttle, self)
@@ -668,9 +695,16 @@ class IQFile(Radio):
         self.center_hz = self.meta['center_hz']
         self.freq_range_hz = (self.center_hz - rate / 2 + 120e3,
                               self.center_hz + rate / 2 - 120e3)
-        self.block = _file_source(self.meta['data'], rate, self.repeat,
-                                  self.throttle)
-        self.total = max(1, os.path.getsize(self.meta['data']) // gr.sizeof_gr_complex)
+        layout = self.meta.get('layout')
+        if layout:
+            self.block = _sdvr_file_source(self.meta['data'], layout, rate,
+                                           self.repeat, self.throttle)
+            self.total = max(1, layout['samples'])
+        else:
+            self.block = _file_source(self.meta['data'], rate, self.repeat,
+                                      self.throttle)
+            self.total = max(1, os.path.getsize(self.meta['data'])
+                             // gr.sizeof_gr_complex)
         self._base = 0
         self._counting = False
 

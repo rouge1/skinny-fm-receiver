@@ -19,6 +19,8 @@ workflows, commands and constraints. Read the file that fits before acting:
   which could be fed from a recording
 - knowledge/rf-ctf.md: RF CTF challenge types and the tools that decode them
 - knowledge/google_bb60d.md: links to Signal Hound's BB60 API documentation
+- knowledge/sceptre-dvr.md: the layout of Sceptre's DVR file (`.sdvr`), which
+  the app plays as IQ, and what is not yet known of its sweep bytes
 
 ## The radio
 

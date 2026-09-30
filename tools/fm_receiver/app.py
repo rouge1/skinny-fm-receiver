@@ -1799,7 +1799,7 @@ class MainWindow(Qt.QWidget):
                   or self._recording_dir())
         path, _ = Qt.QFileDialog.getOpenFileName(
             self, "Play an IQ recording", folder,
-            "IQ recordings (*.sigmf-meta *.sigmf-data *.cfile *.json);;All files (*)")
+            "IQ recordings (*.sigmf-meta *.sigmf-data *.cfile *.json *.sdvr);;All files (*)")
         if not path:
             return False
         self.cfg['iq_file'] = path
@@ -3668,7 +3668,8 @@ def parse_args(argv=None):
                          "start rtl_tcp on ('' for this computer). Also shows "
                          "the address box next to the Radio list; without "
                          "this flag the RTL-SDR is always this computer's")
-    ap.add_argument('--file', help="play an IQ recording (implies --radio file)")
+    ap.add_argument('--file', help="play an IQ recording, or a Sceptre DVR's IQ (.sdvr) "
+                    "(implies --radio file)")
     ap.add_argument('--freq', type=float, metavar='MHZ', help="station to tune")
     ap.add_argument('--mode', choices=TAB_MODES, help="tab to start in")
     ap.add_argument('--sweep', type=float, nargs=2, metavar=('START', 'STOP'),

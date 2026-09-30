@@ -1053,3 +1053,20 @@ and GNU Radio on the RTL-SDR 30.
 - [ ] `fmctl iq-out ...` and `capture`
 - [ ] Tests, no radio; off air with SDR++ and GNU Radio
 - [ ] `usage.md` and `capabilities.md`
+
+## Round 19: Sceptre's DVR (requested 2026-09-29)
+
+Signal Hound's Sceptre keeps what the BB60D received in a ring file
+(`dvr.sdvr`). Its IQ plays here; its sweep bytes are next.
+
+- [x] Read the IQ of a Sceptre DVR in place (`sceptre_dvr.py`), with the
+  spectrum tiles skipped, the ring in time order and old data dropped;
+  `IQFile` plays it; `--file` and the open dialog take `.sdvr`
+- [x] `tools/tests/test_sceptre_dvr.py`: synthetic files (no captured data),
+  the layout, the refusals, exact samples, a station decoded through the engine
+- [x] Off air on a real capture: 230 runs, no gaps; RDS on the stations that
+  carry it, across the whole 27 MHz
+- [x] `knowledge/sceptre-dvr.md`, `usage.md` and `capabilities.md`
+- [ ] The sweep DVR: read its tiles (16 sweeps of 1,228,800 signed bytes) as a
+  waterfall in the Sweep tab, once their dBm is pinned. A float export of the
+  same capture is the exact route (`sceptre-dvr.md`)

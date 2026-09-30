@@ -135,7 +135,7 @@ Useful options (`./fm-receiver --help` lists them all):
 | `--radio bb60` / `hackrf` / `usrp` / `rtlsdr` / `file` | Choose the radio for this run |
 | `--usrp-address 192.168.10.2` | Connect to a USRP at this address |
 | `--rtl-address macmini` | Use an RTL-SDR on another computer (an ssh host), and show its address box. Without it the RTL-SDR is this computer's |
-| `--file PATH` | Play back an IQ recording instead of a radio |
+| `--file PATH` | Play back an IQ recording, or a Sceptre DVR's IQ (`.sdvr`), instead of a radio |
 | `--freq 95.1` | Tune to this station (MHz) |
 | `--mode sweep` / `receive` / `recordings` | Start in this tab |
 | `--sweep 87.5 108` | Set the sweep span (MHz) |
@@ -696,6 +696,17 @@ The Recordings tab plays this app's recordings. For any other IQ file, such
 as SigMF or the RF bench toolkit's captures, choose **IQ recording
 (playback)** in the Radio list and open the `.cfile`, `.sigmf-meta` or
 `.json` file. Or start the app with `./fm-receiver --file PATH`.
+
+**A Sceptre DVR.** Signal Hound's Sceptre keeps a DVR ring, `dvr.sdvr`. Made
+from its **IQ** tab (a BB60D at the widest, 28 MS/s, 27 MHz around the
+centre), the file plays here as it is: choose it in the same way (the
+**`.sdvr`** filter), or `--file /path/to/dvr.sdvr`. Pause the DVR in Sceptre
+first, so the file stops changing while it is read. It holds about 8.6 s in
+a 1 GB ring, played on a loop, and the tuner reaches the whole 27 MHz, so
+every station in it can be tuned in turn (a lower reference level in
+Sceptre, -20 to -30 dBm, gives a better signal than 0). A DVR made from
+Sceptre's **Sweep** tab holds spectra, not IQ, and is refused. How the file
+is laid out: [sceptre-dvr.md](sceptre-dvr.md).
 
 The recording plays in real time on a loop, as if it were a radio, and it
 opens tuned to the station it was recorded on. Tuning moves the channel
