@@ -187,6 +187,29 @@ keeps both sidebands (see usage.md). At 500 kS/s it needs resampling to
   audio (usage.md, "HD Radio"). For a survey of every station at once,
   record the band with **IQ – band** and resample offline, as the table
   above was made: about 5 min of CPU for 38 channels × 8 s.
+- **Offline, from a Sceptre DVR** (2026-09-30). A Sceptre DVR made from its
+  IQ tab (`sceptre-dvr.md`) holds 27 MHz of the band at 28 MS/s for about
+  8.6 s, so every station in it can be decoded without the app:
+  1. Read the runs in time order (`sceptre_dvr.scan`), mix the station to
+     0 Hz, decimate by 14 (28 to 2 MS/s) with a low-pass, then resample by
+     11907/32000 to **744,187.5 S/s** and write cf32. Filter in chunks with
+     the overlap trimmed, or the chunk joins glitch every few milliseconds.
+  2. `nrsc5 -r station.cf32 --iq-input-format cf32 -o hd1.wav -t wav 0`,
+     then again with `1`, `2`, `3` for HD2-HD4. Its audio is 44.1 kHz stereo.
+  - **The rate must be exact.** The 1,488,375 S/s of the cu8 format above is
+    wrong for cf32 and cs16: nrsc5 then exits cleanly with an empty WAV
+    (68 bytes) and no log at all.
+  - **Why offline.** Played in the app the DVR loops every 8.6 s and nrsc5
+    loses sync at each seam, so HD1 played whole but HD2 and HD3, which take
+    longer to come in, were audible only 40-80% of the time. One pass through
+    nrsc5 gave every program 6 s unbroken (92-98% audible).
+  - **What came out** (the capture of 2026-09-29, -20 dBm reference, 19
+    stereo stations in 88-108 MHz): five stations with HD Radio decoded, with
+    two to three programs each at 22-47 kbps, service names and all, at MER
+    of only 1-4 dB; two more had a digital signal too weak to decode (negative
+    MER). A better signal than the live app's: 99.5 counted as lost live, and
+    decoded offline. MER, BER and the service names come from nrsc5's log as
+    usual.
 
 ## Other digital radio, and the US
 

@@ -708,6 +708,12 @@ Sceptre, -20 to -30 dBm, gives a better signal than 0). A DVR made from
 Sceptre's **Sweep** tab holds spectra, not IQ, and is refused. How the file
 is laid out: [sceptre-dvr.md](sceptre-dvr.md).
 
+HD Radio works on a DVR (the **HD Radio** row lights on the stations that
+have it), but the 8.6 s loop restarts the decoder at each seam, so HD1 plays
+and HD2 and HD3, which take longer to come in, drop out. For whole programs,
+decode the DVR offline with `nrsc5`
+([digital-radio.md](digital-radio.md), "Offline, from a Sceptre DVR").
+
 The recording plays in real time on a loop, as if it were a radio, and it
 opens tuned to the station it was recorded on. Tuning moves the channel
 within the recorded band. A whole-band recording therefore lets you listen to

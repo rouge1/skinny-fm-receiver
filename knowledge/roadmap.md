@@ -1067,6 +1067,12 @@ Signal Hound's Sceptre keeps what the BB60D received in a ring file
 - [x] Off air on a real capture: 230 runs, no gaps; RDS on the stations that
   carry it, across the whole 27 MHz
 - [x] `knowledge/sceptre-dvr.md`, `usage.md` and `capabilities.md`
+- [x] HD Radio from a DVR: live in the app (it loops, so it restarts each
+  pass) and offline with nrsc5, whole programs (`digital-radio.md`)
+- [ ] An offline HD Radio decode in the app: a DVR (or any long IQ file)
+  played once through nrsc5 without the loop, writing each program's WAV
+- [ ] A narrower IQ DVR in Sceptre, to hold more than 8.6 s (untried)
+- [ ] Optional: a dBm scale for the IQ (`sceptre-dvr.md`); nothing here needs it
 - [ ] The sweep DVR: read its tiles (16 sweeps of 1,228,800 signed bytes) as a
   waterfall in the Sweep tab, once their dBm is pinned. A float export of the
   same capture is the exact route (`sceptre-dvr.md`)
