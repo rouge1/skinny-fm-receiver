@@ -119,9 +119,16 @@ its own scale**, two float32s in its header page, at 8 (`gain`) and 12
 - Absolute level: FM carriers read about -59 dBm (99.9th percentile) and the
   band's floor -99 dBm (10th percentile) at a -40 dBm reference, where the
   BB60D's own calibrated sweep gave -61 to -62 and -93 to -101; the noise
-  floor falls from -87 dBm at 40 MHz to -118 dBm above 2.4 GHz. Not checked
-  against a float export of the same capture, which would settle the
-  absolute scale to a fraction of a dB, nor against a test tone.
+  floor falls from -87 dBm at 40 MHz to -118 dBm above 2.4 GHz.
+- **Checked against Sceptre's float export** (`.fft`, type `SF`, 32-bit) of
+  the same capture: 544 sweeps matched by time (exactly, to 0.000 of a row),
+  95 million bins, the DVR's bytes converted here against the export's floats:
+  the largest difference is 1.5e-5 dB (float32 rounding; 60% of the values are
+  bit for bit the same, and both have the same 7,338 distinct levels). So
+  `(byte - offset) / gain` is exactly Sceptre's own decode, and the export
+  holds nothing the DVR did not (it is the DVR's bytes, decoded). What stays
+  open is the physical dBm, which is the BB60D's and Sceptre's, checked only
+  against the BB60D's own sweep (above), not a test tone.
 - Bytes at +-127 are the ends of the scale, not measurements: bin 0 is always
   at the top. Not verified for an IQ DVR's tiles (16384 bins), whose header
   floats have not been looked at.
@@ -176,6 +183,15 @@ in dB (100.309 at a -20 dBm reference level). `sceptre_blue.py` reads them
 makes the same kind of channel from a DVR, and matches Sceptre's own (0.998
 correlation, 0.04 dB), so a `.cdif` is only needed for its metadata.
 
+A `.fft` (type 2001, format `SF`) is rows of float32 dBm: a row a sweep,
+1,228,800 bins. In a type 2001 file the **first axis runs along a row**
+(`xstart` and `xdelta` at 256 are the first bin and bin step, 4,882.8125 Hz
+here) and the **second is time** (`ystart` and `ydelta` at 280: 0.72 s and
+0.2322876 s, the sweep interval); `TIME_EPOCH` plus `ystart` is the first
+sweep's time. `Blue` reads them that way (`.rate` is rows a second;
+`.xstart`, `.xdelta`). An earlier version took the first axis for time and put
+the start 4,883 s late. A 208 s export is 4.4 GB.
+
 ## What can be done with an IQ DVR
 
 - **Play it in the app** (`--file dvr.sdvr`, or the open dialog): the whole
@@ -193,12 +209,11 @@ correlation, 0.04 dB), so a `.cdif` is only needed for its metadata.
 
 ## Not settled
 
-- **The sweep DVR's dBm against a float export.** The tile header's gain and
-  offset ("A tile's own scale") give dBm that is steady between tiles and
-  close to the BB60D's calibrated sweep (a couple of dB), but it has not been
-  matched cell for cell to a `.fft` export of the same capture, or checked
-  with a test tone. How the reference level enters the top (-53 dBm at a
-  -40 dBm reference) is not known. An IQ DVR's tiles were not looked at.
+- **The sweep DVR's physical dBm.** The decode is exact (it matches Sceptre's
+  float export to float rounding), and close to the BB60D's own calibrated
+  sweep (a couple of dB), but it has not been checked with a test tone. How
+  the reference level enters the top (-53 dBm at a -40 dBm reference) is not
+  known. An IQ DVR's tiles were not looked at.
 - **A test tone.** The IQ's scale ("The IQ's level in dBm" below) is Sceptre's
   own, in two places that agree to 0.00 dB, and within about 1 dB of the
   BB60D's calibrated sweep. It has not been checked against a source of known
@@ -213,11 +228,13 @@ correlation, 0.04 dB), so a `.cdif` is only needed for its metadata.
 - **Whether the header checksum matters** to Sceptre itself: this reader
   ignores it, and never writes the file.
 
-## A float export is the exact route
+## A float export is the DVR, decoded
 
 *Save Entire DVR Spectrum to Recording Database* with the **32-bit** format
 writes a BLUE file (X-Midas: `BLUE` and `EEEI` at the start, type `SF`,
 little-endian float32 in dBm, 512-byte header and extended header, data at
 byte 3072 in the one seen), one row of 1,228,800 values per sweep, with the
-same times as the DVR's. It is what would check the sweep DVR's dBm exactly, at 4 GB
-for a 1 GB DVR.
+same times as the DVR's, at 4 GB for a 1 GB DVR. It holds exactly what
+`Sweeps.read(dbm=True)` gives from the DVR (checked, "A tile's own scale"),
+so it is not needed: keep the DVR, or convert it with `dvr-sweep` or
+`Sweeps`.

@@ -299,8 +299,14 @@ def write_blue(path, data, rate, fmt='CF', keywords=None, epoch='2026-09-30T10:4
     struct.pack_into('<i', head, 48, 2001 if subsize else 1001)
     head[52:54] = fmt.encode()
     struct.pack_into('<d', head, 56, 2421917061.0)            # 2026-09-30 10:44:21
-    struct.pack_into('<dd', head, 256, 0.855, 1.0 / rate)
-    struct.pack_into('<i', head, 272, 1)
+    if subsize:                      # rows: a frequency axis along them, time down them
+        struct.pack_into('<dd', head, 256, 4882.8125, 4882.8125)
+        struct.pack_into('<i', head, 272, 3)
+        struct.pack_into('<dd', head, 280, 0.855, 1.0 / rate)
+        struct.pack_into('<i', head, 296, 1)
+    else:
+        struct.pack_into('<dd', head, 256, 0.855, 1.0 / rate)
+        struct.pack_into('<i', head, 272, 1)
     struct.pack_into('<i', head, 276, subsize)
     with open(path, 'wb') as fh:
         fh.write(head + raw)

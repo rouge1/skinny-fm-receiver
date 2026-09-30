@@ -42,9 +42,11 @@ class BlueError(Exception):
 
 
 class Blue:
-    """One BLUE file: ``.fmt``, ``.rate`` (Hz, 1 / the axis step), ``.start``
-    (seconds since 1970), ``.keywords`` (a dict), and ``.data`` - a numpy
-    memmap, complex64 for a ``C`` format and 2-D when the type says so."""
+    """One BLUE file: ``.fmt``, ``.rate`` (samples, or rows, a second),
+    ``.start`` (seconds since 1970 of the first sample or row), ``.keywords``
+    (a dict), and ``.data`` - a numpy memmap, complex64 for a ``C`` format and
+    2-D when the type says so. For rows, ``.xstart`` and ``.xdelta`` are the
+    first bin and the bin step along a row (Hz, in a spectrum)."""
 
     def __init__(self, path):
         self.path = path
@@ -63,8 +65,13 @@ class Blue:
         self.timecode = struct.unpack_from('<d', head, 56)[0]
         xstart, xdelta = struct.unpack_from('<dd', head, 256)
         self.xstart, self.xdelta = xstart, xdelta
-        self.rate = 1.0 / xdelta if xdelta else None
         self.subsize = struct.unpack_from('<i', head, 276)[0] if self.type >= 2000 else 1
+        # A series' axis is time; in rows (2001) the first axis runs along a row
+        # (a spectrum's frequency, Hz) and the second, at 280, is time.
+        self.ystart, self.ydelta = ((struct.unpack_from('<dd', head, 280))
+                                    if self.type >= 2000 else (0.0, 0.0))
+        step = self.ydelta if self.type >= 2000 else xdelta
+        self.rate = 1.0 / step if step else None
         if self.fmt[0] not in 'CS' or self.fmt[1] not in _KINDS:
             raise BlueError(f"{os.path.basename(path)} holds format {self.fmt!r}; "
                             "read: CF CD CI CL CB and the scalar SF SD SI SL SB.")
@@ -110,17 +117,21 @@ class Blue:
     @property
     def start(self):
         """Seconds since 1970 of the first sample (``TIME_EPOCH`` plus the
-        axis start when Sceptre wrote it, else the header's time code)."""
+        time axis start when Sceptre wrote it, else the header's time code)."""
         epoch = self.keywords.get('TIME_EPOCH')
         if epoch:
             try:
                 base = datetime.datetime.fromisoformat(
                     epoch.rstrip('Z')[:26] + '+00:00').timestamp()
-                return base + self.xstart
+                return base + self._t0
             except ValueError:
                 pass
         return (_EPOCH_1950 + datetime.timedelta(seconds=self.timecode)).timestamp() \
-            + self.xstart
+            + self._t0
+
+    @property
+    def _t0(self):
+        return self.ystart if self.type >= 2000 else self.xstart
 
     @property
     def center_hz(self):

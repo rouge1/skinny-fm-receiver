@@ -1088,8 +1088,9 @@ Signal Hound's Sceptre keeps what the BB60D received in a ring file
 - [x] The sweep DVR's bytes to dBm: each tile's header carries a gain and an
   offset (`dBm = (byte - offset) / gain`); the dark bands were the tiles' own
   scales (`sceptre-dvr.md`, "A tile's own scale"); `Sweeps.read(dbm=True)`
-- [ ] Check that against a `.fft` float export of the same capture (exact),
-  and look at an IQ DVR's tile headers
+- [x] Checked against a `.fft` float export of the same capture: identical to
+  float rounding (1.5e-5 dB over 95 million bins); the export is the DVR decoded
+- [ ] Look at an IQ DVR's tile headers (do they carry a gain and offset too?)
 - [ ] Draw the tiles in the Sweep tab
 - [ ] Show dBm in the app for a DVR (the offset is `full_scale_dbm`)
 - [ ] **A way to classify what is seen, not a decoder per signal** (decided

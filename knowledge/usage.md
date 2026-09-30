@@ -746,8 +746,9 @@ left out and an overwritten one dropped (the report says so). The levels are
 dBm (`dbm=True`; `--bytes` for the raw signed bytes). Each tile carries its own
 scale, so the raw bytes step up and down between tiles as bands across the
 waterfall, and the dBm is what removes them (`sceptre-dvr.md`, "A tile's own
-scale"). Read against the BB60D's own sweep to a couple of dB; not yet against
-a float export.
+scale"). It is Sceptre's own decode: it matches Sceptre's 32-bit `.fft` export
+of the same capture to float rounding, and the BB60D's own sweep to a couple
+of dB.
 
 **A DVR as a plain IQ file: `tools/dvr-to-iq`.** For anything else that reads
 IQ (SDR++, GNU Radio, inspectrum, URH), or to keep a DVR before Sceptre

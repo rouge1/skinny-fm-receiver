@@ -60,6 +60,9 @@ def blue_checks(folder):
     p2 = signals.write_blue(os.path.join(folder, 'b.fft'), rows, 4.3, fmt='SF', subsize=32)
     b2 = sceptre_blue.read(p2)
     assert b2.fmt == 'SF' and b2.data.shape == (6, 32) and np.array_equal(b2.data, rows), b2.data.shape
+    # rows: the time axis is the second one (a frequency axis runs along a row)
+    assert abs(b2.rate - 4.3) < 1e-9 and abs(b2.start - (1790765061 + 0.855)) < 1e-3, (b2.rate, b2.start)
+    assert b2.xstart == b2.xdelta == 4882.8125
 
     def refused(path, *words):
         try:
