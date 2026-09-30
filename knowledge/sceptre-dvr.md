@@ -103,9 +103,9 @@ its own scale**, two float32s in its header page, at 8 (`gain`) and 12
 
 - The level is constant within a tile (sd 0.17 of a byte) and steps between
   tiles. A per-tile gain and offset fitted from 39 bands across the span
-  (taking the long-run level of each band as the reference) came out as
-  `offset - 1.006*f12 + 121.13*gain = -1.1` with R² 1.000, and the gain fitted
-  to `gain` with correlation 0.98.
+  (taking the long-run level of each band as the reference) gave each tile a
+  byte offset equal to `1.006 * offset - 121.13 * gain - 1.1` (R² 1.000) and a
+  slope that followed `gain` (correlation 0.98): the formula above.
 - Applying it, the level of each band varies 0.25 dB between tiles (4.6 bytes
   before), so the bands are gone and the picture matches Sceptre's own.
 - The scale is set by the tile's extremes: every tile has both +127 and -127.
