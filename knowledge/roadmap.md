@@ -1085,8 +1085,12 @@ Signal Hound's Sceptre keeps what the BB60D received in a ring file
   sweep DVR
 - [ ] Try it on a running **IQ** DVR (Sceptre on the IQ tab, recording): is its
   window kept current, is the newest run ever half written
-- [ ] Calibrate the sweep DVR's bytes to dBm (a `.fft` float export of the
-  same capture is the exact route), then draw the tiles in the Sweep tab
+- [x] The sweep DVR's bytes to dBm: each tile's header carries a gain and an
+  offset (`dBm = (byte - offset) / gain`); the dark bands were the tiles' own
+  scales (`sceptre-dvr.md`, "A tile's own scale"); `Sweeps.read(dbm=True)`
+- [ ] Check that against a `.fft` float export of the same capture (exact),
+  and look at an IQ DVR's tile headers
+- [ ] Draw the tiles in the Sweep tab
 - [ ] Show dBm in the app for a DVR (the offset is `full_scale_dbm`)
 - [ ] **A way to classify what is seen, not a decoder per signal** (decided
   2026-09-30, since the signals to come are OOK, FSK, ASK, NTSC and more, and
@@ -1105,6 +1109,5 @@ Signal Hound's Sceptre keeps what the BB60D received in a ring file
   Its ASK, FSK, PSK and PPM-OOK generators are GNU Radio apps with dialogs, so
   their modulation would be taken into a test rather than the apps run. A bench
   of known signals, each measured, checks that the measurements name the class
-- [ ] The sweep DVR: read its tiles (16 sweeps of 1,228,800 signed bytes) as a
-  waterfall in the Sweep tab, once their dBm is pinned. A float export of the
-  same capture is the exact route (`sceptre-dvr.md`)
+- [ ] The sweep DVR: its tiles (16 sweeps of 1,228,800 bytes) as a waterfall in
+  the Sweep tab, now that their dBm is known (`Sweeps.read(dbm=True)`)

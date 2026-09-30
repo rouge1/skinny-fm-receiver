@@ -743,8 +743,11 @@ tools/dvr-sweep dvr.sdvr --band 88 108 --png fm.png
 From Python: `sceptre_dvr.Sweeps(path).read(f_lo, f_hi)` gives `(times, freqs,
 bytes)`, one row a sweep. While Sceptre is still recording, the newest tile is
 left out and an overwritten one dropped (the report says so). The levels are
-the DVR's signed bytes, a log power of about 0.4 dB a count and **not
-calibrated to dBm** yet, so the picture ranks levels but does not measure them.
+dBm (`dbm=True`; `--bytes` for the raw signed bytes). Each tile carries its own
+scale, so the raw bytes step up and down between tiles as bands across the
+waterfall, and the dBm is what removes them (`sceptre-dvr.md`, "A tile's own
+scale"). Read against the BB60D's own sweep to a couple of dB; not yet against
+a float export.
 
 **A DVR as a plain IQ file: `tools/dvr-to-iq`.** For anything else that reads
 IQ (SDR++, GNU Radio, inspectrum, URH), or to keep a DVR before Sceptre

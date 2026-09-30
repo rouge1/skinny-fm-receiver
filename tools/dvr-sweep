@@ -8,10 +8,10 @@
 Reads the DVR's spectrum tiles: a sweep DVR's (9 kHz to 6 GHz in 4.88 kHz
 bins), or an IQ DVR's, over its band. The DVR may still be recording: the
 newest tile is left out and a tile Sceptre overwrites while it is read is
-dropped, and the report says so. Levels are the DVR's signed bytes (a log
-power, about 0.4 dB a count; not yet calibrated to dBm), so the picture's
-colours say more and less, not how many dBm. Needs numpy; matplotlib for
-``--png``. The DVR is only read.
+dropped, and the report says so. Levels are dBm, each tile by the gain and
+offset its own header carries (``--bytes`` draws the raw signed bytes, whose
+scale changes from tile to tile and shows as bands across the waterfall).
+Needs numpy; matplotlib for ``--png``. The DVR is only read.
 """
 
 import argparse
@@ -27,7 +27,7 @@ def clock(t):
     return time.strftime('%H:%M:%S', time.localtime(t))
 
 
-def picture(path, sw, times, freqs, db, out):
+def picture(path, sw, times, freqs, db, out, unit):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -42,15 +42,16 @@ def picture(path, sw, times, freqs, db, out):
     mhz = freqs / 1e6
     top.plot(mhz, db.max(0), lw=0.6, label='peak')
     top.plot(mhz, db.mean(0), lw=0.6, label='mean')
-    top.set_ylabel('DVR byte')
+    top.set_ylabel(unit)
     top.legend(loc='upper right')
     top.set_title(f"{os.path.basename(path)}: {len(times)} sweeps over "
                   f"{times[-1] - times[0]:.0f} s from {clock(times[0])}")
-    wf.imshow(db, aspect='auto', origin='lower', cmap='viridis',
-              extent=[mhz[0], mhz[-1], 0, times[-1] - times[0]])
+    lo, hi = np.percentile(db, [1, 99.8])
+    img = wf.imshow(db, aspect='auto', origin='lower', cmap='viridis', vmin=lo,
+                    vmax=hi, extent=[mhz[0], mhz[-1], 0, times[-1] - times[0]])
+    fig.colorbar(img, ax=[top, wf], label=unit, pad=0.01)
     wf.set_xlabel('MHz')
     wf.set_ylabel('seconds')
-    fig.tight_layout()
     fig.savefig(out, dpi=110)
 
 
@@ -61,6 +62,8 @@ def main(argv=None):
     ap.add_argument('--band', nargs=2, type=float, metavar=('LO', 'HI'),
                     help="MHz to show (default: all of it)")
     ap.add_argument('--png', metavar='FILE', help="write a waterfall picture")
+    ap.add_argument('--bytes', action='store_true',
+                    help="the raw signed bytes, not dBm (each tile has its own scale)")
     args = ap.parse_args(argv)
     try:
         sw = sceptre_dvr.Sweeps(args.dvr)
@@ -76,7 +79,7 @@ def main(argv=None):
                  else ""))
         if not args.png:
             return
-        times, freqs, db = sw.read(lo, hi)
+        times, freqs, db = sw.read(lo, hi, dbm=not args.bytes)
     except (sceptre_dvr.SdvrError, OSError) as exc:
         sys.exit(f"dvr-sweep: {exc}")
     if sw.overwritten:
@@ -84,7 +87,8 @@ def main(argv=None):
               "they are not in the picture")
     if not len(times):
         sys.exit("dvr-sweep: no tile could be read")
-    picture(args.dvr, sw, times, freqs, db, args.png)
+    picture(args.dvr, sw, times, freqs, db, args.png,
+            'DVR byte' if args.bytes else 'dBm')
     print(f"wrote {args.png} ({db.shape[0]} sweeps x {db.shape[1]} bins)")
 
 

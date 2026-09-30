@@ -20,7 +20,7 @@ workflows, commands and constraints. Read the file that fits before acting:
 - knowledge/rf-ctf.md: RF CTF challenge types and the tools that decode them
 - knowledge/google_bb60d.md: links to Signal Hound's BB60 API documentation
 - knowledge/sceptre-dvr.md: the layout of Sceptre's DVR file (`.sdvr`), which
-  the app plays as IQ, and what is not yet known of its sweep bytes
+  the app plays as IQ, and how its sweep bytes become dBm (each tile's own gain and offset)
   (`tools/dvr-hd DVR.sdvr` decodes HD Radio from one, offline; `--info` and
   `--scan` say what is in it; `tools/dvr-sweep` reads and draws a sweep DVR's
   spectra, also while Sceptre is still recording it; `tools/dvr-to-iq` makes a channel of one a

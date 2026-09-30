@@ -13,7 +13,8 @@ before. It must:
 - play the samples exactly (int16 to float32, full scale 1.0), from a seek
   and around the end when it repeats, through ``IQFile``;
 - read the spectrum tiles (``Sweeps``): a sweep DVR's, in time order, by band,
-  with what an earlier recording left out, and refuse an IQ-only file;
+  with what an earlier recording left out, in dBm from each tile's own gain
+  and offset, and refuse an IQ-only file;
 - and cope with a file Sceptre is still writing: trust its chunks, not the
   window it left on page 1, leave out the newest chunk, and say when a chunk
   was overwritten after it was scanned;
@@ -137,6 +138,27 @@ def sweep_checks(folder):
     except sceptre_dvr.SdvrError as exc:
         assert 'outside' in str(exc)
     print("Sweeps: bytes, times and a band are right; the leftovers are left out")
+
+    # Each tile has its own gain and offset in its header: the same spectrum
+    # is different bytes in every tile, and dBm=True undoes that.
+    truth = -110 + 50 * np.exp(-((np.arange(bins) - 1500) / 40.0) ** 2) \
+        - np.linspace(0, 8, bins)
+    cal = os.path.join(folder, 'cal.sdvr')
+    signals.write_sweep_sdvr(cal, tiles=6, bins=bins, dbm=truth)
+    cw = sceptre_dvr.Sweeps(cal)
+    raw_bytes = cw.read()[2].astype(float)
+    per_tile = raw_bytes.reshape(6, sweeps, bins)[:, 0, 100]       # a floor bin
+    assert per_tile.max() - per_tile.min() > 10, 'the tiles should differ'
+    _, _, levels = cw.read(dbm=True)
+    assert levels.dtype == np.float32 and levels.shape == (6 * sweeps, bins)
+    worst = np.abs(levels - truth).max()
+    assert worst < 0.5 / 1.6 + 1e-3, worst             # half a count at most
+    spread = levels.reshape(6, sweeps, bins)[:, 0].std(0).max()
+    assert spread < 0.35, spread
+    g, o = cw.calibration(cw.tiles[2][0])
+    assert abs(g - (1.6 + 0.045 * 2)) < 1e-5, g
+    print(f"Sweeps: bytes differ by {np.ptp(per_tile):.0f} counts between tiles; "
+          f"dBm within {worst:.2f} dB of the spectrum in every tile")
 
     # The tool: the report, and a picture of a band.
     tool = os.path.join(os.path.dirname(HERE), 'dvr-sweep')

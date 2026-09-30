@@ -128,7 +128,7 @@ def write_station(path_base, seconds=8.0, rate=2.5e6, center_hz=98.4e6,
 
 
 def _sdvr_header(tag, when, interval, count, centre=0.0, bins=0, scale=0.0,
-                 start_hz=0.0, bin_hz=0.0):
+                 start_hz=0.0, bin_hz=0.0, gain=0.0, offset=0.0):
     """One chunk's header page of a Sceptre DVR file (see sceptre_dvr.py)."""
     page = bytearray(4096)
     struct.pack_into('<d', page, 0, centre)
@@ -139,6 +139,7 @@ def _sdvr_header(tag, when, interval, count, centre=0.0, bins=0, scale=0.0,
     struct.pack_into('<d', page, 0x24, interval)
     struct.pack_into('<I', page, 0x2c, count)
     if tag == b'SB':
+        struct.pack_into('<ff', page, 8, gain, offset)
         struct.pack_into('<dd', page, 0x34, start_hz, bin_hz)
         struct.pack_into('<I', page, 0x44, bins)
     return bytes(page)
@@ -217,19 +218,32 @@ def sweep_tile_bytes(k, bins, sweeps=16):
 
 def write_sweep_sdvr(path, tiles=8, bins=4096, start_hz=4882.8125, bin_hz=4882.8125,
                      interval=0.2325, sweeps=16, start=1.7907e9 + 0.25,
-                     rotate=True, stale=True, age=60.0):
+                     rotate=True, stale=True, age=60.0, dbm=None):
     """Write a sweep DVR: ``tiles`` tiles of ``sweeps`` sweeps of ``bins``
     signed bytes (:func:`sweep_tile_bytes`), stored bin by bin, one after
     another in time, as Sceptre's are. The page-1 window is left from an
     earlier IQ recording, as a real sweep DVR's is; the ring is wrapped; and
     ``stale`` adds, from before, a tile of the same kind and one of another
-    (an IQ DVR's 16384 bins). ``age`` as for :func:`write_sdvr`."""
+    (an IQ DVR's 16384 bins). ``age`` as for :func:`write_sdvr`. With ``dbm``
+    (an array of ``bins`` levels, the same in every sweep) the bytes are that
+    spectrum as Sceptre stores it: each tile has its own gain and offset in
+    its header (``byte = gain * dBm + offset``, as they differ in a real one),
+    so the bytes differ from tile to tile for the same spectrum.
+    """
     chunks = []
     for k in range(tiles):
         when = start + k * sweeps * interval
+        gain, offset = 0.0, 0.0
+        if dbm is None:
+            data = sweep_tile_bytes(k, bins, sweeps)
+        else:
+            gain, offset = 1.6 + 0.045 * k, 205.0 + 4.0 * k - 12.0 * (k % 3)
+            one = np.clip(np.round(gain * np.asarray(dbm, float) + offset), -127, 127)
+            data = np.tile(one.astype(np.int8), (sweeps, 1))
         chunks.append(_sdvr_header(b'SB', when, interval, sweeps, bins=bins,
-                                   start_hz=start_hz, bin_hz=bin_hz)
-                      + _pad(sweep_tile_bytes(k, bins, sweeps).T.tobytes()))
+                                   start_hz=start_hz, bin_hz=bin_hz,
+                                   gain=gain, offset=offset)
+                      + _pad(data.T.tobytes()))
     if rotate:
         cut = len(chunks) * 2 // 3
         chunks = chunks[cut:] + chunks[:cut]

@@ -40,7 +40,13 @@ is not.
   bin. Their header gives the start frequency (double at 0x34), the bin width
   (0x3c) and the bin count (0x44). :class:`Sweeps` reads them: a sweep DVR is
   nothing else (1,228,800 bins, 9 kHz to 6 GHz), and an IQ DVR's tiles are
-  16384 bins over its band.
+  16384 bins over its band. **Each tile has its own scale**: two float32s at 8
+  and 12 (``gain`` and ``offset``) make ``byte = gain * dBm + offset``, so
+  ``dBm = (byte - offset) / gain`` (``Sweeps.read(dbm=True)``). Without them
+  the bytes of different tiles cannot be compared: the scale runs from the
+  tile's one deepest bin (-127, somewhere near -190 dBm, a different value
+  every tile) to a fixed ceiling (+127, about -53 dBm), so the whole waterfall
+  steps up and down by up to 6 dB from tile to tile.
 
 **While Sceptre is recording.** The file can be read as it is written; what
 that changes is handled here, and none of it was needed for a paused file:
@@ -376,9 +382,8 @@ def scan_sweeps(path, live=None):
 
 
 class Sweeps(_Ring):
-    """The spectrum tiles of a DVR file, as signed bytes (a log power: about
-    0.4 dB a count in a sweep DVR, not yet calibrated - see
-    ``knowledge/sceptre-dvr.md``).
+    """The spectrum tiles of a DVR file: signed bytes, each tile with its own
+    gain and offset (see the module's notes), or ``dbm=True`` for dBm.
 
     ``read`` gives a band of them as a waterfall, sweeps by bins, in time
     order. A tile that Sceptre overwrote after the scan is left out and
@@ -410,23 +415,33 @@ class Sweeps(_Ring):
                             f"{self.start_hz + (self.bins - 1) * self.bin_hz:.0f} Hz.")
         return lo, hi
 
-    def read(self, f_lo=None, f_hi=None, first=0, stop=None):
-        """``(times, freqs, db)``: the sweeps of tiles ``first`` to ``stop``
-        (all, by default), the bins from ``f_lo`` to ``f_hi`` Hz (all, by
-        default). ``times`` is each sweep's time (s since 1970), ``freqs``
-        each bin's Hz, ``db`` the signed bytes as int8, one row a sweep."""
+    def calibration(self, offset):
+        """``(gain, offset)`` of the tile whose data is at ``offset``:
+        ``byte = gain * dBm + offset``."""
+        return struct.unpack_from('<ff', self._raw, offset - PAGE + 8)
+
+    def read(self, f_lo=None, f_hi=None, first=0, stop=None, dbm=False):
+        """``(times, freqs, levels)``: the sweeps of tiles ``first`` to
+        ``stop`` (all, by default), the bins from ``f_lo`` to ``f_hi`` Hz (all,
+        by default). ``times`` is each sweep's time (s since 1970), ``freqs``
+        each bin's Hz, ``levels`` one row a sweep: the signed bytes as int8,
+        or with ``dbm=True`` float32 dBm, each tile by its own calibration
+        (bytes at +-127 are the ends of the scale, not measurements)."""
         lo, hi = self.bin_range(f_lo, f_hi)
         times, rows = [], []
         for offset, when in self.tiles[first:stop]:
             size = self.bins * self.sweeps
             tile = self._raw[offset:offset + size].view(np.int8)
             block = np.array(tile.reshape(self.bins, self.sweeps)[lo:hi].T)
+            gain, off = self.calibration(offset)
             if self._stamp(offset) != when:                 # overwritten meanwhile
                 self.overwritten += 1
                 continue
+            if dbm:
+                block = (block.astype(np.float32) - np.float32(off)) / np.float32(gain)
             rows.append(block)
             times.append(when + np.arange(self.sweeps) * self.interval)
         if not rows:
             return (np.empty(0), self.freqs(lo, hi),
-                    np.empty((0, hi - lo), dtype=np.int8))
+                    np.empty((0, hi - lo), dtype=np.float32 if dbm else np.int8))
         return np.concatenate(times), self.freqs(lo, hi), np.concatenate(rows)

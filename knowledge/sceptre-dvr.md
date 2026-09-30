@@ -85,14 +85,46 @@ What a file being written does, and what the reader does about it
   `Sweeps` also leaves that tile out. A scan is a snapshot: rescan for the
   chunks written since, and expect the oldest to go.
 - **Sweep tiles.** `Sweeps.read(f_lo, f_hi, first, stop)` gives `(times,
-  freqs, bytes)`: every sweep of the tiles, in time order, cropped to the
-  band, as int8 rows of bins (the stored bin-by-bin order undone). `tools/
-  dvr-sweep DVR [--band LO HI] [--png FILE]` reports what a DVR holds and
-  draws it. The bytes are the DVR's own log power, uncalibrated (below).
-- **Seen in a live sweep DVR**: whole-span dark bands across the waterfall,
-  every few to twenty seconds, at once at every frequency (the level of the
-  sweeps drops together). Not investigated: it could be Sceptre's or the
-  BB60D's gain changing, or the environment.
+  freqs, levels)`: every sweep of the tiles, in time order, cropped to the
+  band, as rows of bins (the stored bin-by-bin order undone): int8 bytes, or
+  float32 dBm with `dbm=True`. `tools/dvr-sweep DVR [--band LO HI] [--png
+  FILE] [--bytes]` reports what a DVR holds and draws it in dBm.
+
+## A tile's own scale: the dark bands, and the dBm of the bytes (2026-09-30)
+
+The raw bytes of a sweep DVR show dark and light bands across the whole
+waterfall, each exactly one tile (3.7 s) or several long, all frequencies at
+once, up to 6 dB. They are not in Sceptre's own viewer (user's screenshot of
+the same kind of capture), and they are not the signal: **each tile carries
+its own scale**, two float32s in its header page, at 8 (`gain`) and 12
+(`offset`), and
+**`byte = gain * dBm + offset`**, so **`dBm = (byte - offset) / gain`**
+(`Sweeps.read(dbm=True)`, `Sweeps.calibration`). Found from the files alone:
+
+- The level is constant within a tile (sd 0.17 of a byte) and steps between
+  tiles. A per-tile gain and offset fitted from 39 bands across the span
+  (taking the long-run level of each band as the reference) came out as
+  `offset - 1.006*f12 + 121.13*gain = -1.1` with R² 1.000, and the gain fitted
+  to `gain` with correlation 0.98.
+- Applying it, the level of each band varies 0.25 dB between tiles (4.6 bytes
+  before), so the bands are gone and the picture matches Sceptre's own.
+- The scale is set by the tile's extremes: every tile has both +127 and -127.
+  +127 is at bin 0 (the 4.9 kHz bin, in all 16 sweeps) at about **-53 dBm**
+  (sd 1.4 dB between tiles), and -127 is one bin, somewhere 1 to 5 GHz, at
+  **-181 to -205 dBm**, a different value each tile (the deepest of 20
+  million samples). `gain` is 254 over the span between them, 1.6 to 2.0, so a
+  count is 0.50 to 0.62 dB, and `offset` is 205 to 233. That is why a fixed
+  0.4 dB a count with an offset fitted to the byte could not be pinned down
+  before (residual 7 dB), and why the bytes of two tiles cannot be compared.
+- Absolute level: FM carriers read about -59 dBm (99.9th percentile) and the
+  band's floor -99 dBm (10th percentile) at a -40 dBm reference, where the
+  BB60D's own calibrated sweep gave -61 to -62 and -93 to -101; the noise
+  floor falls from -87 dBm at 40 MHz to -118 dBm above 2.4 GHz. Not checked
+  against a float export of the same capture, which would settle the
+  absolute scale to a fraction of a dB, nor against a test tone.
+- Bytes at +-127 are the ends of the scale, not measurements: bin 0 is always
+  at the top. Not verified for an IQ DVR's tiles (16384 bins), whose header
+  floats have not been looked at.
 
 ## The IQ's level in dBm (2026-09-30)
 
@@ -161,14 +193,12 @@ correlation, 0.04 dB), so a `.cdif` is only needed for its metadata.
 
 ## Not settled
 
-- **The dBm of the sweep bytes.** The sweep DVR's tile bytes are an 8-bit
-  fixed-point log power. About 0.4 dB per count fits both a float export of
-  the same capture and hovered readings (residual around 7 dB - the viewer
-  draws coarser tiles than the stored ones, so the readings could not be
-  matched cell for cell). The offset is near -115 dBm at byte 0 with a
-  reference level of -40 dBm; how the reference level enters is not known.
-  The minimum and maximum Sceptre lists for an export (about -210 and
-  -40 dBm) are the export's own extremes, not the byte range.
+- **The sweep DVR's dBm against a float export.** The tile header's gain and
+  offset ("A tile's own scale") give dBm that is steady between tiles and
+  close to the BB60D's calibrated sweep (a couple of dB), but it has not been
+  matched cell for cell to a `.fft` export of the same capture, or checked
+  with a test tone. How the reference level enters the top (-53 dBm at a
+  -40 dBm reference) is not known. An IQ DVR's tiles were not looked at.
 - **A test tone.** The IQ's scale ("The IQ's level in dBm" below) is Sceptre's
   own, in two places that agree to 0.00 dB, and within about 1 dB of the
   BB60D's calibrated sweep. It has not been checked against a source of known
@@ -189,5 +219,5 @@ correlation, 0.04 dB), so a `.cdif` is only needed for its metadata.
 writes a BLUE file (X-Midas: `BLUE` and `EEEI` at the start, type `SF`,
 little-endian float32 in dBm, 512-byte header and extended header, data at
 byte 3072 in the one seen), one row of 1,228,800 values per sweep, with the
-same times as the DVR's. It is what calibrates the sweep DVR's bytes, at 4 GB
+same times as the DVR's. It is what would check the sweep DVR's dBm exactly, at 4 GB
 for a 1 GB DVR.
