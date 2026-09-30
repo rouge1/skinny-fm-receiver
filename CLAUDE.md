@@ -35,7 +35,10 @@ with no launcher.
   SoapySDR module opened), `hackrf_sweep.py` the HackRF's (its firmware's
   sweep mode through libhackrf, on the device the SoapySDR module lets go),
   `rtl_tcp.py` the RTL-SDR (an rtl_tcp client; rtl_tcp started here, or on
-  another computer over ssh), `control.py` the control socket the running window listens on,
+  another computer over ssh), `sceptre_dvr.py` Signal Hound Sceptre's DVR
+  file (`.sdvr`) read as IQ (numpy only, so `tools/dvr-hd` runs anywhere),
+  `dvr_hd.py` HD Radio from one, offline with nrsc5 (`tools/dvr-hd`),
+  `control.py` the control socket the running window listens on,
   which `tools/fmctl` talks to (with the window open, use it rather than
   opening the radio).
 - Knowledge: `knowledge/capabilities.md` is the living capability list.

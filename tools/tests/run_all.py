@@ -1,4 +1,4 @@
-"""Run the tests: the ten that need no radio, with ``--hw`` the BB60D
+"""Run the tests: the eleven that need no radio, with ``--hw`` the BB60D
 check as well, with ``--hackrf`` the HackRF check (other sessions may
 use the HackRF too: make sure it is yours before running it), and with
 ``--rtl`` the RTL-SDR check (this app closed, so no rtl_tcp is running).
@@ -17,7 +17,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 TESTS = ['test_sweep.py', 'test_tuning.py', 'test_receive_chain.py', 'test_gui.py',
          'test_recordings.py', 'test_rtl_tcp.py', 'test_bb60_lost.py',
-         'test_control.py', 'test_hdradio.py', 'test_sceptre_dvr.py']
+         'test_control.py', 'test_hdradio.py', 'test_sceptre_dvr.py',
+         'test_dvr_hd.py']
 
 
 def main():

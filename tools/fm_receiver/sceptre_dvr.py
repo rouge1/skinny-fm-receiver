@@ -25,23 +25,29 @@ is not.
   samples (or sweeps) in seconds, at 0x2c the number of samples (or sweeps).
   A ``CI`` header also has the centre frequency, a double at 0.
 - **IQ** is int16, I then Q, full scale 32768, in runs of 1,048,576 samples
-  (1,024 pages). Runs and tiles alternate at a slightly uneven rhythm.
+  (1,024 pages). Runs and tiles alternate at a slightly uneven rhythm. A
+  ``CI`` header's float32 at 8 is the size of one count in Sceptre's own
+  units, which are the square root of milliwatts: the power of a sample is
+  ``(I**2 + Q**2) * scale**2`` mW. It follows the reference level in 20 dB
+  steps, and a full-scale complex sample is ``ref + 10`` dBm (checked: the
+  band's floor and a station's carrier came out within about 1 dB of the
+  BB60D's own calibrated sweep).
 - **The ring wraps**: the newest chunks are early in the file and the oldest
   are after them, so the chunks are put in time order, and any older than the
   window on page 1 - left from before - are dropped.
 
 Nothing here writes the file, and Sceptre may be writing it while it is
-read: pause the DVR first for a reliable read.
+read: pause the DVR first for a reliable read. No GNU Radio is needed here
+(``radios.sdvr_source`` streams it into a flowgraph), so the tools that read
+a DVR run in any Python with numpy.
 """
 
 import bisect
 import mmap
 import os
 import struct
-import threading
 
 import numpy as np
-from gnuradio import gr  # type: ignore
 
 PAGE = 4096
 FIRST_PAGE = 4
@@ -135,7 +141,8 @@ def _scan(mm, size, name):
         if page + 1 + data_pages > npages:      # cut short by the end of the file
             break
         if tag == b'CI':
-            runs.append((when, interval, count, centre, (page + 1) * PAGE))
+            runs.append((when, interval, count, centre, (page + 1) * PAGE,
+                         struct.unpack_from('<f', mm, page * PAGE + 8)[0]))
         else:
             tiles += 1
         page += 1 + data_pages
@@ -153,6 +160,8 @@ def _scan(mm, size, name):
         runs = kept or runs
     runs.sort(key=lambda r: r[0])
     interval, centre = key
+    scales = [r[5] for r in runs if r[5] > 0]
+    scale = max(set(scales), key=scales.count) if scales else None
     gaps = sum(1 for a, b in zip(runs, runs[1:])
                if abs((b[0] - a[0]) - a[2] * interval) > GAP_TOLERANCE_S)
     return {
@@ -160,6 +169,10 @@ def _scan(mm, size, name):
         'samples': sum(r[2] for r in runs),
         'rate': round(1.0 / interval, 3),
         'center_hz': centre,
+        # dBm of a complex sample of magnitude 1.0 (full scale): add it to a
+        # level in dBFS for dBm. None if the file does not say.
+        'scale': scale,
+        'full_scale_dbm': (20 * np.log10(scale * FULL_SCALE) if scale else None),
         'band_hz': tuple(band) if band else None,
         'start': runs[0][0],
         'end': runs[-1][0] + runs[-1][2] * interval,
@@ -168,51 +181,40 @@ def _scan(mm, size, name):
     }
 
 
-class sdvr_source(gr.sync_block):
+class Reader:
     """The IQ of a scanned DVR file, in time order, as complex float32.
 
-    ``seek`` and ``repeat`` work like a ``file_source``'s, in samples.
+    ``fill`` and ``read`` are by sample number from the start of the first
+    run. Plain numpy: nothing here needs GNU Radio.
     """
 
-    def __init__(self, path, layout, repeat=True):
-        gr.sync_block.__init__(self, name='sdvr_source', in_sig=None,
-                               out_sig=[np.complex64])
+    def __init__(self, path, layout):
         self._data = np.memmap(path, dtype=np.int16, mode='r')
         self._runs = layout['runs']
         self.total = layout['samples']
         self._starts = [0]
         for _, count in self._runs:
             self._starts.append(self._starts[-1] + count)
-        self.repeat = repeat
-        self._pos = 0
-        self._lock = threading.Lock()
 
-    def seek(self, sample, whence=0):
-        with self._lock:
-            self._pos = int(min(max(sample, 0), self.total - 1))
-        return True
-
-    def work(self, input_items, output_items):
-        out = output_items[0]
-        want = len(out)
-        done = 0
+    def fill(self, pos, out):
+        """Copy the samples from ``pos`` into ``out`` (complex64), across
+        runs, until ``out`` is full or the IQ ends. Returns how many."""
         scale = np.float32(1.0 / FULL_SCALE)
-        with self._lock:
-            pos = self._pos
-            while done < want:
-                if pos >= self.total:
-                    if not self.repeat:
-                        break
-                    pos = 0
-                i = bisect.bisect_right(self._starts, pos) - 1
-                offset, count = self._runs[i]
-                within = pos - self._starts[i]
-                n = min(want - done, count - within)
-                first = offset // 2 + within * 2
-                src = self._data[first:first + 2 * n].reshape(n, 2)
-                dst = out[done:done + n].view(np.float32).reshape(n, 2)
-                np.multiply(src, scale, out=dst)
-                done += n
-                pos += n
-            self._pos = pos
-        return done if done or self.repeat else -1
+        done, want = 0, len(out)
+        while done < want and pos < self.total:
+            i = bisect.bisect_right(self._starts, pos) - 1
+            offset, count = self._runs[i]
+            within = pos - self._starts[i]
+            n = min(want - done, count - within)
+            first = offset // 2 + within * 2
+            src = self._data[first:first + 2 * n].reshape(n, 2)
+            dst = out[done:done + n].view(np.float32).reshape(n, 2)
+            np.multiply(src, scale, out=dst)
+            done += n
+            pos += n
+        return done
+
+    def read(self, start, stop):
+        """Samples ``start`` to ``stop`` (fewer at the end), as a new array."""
+        out = np.empty(max(0, min(stop, self.total) - start), dtype=np.complex64)
+        return out[:self.fill(start, out)]

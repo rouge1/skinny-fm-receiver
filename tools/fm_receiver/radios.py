@@ -32,7 +32,9 @@ import json
 import math
 import os
 import sys
+import threading
 
+import numpy as np
 from gnuradio import blocks, gr  # type: ignore
 
 from . import bb60_source as _bb60
@@ -631,6 +633,43 @@ class _file_source(gr.hier_block2):
             self.connect(self.file, self)
 
 
+class sdvr_source(gr.sync_block):
+    """The IQ of a scanned Sceptre DVR file as complex float32, in time order.
+
+    ``seek`` and ``repeat`` work like a ``file_source``'s, in samples.
+    """
+
+    def __init__(self, path, layout, repeat=True):
+        gr.sync_block.__init__(self, name='sdvr_source', in_sig=None,
+                               out_sig=[np.complex64])
+        self._reader = sceptre_dvr.Reader(path, layout)
+        self.total = self._reader.total
+        self.repeat = repeat
+        self._pos = 0
+        self._lock = threading.Lock()
+
+    def seek(self, sample, whence=0):
+        with self._lock:
+            self._pos = int(min(max(sample, 0), self.total - 1))
+        return True
+
+    def work(self, input_items, output_items):
+        out = output_items[0]
+        done = 0
+        with self._lock:
+            pos = self._pos
+            while done < len(out):
+                if pos >= self.total:
+                    if not self.repeat:
+                        break
+                    pos = 0
+                n = self._reader.fill(pos, out[done:])
+                done += n
+                pos += n
+            self._pos = pos
+        return done if done or self.repeat else -1
+
+
 class _sdvr_file_source(gr.hier_block2):
     """The same block as :class:`_file_source`, for a Sceptre DVR's IQ."""
 
@@ -638,7 +677,7 @@ class _sdvr_file_source(gr.hier_block2):
         gr.hier_block2.__init__(self, 'iq_sdvr_source',
                                 gr.io_signature(0, 0, 0),
                                 gr.io_signature(1, 1, gr.sizeof_gr_complex))
-        self.file = sceptre_dvr.sdvr_source(path, layout, repeat)
+        self.file = sdvr_source(path, layout, repeat)
         if throttle:
             self.throttle = blocks.throttle(gr.sizeof_gr_complex, rate, True)
             self.connect(self.file, self.throttle, self)

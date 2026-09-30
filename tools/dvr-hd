@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""dvr-hd: decode HD Radio from a Sceptre DVR (.sdvr), offline, with nrsc5.
+
+    tools/dvr-hd DVR.sdvr                  find the stereo stations, decode each
+    tools/dvr-hd DVR.sdvr 100.3 90.9       just these (MHz)
+    tools/dvr-hd DVR.sdvr --info           what the DVR holds, and nothing else
+    tools/dvr-hd DVR.sdvr --scan           list the stereo stations, and stop
+    tools/dvr-hd DVR.sdvr -o out --programs 3 --keep-iq
+
+The DVR must have been made from Sceptre's IQ tab, with the DVR paused. Each
+station's IQ is read once through (the app plays it on a loop, and nrsc5 loses
+sync at every seam), so every program comes out whole: ``out/hd_<MHz>_HD<n>.wav``
+(44.1 kHz stereo), and ``out/summary.json`` with what nrsc5 said (services,
+bit rate, MER, BER). Plain Python with numpy and scipy, and the ``nrsc5``
+program; no GNU Radio needed. Nothing is written beside the DVR, and it is
+only ever read.
+"""
+
+import argparse
+import json
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fm_receiver import dvr_hd, sceptre_dvr  # noqa: E402
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('dvr', help="the Sceptre DVR file (.sdvr), from its IQ tab")
+    ap.add_argument('stations', nargs='*', type=float, metavar='MHZ',
+                    help="stations to decode (default: every stereo station found)")
+    ap.add_argument('-o', '--out', help="folder for the WAVs and summary.json "
+                    "(default: dvr-hd-<DVR name> here)")
+    ap.add_argument('--programs', type=int, default=4, metavar='N',
+                    help="decode HD1 to HDN (default 4; nrsc5's most is 8)")
+    ap.add_argument('--min-pilot-db', type=float, default=15.0,
+                    help="scanning: the least stereo-pilot SNR that counts "
+                    "as a station (default 15)")
+    ap.add_argument('--info', action='store_true',
+                    help="print what the DVR holds (rate, centre, band, times, "
+                    "runs, gaps) and stop")
+    ap.add_argument('--scan', action='store_true',
+                    help="list the stereo stations found, with their pilot "
+                    "SNR, and stop (nrsc5 is not needed)")
+    ap.add_argument('--keep-iq', action='store_true',
+                    help="keep each station's IQ (cf32, 744,187.5 S/s) too")
+    ap.add_argument('--nrsc5', help="the nrsc5 program (default: found on the path)")
+    args = ap.parse_args(argv)
+    sys.stdout.reconfigure(line_buffering=True)        # progress shows as it goes
+
+    try:
+        dvr = dvr_hd.Dvr(args.dvr)
+    except (sceptre_dvr.SdvrError, OSError) as exc:
+        sys.exit(f"dvr-hd: {exc}")
+    lo, hi = dvr.usable()
+    lay = dvr.layout
+    print(f"{os.path.basename(args.dvr)}: {dvr.seconds:.1f} s of IQ at "
+          f"{dvr.rate / 1e6:g} MS/s around {dvr.center_hz / 1e6:g} MHz "
+          f"({lay['gaps']} gaps); usable {lo / 1e6:.2f}-{hi / 1e6:.2f} MHz")
+    if args.info:
+        when = lambda t: time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(t))
+        band = lay['band_hz']
+        print(f"  {len(lay['runs'])} runs of {lay['runs'][0][1]} samples, "
+              f"{lay['tiles']} spectrum tiles skipped\n"
+              f"  from {when(lay['start'])} to {when(lay['end'])}"
+              + (f"\n  band {band[0] / 1e6:g}-{band[1] / 1e6:g} MHz" if band else "")
+              + (f"\n  full scale {lay['full_scale_dbm']:+.1f} dBm (a level in dBFS "
+                 f"plus this is dBm)" if lay['full_scale_dbm'] is not None else ""))
+        return 0
+    if not args.scan:
+        nrsc5 = dvr_hd.find_nrsc5(args.nrsc5)
+        if not nrsc5:
+            sys.exit("dvr-hd: nrsc5 is not installed (see knowledge/digital-radio.md).")
+    if args.stations and not args.scan:
+        stations = [round(s * 1e6, 1) for s in args.stations]
+    else:
+        t0 = time.time()
+        rows = dvr.pilot_scan(dvr_hd.raster(lo, hi))
+        stations = [hz for hz, snr, _ in rows if snr >= args.min_pilot_db]
+        print(f"scanned {len(rows)} channels in {time.time() - t0:.0f} s: "
+              f"{len(stations)} with a stereo pilot")
+        if args.scan:
+            for hz, snr, dev in rows:
+                if snr >= args.min_pilot_db:
+                    print(f"  {hz / 1e6:6.1f} MHz  pilot {snr:4.0f} dB above the "
+                          f"noise, {dev:.1f} kHz deviation")
+            return 0
+    out = args.out or ('dvr-hd-' + os.path.splitext(os.path.basename(args.dvr))[0])
+    os.makedirs(out, exist_ok=True)
+    summary = {}
+    for hz in stations:
+        mhz = hz / 1e6
+        iq = os.path.join(out, f"iq_{mhz:.1f}.cf32")
+        try:
+            dvr.channelize(hz, iq)
+        except ValueError as exc:
+            print(f"{mhz:.1f} MHz: {exc}")
+            continue
+        found = {}
+        for program in range(args.programs):
+            wav = os.path.join(out, f"hd_{mhz:.1f}_HD{program + 1}.wav")
+            info, seconds = dvr_hd.decode(nrsc5, iq, program, wav)
+            if seconds:
+                found[f"HD{program + 1}"] = {
+                    'wav': os.path.basename(wav), 'seconds': round(seconds, 1),
+                    'name': info['services'].get(program + 1)}
+                found['_nrsc5'] = info
+        if not args.keep_iq:
+            os.remove(iq)
+        line = ', '.join(f"{k} {v['name'] or ''} {v['seconds']} s".replace('  ', ' ')
+                         for k, v in found.items() if not k.startswith('_'))
+        info = found.get('_nrsc5') or {}
+        if line:
+            mer = info.get('mer_db')
+            print(f"{mhz:.1f} MHz: {line}; {info.get('kbps') or '?'} kbps, MER "
+                  f"{mer[0]:.1f}/{mer[1]:.1f} dB, BER {info.get('ber')}"
+                  if mer else f"{mhz:.1f} MHz: {line}")
+        else:
+            print(f"{mhz:.1f} MHz: no HD Radio decoded")
+        summary[f"{mhz:.1f}"] = found
+    with open(os.path.join(out, 'summary.json'), 'w') as fh:
+        json.dump({'dvr': os.path.abspath(args.dvr), 'seconds': dvr.seconds,
+                   'rate': dvr.rate, 'center_hz': dvr.center_hz,
+                   'stations': summary}, fh, indent=2)
+    print(f"wrote {out}/")
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -6,7 +6,8 @@ ring wrapped so the newest chunks come first, and an old run left over from
 before. It must:
 
 - find every run, in time order, skip the tiles and the leftover run, and
-  report the rate, centre and band;
+  report the rate, centre, band and the full-scale level in dBm (the scale a
+  run's header carries);
 - refuse a file that is not a DVR, holds no IQ (sweep tiles only), or is cut
   short - with a message that says what to do;
 - play the samples exactly (int16 to float32, full scale 1.0), from a seek
@@ -66,6 +67,7 @@ def layout_checks(folder):
     assert abs(lay['rate'] - RATE) < 1e-3 and lay['center_hz'] == CENTRE, lay
     assert lay['band_hz'] == (CENTRE - RATE / 2, CENTRE + RATE / 2), lay['band_hz']
     assert lay['gaps'] == 0, lay
+    assert abs(lay['full_scale_dbm'] - (-20.0 + 10)) < 1e-3, lay['full_scale_dbm']
     assert lay['tiles'] >= 9, lay['tiles']            # they were there to skip
     assert abs((lay['end'] - lay['start']) - lay['samples'] / RATE) < 1e-6, lay
 

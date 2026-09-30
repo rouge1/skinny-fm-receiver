@@ -126,10 +126,11 @@ def write_station(path_base, seconds=8.0, rate=2.5e6, center_hz=98.4e6,
     return path_base + '.cfile'
 
 
-def _sdvr_header(tag, when, interval, count, centre=0.0, bins=0):
+def _sdvr_header(tag, when, interval, count, centre=0.0, bins=0, scale=0.0):
     """One chunk's header page of a Sceptre DVR file (see sceptre_dvr.py)."""
     page = bytearray(4096)
     struct.pack_into('<d', page, 0, centre)
+    struct.pack_into('<f', page, 8, scale)
     page[0x10:0x12] = tag
     page[0x12:0x14] = b'\x00\x01' if tag == b'CI' else b'\x00\x02'
     struct.pack_into('<dd', page, 0x14, math.floor(when), when - math.floor(when))
@@ -145,7 +146,7 @@ def _pad(data):
 
 
 def write_sdvr(path, iq, rate, center_hz, run=1 << 15, rotate=True, stale=True,
-               tiles=True, start=1.7907e9 + 0.25):
+               tiles=True, start=1.7907e9 + 0.25, ref_dbm=-20.0):
     """Write ``iq`` (complex, |x| < 1) as a Sceptre DVR file, ``path``.
 
     Made the way the real ones are: runs of ``run`` samples as int16 I, Q,
@@ -153,17 +154,19 @@ def write_sdvr(path, iq, rate, center_hz, run=1 << 15, rotate=True, stale=True,
     uneven rhythm (none, one or two after a run); the ring wrapped, so the
     newest chunks come first; and, if ``stale``, an old run left at the end
     from before the window the file describes. Returns the samples it holds
-    as they will be read: quantised, scaled to 1.0 = full scale.
+    as they will be read: quantised, scaled to 1.0 = full scale. The scale
+    the runs carry makes full scale ``ref_dbm + 10`` dBm, as Sceptre's do.
     """
     n = len(iq) // run * run
     q = np.empty((n, 2), dtype='<i2')
     q[:, 0] = np.clip(np.round(iq[:n].real * 32768.0), -32768, 32767)
     q[:, 1] = np.clip(np.round(iq[:n].imag * 32768.0), -32768, 32767)
     interval = 1.0 / rate
+    scale = 10 ** ((ref_dbm + 10) / 20) / 32768.0        # a count, in sqrt(mW)
     chunks = []
     for k in range(n // run):
         when = start + k * run * interval
-        chunks.append(_sdvr_header(b'CI', when, interval, run, center_hz)
+        chunks.append(_sdvr_header(b'CI', when, interval, run, center_hz, scale=scale)
                       + _pad(q[k * run:(k + 1) * run].tobytes()))
         if tiles:
             for j in range((0, 1, 2)[k % 3]):

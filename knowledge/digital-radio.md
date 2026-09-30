@@ -187,9 +187,14 @@ keeps both sidebands (see usage.md). At 500 kS/s it needs resampling to
   audio (usage.md, "HD Radio"). For a survey of every station at once,
   record the band with **IQ – band** and resample offline, as the table
   above was made: about 5 min of CPU for 38 channels × 8 s.
-- **Offline, from a Sceptre DVR** (2026-09-30). A Sceptre DVR made from its
-  IQ tab (`sceptre-dvr.md`) holds 27 MHz of the band at 28 MS/s for about
-  8.6 s, so every station in it can be decoded without the app:
+- **Offline, from a Sceptre DVR** (2026-09-30): **`tools/dvr-hd DVR.sdvr`**.
+  A Sceptre DVR made from its IQ tab (`sceptre-dvr.md`) holds 27 MHz of the
+  band at 28 MS/s for about 8.6 s, so every station in it can be decoded
+  without the app. The tool finds the stereo stations (the pilot's SNR),
+  runs nrsc5 on each for HD1-HD4 and writes the WAVs and a `summary.json`
+  (services, kbps, MER, BER); `--info`, `--scan`, named stations, `--programs`
+  and `--keep-iq` are in usage.md. It needs only numpy, scipy and nrsc5 (no
+  GNU Radio). What it does, and by hand:
   1. Read the runs in time order (`sceptre_dvr.scan`), mix the station to
      0 Hz, decimate by 14 (28 to 2 MS/s) with a low-pass, then resample by
      11907/32000 to **744,187.5 S/s** and write cf32. Filter in chunks with

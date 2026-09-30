@@ -711,8 +711,22 @@ is laid out: [sceptre-dvr.md](sceptre-dvr.md).
 HD Radio works on a DVR (the **HD Radio** row lights on the stations that
 have it), but the 8.6 s loop restarts the decoder at each seam, so HD1 plays
 and HD2 and HD3, which take longer to come in, drop out. For whole programs,
-decode the DVR offline with `nrsc5`
-([digital-radio.md](digital-radio.md), "Offline, from a Sceptre DVR").
+decode the DVR offline with **`tools/dvr-hd`**:
+
+```
+tools/dvr-hd dvr.sdvr --info            what the DVR holds: rate, centre, band, times, full-scale dBm
+tools/dvr-hd dvr.sdvr --scan            the stereo stations in it, and stop
+tools/dvr-hd dvr.sdvr                   decode HD1-HD4 of every stereo station found
+tools/dvr-hd dvr.sdvr 100.3 90.9 -o out just those (MHz), into the folder out/
+                     --programs N       HD1 to HDN (default 4)   --keep-iq  keep the IQ
+```
+
+It reads the DVR once through and writes `hd_<MHz>_HD<n>.wav` (44.1 kHz
+stereo) for each program that decoded, and `summary.json` (services, kbps,
+MER, BER). About 12 s a station and a few minutes for a whole band. Plain
+Python with numpy, scipy and `nrsc5`: no GNU Radio environment needed, and
+the DVR is only read. See [digital-radio.md](digital-radio.md), "Offline,
+from a Sceptre DVR", for what it does.
 
 The recording plays in real time on a loop, as if it were a radio, and it
 opens tuned to the station it was recorded on. Tuning moves the channel

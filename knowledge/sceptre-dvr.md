@@ -54,6 +54,46 @@ Sceptre may be writing the file while it is read. **Pause the DVR first.**
   data is), and step a page at a time where no header is found. Count a run
   that does not follow on from the one before as a gap.
 
+## The IQ's level in dBm (2026-09-30)
+
+Levels in dBFS (as the app shows) are relative to the ADC's full scale, and
+that moves with the reference level - the same signal reads 10 dB lower at
+-20 dBm than at -30 - so dBFS is enough inside one capture (SNR, one station
+against another, shapes, decoding) but cannot compare two captures, a capture
+with a sweep, or a level with a limit. A DVR carries what turns it into dBm:
+
+- Each `CI` header has a float32 at byte 8: the size of one count in Sceptre's
+  own units, the square root of milliwatts. **Power is `(I² + Q²) × scale²`
+  mW**, so `dBm = dBFS + full_scale_dbm`, and `full_scale_dbm` is
+  **the reference level + 10** (the scale is 10^((ref + 10)/20) / 32768: 20 dB
+  more for each 20 dB of reference level, seen at 0 and -20 dBm).
+  `sceptre_dvr.scan` returns `scale` and `full_scale_dbm`; `dvr-hd --info`
+  prints it.
+- **Checked** on a capture at -20 dBm (full scale -10 dBm) against levels the
+  BB60D's own calibrated sweep gave for the same band earlier (the reference
+  level there was -40 dBm; the environment the same): a strong station's carrier
+  in a 21 kHz slice -61.8 dBm against -61 to -62 read by the sweep, and the
+  floor above the band -96.7 dBm against -93 to -101. The other reading (a
+  complex sample's power as half its squared magnitude) would be 3 dB lower and
+  did not fit. Not yet checked with a test tone of known level, so call it good
+  to a few dB until it is.
+- The app still shows dBFS for a DVR; adding the offset there is on the roadmap.
+
+## Sceptre's recordings (`.cdif` and `.fft`)
+
+The *Recordings* folder beside the DVR holds what Sceptre exports, in BLUE
+(X-Midas) files, `sceptre.db` (SQLite, a row per recording: centre, sample
+rate, start, duration, format, min and max) listing them. A `.cdif` is IQ:
+`BLUE`/`EEEI` header, type 1001 and format `CF` (complex float32,
+little-endian), data at byte 512, then a keyword block after the data
+(`SAMPLE_RATE`, `RF_FREQ`, `PRETUNED_CENTER_FREQ`, `DATA_BANDWIDTH`,
+`DATA_GAIN`, `TIME_EPOCH`, `SCEPTRE_MIN_VAL`/`MAX_VAL`, and the stream it came
+from, e.g. `.../rawcorrector/CorrectedRaw/DVR/Channel 1`). One extracted from
+a DVR (a 5 MHz channel at 7 MS/s, 5.35 s) read straight: the floats are
+calibrated units, with `DATA_GAIN` (100.3 dB there) the gain the numbers carry;
+`10*log10(mean(|x|²)) - DATA_GAIN` gave -80.5 dBm over the 5 MHz, which is a
+reading, not checked. The app does not read them.
+
 ## What can be done with an IQ DVR
 
 - **Play it in the app** (`--file dvr.sdvr`, or the open dialog): the whole
@@ -64,8 +104,8 @@ Sceptre may be writing the file while it is read. **Pause the DVR first.**
   dB) and a 1 s test decoded no RDS (HD Radio was not tried at 0 dBm). Set it
   in Sceptre's IQ tab before recording.
 - **Decode HD Radio offline** with nrsc5 for whole, unbroken programs:
-  `digital-radio.md`, "Offline, from a Sceptre DVR". The app's loop restarts
-  nrsc5 every 8.6 s, which costs the slower programs.
+  `tools/dvr-hd` (usage.md; method in `digital-radio.md`). The app's loop
+  restarts nrsc5 every 8.6 s, which costs the slower programs.
 - **A longer capture** needs a narrower IQ rate in Sceptre: at 28 MS/s the ring
   holds 8.6 s, and one HD station needs only about 1.5 MHz. (Not tried.)
 
@@ -79,11 +119,10 @@ Sceptre may be writing the file while it is read. **Pause the DVR first.**
   reference level of -40 dBm; how the reference level enters is not known.
   The minimum and maximum Sceptre lists for an export (about -210 and
   -40 dBm) are the export's own extremes, not the byte range.
-- **The IQ's dBm.** Linear, so one constant (ADC counts to volts, tied to the
-  reference level); not measured, and not needed for FM, RDS or HD Radio,
-  which use the shape of the signal. The app shows dBFS. To put a dBm axis on
-  it, line the IQ's FFT up against Sceptre's own spectrum at the same
-  resolution (good to a few dB), or record a test tone of known level.
+- **Whether the scale is exact.** See "The IQ's level in dBm" below: it is
+  checked to about 1 dB against the BB60D's own calibrated sweep, not against a
+  test tone of known level, and the 3 dB between a peak and an rms reading of a
+  complex sample was settled by the same check, not by Sceptre's documentation.
 - **Other stream types.** Only an IQ tab's DVR and a sweep DVR have been seen.
 - **Whether the header checksum matters** to Sceptre itself: this reader
   ignores it, and never writes the file.
