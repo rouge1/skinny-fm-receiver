@@ -2064,6 +2064,7 @@ class SpectrumView(Qt.QWidget):
     #: The mini map's column beside the waterfall (Recordings), and how long
     #: it takes to slide open or shut.
     MAP_W = 96
+    MAP_GAP = 6
     MAP_MS = 240
 
     #: Rows drawn on screen, whatever the time shown; columns kept.
@@ -2125,7 +2126,7 @@ class SpectrumView(Qt.QWidget):
         self.wf_frozen = False
         self.minimap = None
         self.map_info = None
-        self._wf_box = None
+        self._map_column = None
         self._map_w = 0
         self._map_shown = False
         self._map_anim = None
@@ -2295,36 +2296,44 @@ class SpectrumView(Qt.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         if waterfall:
-            # The mini map is a column beside the waterfall, and the spectrum
-            # above gives up a gutter of the same width: linked views line
-            # up by where they are on screen, so both must end together.
+            self.splitter = Qt.QSplitter(QtCore.Qt.Vertical)
+            self.splitter.addWidget(self.plot)
+            self.splitter.addWidget(self.wf_plot)
+            self.splitter.setStretchFactor(0, 3)
+            self.splitter.setStretchFactor(1, 2)
+            # The mini map is a column down the right of the view, as tall as
+            # the spectrum and the waterfall together, with its words beside
+            # the dials. It is closed (no width) except in Recordings.
             self.minimap = MiniMap()
-            self.minimap.setFixedWidth(0)
+            self.minimap.setMinimumWidth(0)
             self.minimap.hide()
             self.minimap.zoomRequested.connect(lambda n, fine: self.zoom_time(n, fine))
             self.map_info = Qt.QLabel('')
             self.map_info.setWordWrap(True)
             self.map_info.setAlignment(QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
-            self.map_info.setFixedWidth(0)
+            self.map_info.setFixedHeight(self.span_knob.sizeHint().height())
             self.map_info.hide()
-            above, below = Qt.QWidget(), Qt.QWidget()
-            self._wf_box = below                  # the waterfall and its map: one pane
-            for row, widgets in ((above, (self.plot, self.map_info)),
-                                 (below, (self.wf_plot, self.minimap))):
-                box = Qt.QHBoxLayout(row)
-                box.setContentsMargins(0, 0, 0, 0)
-                box.setSpacing(0)
-                box.addWidget(widgets[0], 1)
-                box.addWidget(widgets[1])
-            self.splitter = Qt.QSplitter(QtCore.Qt.Vertical)
-            self.splitter.addWidget(above)
-            self.splitter.addWidget(below)
-            self.splitter.setStretchFactor(0, 3)
-            self.splitter.setStretchFactor(1, 2)
-            layout.addWidget(self.splitter, 1)
+            self._map_column = Qt.QWidget()
+            column = Qt.QVBoxLayout(self._map_column)
+            column.setContentsMargins(self.MAP_GAP, 0, 0, 0)
+            column.setSpacing(4)
+            column.addWidget(self.minimap, 1)
+            column.addWidget(self.map_info)
+            self._map_column.setFixedWidth(0)
+            left = Qt.QVBoxLayout()
+            left.setContentsMargins(0, 0, 0, 0)
+            left.setSpacing(4)
+            left.addWidget(self.splitter, 1)
+            left.addLayout(controls)
+            body = Qt.QHBoxLayout()
+            body.setContentsMargins(0, 0, 0, 0)
+            body.setSpacing(0)
+            body.addLayout(left, 1)
+            body.addWidget(self._map_column)
+            layout.addLayout(body, 1)
         else:
             layout.addWidget(self.plot, 1)
-        layout.addLayout(controls)
+            layout.addLayout(controls)
         self.plot.getPlotItem().getViewBox().sigResized.connect(self._align_controls)
         self.restyle()
         self._apply_levels()
@@ -2820,9 +2829,9 @@ class SpectrumView(Qt.QWidget):
         self.minimap.set_window(self.wf_span_s, x0 * self.scale, x1 * self.scale)
 
     def set_map(self, shown):
-        """Slide the mini map open beside the waterfall, or shut. The
-        spectrum above gives up a gutter of the same width as it does, so
-        the two stay lined up the whole way."""
+        """Slide the mini map open down the right of the view, or shut. The
+        spectrum and the waterfall both give up its width, so they stay
+        lined up the whole way."""
         if self.minimap is None or bool(shown) == self._map_shown:
             return
         self._map_shown = bool(shown)
@@ -2841,10 +2850,9 @@ class SpectrumView(Qt.QWidget):
     def _set_map_width(self, width):
         try:
             self._map_w = width
-            for widget in (self.minimap, self.map_info):
-                widget.setFixedWidth(width)
+            self._map_column.setFixedWidth(width + self.MAP_GAP if width > 0 else 0)
             self.minimap.setVisible(width > 0)
-            self.map_info.setVisible(width > 0 and self.wf_check.isChecked())
+            self.map_info.setVisible(width > 0)
         except Exception as exc:                  # never abort the app
             print(f"spectrum view: {exc}")
 
@@ -3140,10 +3148,7 @@ class SpectrumView(Qt.QWidget):
 
     def _wf_toggled(self, on):
         if self.wf_plot is not None:
-            # The pane that holds the waterfall and its map, so the spectrum
-            # has the height again; the gutter above goes with the map.
-            self._wf_box.setVisible(on)
-            self.map_info.setVisible(on and self._map_w > 0)
+            self.wf_plot.setVisible(on)
 
 
 # ---------------------------------------------------------- timeline strip
@@ -3178,7 +3183,7 @@ class MiniMap(Qt.QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumWidth(40)
+        self.setMinimumWidth(0)
         self.setMouseTracking(True)
         self.setCursor(QtCore.Qt.OpenHandCursor)
         self.setToolTip("The whole recording: time up (later at the top), frequency\n"

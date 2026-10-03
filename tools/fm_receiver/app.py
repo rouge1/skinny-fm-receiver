@@ -353,7 +353,7 @@ class MainWindow(Qt.QWidget):
     #: The Recordings tab's mini map is drawn from the whole track at this
     #: many rows (time) by columns (frequency); and the waterfall's stretch
     #: is read from the file once a drag or a zoom has held still this long.
-    MAP_ROWS = 240
+    MAP_ROWS = 320
     MAP_COLS = 128
     WINDOW_SETTLE_MS = 40
 
@@ -1863,7 +1863,8 @@ class MainWindow(Qt.QWidget):
         self._left_box.insertWidget(1, self.gain_box)
         quiet = mode == 'sweep'                  # nothing to hear or record
         self.audio_box.setVisible(not quiet)
-        self.record_box.setVisible(not quiet)
+        # Recording is for the radio: what is played back is not recorded.
+        self.record_box.setVisible(mode == 'receive')
 
     def _tab_changed(self, _index):
         self._place_side_boxes()
@@ -3083,9 +3084,11 @@ class MainWindow(Qt.QWidget):
         track = self._track
         if view.map_info is None or track is None:
             return
-        view.map_info.setText(f"{library.clock(self._shown_at)}\n"
-                              f"of {library.clock(track.seconds)}\n"
-                              f"{view.wf_span_s:g} s shown")
+        low, high = library.extent(track) if not track.error else (0.0, 0.0)
+        band = (f"{low / 1e6:.2f}-{high / 1e6:.2f} MHz" if view.unit == 'MHz'
+                else f"{low / 1e3:g}-{high / 1e3:g} kHz")
+        view.map_info.setText(f"{library.clock(self._shown_at)} of {library.clock(track.seconds)}\n"
+                              f"{view.wf_span_s:g} s shown\n{band}")
 
     # ---- the player
     def _play_toggled(self, on):

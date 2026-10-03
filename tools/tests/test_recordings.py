@@ -381,11 +381,24 @@ def part1b_minimap():
     pump(0.1)
     view.set_map(True)
     assert pump(2, lambda: view.minimap.width() == view.MAP_W)
-    assert not view._wf_box.isHidden()
+    # The map is a column as tall as the spectrum and the waterfall together,
+    # and the two plots end where it begins (so they stay lined up).
+    top = view.minimap.mapTo(view, QtCore.QPoint(0, 0)).y()
+    bottom = top + view.minimap.height()
+    assert top <= view.plot.mapTo(view, QtCore.QPoint(0, 0)).y() + 2, top
+    wf_bottom = view.wf_plot.mapTo(view, QtCore.QPoint(0, view.wf_plot.height())).y()
+    assert bottom >= wf_bottom - 2, (bottom, wf_bottom)
+    assert view.minimap.height() > view.plot.height() + view.wf_plot.height() - 10
+    edge = view.minimap.mapTo(view, QtCore.QPoint(0, 0)).x()
+    assert abs(view.plot.mapTo(view, QtCore.QPoint(view.plot.width(), 0)).x() - edge) <= \
+        view.MAP_GAP + 1 and abs(view.wf_plot.mapTo(view, QtCore.QPoint(view.wf_plot.width(), 0)).x()
+                                 - edge) <= view.MAP_GAP + 1, 'both plots end at the map'
+    # Unticking Waterfall takes the waterfall away and the spectrum has its
+    # height; the map stays, a scrubber all the same.
     view.wf_check.setChecked(False)
-    assert view._wf_box.isHidden() and view.map_info.isHidden()
+    assert view.wf_plot.isHidden() and not view.minimap.isHidden()
     view.wf_check.setChecked(True)
-    assert not view._wf_box.isHidden() and not view.map_info.isHidden()
+    assert not view.wf_plot.isHidden()
     x = np.linspace(97e6, 99e6, 256)
     view.wf_clock = lambda: view._test_clock
     for t in (10.0, 10.1, 10.2, 10.3):
@@ -498,6 +511,8 @@ def part2_window():
     assert w.track_combo.count() == 4 and w._track.kind == 'iq-band'
     view = w.rf_view
     mini = view.minimap
+    # There is nothing to record in Recordings: no Record box there.
+    assert w.record_box.isHidden() and not w.audio_box.isHidden()
     # The mini map slides open beside the waterfall and is drawn from the
     # file; the audio view's stays shut.
     assert w.top_stack.currentWidget() is view
@@ -563,7 +578,10 @@ def part2_window():
     # The strip's dB are the spectrum's: its loudest level, the view's.
     assert pump(3, lambda: w._rx_sig is not None)
     pump(1)
-    shown, mapped = float(np.max(w._rx_sig[1])), float(np.nanmax(mini._db))
+    # (The typical row's peak: the single loudest cell of hundreds is a
+    # modulation extreme, which moves with the number of rows.)
+    shown = float(np.max(w._rx_sig[1]))
+    mapped = float(np.median(np.nanmax(mini._db, axis=1)))
     assert abs(shown - mapped) < 3, (shown, mapped)
     # Playing, the view's own saved scale, and the map follows it.
     assert mini._levels == (view.ref_knob.value() - view.range_knob.value(),
@@ -727,6 +745,7 @@ def part2_window():
     # Back to Receive: the radio opens again, tuned where it was.
     w.tabs.setCurrentIndex(1)
     assert pump(3, lambda: view.minimap.isHidden() and av.minimap.isHidden()), 'the maps stay open'
+    assert not w.record_box.isHidden(), 'Receive has its Record box'
     assert view.wf_clock is None and av.wf_clock is None and not view.wf_frozen
     assert view.time_axis.origin is None and av.time_axis.origin is None, 'seconds ago again'
 

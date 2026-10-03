@@ -1135,8 +1135,11 @@ own recordings (IQ band, IQ channel, WAV)**
   box's middle there, drag carries it (time seeks on release, frequency pans the
   spectrum without tuning), the wheel zooms time; colours from the view's Ref
   level and Range
-- [x] It slides open beside each view's waterfall in Recordings (the spectrum
-  gives up a gutter of the same width so they stay lined up) and shuts on
+- [x] It slides open down the right of each view in Recordings, as tall as the
+  spectrum and the waterfall together (both give up its width, so they stay
+  lined up; asked for 2026-10-03, where it was first beside the waterfall only,
+  with a blank gutter above), its words and the band it covers beside the
+  dials, and shuts on
   leaving; Sweep and Receive are as they were
 - [x] The big waterfall drawn from the file: on choosing a recording, on a
   seek, on a drag and on a zoom; the radio's rows after it are stamped with the

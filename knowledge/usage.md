@@ -183,8 +183,9 @@ Useful options (`./fm-receiver --help` lists them all):
 - **RF gain** applies to the radio in every mode, and each radio remembers its
   own setting. It is the top row of the tab's first box: in Receive a row of
   the Radio box, in Sweep the first row of the Sweep box; elsewhere its box is
-  under the tabs, above **Audio** and **Record**. Audio and Record are hidden
-  in Sweep since there is nothing to hear or record while the radio sweeps.
+  under the tabs, above **Audio**. Audio and Record are hidden in Sweep since
+  there is nothing to hear or record while the radio sweeps, and Record is
+  hidden in Recordings too: what is played back is not recorded.
   On a BB60D the **AGC** box beside it hands the gain to the
   device in its own sweep: the slider greys out, and AGC sets the device's
   reference level to 5 dB over the strongest signal, which is how Signal
@@ -655,7 +656,7 @@ where it was.
    file. The IQ is chosen first (the whole band before the channel), and
    the WAV is in the list too.
 3. **Press Play**, or double-click the line. Press it again to pause.
-4. **Jump** by clicking or dragging the **mini map** beside the waterfall (below).
+4. **Jump** by clicking or dragging the **mini map** down the right of the view (below).
 
 What you see and hear depends on the file:
 
@@ -668,7 +669,7 @@ What you see and hear depends on the file:
 - **In a whole-band recording, click another station** in the spectrum or
   the waterfall to listen to it. The Receive tab's controls (channel filter,
   stereo, region, the RDS details) work on the recording too.
-- **The mini map** is the narrow picture to the right of the waterfall: the
+- **The mini map** is the narrow picture down the right of the spectrum and the waterfall, as tall as both: the
   whole recording at a glance, **time up it with later at the top, as in
   the waterfall, and frequency across it**, in the waterfall's colours. A
   station is a line up it. The **box** on it is what the waterfall shows: the
