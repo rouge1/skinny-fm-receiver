@@ -1091,7 +1091,7 @@ Signal Hound's Sceptre keeps what the BB60D received in a ring file
 - [x] Checked against a `.fft` float export of the same capture: identical to
   float rounding (1.5e-5 dB over 95 million bins); the export is the DVR decoded
 - [ ] Look at an IQ DVR's tile headers (do they carry a gain and offset too?)
-- [ ] Draw the tiles in the Sweep tab
+- [ ] Draw the tiles: **in the Recordings tab** (Round 23, phase 3), not the Sweep tab
 - [ ] Show dBm in the app for a DVR (the offset is `full_scale_dbm`)
 - [ ] **A way to classify what is seen, not a decoder per signal** (decided
   2026-09-30, since the signals to come are OOK, FSK, ASK, NTSC and more, and
@@ -1110,5 +1110,60 @@ Signal Hound's Sceptre keeps what the BB60D received in a ring file
   Its ASK, FSK, PSK and PPM-OOK generators are GNU Radio apps with dialogs, so
   their modulation would be taken into a test rather than the apps run. A bench
   of known signals, each measured, checks that the measurements name the class
-- [ ] The sweep DVR: its tiles (16 sweeps of 1,228,800 bytes) as a waterfall in
-  the Sweep tab, now that their dBm is known (`Sweeps.read(dbm=True)`)
+- [ ] The sweep DVR: its tiles (16 sweeps of 1,228,800 bytes) as a waterfall,
+  now that their dBm is known (`Sweeps.read(dbm=True)`): **played in the
+  Recordings tab** (Round 23, phase 3). A mockup that used the Sweep tab was
+  rejected on 2026-10-03: Sweep and IQ are real time, Recordings is old stuff
+
+## Round 23: the Recordings tab shows every recording (requested 2026-10-03)
+
+The design the user chose: **everything recorded plays in the Recordings
+tab**, whatever made it - this app's Record, a Sceptre IQ DVR, a sweep DVR,
+Sceptre's `.cdif` and `.fft` exports. Sweep and Receive are real time and show
+only live signals. The scrubber is **a mini map on the right of the
+waterfall, with a box for what the big waterfall shows**; the strip under
+Play goes. No "Keep..." button on a DVR (declined).
+
+**Phase 1: the mini map, and a waterfall drawn from the file, on this app's
+own recordings (IQ band, IQ channel, WAV)**
+
+- [x] `library.render(track, t0, t1, rows, cols)`: any stretch of a track as
+  a waterfall in the spectrum views' own dB, NaN outside the file, native
+  columns equal to the views' bins; a WAV's frequencies linear (they were log)
+- [x] `widgets.MiniMap`: time up (later at the top), frequency across, a box
+  for the waterfall's span and band, the playhead its top edge; click puts the
+  box's middle there, drag carries it (time seeks on release, frequency pans the
+  spectrum without tuning), the wheel zooms time; colours from the view's Ref
+  level and Range
+- [x] It slides open beside each view's waterfall in Recordings (the spectrum
+  gives up a gutter of the same width so they stay lined up) and shuts on
+  leaving; Sweep and Receive are as they were
+- [x] The big waterfall drawn from the file: on choosing a recording, on a
+  seek, on a drag and on a zoom; the radio's rows after it are stamped with the
+  playhead's time (`wf_clock`) and held back while a stretch is drawn
+- [x] The horizontal strip removed; `test_recordings.py` ported and extended
+  (render, the map alone, the window driven)
+- [x] `fmctl`: `recordings`, `recording`, `play`, `seek`, `view ... window`,
+  and `status`'s `playback`; `test_control.py`
+- [x] Docs: usage, capabilities, the project skill
+- [ ] Looked at on the user's window, with a real recording (only synthetic
+  recordings so far, offscreen)
+- [ ] The time scale labelled in the recording's own time (0:35) rather than
+  seconds ago, in Recordings (idea)
+
+**Phase 2: a Sceptre IQ DVR (`.sdvr`) and `.cdif` in the list, playing**
+
+- [ ] Extra folders to list, a setting kept with `config.update_config` (the
+  app must not assume where Sceptre keeps its files: the repo is public and runs on a Mac)
+- [ ] The listing reads headers only: Sceptre rewrites a 1 GB ring, and the
+  folder watcher must not make it scan the whole ring again each time
+- [ ] An IQ `.sdvr` as a track (`radios.read_iq_metadata` already reads it;
+  the runs in time order through `sceptre_dvr.Reader`), played as a band
+  recording
+- [ ] `.cdif` (BLUE IQ) as a source: `sceptre_blue.py` reads it, `IQFile` does not
+
+**Phase 3: spectrum recordings (a sweep `.sdvr`, `.fft`) played without sound**
+
+- [ ] No engine: the playhead runs on a timer, the waterfall and trace come
+  from the file (`Sweeps.read(dbm=True)`, in dBm), Loop applies, the radio
+  stays closed

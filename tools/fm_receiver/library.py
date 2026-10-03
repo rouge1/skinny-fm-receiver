@@ -9,10 +9,11 @@ station sent while it was recorded. Recordings made before that file
 existed have none, and their kinds could be named a second apart: those
 within :data:`MERGE_S` of each other, on the same station, are one.
 
-**The overview** (:func:`overview`) is a whole track as a waterfall lying
-on its side: time along it, frequency up it. It samples the file -
-a few FFT frames for each column - rather than reading it all, so a
-gigabyte of band IQ takes as long as a minute of WAV.
+**:func:`render`** draws any stretch of a track as a waterfall, in the
+spectrum views' own dB: the whole track, small, for the Recordings tab's
+mini map, and the stretch the big waterfall shows, from the file. It
+samples the file - a few FFT frames for each row - rather than reading it
+all, so a gigabyte of band IQ takes as long as a minute of WAV.
 """
 
 import datetime as _dt
@@ -322,30 +323,14 @@ def delete(rec):
     return failed
 
 
-# --------------------------------------------------------------- overview
-
-def _column_starts(total, columns, length, frames):
-    """Where to take ``frames`` FFTs of ``length`` in each of ``columns``."""
-    edges = np.linspace(0, total, columns + 1)
-    starts = []
-    for c in range(columns):
-        lo, hi = int(edges[c]), max(int(edges[c]), int(edges[c + 1]) - length)
-        starts.append(np.linspace(lo, hi, frames).astype(np.int64))
-    return starts
-
-
-def _read(data, start, length):
-    seg = np.asarray(data[start:start + length])
-    if len(seg) < length:
-        pad = np.zeros((length - len(seg),) + seg.shape[1:], dtype=seg.dtype)
-        seg = np.concatenate([seg, pad])
-    return seg
-
+# ----------------------------------------------------------------- render
 
 #: The spectrum views' FFT sizes (``dsp.ReceiveChain.RF_FFT``,
-#: ``dsp.WavChain.FFT``): the overview's levels are theirs, bin for bin.
+#: ``dsp.WavChain.FFT``): what is drawn here has their dB, bin for bin.
 RF_FFT = 4096
 AUDIO_FFT = 2048
+#: The most FFTs worked at once: 256 of 4096 complex64 is 8 MB.
+CHUNK = 256
 
 
 def blackman_harris(n):
@@ -355,54 +340,102 @@ def blackman_harris(n):
             - 0.01168 * np.cos(3 * k))
 
 
-def overview(track, columns=480, rows=64, frames=4):
-    """``track`` from end to end: a (rows, columns) float32 array in dB, row
-    0 the lowest frequency, and the (low, high) frequency of its rows in Hz.
+def extent(track):
+    """The (low, high) frequency, in Hz, a track covers: the band an IQ
+    file was recorded over, or 0 to half the rate of a WAV."""
+    if track.kind == 'audio':
+        return 0.0, track.rate / 2
+    centre = track.center_hz or 0.0
+    return centre - track.rate / 2, centre + track.rate / 2
+
+
+def bin_freqs(track):
+    """The frequency of each of :func:`render`'s native columns - the same
+    sum the live views make from their taps, so a row drawn from the file
+    and a row from the radio are on one scale."""
+    if track.kind == 'audio':
+        n = AUDIO_FFT
+        return np.arange(n // 2 + 1) * track.rate / n
+    n = RF_FFT
+    return (track.center_hz or 0.0) + (np.arange(n) - n / 2) * track.rate / n
+
+
+def _pool(power, cols):
+    """``power`` (rows, bins) as ``cols`` columns, each the most of the bins
+    it covers: a narrow carrier must not vanish when the band is squeezed."""
+    bins = power.shape[1]
+    if cols is None or cols >= bins:
+        return power
+    edges = (np.arange(cols) * bins / cols).astype(np.intp)
+    return np.maximum.reduceat(power, edges, axis=1)
+
+
+def render(track, t0, t1, rows, cols=None, frames=2):
+    """``track`` from ``t0`` to ``t1`` seconds as a waterfall: a (rows,
+    columns) float32 array in dB and the frequency of each column in Hz.
+    **Row 0 is the earliest** slot, and a slot outside the file is NaN.
 
     **In the spectrum views' own dB** (dBFS for IQ): the same window, FFT
-    size and scaling as their taps, so the strip can be coloured by the
-    view's Ref level and Range and mean what the view does. Each row is the
-    most of its bins (max-pooled), as a narrow carrier shows in the view.
-    IQ rows are the band. A WAV's rows are spaced logarithmically from 50
-    Hz to 16 kHz, as the ear hears, the channels mixed to one."""
+    size and scaling as their taps, so what is drawn here can be coloured
+    by a view's Ref level and Range and mean what the view does, and a row
+    drawn from the file sits beside rows the radio makes. Each row is the
+    mean power of ``frames`` FFTs spread over its slot. ``cols`` None gives
+    the views' own bins (:func:`bin_freqs`); a number squeezes them into
+    that many columns, each the most of its bins. The columns cover the
+    whole band (:func:`extent`); a view's zoom is its own business.
+
+    A WAV's columns are linear in frequency, 0 to half its rate, as the
+    audio spectrum's are; its channels are mixed to one. It reads a few
+    frames of the file for each row rather than all of it, so a gigabyte of
+    band IQ takes as long as a minute of WAV."""
+    rows = max(1, int(rows))
     if track.kind == 'audio':
         data = wav_frames(track.path)
-        total = len(data)
-        rate = track.rate
         nfft = AUDIO_FFT
         scale = 1.0 / 32768.0 if data.dtype == np.int16 else 1.0
         win = blackman_harris(nfft)
-        norm = float(np.sum(win)) ** 2
-        freqs = np.fft.rfftfreq(nfft, 1.0 / rate)
-        top = min(16e3, rate / 2)
-        edges = np.geomspace(50.0, top, rows + 1)
-        bins = []
-        for r in range(rows):
-            inside = np.flatnonzero((freqs >= edges[r]) & (freqs < edges[r + 1]))
-            if not len(inside):           # narrower than a bin: the nearest
-                inside = [int(np.argmin(np.abs(freqs - np.sqrt(edges[r] * edges[r + 1]))))]
-            bins.append((int(inside[0]), int(inside[-1]) + 1))
-        img = np.full((rows, columns), -200.0, dtype=np.float32)
-        if total:
-            for c, starts in enumerate(_column_starts(total, columns, nfft, frames)):
-                segs = np.stack([_read(data, s, nfft).mean(axis=1) * scale for s in starts])
-                power = np.mean(np.abs(np.fft.rfft(segs * win, axis=1)) ** 2, axis=0) / norm
-                img[:, c] = [10 * np.log10(power[a:b].max() + 1e-20) for a, b in bins]
-        return img, (edges[0], edges[-1])
-
-    nfft = RF_FFT
-    data = np.memmap(track.path, dtype=np.complex64, mode='r')
+        rate = track.rate
+    else:
+        # An empty file cannot be mapped: it is a recording of nothing.
+        data = (np.memmap(track.path, dtype=np.complex64, mode='r')
+                if os.path.getsize(track.path) >= 8 else np.zeros(0, np.complex64))
+        nfft = RF_FFT
+        scale = 1.0
+        win = blackman_harris(nfft).astype(np.float32)
+        rate = track.rate
     total = len(data)
-    rate = track.rate
-    win = blackman_harris(nfft).astype(np.float32)
+    freqs = bin_freqs(track)
     norm = float(np.sum(win)) ** 2
-    pool = nfft // rows
-    img = np.full((rows, columns), -200.0, dtype=np.float32)
-    if total:
-        for c, starts in enumerate(_column_starts(total, columns, nfft, frames)):
-            segs = np.stack([_read(data, s, nfft) for s in starts])
-            power = np.mean(np.abs(np.fft.fft(segs * win, axis=1)) ** 2, axis=0) / norm
-            power = np.fft.fftshift(power)[:rows * pool].reshape(rows, pool).max(axis=1)
-            img[:, c] = 10 * np.log10(power + 1e-20)
-    centre = track.center_hz or 0.0
-    return img, (centre - rate / 2, centre + rate / 2)
+    nbins = len(freqs)
+    width = nbins if cols is None or cols >= nbins else int(cols)
+    out = np.full((rows, width), np.nan, dtype=np.float32)
+    edges = np.linspace(t0, t1, rows + 1) * rate
+    lo = np.floor(edges[:-1]).astype(np.int64)
+    hi = np.floor(edges[1:]).astype(np.int64)
+    inside = np.flatnonzero((hi > 0) & (lo < total))
+    frames = max(1, int(frames))
+    for first in range(0, len(inside), max(1, CHUNK // frames)):
+        chunk = inside[first:first + max(1, CHUNK // frames)]
+        segs = []
+        for r in chunk:
+            a = max(int(lo[r]), 0)
+            b = max(a, min(int(hi[r]), total) - nfft)
+            for start in np.linspace(a, b, frames).astype(np.int64):
+                start = min(start, max(total - nfft, 0))     # a whole window, if the file has one
+                seg = np.asarray(data[start:start + nfft])
+                if len(seg) < nfft:                    # the end of the file
+                    pad = np.zeros((nfft - len(seg),) + seg.shape[1:], dtype=seg.dtype)
+                    seg = np.concatenate([seg, pad])
+                segs.append(seg.mean(axis=1) * scale if seg.ndim > 1 else seg)
+        segs = np.stack(segs) * win
+        if track.kind == 'audio':
+            power = np.abs(np.fft.rfft(segs, axis=1)) ** 2 / norm
+        else:
+            power = np.fft.fftshift(np.abs(np.fft.fft(segs, axis=1)) ** 2, axes=1) / norm
+        power = power.reshape(len(chunk), frames, nbins).mean(axis=1)
+        out[chunk] = 10 * np.log10(_pool(power, width) + 1e-20)
+    if width != nbins:
+        groups = (np.arange(width) * nbins / width).astype(np.intp)
+        ends = np.append(groups[1:], nbins)
+        freqs = np.array([freqs[a:b].mean() for a, b in zip(groups, ends)])
+    return out, freqs

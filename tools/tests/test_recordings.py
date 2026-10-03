@@ -2,18 +2,26 @@
 
 Part 1 checks the pieces on their own: recordings grouped from their file
 names (and an older recording whose kinds were named a second apart), the
-WAV reader (a header cut short too), the overview, the WAV source's seek,
-loop and end, and the description Record writes - a station name kept only
-once it has held still.
+WAV reader (a header cut short too), ``library.render`` (any stretch of a
+track as a waterfall: its columns, its slots of time, NaN outside the file,
+a WAV on a linear scale), the WAV source's seek, loop and end, and the
+description Record writes - a station name kept only once it has held still.
+
+Part 1b drives the mini map alone: the box on it, pressing outside it and
+inside it, dragging in time and frequency, the wheel, and what it never
+does without a recording.
 
 Part 2 records the synthetic station from an IQ file in the Receive tab -
 WAV, channel and band, with a retune - then opens the Recordings tab and
 plays it back: the radio closes, the recording is listed with its RDS
-name, the strip coloured by the RF spectrum's Ref level and Range and in
-its dBFS, the band plays with RDS, seeks (by the overview strip too), pauses
-and resumes with RDS kept, stops at its end or loops, the WAV plays with
-its spectrum and the RadioText logged at record time, a recording is
-deleted, and going back to Receive opens the radio where it was.
+name, the mini map beside the waterfall coloured by the RF spectrum's Ref
+level and Range and in its dBFS, the band plays with RDS, the waterfall
+drawn from the file (before play, after a seek, carried on by the radio's
+rows, zoomed), seeks by dragging the map's box (which pans the spectrum
+too), pauses and resumes with RDS kept, stops at its end or loops, the WAV
+plays with its spectrum and the RadioText logged at record time, a
+recording is deleted, and going back to Receive closes the map and opens the
+radio where it was.
 
 Run:  python tools/tests/test_recordings.py     (about a minute)
 """
@@ -52,6 +60,14 @@ def pump(seconds, until=None):
             return True
         time.sleep(0.02)
     return until() if until else True
+
+
+def mouse_move(widget, pos):
+    """A move with the left button down. (QTest.mouseMove sets the cursor,
+    which the offscreen platform does not turn into an event.)"""
+    Qt.QApplication.sendEvent(widget, Qt.QMouseEvent(
+        QtCore.QEvent.MouseMove, QtCore.QPointF(pos), QtCore.Qt.NoButton,
+        QtCore.Qt.LeftButton, QtCore.Qt.NoModifier))
 
 
 def write_wav(path, seconds, rate=48000, left_hz=1000.0, right_hz=2500.0):
@@ -136,18 +152,55 @@ def part1_pieces():
     assert [t.kind for t in old.tracks] == ['iq-band', 'audio'], 'named a second apart: one'
     assert abs(killed.seconds - 2.0) < 0.01
 
-    # The overview: the band's station stands out in its own rows, and a
-    # WAV's tones in the rows of their frequencies.
-    img, (low, high) = library.overview(new.tracks[0], columns=60, rows=64)
-    assert img.shape == (64, 60) and abs(low - 97.15e6) < 1 and abs(high - 99.65e6) < 1
-    row = int((98.7e6 - low) / (high - low) * 64)
-    profile = img.mean(axis=1)
-    assert profile[row - 1:row + 2].max() > np.median(profile) + 20, profile
-    img, (low, high) = library.overview(new.tracks[3], columns=30, rows=64)
-    edges = np.geomspace(low, high, 65)
-    loud = set(np.argsort(img.mean(axis=1))[-2:])
-    want = {int(np.searchsorted(edges, 1000.0)) - 1, int(np.searchsorted(edges, 2500.0)) - 1}
-    assert loud == want, (loud, want)
+    # render: the band's station stands out in its own columns.
+    band = new.tracks[0]
+    img, freqs = library.render(band, 0.0, 3.0, 24, cols=60)
+    assert img.shape == (24, 60) and abs(freqs[0] - 97.17e6) < 50e3, (img.shape, freqs[0])
+    assert library.extent(band) == (97.15e6, 99.65e6), library.extent(band)
+    profile = np.nanmean(img, axis=0)
+    assert abs(freqs[np.argmax(profile)] - 98.7e6) < 50e3, freqs[np.argmax(profile)]
+    # Natively its columns are the spectrum views' own bins, on their scale.
+    native, nf = library.render(band, 0.5, 2.5, 10)
+    assert native.shape == (10, library.RF_FFT) and np.array_equal(nf, library.bin_freqs(band))
+    assert abs(nf[0] - 97.15e6) < 1 and abs(nf[-1] - (99.65e6 - 2.5e6 / library.RF_FFT)) < 1
+    # A slot outside the file is NaN: rows before its start, and after its end.
+    out, _ = library.render(band, -1.0, 1.0, 4, cols=16)
+    assert np.isnan(out[:2]).all() and np.isfinite(out[2:]).all(), np.isnan(out).all(axis=1)
+    out, _ = library.render(band, 2.0, 5.0, 6, cols=16)
+    assert np.isfinite(out[:2]).all() and np.isnan(out[2:]).all(), np.isnan(out).all(axis=1)
+    # Each row is its own slot of time: a tone that lasts a second (1 to 2 s
+    # of 3) is in the rows of that second, and no others.
+    rate = 500e3
+    t = np.arange(int(3 * rate)) / rate
+    burst = (0.3 * np.exp(2j * np.pi * 100e3 * t) * ((t >= 1) & (t < 2))).astype(np.complex64)
+    burst.tofile(os.path.join(folder, 'burst.cfile'))
+    with open(os.path.join(folder, 'burst.json'), 'w') as fh:
+        json.dump({'rate': rate, 'offset_hz': 0, 'station_hz': 98.4e6, 'center_hz': 98.4e6}, fh)
+    track = library.Track(os.path.join(folder, 'burst.cfile'), 'iq-channel', 1)
+    img, freqs = library.render(track, 0.0, 3.0, 6, cols=64)
+    level = img[:, int(np.argmin(np.abs(freqs - 98.5e6)))]
+    assert level[2:4].min() > level[[0, 1, 4, 5]].max() + 30, level
+    os.remove(os.path.join(folder, 'burst.cfile'))
+    os.remove(os.path.join(folder, 'burst.json'))
+    # A recording of nothing is a blank picture, not an error.
+    open(os.path.join(folder, 'nothing.cfile'), 'wb').close()
+    with open(os.path.join(folder, 'nothing.json'), 'w') as fh:
+        json.dump({'rate': rate, 'offset_hz': 0, 'station_hz': 98.4e6, 'center_hz': 98.4e6}, fh)
+    track = library.Track(os.path.join(folder, 'nothing.cfile'), 'iq-channel', 1)
+    img, freqs = library.render(track, 0.0, 0.0, 4, cols=16)
+    assert track.seconds == 0.0 and img.shape == (4, 16) and np.isnan(img).all()
+    os.remove(os.path.join(folder, 'nothing.cfile'))
+    os.remove(os.path.join(folder, 'nothing.json'))
+    # A WAV is linear, 0 to half its rate, as the audio spectrum is: its
+    # tones are in the columns of their own frequencies.
+    img, freqs = library.render(new.tracks[3], 0.0, 3.0, 12)
+    assert img.shape == (12, 1025) and freqs[0] == 0 and abs(freqs[-1] - 24000) < 1
+    assert library.extent(new.tracks[3]) == (0.0, 24000.0)
+    profile = np.nanmean(img, axis=0)
+    for hz in (1000.0, 2500.0):
+        near = np.abs(freqs - hz) < 60
+        assert profile[near].max() > np.median(profile) + 40, (hz, profile[near].max())
+        assert abs(freqs[near][np.argmax(profile[near])] - hz) < 25, hz
 
     # The WAV source: seek, the loop point, the end.
     frames = library.wav_frames(new.tracks[3].path)
@@ -173,6 +226,183 @@ def part1_pieces():
     print("part 1 passed")
 
 
+# ============================================================ part 1b
+
+def part1b_minimap():
+    """The mini map alone: 100 px by 200, 100 s, 97-99 MHz."""
+    from fm_receiver.widgets import MiniMap
+    mini = MiniMap()
+    mini.resize(100, 200)
+    mini.show()
+    pump(0.1)
+    sent = {'scrub': [], 'seek': [], 'pan': [], 'zoom': []}
+    mini.scrubbed.connect(sent['scrub'].append)
+    mini.seekRequested.connect(sent['seek'].append)
+    mini.panRequested.connect(sent['pan'].append)
+    mini.zoomRequested.connect(lambda n, fine: sent['zoom'].append((n, fine)))
+
+    def point(seconds, hz):
+        return QtCore.QPoint(int(mini.x_of(hz)), int(mini.y_of(seconds)))
+
+    def press(pos):
+        QtTest.QTest.mousePress(mini, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, pos)
+
+    def move(pos):
+        mouse_move(mini, pos)
+
+    def release(pos):
+        QtTest.QTest.mouseRelease(mini, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, pos)
+
+    # Without a recording it is a frame, and does nothing.
+    press(QtCore.QPoint(50, 100))
+    release(QtCore.QPoint(50, 100))
+    assert not any(sent.values()) and mini.window_rect() is None
+
+    mini.set_duration(100.0)
+    mini.set_extent((97e6, 99e6))
+    mini.set_window(20.0, 97.5e6, 98.0e6)
+    mini.set_position(50.0)
+    # Later at the top: the playhead is the box's top edge, and the box runs
+    # down the time it shows; its width is the band the spectrum shows.
+    box = mini.window_rect()
+    frame = mini._frame()
+    assert abs(box.top() - mini.y_of(50.0)) < 1 and abs(box.bottom() - mini.y_of(30.0)) < 1, box
+    assert abs(box.height() - frame.height() * 0.2) < 1, box
+    assert abs(box.left() - mini.x_of(97.5e6)) < 1 and abs(box.right() - mini.x_of(98.0e6)) < 1
+    assert mini.y_of(100.0) <= frame.top() + 1 and mini.y_of(0.0) >= frame.bottom() - 1, \
+        'the end is at the top and the start at the bottom'
+    assert abs(mini.time_at(mini.y_of(37.0)) - 37.0) < 1e-6
+    assert abs(mini.hz_at(mini.x_of(98.4e6)) - 98.4e6) < 1
+
+    # Pressing outside the box puts its middle on the pointer: the playhead
+    # is the top, so half the span above where it was pressed.
+    press(point(80.0, 98.6e6))
+    assert abs(sent['scrub'][-1] - 90.0) < 0.6, sent['scrub']
+    assert abs(sent['pan'][-1] - 98.6e6) < 25e3, sent['pan']
+    assert not sent['seek'], 'nothing is played until the button comes up'
+    move(point(40.0, 98.6e6))
+    assert abs(sent['scrub'][-1] - 50.0) < 0.6, sent['scrub'][-1]
+    release(point(40.0, 98.6e6))
+    assert len(sent['seek']) == 1 and abs(sent['seek'][0] - 50.0) < 0.6, sent['seek']
+    assert abs(mini.position - 50.0) < 0.6
+
+    # Pressing inside carries it from where it was taken: nothing jumps.
+    for key in sent:
+        sent[key].clear()
+    mini.set_position(50.0)
+    mini.set_window(20.0, 97.5e6, 98.0e6)
+    inside = point(45.0, 97.75e6)
+    assert mini.window_rect().contains(QtCore.QPointF(inside))
+    press(inside)
+    assert abs(sent['scrub'][-1] - 50.0) < 0.6, 'pressed inside: it stays'
+    assert abs(sent['pan'][-1] - 97.75e6) < 25e3, sent['pan'][-1]
+    move(point(25.0, 98.25e6))                    # 20 s earlier, 0.5 MHz up
+    assert abs(sent['scrub'][-1] - 30.0) < 0.6, sent['scrub'][-1]
+    assert abs(sent['pan'][-1] - 98.25e6) < 25e3, sent['pan'][-1]
+    release(point(25.0, 98.25e6))
+    assert abs(sent['seek'][-1] - 30.0) < 0.6, sent['seek']
+
+    # Dragged past either end it stops there.
+    press(point(30.0, 97.75e6))
+    move(QtCore.QPoint(50, -40))
+    assert abs(sent['scrub'][-1] - 100.0) < 1e-6, sent['scrub'][-1]
+    move(QtCore.QPoint(50, 400))
+    assert sent['scrub'][-1] == 0.0, sent['scrub'][-1]
+    release(QtCore.QPoint(50, 400))
+    assert sent['seek'][-1] == 0.0
+
+    # At the very start the box rests on the bottom edge, as small as it may
+    # be, and the map is not dimmed all over.
+    mini.set_position(0.0)
+    box = mini.window_rect()
+    assert box is not None and box.height() >= mini.WINDOW_MIN_PX - 1e-6 \
+        and abs(box.bottom() - frame.bottom()) < 1, box
+    mini.set_position(100.0)
+    assert abs(mini.window_rect().top() - frame.top()) < 1.5
+
+    # The wheel is the waterfall's time zoom; Shift makes it fine.
+    for key in sent:
+        sent[key].clear()
+    for mods, fine in ((QtCore.Qt.NoModifier, False), (QtCore.Qt.ShiftModifier, True)):
+        mini.wheelEvent(Qt.QWheelEvent(QtCore.QPointF(10, 10), QtCore.QPointF(10, 10),
+                                       QtCore.QPoint(0, 0), QtCore.QPoint(0, 120),
+                                       QtCore.Qt.NoButton, mods, QtCore.Qt.NoScrollPhase, False))
+        assert sent['zoom'][-1] == (1.0, fine), sent['zoom']
+
+    # A very long recording: the box is still there to be found.
+    mini.set_duration(36000.0)
+    mini.set_window(20.0, 97.5e6, 98.0e6)
+    mini.set_position(18000.0)
+    assert mini.window_rect().height() >= mini.WINDOW_MIN_PX - 1e-6
+    # A picture in dB, later at the top, and NaN (before the file) left clear.
+    img = np.full((8, 4), -90.0)
+    img[7, 1] = -20.0                               # the latest row
+    img[0] = np.nan
+    mini.set_levels(-20, 60)
+    mini.set_image(img, (97e6, 99e6))
+    assert mini._index is not None and mini._index.shape == (8, 4)
+    assert mini._index[0, 1] == 255 and mini._index[7].max() == 0, mini._index
+    mini.set_image(None, (97e6, 99e6))
+    assert mini._index is None
+
+    # A recording shorter than the box (20 s of a 12 s file): a press outside
+    # it puts the playhead at the pointer, not at the end.
+    for key in sent:
+        sent[key].clear()
+    mini.set_duration(12.0)
+    mini.set_window(20.0, 97.5e6, 98.0e6)
+    mini.set_position(3.0)
+    outside = point(8.0, 98.5e6)
+    assert not mini.window_rect().contains(QtCore.QPointF(outside))
+    press(outside)
+    assert abs(sent['scrub'][-1] - 8.0) < 0.3, sent['scrub']
+    # Hidden mid-drag (the tab left, a recording chosen): no release is coming.
+    assert mini._grab is not None
+    mini.hide()
+    assert mini._grab is None
+    mini.show()
+    # Panned wholly off the recorded band, the box rests against the edge.
+    mini.set_window(20.0, 120e6, 121e6)
+    box = mini.window_rect()
+    assert box.width() >= mini.WINDOW_MIN_PX - 1e-6 and mini._frame().contains(box), box
+    mini.set_window(20.0, 50e6, 51e6)
+    box = mini.window_rect()
+    assert box.width() >= mini.WINDOW_MIN_PX - 1e-6 and mini._frame().contains(box), box
+    mini.close()
+
+    # The view: unticking Waterfall takes the whole pane, the map's column
+    # with it, so the spectrum has the height; and a clock that goes back
+    # (a recording looping) starts the history again.
+    from fm_receiver.widgets import SpectrumView
+    view = SpectrumView('test', waterfall=True)
+    view.resize(700, 400)
+    view.show()
+    view.set_extent(97e6, 99e6)
+    pump(0.1)
+    view.set_map(True)
+    assert pump(2, lambda: view.minimap.width() == view.MAP_W)
+    assert not view._wf_box.isHidden()
+    view.wf_check.setChecked(False)
+    assert view._wf_box.isHidden() and view.map_info.isHidden()
+    view.wf_check.setChecked(True)
+    assert not view._wf_box.isHidden() and not view.map_info.isHidden()
+    x = np.linspace(97e6, 99e6, 256)
+    view.wf_clock = lambda: view._test_clock
+    for t in (10.0, 10.1, 10.2, 10.3):
+        view._test_clock = t
+        view.set_data(x, np.full(256, -50.0))
+    assert view._hist.n == 4, view._hist.n
+    view._test_clock = 0.1                     # round again
+    view.set_data(x, np.full(256, -50.0))
+    assert view._hist.n == 1, 'the history starts again when the clock goes back'
+    view._test_clock = 0.2
+    view.set_data(x, np.full(256, -50.0))
+    order, times = view._hist.newest_first()
+    assert view._hist.n == 2 and np.all(np.diff(times) < 0), times
+    view.close()
+    print("part 1b passed")
+
+
 # ============================================================ part 2
 
 WINDOWS = []
@@ -188,11 +418,22 @@ def make_window(argv, config):
     return window
 
 
-def click_strip(strip, fraction):
-    pos = QtCore.QPoint(int(strip.width() * fraction), strip.height() // 2)
-    QtTest.QTest.mousePress(strip, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, pos)
-    QtTest.QTest.mouseRelease(strip, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, pos)
+def drag_map(mini, to_seconds, to_hz=None, release=True):
+    """Take the map's box by its middle and carry it so the playhead is at
+    ``to_seconds`` (and, with ``to_hz``, its band centred there)."""
+    box = mini.window_rect()
+    x0, y0 = int(box.center().x()), int(box.center().y())
+    x1 = x0 if to_hz is None else int(mini.x_of(to_hz) - (mini.x_of(mini._window_centre_hz())
+                                                           - box.center().x()))
+    y1 = y0 + int(mini.y_of(to_seconds) - mini.y_of(mini.position))
+    QtTest.QTest.mousePress(mini, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier,
+                            QtCore.QPoint(x0, y0))
+    mouse_move(mini, QtCore.QPoint(x1, y1))
+    end = QtCore.QPoint(x1, y1)
+    if release:
+        QtTest.QTest.mouseRelease(mini, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, end)
     QAPP.processEvents()
+    return end
 
 
 def seconds_shown(w):
@@ -231,17 +472,64 @@ def part2_window():
     assert 'WAV + IQ channel (2 parts) + IQ band' in first, first
     rec = w._rec_sel
     assert w.track_combo.count() == 4 and w._track.kind == 'iq-band'
-    assert pump(5, lambda: w.timeline._index is not None), 'no overview'
-    # The strip is coloured by the RF spectrum's Ref level and Range, and
-    # follows them.
     view = w.rf_view
-    assert w.timeline._levels == (view.ref_knob.value() - view.range_knob.value(),
-                                  view.ref_knob.value()), w.timeline._levels
-    before = w.timeline._index.copy()
+    mini = view.minimap
+    # The mini map slides open beside the waterfall and is drawn from the
+    # file; the audio view's stays shut.
+    assert w.top_stack.currentWidget() is view
+    assert pump(5, lambda: mini._index is not None), 'no map'
+    assert pump(3, lambda: not mini.isHidden() and mini.width() == view.MAP_W), mini.width()
+    assert w.audio_view.minimap.isHidden() and mini.duration == w._track.seconds
+    assert mini.extent_hz == library.extent(w._track), mini.extent_hz
+    # Coloured by the RF spectrum's Ref level and Range, and follows them.
+    assert mini._levels == (view.ref_knob.value() - view.range_knob.value(),
+                            view.ref_knob.value()), mini._levels
+    before = mini._index.copy()
     view.ref_knob.setValue(view.ref_knob.value() - 30)
     view.range_knob.setValue(60)
-    assert w.timeline._levels == (view.ref_knob.value() - 60, view.ref_knob.value())
-    assert not np.array_equal(before, w.timeline._index), 'the colours did not move'
+    assert mini._levels == (view.ref_knob.value() - 60, view.ref_knob.value())
+    assert not np.array_equal(before, mini._index), 'the colours did not move'
+    # Its box is what the waterfall shows: that much time, that band.
+    vb = view.plot.getPlotItem().getViewBox()
+    assert mini.span == view.wf_span_s, (mini.span, view.wf_span_s)
+    assert abs(mini.window_hz[0] - vb.viewRange()[0][0] * 1e6) < 1, mini.window_hz
+
+    def newest(v):
+        ring = v._hist
+        return ring.t[(ring.head - 1) % len(ring.t)]
+
+    # Before it plays, a seek draws the waterfall's stretch from the file,
+    # ending where the box's top edge is.
+    w._seek_to(8.0)
+    assert pump(3, lambda: view._hist is not None and view._hist.n > 0
+                and not view.wf_frozen), 'no waterfall drawn from the file'
+    assert abs(newest(view) - 8.0) < view.wf_span_s / view.WF_ROWS + 0.05, newest(view)
+    assert view._wf is not None and view._x is not None and not w.play_btn.isChecked()
+    assert abs(mini.position - 8.0) < 0.1 and seconds_shown(w) == 8
+    # Played on from there, the radio's rows carry on from the file's, on
+    # the track's own time, at the same level.
+    # What was done to the view before Play (zoomed, the box carried sideways,
+    # the waterfall's time set) is still so after it.
+    view.set_wf_span(10.0)
+    view.span_knob.setValue(1e6)
+    view.pan_to(98.2e6)
+    centre = view.center_hz
+    w.play_btn.setChecked(True)
+    assert pump(8, lambda: newest(view) > 8.5 and not view.wf_frozen), newest(view)
+    assert view.wf_clock is not None
+    assert view.wf_span_s == 10.0 and abs(view.span_knob.value() - 1e6) < 1, \
+        (view.wf_span_s, view.span_knob.value())
+    assert abs(view.center_hz - centre) < 1e3 and abs(centre - 98.2e6) < 1e5, (view.center_hz, centre)
+    order, times = view._hist.newest_first()
+    peaks = view._hist.rows[order].astype(float).max(axis=1)
+    filed, live = peaks[times < 7.9], peaks[times > 8.3]
+    assert len(filed) > 20 and len(live) > 3, (len(filed), len(live))
+    assert np.all(np.diff(times) <= 1e-9), 'the history is in time order'
+    assert abs(np.median(filed) - np.median(live)) < 3, (np.median(filed), np.median(live))
+    w.play_btn.setChecked(False)
+    view.full_btn.click()
+    view.set_wf_span(20.0)
+    w._seek_to(0.0)
 
     # The band plays with RDS; the time goes on.
     w.play_btn.setChecked(True)
@@ -250,11 +538,15 @@ def part2_window():
     # The strip's dB are the spectrum's: its loudest level, the view's.
     assert pump(3, lambda: w._rx_sig is not None)
     pump(1)
-    shown, strip = float(np.max(w._rx_sig[1])), float(np.max(w.timeline._db))
-    assert abs(shown - strip) < 3, (shown, strip)
-    # Playing, the view's own saved scale, and the strip follows it.
-    assert w.timeline._levels == (view.ref_knob.value() - view.range_knob.value(),
-                                  view.ref_knob.value())
+    shown, mapped = float(np.max(w._rx_sig[1])), float(np.nanmax(mini._db))
+    assert abs(shown - mapped) < 3, (shown, mapped)
+    # Playing, the view's own saved scale, and the map follows it.
+    assert mini._levels == (view.ref_knob.value() - view.range_knob.value(),
+                            view.ref_knob.value())
+    # The waterfall's rows are on the track's own time.
+    assert view.wf_clock is not None and not view.wf_frozen
+    here = w._play.radio.position() / w._play.radio.rate
+    assert abs(newest(view) - here) < 0.6, (newest(view), here)
     assert pump(12, lambda: 'TEST FM' in w.play_station.text()), w.play_station.text()
     assert pump(8, lambda: 'Hello from the synthetic station' in w.play_text.text()), \
         w.play_text.text()
@@ -271,10 +563,41 @@ def part2_window():
     assert e.running and e.rx.rds.snapshot()['station_name'].strip() == 'TEST FM'
     assert pump(2, lambda: w._play.radio.position() > held + 0.3 * w._play.radio.rate)
 
-    # A click on the strip jumps there.
-    click_strip(w.timeline, 0.75)
-    assert abs(w._play.radio.position() / w._play.radio.rate - 0.75 * total) < 0.5, \
+    # Dragging the map's box jumps there: the time follows the pointer while
+    # the button is down, the sound waits for it to come up, and the
+    # waterfall shows the stretch ending there, drawn from the file.
+    view.set_wf_span(5.0)                         # a box smaller than the file
+    assert pump(2, lambda: mini.span == 5.0) and total > 8, (mini.span, total)
+    held = w._play.radio.position()
+    end = drag_map(mini, 0.75 * total, release=False)
+    assert abs(w._shown_at - 0.75 * total) < 0.5 and w._scrubbing, \
+        (w._shown_at, 0.75 * total, w._scrubbing, mini.position)
+    assert abs(seconds_shown(w) - w._shown_at) < 1.0, w.time_label.text()
+    assert pump(3, lambda: abs(newest(view) - 0.75 * total) < 0.4), (newest(view), 0.75 * total)
+    assert view.wf_frozen, "the radio's rows wait while the box is carried"
+    assert abs(w._play.radio.position() - held) < 0.5 * w._play.radio.rate * 2, \
+        'not seeked until the button comes up'
+    QtTest.QTest.mouseRelease(mini, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, end)
+    assert pump(3, lambda: not view.wf_frozen and not w._scrubbing), 'the rows go on after the drop'
+    assert abs(w._play.radio.position() / w._play.radio.rate - 0.75 * total) < 0.8, \
         w._play.radio.position()
+    # The box dragged sideways pans the spectrum - it does not retune.
+    station = e.station_hz
+    view.span_knob.setValue(500e3)
+    assert pump(2, lambda: abs(mini.window_hz[1] - mini.window_hz[0] - 500e3) < 1e3), mini.window_hz
+    drag_map(mini, mini.position, to_hz=98.1e6)
+    assert abs(view.center_hz - 98.1e6) < 60e3, view.center_hz
+    assert abs(mini.window_hz[0] + 250e3 - 98.1e6) < 60e3, mini.window_hz
+    assert e.station_hz == station, 'panning is not tuning'
+    view.full_btn.click()
+    # The wheel on the map is the waterfall's time zoom.
+    mini.wheelEvent(Qt.QWheelEvent(QtCore.QPointF(10, 10), QtCore.QPointF(10, 10),
+                                   QtCore.QPoint(0, 0), QtCore.QPoint(0, -120),
+                                   QtCore.Qt.NoButton, QtCore.Qt.NoModifier,
+                                   QtCore.Qt.NoScrollPhase, False))
+    assert view.wf_span_s > 5.0 and mini.span == view.wf_span_s, view.wf_span_s
+    assert pump(3, lambda: not view.wf_frozen), 'zoomed: drawn again from the file'
+    view.set_wf_span(20.0)
     # A click on the spectrum tunes within the recorded band.
     w.tune(98.6e6)
     assert abs(e.station_hz - 98.6e6) < 1 and w._mode == 'playback'
@@ -286,10 +609,14 @@ def part2_window():
     assert seconds_shown(w) == 0 and 'Finished' in w.status.text() and not e.running
     # Loop: round again, past the end.
     w.loop_check.setChecked(True)
-    click_strip(w.timeline, 0.9)
+    w._seek_to(0.9 * total)
     w.play_btn.setChecked(True)
     assert pump(total * 0.1 + 3, lambda: w._play.radio.played() > w._play.radio.total)
     assert w.play_btn.isChecked() and e.running
+    assert pump(3, lambda: not view.wf_frozen), 'drawn again after the wrap'
+    order, times = view._hist.newest_first()
+    assert np.all(np.diff(times) <= 1e-9), 'the history is in time order after a loop'
+    assert abs(newest(view) - w._play.radio.position() / w._play.radio.rate) < 1.0
     w.loop_check.setChecked(False)
 
     # The WAV: its sound's spectrum, and the RadioText Record logged.
@@ -306,26 +633,36 @@ def part2_window():
     peak = x[band][np.argmax(db[band])]
     assert abs(peak - 1.0) < 0.05 or abs(peak - 2.5) < 0.05, peak     # the tones, kHz
     assert max(w.meter._rms) > -30, w.meter._rms
-    # A WAV's strip: the sound's spectrum sets its colours, and its dB are
-    # that view's.
+    # A WAV's map is beside the audio view's waterfall: the sound's spectrum
+    # sets its colours, its frequencies are linear and its dB the view's.
     av = w.audio_view
-    assert w.timeline._levels == (av.ref_knob.value() - av.range_knob.value(),
-                                  av.ref_knob.value()), w.timeline._levels
-    assert pump(5, lambda: w.timeline._db is not None), 'no WAV overview'
+    amini = av.minimap
+    assert pump(3, lambda: not amini.isHidden() and amini.width() == av.MAP_W), amini.width()
+    assert pump(2, lambda: mini.isHidden()), 'the RF map shuts'
+    assert amini._levels == (av.ref_knob.value() - av.range_knob.value(),
+                             av.ref_knob.value()), amini._levels
+    assert amini.extent_hz == (0.0, 24000.0), amini.extent_hz
+    assert pump(5, lambda: amini._index is not None), 'no WAV map'
     # Where it is playing: this WAV was recorded across a retune, so its
     # loudest moment is not now.
-    cols = w.timeline._db.shape[1]
-    at = int(w._play.source.position / 48000 / w.timeline.duration * cols)
+    rows = amini._db.shape[0]
+    at = int((amini.duration - w._play.source.position / 48000) / amini.duration * rows)
     shown = float(np.max(db))
-    strip = float(np.max(w.timeline._db[:, max(0, at - 4):at + 2]))
-    assert abs(shown - strip) < 3, (shown, strip, float(np.max(w.timeline._db)))
+    mapped = float(np.nanmax(amini._db[max(0, at - 3):at + 4]))
+    assert abs(shown - mapped) < 3, (shown, mapped, float(np.nanmax(amini._db)))
+    assert av.wf_clock is not None and pump(3, lambda: av._hist is not None and av._hist.n > 0)
     av.range_knob.setValue(av.range_knob.value() - 20)
-    assert w.timeline._levels[0] == av.ref_knob.value() - av.range_knob.value()
+    assert amini._levels[0] == av.ref_knob.value() - av.range_knob.value()
     assert 'Hello from the synthetic station' in w.play_text.text(), w.play_text.text()
     w.play_btn.setChecked(False)
     assert e.running and w._play.source.paused, 'a WAV pauses on silence'
     w._seek_to(1.0)
     assert w._play.source.position == 48000
+    assert pump(3, lambda: not av.wf_frozen and abs(newest(av) - 1.0) < 0.2), newest(av)
+
+    # A drag cut short by what is under it (the recording deleted) lets go.
+    drag_map(amini, 0.5 * amini.duration, release=False)
+    assert w._scrubbing and amini._grab is not None
 
     # Delete it: every file goes, and so does the list's line.
     before = len(os.listdir(folder))
@@ -334,9 +671,37 @@ def part2_window():
     assert w._play is None and w.rec_list.count() == 0, w.rec_list.count()
     assert not os.listdir(folder), os.listdir(folder)
     assert 'No recordings' in w.lib_note.text()
+    assert not w._scrubbing and pump(2, lambda: amini._grab is None), 'the drag went on'
+
+    # A recording that cannot be read (no description beside its samples), and
+    # one with none (an empty file): chosen, they say so and do not fall over.
+    bad = os.path.join(folder, 'fm-99.10MHz-20260921-120000-iq-band.cfile')
+    open(bad, 'wb').write(b'\0' * 4096)
+    empty = os.path.join(folder, 'fm-97.30MHz-20260921-130000-iq-band')
+    open(empty + '.cfile', 'wb').close()
+    json.dump({'rate': 500e3, 'offset_hz': 0, 'station_hz': 97.3e6, 'center_hz': 97.3e6},
+              open(empty + '.json', 'w'))
+    w._refresh_library()
+    assert w.rec_list.count() == 2, w.rec_list.count()
+    for row in (1, 0):                              # the unreadable one, then the empty
+        w.rec_list.setCurrentRow(row)
+        pump(0.5)
+        assert w._rec_sel is not None and w._track is not None
+        if row == 1:
+            assert w._track.error and not w.play_btn.isEnabled(), w._track.error
+            assert pump(2, lambda: view.minimap.isHidden()), 'no map for what cannot be read'
+        else:
+            assert not w._track.error and w._track.seconds == 0.0
+            assert view.minimap.duration == 0.0
+    for path in (bad, empty + '.cfile', empty + '.json'):
+        os.remove(path)
+    w._refresh_library()
+    assert w.rec_list.count() == 0
 
     # Back to Receive: the radio opens again, tuned where it was.
     w.tabs.setCurrentIndex(1)
+    assert pump(3, lambda: view.minimap.isHidden() and av.minimap.isHidden()), 'the maps stay open'
+    assert view.wf_clock is None and av.wf_clock is None and not view.wf_frozen
     assert e.running and w.radio is not None and w._mode == 'receive', w.status.text()
     assert w.radio_combo.isEnabled() and w.rec_btn.isEnabled()
     assert abs(w.tuner.value() - live_tuner) < 1, (w.tuner.value(), live_tuner)
@@ -356,6 +721,7 @@ def main():
     keep = '--keep' in sys.argv
     try:
         part1_pieces()
+        part1b_minimap()
         part2_window()
     finally:
         # A failed check must not leave a flowgraph running into interpreter

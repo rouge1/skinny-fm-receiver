@@ -2011,6 +2011,12 @@ class SpectrumView(Qt.QWidget):
     bandDragged = pyqtSignal(float)
     bandDragFinished = pyqtSignal()
     tunerRequested = pyqtSignal(float)
+    waterfallSpanChanged = pyqtSignal(float)
+
+    #: The mini map's column beside the waterfall (Recordings), and how long
+    #: it takes to slide open or shut.
+    MAP_W = 96
+    MAP_MS = 240
 
     #: Rows drawn on screen, whatever the time shown; columns kept.
     WF_ROWS = 220
@@ -2019,6 +2025,10 @@ class SpectrumView(Qt.QWidget):
     #: fastest rate one comes (Receive, 15 a second), kept as float16.
     WF_HISTORY_S = 300.0
     WF_HISTORY_ROWS = 4800
+    #: A row stamped this much earlier than the newest one is a clock that
+    #: went back (a recording looping, a seek): the history starts again,
+    #: for the rows are drawn on the assumption that time only goes on.
+    WF_BACK_S = 0.25
     #: The coarse copy: a row a quarter of a second, drawn from once a row
     #: on screen covers that much. From every row, five minutes on screen
     #: took 90 ms a draw.
@@ -2058,6 +2068,18 @@ class SpectrumView(Qt.QWidget):
         self._hist = None                 # the history: every row, and
         self._coarse = None               # the most of each quarter second
         self._wf_drawn = 0.0              # the newest row's time when drawn
+        #: What stamps a row as it comes: None, the wall clock; a recording
+        #: gives the playhead, so its rows sit on its own time.
+        self.wf_clock = None
+        #: True while a recording's stretch is being drawn from its file:
+        #: rows from the radio that came meanwhile are on the wrong time.
+        self.wf_frozen = False
+        self.minimap = None
+        self.map_info = None
+        self._wf_box = None
+        self._map_w = 0
+        self._map_shown = False
+        self._map_anim = None
         self.wf_span_s = self.WF_SPAN_S[1]
         self._time_hot = False
         self._wf_later = Qt.QTimer(self)
@@ -2223,9 +2245,30 @@ class SpectrumView(Qt.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         if waterfall:
+            # The mini map is a column beside the waterfall, and the spectrum
+            # above gives up a gutter of the same width: linked views line
+            # up by where they are on screen, so both must end together.
+            self.minimap = MiniMap()
+            self.minimap.setFixedWidth(0)
+            self.minimap.hide()
+            self.minimap.zoomRequested.connect(lambda n, fine: self.zoom_time(n, fine))
+            self.map_info = Qt.QLabel('')
+            self.map_info.setWordWrap(True)
+            self.map_info.setAlignment(QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
+            self.map_info.setFixedWidth(0)
+            self.map_info.hide()
+            above, below = Qt.QWidget(), Qt.QWidget()
+            self._wf_box = below                  # the waterfall and its map: one pane
+            for row, widgets in ((above, (self.plot, self.map_info)),
+                                 (below, (self.wf_plot, self.minimap))):
+                box = Qt.QHBoxLayout(row)
+                box.setContentsMargins(0, 0, 0, 0)
+                box.setSpacing(0)
+                box.addWidget(widgets[0], 1)
+                box.addWidget(widgets[1])
             self.splitter = Qt.QSplitter(QtCore.Qt.Vertical)
-            self.splitter.addWidget(self.plot)
-            self.splitter.addWidget(self.wf_plot)
+            self.splitter.addWidget(above)
+            self.splitter.addWidget(below)
             self.splitter.setStretchFactor(0, 3)
             self.splitter.setStretchFactor(1, 2)
             layout.addWidget(self.splitter, 1)
@@ -2283,6 +2326,8 @@ class SpectrumView(Qt.QWidget):
             for line in region.lines:
                 line.setPen(edge)
         self.message.setColor(t['warn'])
+        if self.map_info is not None:
+            self.map_info.setStyleSheet(f"color: {t['ink_2']}; font-size: 11px;")
         # A chip of the panel behind the readout, nearly opaque, so a busy
         # trace or density map under it can't wash the numbers out.
         chip = Qt.QColor(t['panel'])
@@ -2378,7 +2423,8 @@ class SpectrumView(Qt.QWidget):
             else:
                 np.maximum(self._peak, db, out=self._peak)
             self.peak_curve.setData(x, self._peak)
-        if self.wf_plot is not None and waterfall_row and self.wf_check.isChecked():
+        if self.wf_plot is not None and waterfall_row and self.wf_check.isChecked() \
+                and not self.wf_frozen:
             self._add_row(x, db)
 
     def clear(self):
@@ -2460,7 +2506,7 @@ class SpectrumView(Qt.QWidget):
             self.density_item.clear()
 
     def add_waterfall_row(self, freqs_hz, db):
-        if self.wf_plot is not None and self.wf_check.isChecked():
+        if self.wf_plot is not None and self.wf_check.isChecked() and not self.wf_frozen:
             self._add_row(np.asarray(freqs_hz) / self.scale, np.asarray(db))
 
     def _add_row(self, x, db, now=None):
@@ -2474,15 +2520,20 @@ class SpectrumView(Qt.QWidget):
         else:
             row = db
         extent = (x[0], x[-1] + (x[-1] - x[0]) / max(1, n - 1))
+        if now is None:
+            now = self.wf_clock() if self.wf_clock is not None else time.monotonic()
+        t = float(now)
+        back = (self._hist is not None and self._hist.n
+                and t < self._hist.t[(self._hist.head - 1) % len(self._hist.t)] - self.WF_BACK_S)
         if (self._hist is None or self._hist.rows.shape[1] != len(row)
-                or self._wf_extent != extent):
-            # A new band or resolution: the history starts again.
+                or not self._same_extent(extent) or back):
+            # A new band or resolution, or time gone back: the history
+            # starts again.
             self._hist = _RowRing(self.WF_HISTORY_ROWS, len(row))
             self._coarse = _RowRing(int(self.WF_HISTORY_S / self.WF_COARSE_S) + 2, len(row),
                                     merge_s=self.WF_COARSE_S)
             self._wf_drawn = 0.0
             self._wf_extent = extent
-        t = time.monotonic() if now is None else float(now)
         self._hist.add(row, t)
         self._coarse.add(row, t)
         # Every row is drawn while a draw is cheap (the full history, a
@@ -2495,6 +2546,47 @@ class SpectrumView(Qt.QWidget):
             self._draw_wf()
         elif not self._wf_later.isActive():
             self._wf_later.start(int(1000 * wait))
+
+    def _same_extent(self, extent):
+        old = self._wf_extent
+        if old is None:
+            return False
+        tol = 1e-9 * max(1.0, abs(old[0]), abs(old[1]))
+        return abs(old[0] - extent[0]) <= tol and abs(old[1] - extent[1]) <= tol
+
+    def set_waterfall_history(self, freqs_hz, rows_db, times):
+        """Put ``rows_db`` (oldest first, one per time in ``times``, on the
+        clock live rows will use) in the waterfall's place - a stretch of a
+        recording drawn from its file, which the rows that come next carry
+        on from. A row that is NaN (before the file began) is left out."""
+        if self.wf_plot is None:
+            return
+        x = np.asarray(freqs_hz, dtype=np.float64) / self.scale
+        rows = np.asarray(rows_db)
+        if rows.ndim != 2 or not len(x) or rows.shape[1] != len(x):
+            return
+        n = len(x)
+        if n > self.WF_COLS:
+            k = int(math.ceil(n / self.WF_COLS))
+            cols = int(math.ceil(n / k))
+            pad = np.repeat(rows[:, -1:], k * cols - n, axis=1)
+            rows = np.concatenate([rows, pad], axis=1).reshape(len(rows), cols, k).max(axis=2)
+        extent = (x[0], x[-1] + (x[-1] - x[0]) / max(1, n - 1))
+        self._hist = _RowRing(self.WF_HISTORY_ROWS, rows.shape[1])
+        self._coarse = _RowRing(int(self.WF_HISTORY_S / self.WF_COARSE_S) + 2, rows.shape[1],
+                                merge_s=self.WF_COARSE_S)
+        self._wf_extent = extent
+        self._wf_drawn = 0.0
+        self._wf_later.stop()
+        for row, t in zip(rows, times):
+            if np.isfinite(row).all():
+                self._hist.add(row, float(t))
+                self._coarse.add(row, float(t))
+        if self._hist.n:
+            self._draw_wf()
+        else:
+            self._wf = None
+            self.wf_image.clear()
 
     def _draw_wf(self):
         """The rows on screen from the history: row ``b`` covers the ages
@@ -2666,6 +2758,50 @@ class SpectrumView(Qt.QWidget):
         if self.wf_plot is not None:
             self.wf_plot.setYRange(0, self.wf_span_s, padding=0)
             self._draw_wf()
+            self._map_window()
+            self.waterfallSpanChanged.emit(self.wf_span_s)
+
+    # -- the mini map beside the waterfall
+    def _map_window(self):
+        """Tell the map what the waterfall shows now."""
+        if self.minimap is None:
+            return
+        (x0, x1), _ = self.plot.getPlotItem().getViewBox().viewRange()
+        self.minimap.set_window(self.wf_span_s, x0 * self.scale, x1 * self.scale)
+
+    def set_map(self, shown):
+        """Slide the mini map open beside the waterfall, or shut. The
+        spectrum above gives up a gutter of the same width as it does, so
+        the two stay lined up the whole way."""
+        if self.minimap is None or bool(shown) == self._map_shown:
+            return
+        self._map_shown = bool(shown)
+        if self._map_anim is not None:
+            self._map_anim.stop()
+        anim = QtCore.QVariantAnimation(self)
+        anim.setDuration(self.MAP_MS)
+        anim.setEasingCurve(QtCore.QEasingCurve.InOutCubic)
+        anim.setStartValue(self._map_w)
+        anim.setEndValue(self.MAP_W if shown else 0)
+        anim.valueChanged.connect(lambda v: self._set_map_width(int(v)))
+        self._map_anim = anim
+        self._map_window()
+        anim.start()
+
+    def _set_map_width(self, width):
+        try:
+            self._map_w = width
+            for widget in (self.minimap, self.map_info):
+                widget.setFixedWidth(width)
+            self.minimap.setVisible(width > 0)
+            self.map_info.setVisible(width > 0 and self.wf_check.isChecked())
+        except Exception as exc:                  # never abort the app
+            print(f"spectrum view: {exc}")
+
+    def pan_to(self, centre_hz):
+        """Move the spectrum's window to be centred on ``centre_hz`` (as far
+        as the data goes), keeping its span: the mini map's window dragged."""
+        self.set_center(centre_hz)
 
     def _axis_event(self, kind, event):
         """The wheel and the middle button on the level axis; True if the
@@ -2834,6 +2970,8 @@ class SpectrumView(Qt.QWidget):
         self.plot.setYRange(bottom, top, padding=0)
         if self.wf_plot is not None and self._wf is not None:
             self.wf_image.setLevels((bottom, top))
+        if self.minimap is not None:
+            self.minimap.set_levels(top, self.range_knob.value())
 
     def _span_changed(self, _value):
         self._wanted_span = None                    # turned since: that stands
@@ -2853,6 +2991,7 @@ class SpectrumView(Qt.QWidget):
     def _range_changed(self, _vb, rng):
         # Zoomed out, the band may now be thinner than it is drawn.
         self._place_band()
+        self._map_window()
         if self._syncing:
             return
         x0, x1 = rng
@@ -2945,48 +3084,79 @@ class SpectrumView(Qt.QWidget):
 
     def _wf_toggled(self, on):
         if self.wf_plot is not None:
-            self.wf_plot.setVisible(on)
+            # The pane that holds the waterfall and its map, so the spectrum
+            # has the height again; the gutter above goes with the map.
+            self._wf_box.setVisible(on)
+            self.map_info.setVisible(on and self._map_w > 0)
 
 
 # ---------------------------------------------------------- timeline strip
 
-class TimelineStrip(Qt.QWidget):
-    """A recording from end to end, as a waterfall lying on its side - time
-    left to right, frequency up the strip, in the theme's waterfall colours
-    - with the playhead across it. It is the seek bar: click or drag, and
-    :attr:`seekRequested` (seconds) goes when the button comes up; the
-    playhead follows the pointer until then.
+class MiniMap(Qt.QWidget):
+    """A recording from end to end, small, beside the waterfall: **time
+    up the map, later at the top, as in the waterfall; frequency across it**,
+    in the theme's waterfall colours. A **window** on it is what the big
+    waterfall shows - the span of time before the playhead, and the band the
+    spectrum has zoomed to - so what is inside the window is a shrunk copy of
+    the waterfall. The playhead is the window's top edge.
 
-    With no overview yet (it is worked out in the background) it is a plain
-    track that seeks all the same."""
+    It is the scrubber. Press where you want to look and the window goes
+    there, centred on the pointer; press inside the window and it is carried
+    from where you took it. While the button is down :attr:`scrubbed`
+    (seconds) and :attr:`panRequested` (hertz, the window's centre) say where
+    the window is; when it comes up :attr:`seekRequested` (seconds) says where
+    to play from. The wheel is the waterfall's time zoom: :attr:`zoomRequested`
+    (notches, fine).
+
+    With no image yet (it is worked out in the background) it is a plain
+    frame that seeks all the same."""
 
     seekRequested = pyqtSignal(float)
+    scrubbed = pyqtSignal(float)
+    panRequested = pyqtSignal(float)
+    zoomRequested = pyqtSignal(float, bool)
+
+    #: The window is drawn at least this big, as the channel band is: a
+    #: second of an hour is no pixel, and nothing the pointer could find.
+    WINDOW_MIN_PX = 8
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(64)
-        self.setMinimumWidth(160)
-        self.setSizePolicy(Qt.QSizePolicy.Expanding, Qt.QSizePolicy.Fixed)
-        self.setCursor(QtCore.Qt.PointingHandCursor)
-        self.setToolTip("The whole recording: time left to right, frequency "
-                        "upwards.\nClick or drag to jump.")
+        self.setMinimumWidth(40)
+        self.setMouseTracking(True)
+        self.setCursor(QtCore.Qt.OpenHandCursor)
+        self.setToolTip("The whole recording: time up (later at the top), frequency\n"
+                        "across. The box is what the waterfall shows. Click or drag\n"
+                        "to move it; the wheel shows more or less time.")
         self.duration = 0.0
-        self.position = 0.0
-        self._db = None                     # (rows, cols) dB, top row first
+        self.position = 0.0                 # the playhead: the window's top
+        self.span = 0.0                     # seconds the window covers, below it
+        self.extent_hz = None               # (low, high) the image covers
+        self.window_hz = None               # (low, high) the spectrum shows
+        self._db = None                     # (rows, cols) dB, latest row first
         self._levels = None                 # (bottom, top) dB, from the view
-        self._index = None                  # (rows, cols) uint8, top row first
+        self._index = None                  # (rows, cols) uint8
         self._image = None
         self._image_theme = None
-        self._drag_x = None
+        self._grab = None                   # (seconds, hertz) offsets at the press
         self.note = ''
 
-    def set_overview(self, img):
-        """``img``: (rows, columns) in dB, row 0 the lowest frequency, in the
-        spectrum view's own dB (``library.overview``). Coloured as the
-        view's waterfall is, by :meth:`set_levels`; until those are given,
-        from its 5th to its 99.7th percentile."""
-        self._db = None if img is None else np.asarray(img, dtype=np.float64)[::-1]
+    # -- what is drawn
+    def set_image(self, img, extent_hz):
+        """``img``: (rows, columns) in dB, row 0 the earliest, column 0 the
+        lowest frequency (``library.render``), over ``extent_hz`` = (low,
+        high). None clears it."""
+        if img is None:
+            self._db, self.extent_hz = None, extent_hz
+        else:
+            self._db = np.asarray(img, dtype=np.float64)[::-1]
+            self.extent_hz = (float(extent_hz[0]), float(extent_hz[1]))
         self._colour()
+
+    def set_extent(self, extent_hz):
+        """Where the frequencies are, before there is a picture."""
+        self.extent_hz = None if extent_hz is None else (float(extent_hz[0]), float(extent_hz[1]))
+        self.update()
 
     def set_levels(self, ref_db, range_db):
         """The view's Ref level and Range: the colours run from Ref - Range
@@ -2998,11 +3168,12 @@ class TimelineStrip(Qt.QWidget):
 
     def _colour(self):
         img = self._db
-        if img is None:
+        if img is None or not np.isfinite(img).any():
             self._index = None
         else:
-            low, high = self._levels or (np.percentile(img, 5), np.percentile(img, 99.7))
-            level = (img - low) / max(high - low, 1e-6)
+            known = img[np.isfinite(img)]
+            low, high = self._levels or (np.percentile(known, 5), np.percentile(known, 99.7))
+            level = (np.nan_to_num(img, nan=low) - low) / max(high - low, 1e-6)
             self._index = np.ascontiguousarray(
                 np.round(np.clip(level, 0, 1) * 255).astype(np.uint8))
         self._image = None
@@ -3013,56 +3184,174 @@ class TimelineStrip(Qt.QWidget):
         self.update()
 
     def set_position(self, seconds):
-        seconds = float(seconds)
-        if self.duration and self.width() and \
-                abs(seconds - self.position) * self.width() / self.duration < 0.5:
-            self.position = seconds                # under a pixel: no repaint
+        if self._grab is not None:                 # carried: the pointer has it
             return
+        seconds = min(max(float(seconds), 0.0), self.duration) if self.duration else 0.0
+        moved = (abs(seconds - self.position) * self.height() / self.duration
+                 if self.duration and self.height() else 1.0)
         self.position = seconds
-        self.update()
+        if moved >= 0.5:                           # under a pixel: no repaint
+            self.update()
+
+    def set_window(self, span_s, low_hz=None, high_hz=None):
+        """What the waterfall shows: ``span_s`` seconds back from the
+        playhead, and the band the spectrum has zoomed to."""
+        window = None if low_hz is None else (float(low_hz), float(high_hz))
+        if abs(float(span_s) - self.span) > 1e-9 or window != self.window_hz:
+            self.span = float(span_s)
+            self.window_hz = window
+            self.update()
 
     def set_note(self, text):
         self.note = text
         self.update()
 
+    # -- where things are
     def _frame(self):
         return QtCore.QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
 
-    def _time_at(self, x):
+    def y_of(self, seconds):
+        """The y of a time: the start at the bottom, the end at the top."""
         frame = self._frame()
-        if frame.width() <= 0 or not self.duration:
+        if not self.duration:
+            return frame.bottom()
+        return frame.bottom() - frame.height() * seconds / self.duration
+
+    def time_at(self, y):
+        frame = self._frame()
+        if frame.height() <= 0 or not self.duration:
             return 0.0
-        return min(max((x - frame.left()) / frame.width(), 0.0), 1.0) * self.duration
+        return (frame.bottom() - y) / frame.height() * self.duration
+
+    def x_of(self, hz):
+        frame = self._frame()
+        if not self.extent_hz or self.extent_hz[1] <= self.extent_hz[0]:
+            return frame.left()
+        low, high = self.extent_hz
+        return frame.left() + frame.width() * (hz - low) / (high - low)
+
+    def hz_at(self, x):
+        frame = self._frame()
+        if not self.extent_hz or frame.width() <= 0:
+            return 0.0
+        low, high = self.extent_hz
+        return low + (x - frame.left()) / frame.width() * (high - low)
+
+    def window_rect(self):
+        """The window on the map, in pixels, kept inside it and never smaller
+        than :attr:`WINDOW_MIN_PX`: None until there is a recording and
+        something shown."""
+        frame = self._frame()
+        if not self.duration or self.span <= 0 or frame.height() < 4:
+            return None
+        # At the very start the box would hang below the map: it rests on
+        # the bottom edge instead, as small as it may be.
+        top = min(self.y_of(self.position), frame.bottom() - self.WINDOW_MIN_PX)
+        bottom = max(self.y_of(self.position - self.span), top + self.WINDOW_MIN_PX)
+        if self.window_hz and self.extent_hz:
+            left, right = self.x_of(self.window_hz[0]), self.x_of(self.window_hz[1])
+        else:
+            left, right = frame.left(), frame.right()
+        if right - left < self.WINDOW_MIN_PX:
+            middle = (left + right) / 2
+            left, right = middle - self.WINDOW_MIN_PX / 2, middle + self.WINDOW_MIN_PX / 2
+        # Panned wholly off the recorded band, it rests against the edge.
+        left = min(max(left, frame.left()), frame.right() - self.WINDOW_MIN_PX)
+        right = max(min(right, frame.right()), left + self.WINDOW_MIN_PX)
+        return QtCore.QRectF(left, top, right - left, bottom - top).intersected(frame)
+
+    def _window_centre_hz(self):
+        if self.window_hz:
+            return (self.window_hz[0] + self.window_hz[1]) / 2
+        return self.hz_at(self._frame().center().x())
 
     # -- mouse
     def mousePressEvent(self, event):
-        if event.button() == QtCore.Qt.LeftButton and self.duration:
-            self._drag_x = event.pos().x()
-            self.update()
+        try:
+            self._press(event)
+        except Exception as exc:                  # never abort the app
+            print(f"mini map: {exc}")
 
     def mouseMoveEvent(self, event):
-        if self._drag_x is not None:
-            self._drag_x = event.pos().x()
-            self.update()
+        try:
+            self._moved(event)
+        except Exception as exc:
+            print(f"mini map: {exc}")
 
     def mouseReleaseEvent(self, event):
-        if self._drag_x is not None and event.button() == QtCore.Qt.LeftButton:
-            seconds = self._time_at(event.pos().x())
-            self._drag_x = None
-            self.position = seconds
+        try:
+            self._released(event)
+        except Exception as exc:
+            print(f"mini map: {exc}")
+
+    def hideEvent(self, event):
+        # Shut or hidden mid-drag, no release will come.
+        self._grab = None
+        super().hideEvent(event)
+
+    def _press(self, event):
+        if event.button() != QtCore.Qt.LeftButton or not self.duration:
+            return
+        box = self.window_rect()
+        pos = event.pos()
+        if box is not None and box.contains(QtCore.QPointF(pos)):
+            # Carried from where it was taken.
+            self._grab = (self.position - self.time_at(pos.y()),
+                          self._window_centre_hz() - self.hz_at(pos.x()))
+        else:
+            # Put there: the window's middle on the pointer - or, when the
+            # box is longer than the recording, its top edge (the middle
+            # would be past the end).
+            self._grab = (self.span / 2 if self.span < self.duration else 0.0, 0.0)
+        self.setCursor(QtCore.Qt.ClosedHandCursor)
+        self._move_to(pos)
+
+    def _moved(self, event):
+        if self._grab is not None:
+            self._move_to(event.pos())
+        else:
+            box = self.window_rect()
+            self.setCursor(QtCore.Qt.OpenHandCursor if box is not None
+                           and box.contains(QtCore.QPointF(event.pos()))
+                           else QtCore.Qt.PointingHandCursor)
+
+    def _move_to(self, pos):
+        seconds = min(max(self.time_at(pos.y()) + self._grab[0], 0.0), self.duration)
+        self.position = seconds
+        self.update()
+        self.scrubbed.emit(seconds)
+        if self.extent_hz and self.window_hz:
+            self.panRequested.emit(self.hz_at(pos.x()) + self._grab[1])
+
+    def _released(self, event):
+        if self._grab is not None and event.button() == QtCore.Qt.LeftButton:
+            self._move_to(event.pos())
+            seconds = self.position
+            self._grab = None
+            self.setCursor(QtCore.Qt.OpenHandCursor)
             self.update()
             self.seekRequested.emit(seconds)
+
+    def wheelEvent(self, event):
+        try:
+            notches = event.angleDelta().y() / 120.0
+            if notches:
+                fine = bool(event.modifiers() & QtCore.Qt.ShiftModifier)
+                self.zoomRequested.emit(notches, fine)
+            event.accept()
+        except Exception as exc:                  # never abort the app
+            print(f"mini map: {exc}")
 
     # -- paint
     def paintEvent(self, event):
         try:
             self._paint()
         except Exception as exc:
-            print(f"timeline paint: {exc}")
+            print(f"mini map paint: {exc}")
 
     def _colours(self):
-        """The overview in the theme's waterfall colours, made again only
-        when the theme changes."""
+        """The map in the theme's waterfall colours, made again only when
+        the theme changes."""
         name = theme.current()
         if self._image is None or self._image_theme != name:
             lut = waterfall_lut(WATERFALL.get(name, WATERFALL['slate']))
@@ -3084,19 +3373,30 @@ class TimelineStrip(Qt.QWidget):
             p.drawImage(frame, self._colours())
         elif self.note:
             p.setPen(colour('ink_3'))
-            p.drawText(frame, QtCore.Qt.AlignCenter, self.note)
-        if self.duration:
-            x = (self._drag_x if self._drag_x is not None else
-                 frame.left() + frame.width() * min(self.position / self.duration, 1.0))
-            x = min(max(x, frame.left() + 1), frame.right() - 1)
-            # What has played is dimmed; the playhead is in the ink, apart
-            # from any colour the waterfall can reach.
-            played = Qt.QColor(t['ground'])
-            played.setAlpha(120)
-            p.fillRect(QtCore.QRectF(frame.left(), frame.top(), x - frame.left(),
-                                     frame.height()), played)
+            p.drawText(frame.adjusted(4, 0, -4, 0),
+                       QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap, self.note)
+        box = self.window_rect()
+        if box is not None:
+            # Outside the window is dimmed, so the window is what is seen.
+            veil = Qt.QColor(t['ground'])
+            veil.setAlpha(120)
+            for part in (QtCore.QRectF(frame.left(), frame.top(), frame.width(),
+                                       box.top() - frame.top()),
+                         QtCore.QRectF(frame.left(), box.bottom(), frame.width(),
+                                       frame.bottom() - box.bottom()),
+                         QtCore.QRectF(frame.left(), box.top(), box.left() - frame.left(),
+                                       box.height()),
+                         QtCore.QRectF(box.right(), box.top(), frame.right() - box.right(),
+                                       box.height())):
+                if part.width() > 0 and part.height() > 0:
+                    p.fillRect(part, veil)
+            p.setBrush(QtCore.Qt.NoBrush)
+            p.setPen(Qt.QPen(Qt.QColor(t['ink']), 1))
+            p.drawRect(box)
+            # The playhead: the window's top edge, the newest row.
             p.setPen(Qt.QPen(Qt.QColor(t['ink']), 2))
-            p.drawLine(QtCore.QPointF(x, frame.top()), QtCore.QPointF(x, frame.bottom()))
+            p.drawLine(QtCore.QPointF(frame.left(), box.top()),
+                       QtCore.QPointF(frame.right(), box.top()))
         p.setPen(Qt.QPen(Qt.QColor(t['rule']), 1))
         p.setBrush(QtCore.Qt.NoBrush)
         p.drawRect(frame)

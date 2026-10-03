@@ -474,8 +474,63 @@ def main():
         c.refused('{"verb": "status"}', 'JSON commands')
         c.refused('fly 3', 'unknown command')
         assert set(c.ok('help')) >= {'status', 'tune', 'center', 'gain', 'agc', 'mode',
-                                     'station', 'scan', 'volume', 'mute', 'screenshot', 'wait'}
+                                     'station', 'scan', 'recordings', 'recording', 'play',
+                                     'seek', 'volume', 'mute', 'screenshot', 'wait'}
         assert 'status' in c.ask('status')     # every reply carries the status line
+
+        # Recordings: the list, one chosen, its mini map and waterfall drawn
+        # from the file, played, sought and zoomed - all as the clicks are.
+        c.refused('recordings', "mode recordings")
+        c.refused('play on', "mode recordings")
+        c.refused('seek 1', "mode recordings")
+        c.refused('view mpx window 5', 'no waterfall')
+        tuner = w.tuner.value()
+        c.ok('mode recordings')
+        assert c.ok('status')['tab'] == 'recordings' and not c.ok('status')['running']
+        listed = c.ok('recordings')
+        assert len(listed['recordings']) >= 2 and listed['selected'] is not None, listed
+        iq = next(r for r in listed['recordings'] if 'IQ channel' in r['kinds'])
+        assert abs(iq['station_mhz'] - 98.7) < 1e-6 and iq['seconds'] > 0.5, iq
+        c.refused('recording 99', 'recording: 0 to')
+        sel = c.ok('status')['playback']['recording']
+        c.refused('recording 0 9', 'track 0 to')
+        assert c.ok('status')['playback']['recording'] == sel, 'a refused track changed the choice'
+        c.refused('recording x', 'expected a number')
+        c.refused('recording nan', 'recording: 0 to')
+        chosen = c.ok(f"recording {iq['index']}")
+        assert chosen['recording'] == iq['index'] and chosen['kind'] == 'iq-channel', chosen
+        assert chosen['tracks'] and chosen['position_s'] == 0.0, chosen
+        assert pump(8, lambda: c.ok('status')['playback']['map']['drawn']), 'no map drawn'
+        pb = c.ok('status')['playback']
+        box = pb['map']['window']
+        assert pb['map']['open'] and box['span_s'] == 20.0 and box['unit'] == 'MHz', pb
+        assert box['high'] - box['low'] > 0.1, box             # the band the spectrum shows
+        assert pb['duration_s'] == iq['seconds'] or abs(pb['duration_s'] - iq['seconds']) < 0.1
+        c.refused('seek 9999', 'seek: 0 to')
+        c.refused('seek x', 'expected a number')
+        assert c.ok('seek 0.3')['position_s'] == 0.3
+        assert pump(5, lambda: (c.ok('status')['playback']['waterfall']['newest_s'] or 0) > 0.2), \
+            c.ok('status')['playback']['waterfall']
+        assert c.ok('view rf window 5')['window_s'] == 5.0
+        c.refused('view rf window 1000', 'seconds')
+        assert c.ok('status')['playback']['map']['window']['span_s'] == 5.0
+        w.loop_check.setChecked(True)               # a second long: it must not end meanwhile
+        assert c.ok('play on')['playing']
+        assert pump(5, lambda: c.ok('status')['playback']['playing'] and w.engine.running)
+        assert c.ok('status')['playback']['position_s'] >= 0.3
+        assert not c.ok('play off')['playing']
+        w.loop_check.setChecked(False)
+        c.ok('view rf window 20')
+        c.ok('mode receive')
+        assert pump(10, lambda: c.ok('status')['running']), 'the radio did not open again'
+        assert abs(w.tuner.value() - tuner) < 1 and 'playback' not in c.ok('status')
+        # Receive is live: what Recordings drew from a file does not follow
+        # it out (a window set there is only the waterfall's time).
+        assert c.ok('view rf window 5')['window_s'] == 5.0
+        pump(0.3)
+        assert not w.rf_view.wf_frozen and w._window_job is None and w.rf_view.wf_clock is None
+        assert not w.rf_view.minimap.isVisible() and w.rf_view._hist is not None
+        c.ok('view rf window 20')
 
         # A second window finds the socket taken, and leaves it be.
         second = ControlServer(w)

@@ -25,6 +25,7 @@ holds the queue for its seconds without blocking the window.
 """
 
 import json
+import math
 import os
 import shlex
 import sys
@@ -178,7 +179,51 @@ def cmd_status(w, args):
                          'pilot_locked': bool(rx.pilot_locked())}
         out['rds'] = _rds_state(rx.rds.snapshot())
         out['hd'] = _hd_state(w)
+    if w._tab_mode() == 'recordings':
+        out['playback'] = _playback_state(w)
     return out
+
+
+def _playback_state(w):
+    """What the Recordings tab has chosen and is playing, and what its mini
+    map and waterfall show: where the playhead is, the box on the map (the
+    time the waterfall covers back from the playhead, and the band the
+    spectrum shows, in MHz, or kHz for a WAV), and how much of the
+    waterfall has been drawn."""
+    rec, track = w._rec_sel, w._track
+    view = w._map_view()
+    mini = view.minimap
+    play = w._play
+    index = next((i for i, r in enumerate(w._recordings)
+                  if rec is not None and r.key == rec.key), None)
+    state = {
+        'recording': index,
+        'tracks': [t.label() for t in rec.tracks] if rec is not None else [],
+        # By its file: the list is read again as the folder changes, and the
+        # chosen track may be an older read of the same file.
+        'track': (next((i for i, t in enumerate(rec.tracks) if t.path == track.path), None)
+                  if rec is not None and track is not None else None),
+        'kind': track.kind if track is not None else None,
+        'playing': bool(play is not None and not play.paused),
+        'position_s': round(w._shown_at, 2),
+        'duration_s': round(track.seconds, 2) if track is not None else None,
+        'loop': bool(w.loop_check.isChecked()),
+        'station': w.play_station.text(),
+        'text': w.play_text.text(),
+    }
+    box = None
+    if mini.window_hz and mini.duration:
+        box = {'top_s': round(mini.position, 2), 'span_s': round(mini.span, 2),
+               'low': round(mini.window_hz[0] / view.scale, 6),
+               'high': round(mini.window_hz[1] / view.scale, 6), 'unit': view.unit}
+    state['map'] = {'open': bool(not mini.isHidden() and mini.width() > 0),
+                    'drawn': mini._index is not None, 'window': box}
+    ring = view._hist
+    newest = (float(ring.t[(ring.head - 1) % len(ring.t)])
+              if ring is not None and ring.n else None)
+    state['waterfall'] = {'rows': int(ring.n) if ring is not None else 0,
+                          'newest_s': round(newest, 2) if newest is not None else None}
+    return state
 
 
 def _rds_state(snap):
@@ -381,6 +426,78 @@ def cmd_station(w, args):
     return {'station_tab': STATION_TABS[tabs.currentIndex()]}
 
 
+def _recordings_tab(w):
+    if w._tab_mode() != 'recordings':
+        raise CommandError("the recordings are the Recordings tab's: "
+                           "switch with 'mode recordings' first")
+
+
+@command('recordings', 'recordings', "The Recordings tab's list, newest first: each one's "
+         "index, station, name, call sign, start, length, files and size. Choose one with "
+         "'recording N'. Needs 'mode recordings'.")
+def cmd_recordings(w, args):
+    _args(args, 0, 0, 'recordings')
+    _recordings_tab(w)
+    rows = [{'index': i, 'station_mhz': _mhz(r.station_hz), 'name': r.name.strip() or None,
+             'callsign': r.callsign or None, 'started': r.started.isoformat(timespec='seconds'),
+             'seconds': round(r.seconds, 2), 'kinds': r.kinds_text(), 'bytes': r.bytes}
+            for i, r in enumerate(w._recordings)]
+    state = _playback_state(w)
+    return {'recordings': rows, 'selected': state['recording']}
+
+
+@command('recording', 'recording N [TRACK]', "Choose the Nth recording of the list (0 is the "
+         "newest), as a click on its line does, and with TRACK which of its files to play "
+         "(the order of 'status''s playback tracks). Its mini map and waterfall are drawn "
+         "in the background: wait a moment. Needs 'mode recordings'.")
+def cmd_recording(w, args):
+    words = _args(args, 1, 2, 'recording N [TRACK]')
+    _recordings_tab(w)
+    n = _number(words[0], 'recording')
+    if not math.isfinite(n) or n != int(n) or not 0 <= n < len(w._recordings):
+        raise CommandError(f"recording: 0 to {len(w._recordings) - 1}" if w._recordings
+                           else "recording: there are none")
+    # Both checked before either is done: a refused track leaves the choice.
+    m = None
+    if len(words) == 2:
+        m = _number(words[1], 'recording track')
+        tracks = w._recordings[int(n)].tracks
+        if not math.isfinite(m) or m != int(m) or not 0 <= m < len(tracks):
+            raise CommandError(f"recording: track 0 to {len(tracks) - 1}")
+    w.rec_list.setCurrentRow(int(n))
+    if m is not None:
+        w.track_combo.setCurrentIndex(int(m))
+        w._track_chosen(int(m))
+    return _playback_state(w)
+
+
+@command('play', 'play on|off', "The Play button of the Recordings tab: play the chosen "
+         "recording, or pause it. Needs 'mode recordings' and a recording chosen.")
+def cmd_play(w, args):
+    on = _on_off(_args(args, 1, 1, 'play on|off')[0], 'play')
+    _recordings_tab(w)
+    if on and not w.play_btn.isEnabled():
+        raise CommandError("play: there is nothing to play - choose a recording that "
+                           "can be played ('recording N')")
+    w.play_btn.setChecked(on)
+    return {'playing': w.play_btn.isChecked()}
+
+
+@command('seek', 'seek SECONDS', "Jump to SECONDS into what is chosen, as a drag of the mini "
+         "map's box ending there does - before it plays, too. The waterfall shows the "
+         "stretch ending there. Needs 'mode recordings'.")
+def cmd_seek(w, args):
+    seconds = _number(_args(args, 1, 1, 'seek SECONDS')[0], 'seek')
+    _recordings_tab(w)
+    track = w._track
+    if track is None or track.error:
+        raise CommandError("seek: there is nothing chosen to play")
+    if not 0 <= seconds <= track.seconds:
+        raise CommandError(f"seek: 0 to {track.seconds:.1f} seconds")
+    w._map_view().minimap.seekRequested.emit(seconds)
+    return {'position_s': round(w._shown_at, 2), 'duration_s': round(track.seconds, 2)}
+
+
 @command('screenshot', 'screenshot PATH.png', "The window, grabbed, as the user sees it.")
 def cmd_screenshot(w, args):
     path = _args(args, 1, 1, 'screenshot PATH.png')[0]
@@ -434,7 +551,7 @@ def cmd_peakhold(w, args):
 #: The spectrum views ``view`` sets, by name: the attribute on the window.
 VIEWS = {'rf': 'rf_view', 'mpx': 'mpx_view', 'audio': 'audio_view'}
 VIEW_USAGE = ('view [rf|mpx|audio] [span X|full] [center X] [ref DB] [range DB] '
-              '[avg N]')
+              '[avg N] [window S]')
 
 
 def _view_state(view):
@@ -446,15 +563,18 @@ def _view_state(view):
             'full': [round(hz / view.scale, 6) for hz in view.full],
             'ref_db': round(view.ref_knob.value(), 1),
             'range_db': round(view.range_knob.value(), 1),
-            'avg': int(view.avg_knob.value()), 'level_unit': view.level_unit}
+            'avg': int(view.avg_knob.value()), 'level_unit': view.level_unit,
+            'window_s': view.wf_span_s if view.wf_plot is not None else None}
 
 
 @command('view', VIEW_USAGE, "A spectrum view's dials: rf (the RF spectrum and its "
          "waterfall), mpx (the multiplex), audio (a recording playing). Span and center "
          "in the view's unit (MHz for rf, kHz for the others), full for the whole band; "
          "ref and range set the level scale (display only, the waterfall's colours "
-         "too); avg is Average, which smooths the trace peaks reads. With no settings, "
-         "reports them; with no view, all three.")
+         "too); avg is Average, which smooths the trace peaks reads; window is how many "
+         "seconds the waterfall shows (2-300), as the wheel over its time scale sets it "
+         "(in Recordings, the mini map's box with it). With no settings, reports them; "
+         "with no view, all three.")
 def cmd_view(w, args):
     if not args:
         return {name: _view_state(getattr(w, attr)) for name, attr in VIEWS.items()}
@@ -466,7 +586,7 @@ def cmd_view(w, args):
     view = getattr(w, VIEWS[name])
     pairs = [(words[i].lower(), words[i + 1]) for i in range(0, len(words), 2)]
     for key, _ in pairs:
-        if key not in ('span', 'center', 'ref', 'range', 'avg'):
+        if key not in ('span', 'center', 'ref', 'range', 'avg', 'window'):
             raise CommandError(f"view: unknown setting {key!r} ({VIEW_USAGE})")
     # All checked first, so a bad one leaves the view as it was.
     values = {key: (word if key == 'span' and word.lower() == 'full'
@@ -477,6 +597,12 @@ def cmd_view(w, args):
         raise CommandError("view range: more than 0 dB")
     if isinstance(values.get('span'), float) and values['span'] <= 0:
         raise CommandError("view span: more than 0")
+    if 'window' in values:
+        if view.wf_plot is None:
+            raise CommandError(f"view window: the {name} view has no waterfall")
+        low, _, high = view.WF_SPAN_S
+        if not low <= values['window'] <= high:
+            raise CommandError(f"view window: {low:g} to {high:g} seconds")
     if 'center' in values:
         low, high = (hz / view.scale for hz in view.full)
         if not low <= values['center'] <= high:
@@ -489,6 +615,8 @@ def cmd_view(w, args):
         view.range_knob.setValue(values['range'])
     if 'avg' in values:
         view.avg_knob.setValue(round(values['avg']))
+    if 'window' in values:
+        view.set_wf_span(values['window'])
     if 'center' in values:
         view.center_hz = values['center'] * view.scale
     if 'span' in values:

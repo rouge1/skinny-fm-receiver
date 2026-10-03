@@ -27,8 +27,8 @@ with no launcher.
 - Code: `tools/fm_receiver/`. `app.py` is the window, `engine.py` the
   flowgraph, `sweep.py` the FFT sweep, `dsp.py` the receive chain,
   `radios.py` the radios, `recording.py` IQ/WAV output, `library.py` the
-  Recordings tab's list and overview, `widgets.py` the knobs, digit
-  entries, theme disc, spectrum view, timeline strip and the foldable boxes
+  Recordings tab's list and `render` (a track, or a stretch of it, as a waterfall), `widgets.py` the knobs, digit
+  entries, theme disc, spectrum view, the Recordings mini map and the foldable boxes
   (`Card` on a grid `Form`: Qt 5's `QFormLayout` leaves gaps for hidden
   rows), `bb60_sweep.py` the
   BB60D's own sweep (Signal Hound's API through ctypes, on the device the

@@ -58,7 +58,7 @@ user sees it, and is refused where the window would refuse it.
   `hd 1-8|analog` (HD Radio's program, or analog FM; the
   decoder is always on where nrsc5 is installed, with no off;
   `status`'s `hd` says what plays, what is chosen and the lamp).
-- View: `view rf|mpx|audio span X center X ref DB range DB avg N` (any of
+- View: `view rf|mpx|audio span X center X ref DB range DB avg N window S` (any of
   them; none reports). Before a screenshot, zoom onto the signal and set
   ref/range around it: at the default 100 dB range a weak signal is a few
   pixels, and the waterfall's colours follow ref/range too. `avg` changes
@@ -67,6 +67,14 @@ user sees it, and is refused where the window would refuse it.
   away.
 - Record: `capture SECONDS [iq-band|iq-channel|audio]` replies with the
   files and their `.sigmf-meta`; `record ...` works the Record box.
+- Recordings (everything recorded plays in the Recordings tab; Sweep and
+  Receive are live only): `mode recordings`, `recordings` (the list, newest
+  first), `recording N [TRACK]`, `play on|off`, `seek SECONDS`,
+  `view rf|audio window S` (the seconds the waterfall, and the mini map's
+  box, show). `status`'s `playback` block says what is chosen and playing,
+  where the playhead is, the box on the map and how much waterfall is drawn.
+  The map and the waterfall draw in the background after a choice or a
+  seek: `wait 1` before reading or taking a screenshot.
 - `wait SECONDS` lets the window run between commands: your shell can't
   sleep in the foreground, and RDS or peak hold need seconds.
 

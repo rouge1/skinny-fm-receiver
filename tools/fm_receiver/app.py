@@ -49,7 +49,7 @@ from .recording import (NAME_STEADY_S, IqRecording, RecordingInfo, WavWriter,
 from .style import apply_window_theme
 from .sweep import SweepPlan, to_db
 from .widgets import (Card, DigitEntry, Form, PageTabs, Knob, LevelMeter, Marquee, Orb,
-                      SpectrumView, StepRoller, ThemeDisc, TimelineStrip, fade, on_raster)
+                      SpectrumView, StepRoller, ThemeDisc, fade, on_raster)
 
 #: (name, start MHz, stop MHz); 'full' is the whole of the radio's sweep
 #: range, whichever radio it is (9 kHz-6 GHz on the BB60D).
@@ -350,6 +350,13 @@ def _same_plan(new, running):
 
 class MainWindow(Qt.QWidget):
 
+    #: The Recordings tab's mini map is drawn from the whole track at this
+    #: many rows (time) by columns (frequency); and the waterfall's stretch
+    #: is read from the file once a drag or a zoom has held still this long.
+    MAP_ROWS = 240
+    MAP_COLS = 128
+    WINDOW_SETTLE_MS = 40
+
     def __init__(self, args, config):
         super().__init__()
         self.args = args
@@ -416,12 +423,29 @@ class MainWindow(Qt.QWidget):
         self._play = None
         self._start_at = 0.0
         self._heard = ('', 0.0)
-        self._overview_job = None
+        #: The mini map being drawn, and the stretch of the file the big
+        #: waterfall is being drawn from: (path, future) and (serial, path,
+        #: playhead, span, future). Where the window wants to be, whether it
+        #: is being dragged, and the playhead as last shown.
+        self._map_job = None
+        self._window_job = None
+        self._window_serial = 0
+        self._window_at = None
+        self._scrubbing = False
+        self._shown_at = 0.0
+        self._prepared = None                 # the track whose view is set up
+        self._prepared_kind = None            # 'iq' or 'audio'
         self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
         self._edge_timer = Qt.QTimer(self)
         self._edge_timer.setSingleShot(True)
         self._edge_timer.timeout.connect(self._show_range)
+        # A drag or a zoom asks for the waterfall's stretch many times a
+        # second: the file is read once it has settled for this long.
+        self._window_timer = Qt.QTimer(self)
+        self._window_timer.setSingleShot(True)
+        self._window_timer.setInterval(self.WINDOW_SETTLE_MS)
+        self._window_timer.timeout.connect(self._start_window)
         self._build()
         # HD Radio is always on where nrsc5 is installed: HD1 plays the
         # analog until the digital is clean, and the lamp says which.
@@ -1409,13 +1433,6 @@ class MainWindow(Qt.QWidget):
         self.time_label.setFont(_mono_font())
         row.addWidget(self.time_label)
         form.addRow(row)
-        self.timeline = TimelineStrip()
-        self.timeline.seekRequested.connect(self._seek_to)
-        self.timeline.setToolTip(
-            "The whole recording: time left to right, frequency upwards, in\n"
-            "the colours of the spectrum's waterfall: its Ref level and Range\n"
-            "set them, as they do the waterfall's. Click or drag to jump.")
-        form.addRow(self.timeline)
         big = Qt.QFont()
         big.setPixelSize(17)
         big.setBold(True)
@@ -1551,10 +1568,13 @@ class MainWindow(Qt.QWidget):
         self.audio_view.averageChanged.connect(self._audio_average_changed)
         self.audio_view.load_state(self.cfg['view_audio'])
         self.top_stack.addWidget(self.audio_view)
-        # The Recordings strip is coloured by the view that shows its track.
+        # The Recordings tab's mini map is beside each view's waterfall: the
+        # box on it is what the waterfall shows, and dragging it moves both.
         for view in (self.rf_view, self.audio_view):
-            for knob in (view.ref_knob, view.range_knob):
-                knob.valueChanged.connect(lambda _v: self._timeline_levels())
+            view.minimap.seekRequested.connect(self._seek_to)
+            view.minimap.scrubbed.connect(self._scrubbed)
+            view.minimap.panRequested.connect(view.pan_to)
+            view.waterfallSpanChanged.connect(lambda _s: self._request_window())
         self.right_split.addWidget(self.top_stack)
 
         # Under the RF spectrum in Receive: the multiplex (RDS is in the
@@ -1895,12 +1915,15 @@ class MainWindow(Qt.QWidget):
         self.rec_btn.setEnabled(True)
         self._set_status(self._running_text(), 'good')
 
-    def _run_receive(self, mode, station_hz, rate, center_hz):
+    def _run_receive(self, mode, station_hz, rate, center_hz, keep_view=False):
         """Build the receive chain and show it: for the radio (``mode``
-        'receive'), or for an IQ recording ('playback')."""
+        'receive'), or for an IQ recording ('playback'). ``keep_view``: the
+        view was set up already (a recording's, before Play), with whatever
+        was done to it since, so it is not loaded or recentred again."""
         self._save_view()
         self._mode = mode
-        self.rf_view.load_state(self.cfg[VIEW_KEYS[mode]])
+        if not keep_view:
+            self.rf_view.load_state(self.cfg[VIEW_KEYS[mode]])
         self.rf_view.set_level_unit('dBFS')
         self.rf_view.clear_density()
         # Receiving, the view is the band the radio streams: no limits.
@@ -1918,7 +1941,7 @@ class MainWindow(Qt.QWidget):
         self.rf_view.set_marker_auto(True)
         rx.rf_probe.set_alpha(1.0 / max(1, self.rf_view.avg_knob.value()))
         rx.mpx_probe.set_alpha(1.0 / max(1, self.mpx_view.avg_knob.value()))
-        self._place_receive_view()
+        self._place_receive_view(recentre=not keep_view)
         self.bottom.setCurrentWidget(self.rx_page)
         self.bottom.setVisible(True)
         self._clear_rds_labels()
@@ -2587,7 +2610,8 @@ class MainWindow(Qt.QWidget):
             view.restyle()
         for entry in (self.tuner, self.sweep_tuner, self.center_entry):
             entry.restyle()
-        self.timeline.update()
+        for view in (self.rf_view, self.audio_view):
+            view.minimap.update()
         self.theme_disc.describe()
         self.theme_word.setToolTip(self.theme_disc.toolTip())
         self._refit_left()
@@ -2742,11 +2766,23 @@ class MainWindow(Qt.QWidget):
                                                else ", and free for other programs."))
         self.status.setToolTip('')
         self._refresh_library()
+        if self._track is not None and self._prepared != self._track.path:
+            self._load_track(self._track)           # the list kept the same one
 
     def _leave_recordings(self):
         """Back to Sweep or Receive: the radio opens again, tuned where it was."""
-        self._stop_playback()
+        self._stop_playback(show=False)
+        self._keep_track_view()
         live, self._live = self._live, None
+        self._prepared = None
+        self._scrubbing = False
+        for view in (self.rf_view, self.audio_view):   # the live waterfall: no map
+            view.set_map(False)
+            view.wf_clock = None
+            view.wf_frozen = False
+            view.clear()
+        self._window_timer.stop()
+        self._map_job = self._window_job = None
         self._show_audio_view(False)
         for widget in (self.radio_combo, self.usrp_edit, self.rtl_edit, self.file_btn, self.run_btn):
             widget.setEnabled(True)
@@ -2813,7 +2849,7 @@ class MainWindow(Qt.QWidget):
                                   "Receive tab, then come back here.")
         if self._play is not None and not any(r.key == self._play.recording.key
                                               for r in self._recordings):
-            self._stop_playback()                   # deleted from outside
+            self._stop_playback(show=False)         # deleted from outside
         if chosen is None and self.rec_list.count():
             chosen = self.rec_list.item(0)
         if chosen is not None:
@@ -2844,7 +2880,7 @@ class MainWindow(Qt.QWidget):
             if self._play is not None:
                 self._play.recording = rec
             return
-        self._stop_playback()
+        self._stop_playback(show=False)
         self._rec_sel = rec
         self.track_combo.clear()
         if rec is None:
@@ -2863,25 +2899,23 @@ class MainWindow(Qt.QWidget):
         if self._track is not None and track.path == self._track.path:
             return
         playing = self._play is not None and not self._play.paused
-        self._stop_playback()
+        self._stop_playback(show=False)
         self._load_track(track)
         if playing:
             self.play_btn.setChecked(True)
 
     def _load_track(self, track):
-        """Show ``track`` ready to play from its start, and have its overview
-        worked out."""
+        """Show ``track`` ready to play from its start: its view with the
+        mini map beside the waterfall, the map and the waterfall's first
+        stretch being drawn from the file."""
         self._track = track
         self._start_at = 0.0
+        self._shown_at = 0.0
         self._heard = ('', 0.0)
-        self.timeline.set_overview(None)
-        self._timeline_levels()
-        self.timeline.set_duration(track.seconds if track else 0.0)
-        self.timeline.set_position(0.0)
-        self.timeline.set_note('')
-        self._show_time(0.0)
         self.play_btn.setEnabled(track is not None and not track.error)
         self.delete_btn.setEnabled(self._rec_sel is not None)
+        self._prepare_view(track)
+        self._show_time(0.0)
         rec = self._rec_sel
         if rec is None:
             self.play_station.setText('-')
@@ -2889,33 +2923,139 @@ class MainWindow(Qt.QWidget):
             return
         self._show_station(rec.station_hz, rec.name)
         self._show_rds_text(*rec.rds_at(0.0))
-        if track.error:
-            self.timeline.set_note(f"Cannot play: {track.error}")
-            return
-        self.timeline.set_note("Working out the overview...")
-        self._overview_job = (track.path, self._pool.submit(library.overview, track))
 
-    def _timeline_levels(self):
-        """The strip's colours from the view the chosen track plays in: the
-        RF spectrum for IQ, the sound's spectrum for a WAV."""
-        track = self._track
-        view = self.audio_view if track is not None and track.kind == 'audio' else self.rf_view
-        self.timeline.set_levels(view.ref_knob.value(), view.range_knob.value())
+    def _map_view(self, track=None):
+        """The view that shows a track: the sound's for a WAV, else the RF."""
+        track = track or self._track
+        return self.audio_view if track is not None and track.kind == 'audio' else self.rf_view
 
-    def _collect_overview(self):
-        job = self._overview_job
-        if job is None or not job[1].done():
+    def _keep_track_view(self):
+        """What the last prepared view was set to - the Span, Ref level,
+        Range and the time the waterfall shows - is the playback's own
+        setting, kept before another is loaded."""
+        if self._prepared_kind == 'iq':
+            self.cfg[VIEW_KEYS['playback']] = self.rf_view.state()
+        elif self._prepared_kind == 'audio':
+            self.cfg['view_audio'] = self.audio_view.state()
+        self._prepared_kind = None
+
+    def _prepare_view(self, track):
+        """The chosen track's view, before it plays: its band, the mini map
+        slid open beside the waterfall and filled in the background, and
+        the stretch the waterfall shows drawn from the file."""
+        self._keep_track_view()
+        usable = track is not None and not track.error
+        self._prepared = track.path if track is not None else None
+        self._map_job = None
+        self._window_job = None
+        self._window_at = None
+        self._window_timer.stop()
+        self._scrubbing = False
+        for view in (self.rf_view, self.audio_view):
+            view.wf_frozen = False
+            view.set_map(usable and view is self._map_view(track))
+            view.minimap.set_image(None, None)
+            view.minimap.set_note('')
+        if track is None:
+            self._idle_views()
             return
-        self._overview_job = None
-        path, future = job
-        if self._track is None or self._track.path != path:
+        audio = track.kind == 'audio'
+        self._show_audio_view(audio)
+        view = self._map_view(track)
+        view.clear()
+        view.wf_clock = None
+        if not audio:
+            self.bottom.setCurrentWidget(self.rx_page)
+            self.mpx_view.clear()
+            view.set_band(None, None)
+            view.set_center_line(None)
+            view.set_tuner_range(None, None)
+            view.set_marker(None)
+            view.clear_density()
+        if track.error:                           # no rate, no band: nothing to draw
+            view.set_message(f"Cannot play: {track.error}")
             return
-        try:
-            img, _ = future.result()
-            self.timeline.set_overview(img)
-            self.timeline.set_note('')
-        except Exception as exc:
-            self.timeline.set_note(f"No overview: {exc}")
+        self._prepared_kind = 'audio' if audio else 'iq'
+        low, high = library.extent(track)
+        if audio:
+            view.load_state(self.cfg['view_audio'])
+            view.set_extent(low, high, center_hz=0.0)
+        else:
+            view.load_state(self.cfg[VIEW_KEYS['playback']])
+            view.set_extent(low, high, center_hz=track.station_hz or track.center_hz)
+        view.set_level_unit('dBFS')
+        view.set_message("Press Play")
+        mini = view.minimap
+        mini.set_extent((low, high))
+        mini.set_duration(track.seconds)
+        mini.set_position(0.0)
+        view._map_window()
+        mini.set_note("...")
+        self._map_job = (track.path, self._pool.submit(
+            library.render, track, 0.0, track.seconds, self.MAP_ROWS, self.MAP_COLS, 4))
+        self._request_window(0.0)
+
+    def _collect_jobs(self):
+        """What the pool has finished: the mini map, and the waterfall's
+        stretch (the newest asked for - an older one is no use)."""
+        job = self._map_job
+        if job is not None and job[1].done():
+            self._map_job = None
+            path, future = job
+            if self._track is not None and self._track.path == path:
+                mini = self._map_view().minimap
+                try:
+                    img, _ = future.result()
+                    mini.set_image(img, library.extent(self._track))
+                    mini.set_note('')
+                except Exception as exc:
+                    mini.set_note(f"No map: {exc}")
+        job = self._window_job
+        if job is not None and job[4].done():
+            self._window_job = None
+            serial, path, at, span, future = job
+            view = self._map_view()
+            try:
+                if serial == self._window_serial and self._track is not None \
+                        and self._track.path == path:
+                    img, freqs = future.result()
+                    rows = len(img)
+                    times = at - span + (np.arange(rows) + 0.5) * span / rows
+                    view.set_waterfall_history(freqs, img, times)
+                    if self._play is None:
+                        known = np.flatnonzero(np.isfinite(img).all(axis=1))
+                        if len(known):
+                            view.set_data(freqs, img[known[-1]], waterfall_row=False)
+            except Exception:
+                self._report('waterfall')
+            finally:
+                # Dragged, the radio is still where it was: its rows stay
+                # held back until the button comes up and it has moved.
+                if serial == self._window_serial and not self._scrubbing:
+                    view.wf_frozen = False
+
+    def _request_window(self, seconds=None):
+        """Have the waterfall show the stretch of the file ending at
+        ``seconds`` (the playhead if None), as soon as the dragging or the
+        zooming has settled. Rows the radio makes meanwhile are held back:
+        they would be on the wrong time."""
+        if self._live is None or self._track is None or self._track.error:
+            return                                  # not in Recordings, or nothing to draw
+        self._window_at = self._shown_at if seconds is None else float(seconds)
+        self._map_view().wf_frozen = True
+        if not self._window_timer.isActive():        # a drag is followed as it goes
+            self._window_timer.start()
+        self._show_map_info()
+
+    def _start_window(self):
+        track, at = self._track, self._window_at
+        if self._live is None or track is None or track.error or at is None:
+            return
+        view = self._map_view()
+        self._window_serial += 1
+        span = view.wf_span_s
+        self._window_job = (self._window_serial, track.path, at, span, self._pool.submit(
+            library.render, track, at - span, at, view.WF_ROWS, None, 2))
 
     def _show_station(self, hz, name):
         name = (name or '').strip()
@@ -2926,9 +3066,23 @@ class MainWindow(Qt.QWidget):
         self.play_text.setText("\n".join(lines) or '-')
 
     def _show_time(self, seconds):
-        total = self._track.seconds if self._track is not None else 0.0
+        track = self._track
+        total = track.seconds if track is not None else 0.0
+        self._shown_at = seconds
         self.time_label.setText(f"{library.clock(seconds)} / {library.clock(total)}")
-        self.timeline.set_position(seconds)
+        self._map_view().minimap.set_position(seconds)
+        self._show_map_info()
+
+    def _show_map_info(self):
+        """The words over the mini map: where the playhead is, and how much
+        the waterfall shows."""
+        view = self._map_view()
+        track = self._track
+        if view.map_info is None or track is None:
+            return
+        view.map_info.setText(f"{library.clock(self._shown_at)}\n"
+                              f"of {library.clock(track.seconds)}\n"
+                              f"{view.wf_span_s:g} s shown")
 
     # ---- the player
     def _play_toggled(self, on):
@@ -2956,7 +3110,7 @@ class MainWindow(Qt.QWidget):
         if p is not None and p.track.path == track.path:
             self._resume()
         else:
-            self._stop_playback()
+            self._stop_playback(show=False)
             if track.is_iq:
                 self._open_iq(track)
             else:
@@ -2976,8 +3130,10 @@ class MainWindow(Qt.QWidget):
         self.center_entry.set_range(radio.center_hz, radio.center_hz)
         self._show_audio_view(False)
         self._run_receive('playback', track.station_hz or radio.center_hz,
-                          radio.rate, radio.center_hz)
+                          radio.rate, radio.center_hz,
+                          keep_view=self._prepared == track.path)
         radio.counting(True)
+        self._follow_clock(self.rf_view)
 
     def _open_wav(self, track):
         if track.rate != AUDIO_RATE:
@@ -2992,13 +3148,24 @@ class MainWindow(Qt.QWidget):
         self._show_audio_view(True)
         view = self.audio_view
         view.clear()
-        view.load_state(self.cfg['view_audio'])
+        if self._prepared != track.path:
+            view.load_state(self.cfg['view_audio'])
         view.set_extent(0.0, AUDIO_RATE / 2, center_hz=0.0)
         view.set_level_unit('dBFS')
+        view.set_message('')
         self.engine.start_wav(source, volume=self.volume_knob.value() / 100.0,
                               muted=self.mute_btn.isChecked())
         self.engine.player.probe.set_alpha(1.0 / max(1, view.avg_knob.value()))
         self._show_audio_note()
+        self._follow_clock(view)
+
+    def _follow_clock(self, view):
+        """The waterfall's rows are on the track's own time, and its first
+        stretch is drawn from the file (starting a view clears it)."""
+        self._map_view().set_map(True)
+        view.wf_clock = self._playhead
+        self._show_time(self._start_at)
+        self._request_window(self._start_at)
 
     def _play_pause(self):
         p = self._play
@@ -3023,14 +3190,19 @@ class MainWindow(Qt.QWidget):
             p.source.set_paused(False)
         p.paused = False
 
-    def _stop_playback(self):
-        """Unload whatever is playing; the radio stays closed."""
+    def _stop_playback(self, show=True):
+        """Unload whatever is playing; the radio stays closed. ``show`` draws
+        the chosen track's view again, ready to play; callers that load or
+        open something next say no."""
         if self._play is None:
             return
         self._save_view()
         self._play = None
         self.engine.close()
         self._mode = None
+        for view in (self.rf_view, self.audio_view):
+            view.wf_clock = None
+            view.wf_frozen = False
         self.audio_view.clear()
         self._idle_views()
         self._clear_rds_labels()
@@ -3040,14 +3212,34 @@ class MainWindow(Qt.QWidget):
         self.play_btn.setText("Play")
         self._start_at = 0.0
         self._show_time(0.0)
+        if show and self._track is not None:
+            self._prepare_view(self._track)
 
     def _loop_toggled(self, on):
         self.cfg['play_loop'] = bool(on)
         if self._play is not None and not self._play.is_iq:
             self._play.source.loop = bool(on)
 
+    def _playhead(self):
+        """Where the track is playing, in seconds: what a row of the
+        waterfall is stamped with as it comes."""
+        p = self._play
+        if p is None or p.paused:
+            return self._shown_at
+        if p.is_iq:
+            return (p.radio.played() % p.radio.total) / p.radio.rate
+        return p.source.position / AUDIO_RATE
+
+    def _scrubbed(self, seconds):
+        """The mini map's box is being dragged: the time shows and the
+        waterfall follows from the file; the playing waits for the button."""
+        self._scrubbing = True
+        self._show_time(seconds)
+        self._request_window(seconds)
+
     def _seek_to(self, seconds):
         """Jump to ``seconds`` into the track - before it plays, too."""
+        self._scrubbing = False
         p = self._play
         if p is None:
             self._start_at = seconds
@@ -3068,11 +3260,12 @@ class MainWindow(Qt.QWidget):
                 self.engine.player.seeked()
             self.audio_view.clear_peak()
         self._show_time(seconds)
+        self._request_window(seconds)
 
     def _follow_playback(self):
         """The playhead and the time; at the end, stop, or go round."""
         p = self._play
-        if p.paused:
+        if p.paused or self._scrubbing:
             return
         if p.is_iq:
             if not self.engine.running:
@@ -3087,7 +3280,10 @@ class MainWindow(Qt.QWidget):
                 self._play_ended()
                 return
             seconds = p.source.position / AUDIO_RATE
+        wrapped = seconds < self._shown_at - 0.25 and not self._scrubbing
         self._show_time(seconds)
+        if wrapped:                                  # round again: its rows are on the old time
+            self._request_window(seconds)
 
     def _play_ended(self):
         name = self._play.name
@@ -3172,7 +3368,7 @@ class MainWindow(Qt.QWidget):
 
     def _delete_recording(self, rec):
         if self._play is not None and self._play.recording.key == rec.key:
-            self._stop_playback()
+            self._stop_playback(show=False)
         failed = library.delete(rec)
         self._rec_sel = None
         self._refresh_library()
@@ -3182,6 +3378,7 @@ class MainWindow(Qt.QWidget):
     # ============================================================== timers
     def _tick_fast(self):
         try:
+            self._collect_jobs()
             running = self.engine.running
             if running and self._mode in ('receive', 'playback') and self.engine.rx:
                 self._draw_receive()
@@ -3274,7 +3471,6 @@ class MainWindow(Qt.QWidget):
         try:
             if self._rec_t0 is not None:
                 self._recording_progress()
-            self._collect_overview()
             self._watch_lost()                   # also once a reopen has failed
             if not self.engine.running:
                 return

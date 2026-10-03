@@ -655,7 +655,7 @@ where it was.
    file. The IQ is chosen first (the whole band before the channel), and
    the WAV is in the list too.
 3. **Press Play**, or double-click the line. Press it again to pause.
-4. **Jump** by clicking or dragging on the strip under the Play button.
+4. **Jump** by clicking or dragging the **mini map** beside the waterfall (below).
 
 What you see and hear depends on the file:
 
@@ -668,14 +668,28 @@ What you see and hear depends on the file:
 - **In a whole-band recording, click another station** in the spectrum or
   the waterfall to listen to it. The Receive tab's controls (channel filter,
   stereo, region, the RDS details) work on the recording too.
-- **The strip** is the whole recording at a glance: time from left to right,
-  frequency upwards, in the waterfall's colours. A station is a line along
-  it; music in a WAV shows its rhythm. Its colours follow the spectrum's
-  **Ref level** and **Range**, as the waterfall's do: turn them and the strip
-  changes with it (the RF spectrum's for an IQ recording, the sound's for a
-  WAV). Its levels are the spectrum's own, so a station that reads -30 dBFS
-  there has the same colour in the strip. The bright line is where you are, and
-what has already played is dimmed.
+- **The mini map** is the narrow picture to the right of the waterfall: the
+  whole recording at a glance, **time up it with later at the top, as in
+  the waterfall, and frequency across it**, in the waterfall's colours. A
+  station is a line up it. The **box** on it is what the waterfall shows: the
+  time before the playhead (as long as the waterfall's time scale is set to,
+  2 s to 5 min), and the band the spectrum is zoomed to; the box's top edge
+  is the playhead. Inside the box is a shrunk copy of the waterfall.
+  - **Click** where you want to look and the box goes there, its middle on
+    your pointer. **Drag the box** and it is carried: up and down is time,
+    sideways moves the spectrum's window (it does not tune; click a station
+    to tune). The waterfall follows while you drag, and the sound jumps when
+    you let go.
+  - The **wheel** over the map shows more or less time in the waterfall,
+    as the wheel over the waterfall's time scale does (Shift for fine).
+  - The map's colours follow the spectrum's **Ref level** and **Range**, as
+    the waterfall's do. Its levels are the spectrum's own, so a station that
+    reads -30 dBFS there has the same colour in the map. A WAV's frequencies
+    run 0 to 24 kHz, as in the audio spectrum.
+  - The waterfall is drawn **from the file**, so choosing a recording, or
+    jumping, shows that stretch at once, before anything plays; playing then
+    carries on from it. The numbers over the map say where the playhead is.
+  - At the very start the box rests on the bottom edge: nothing came before.
 - **Loop** starts again from the beginning at the end. Without it, playback
   stops and goes back to the start.
 - **Delete...** removes every file of the chosen recording, after asking.
@@ -819,7 +833,7 @@ tools/fmctl help                          # every command
 
 | Command | Does |
 |---|---|
-| `status` | Radio, tab, the RDS or HD Radio tab on show, Tuner and its range, Center, IQ bandwidth, gain and AGC, volume and mute, channel filter, step, clipped %, recording; in Receive the signal (dBFS in the channel, SNR), stereo pilot, RDS (PI, call sign and whether it is confirmed, PS, name, RadioText, PTY, % blocks good, the TP and TA flags, TMC, the station clock, RT+ title and artist, data applications, and how many groups of each type came) and HD Radio (on, program, what is heard, sync, station, programs, BER, now playing, the status line) |
+| `status` | Radio, tab, the RDS or HD Radio tab on show, Tuner and its range, Center, IQ bandwidth, gain and AGC, volume and mute, channel filter, step, clipped %, recording; in Receive the signal (dBFS in the channel, SNR), stereo pilot, RDS (PI, call sign and whether it is confirmed, PS, name, RadioText, PTY, % blocks good, the TP and TA flags, TMC, the station clock, RT+ title and artist, data applications, and how many groups of each type came) and HD Radio (on, program, what is heard, sync, station, programs, BER, now playing, the status line); in Recordings, `playback`: the recording and file chosen, playing, position and duration, loop, the station and text, whether the map is open and drawn and its box (top, span, band), and the waterfall's drawn rows and newest time |
 | `tune MHZ` | The Tuner. Outside the band around the Center, the Center moves first, as **Center on tuner** does (not for an IQ file, whose band is fixed) |
 | `center MHZ` | The Radio box's Center (Receive tab only) |
 | `gain PERCENT` | The RF gain slider |
@@ -828,11 +842,15 @@ tools/fmctl help                          # every command
 | `volume PERCENT`, `mute on` / `off` | Audio |
 | `hd 1`-`8` / `analog` | HD Radio: the program to play (lights that HD button), or `analog` for analog FM (none lit). HD Radio is always on: there is no off, in the window or here. `status`'s `hd` has the lamp too. Needs nrsc5 |
 | `station rds` / `hd` | The **RDS \| HD Radio** tabs under the Tuner, as a click on a tab does (a folded box opens). Receive's: refused from the other tabs. Show **RDS** while reading RDS, so the person at the window sees what is being read |
+| `recordings` | The Recordings tab's list, newest first: index, station, name, call sign, start, length, files, size, and which is chosen. Needs `mode recordings` |
+| `recording N [TRACK]` | Choose the Nth recording (0 is the newest) as a click on its line does, and with TRACK which of its files plays (`status`'s `playback.tracks` is the order). Its map and waterfall draw in the background: wait a moment |
+| `play on` / `off` | The Play button: play the chosen recording, or pause it |
+| `seek SECONDS` | Jump to a time, as dragging the map's box there does (before it plays, too); the waterfall shows the stretch ending there |
 | `screenshot PATH.png` | A picture of the window, as it is on screen |
 | `sweep START STOP` | The Sweep tab over START-STOP MHz (switching to it first) |
 | `peakhold on` / `off` / `clear` | The RF spectrum's **Peak hold**: the most each frequency reached, which catches short bursts |
 | `peaks [THRESHOLD_DB [START STOP]]` | The signals on the RF spectrum (the held trace while Peak hold is on) THRESHOLD_DB (default 10) over the floor, within START-STOP MHz if given: each one's frequency, level, height over the floor and width, the strongest 20 |
-| `view [rf` / `mpx` / `audio] [span X` / `full] [center X] [ref DB] [range DB] [avg N]` | A spectrum view's dials: **Span** and where it is centred (MHz for `rf`, kHz for `mpx` and `audio`), **Ref level** and **Range** (the level scale, the waterfall's colours too; display only), **Average** (smooths the trace, and so what `peaks` reads). With no settings it reports them, with no view all three |
+| `view [rf` / `mpx` / `audio] [span X` / `full] [center X] [ref DB] [range DB] [avg N] [window S]` | A spectrum view's dials: **Span** and where it is centred (MHz for `rf`, kHz for `mpx` and `audio`), **Ref level** and **Range** (the level scale, the waterfall's colours too; display only), **Average** (smooths the trace, and so what `peaks` reads), and **window**, the seconds the waterfall shows (2-300; in Recordings the map's box with it). With no settings it reports them, with no view all three |
 | `rate MSPS` | The IQ bandwidth |
 | `record audio` / `iq-channel` / `iq-band` `on` / `off`, `record start` / `stop` | The Record box. `stop` replies with the files saved, the `.sigmf-meta` beside each IQ file included |
 | `capture SECONDS [iq-band` / `iq-channel` / `audio]` | Records only that (IQ of the whole band by default) for SECONDS and replies with the files; the Record box's ticks are put back after. Refused over 4 GB: at 40 MS/s the whole band is 320 MB/s, so 12 s at most |
