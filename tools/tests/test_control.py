@@ -5,9 +5,12 @@ socket on a path of the test's own (``FMRX_CONTROL``). Each command goes
 through the socket, as ``fmctl`` sends it, and is checked against the
 widgets it works: status (RDS and all), tune (and a tune outside the band),
 the Center, gain and AGC refused where the window refuses them, volume,
-mute, the tabs, a screenshot, wait holding a second client's command
-behind it, JSON commands, bad commands, a second window finding the socket
-taken, and ``fmctl`` itself, as a separate process.
+mute, the tabs (and the RDS | HD Radio tabs, folded or not), the RDS block's
+flags, clock and groups, ``scan`` (each channel read, out-of-band channels as
+rows with the reason, the tuner put back, a scan nobody waits for ended), a
+screenshot, wait holding a second client's command behind it, JSON commands, bad
+commands, a second window finding the socket taken, and ``fmctl`` itself, as
+a separate process.
 
 Part 2 is a simulated radio that can retune, its Radio box folded: a tune
 outside the band around the Center moves the Center (the tuner's digits
@@ -289,6 +292,63 @@ def main():
         c.refused('gain 40', 'greyed out')
         c.refused('agc on', "isn't offered")
 
+        # The RDS block: the flags, the station clock, RT+, the data
+        # applications and the groups heard, besides the name.
+        # (The retunes above cleared the decoder: wait for it to hear it again.)
+        assert pump(20, lambda: '2A' in c.ok('status')['rds']['group_counts']), c.ok('status')
+        r = c.ok('status')['rds']
+        assert r['tp'] is True and not r['ta'] and r['tmc'] is False, r
+        assert r['clock'] is None and r['rtplus'] is None and r['oda'] is None, r
+        assert r['group_counts'].get('0A', 0) > 0 and r['group_counts'].get('2A', 0) > 0, r
+        assert 0 < r['blocks_ok'] <= r['blocks_seen'] and isinstance(r['callsign_confirmed'], bool)
+        assert r['blocks_good_percent'] > 50, r
+
+        # scan: each channel tuned and read, RDS where it decodes, the tuner
+        # back where it was. Only a pilot earns the long listen (snr 99).
+        began = time.time()
+        r = c.ask('scan 98.5 98.9 step 200 quick 1.5 listen 5 snr 99', timeout=60)
+        assert r['ok'], r
+        r = r['result']
+        rows = {row['freq_mhz']: row for row in r['channels']}
+        assert list(rows) == [98.5, 98.7, 98.9] and not any('error' in x for x in rows.values()), r
+        mid = rows[98.7]
+        assert mid['pilot_locked'] and mid['listened_s'] == 5.0 and mid['snr_db'] > 15, mid
+        assert mid['rds']['pi'] == '0x1234' and mid['rds']['ps'].strip() == 'TEST FM', mid
+        assert rows[98.5]['listened_s'] == 0.0 and 'rds' not in rows[98.5], rows[98.5]
+        assert r['with_rds'] == 1 and r['with_hd'] == 0 and r['min_snr_db'] == 99, r
+        assert r['step_khz'] == 200, r
+        # Left alone, the step is the window's own (this one's is 100 kHz).
+        assert [x['freq_mhz'] for x in c.ask('scan 98.5 98.7 quick 0.5 listen 0')['result']['channels']] \
+            == [98.5, 98.6, 98.7]
+        assert abs(w.tuner.value() - 98.7e6) < 1 and abs(w.engine.station_hz - 98.7e6) < 1, \
+            'the scan left the tuner elsewhere'
+        # A channel outside the recording's band is a row with the reason.
+        r = c.ask('scan 98.7 108.7 step 5000 quick 1 listen 0', timeout=30)['result']
+        assert [x['freq_mhz'] for x in r['channels']] == [98.7, 103.7, 108.7]
+        assert 'error' not in r['channels'][0]
+        assert all('outside' in x['error'] for x in r['channels'][1:]), r['channels']
+        c.refused('scan 98.9 98.5', 'below START')
+        c.refused('scan 98.5', 'usage')
+        c.refused('scan 98.5 98.9 hurry 3', 'unknown setting')
+        c.refused('scan 98.7 98.7 quick 0', 'above 0')
+        c.refused('scan 87 108 step 100 quick 20', 'minutes')
+        # A client that leaves ends it, and the tuner goes back: the next
+        # command (queued behind it) is answered when the step ends, not the scan.
+        gone = Client()
+        began = time.time()
+        gone.send('scan 98.5 98.9 step 200 quick 3 listen 0')
+        assert pump(2, lambda: abs(w.tuner.value() - 98.5e6) < 1), 'the scan did not start'
+        gone.sock.close()
+        assert c.ok('status')['running']
+        assert time.time() - began < 7, 'a scan nobody waits for ran on'
+        assert abs(w.tuner.value() - 98.7e6) < 1, 'an abandoned scan left the tuner elsewhere'
+        # Not in Sweep.
+        c.ok('mode sweep')
+        c.refused('scan 98.5 98.9', "Receive's")
+        c.ok('mode receive')
+        assert abs(w.engine.station_hz - 98.7e6) < 1
+        print("scan: channels read, RDS decoded, out-of-band rows, abandoned scan undone")
+
         # Audio.
         assert c.ok('volume 30')['volume'] == 30 and round(w.volume_knob.value()) == 30
         assert c.ok('mute on')['muted'] and w.mute_btn.isChecked()
@@ -303,6 +363,21 @@ def main():
         assert w.tabs.currentIndex() == 1 and w._mode == 'receive' and w.engine.running
         assert abs(w.engine.station_hz - 98.7e6) < 1, w.engine.station_hz
         c.refused('mode upside-down', 'one of')
+
+        # The RDS | HD Radio tabs: as a click on them, a folded box opening;
+        # Receive's, so refused from Sweep.
+        assert c.ok('status')['station_tab'] == 'rds'
+        assert c.ok('station hd') == {'station_tab': 'hd'}
+        assert w.station_tabs.currentIndex() == 1 and c.ok('status')['station_tab'] == 'hd'
+        assert c.ok('station rds')['station_tab'] == 'rds' and w.station_tabs.currentIndex() == 0
+        w.station_tabs.set_folded(True)
+        assert c.ok('station hd')['station_tab'] == 'hd' and not w.station_tabs.is_folded()
+        c.ok('station rds')
+        c.refused('station mpx', 'rds or hd')
+        c.ok('mode sweep')
+        c.refused('station hd', "Receive's")
+        assert w.station_tabs.currentIndex() == 0, 'a refused station moved the tab'
+        c.ok('mode receive')
 
         # A screenshot, as the user sees the window.
         shot = os.path.join(FOLDER, 'shot.png')
@@ -399,7 +474,7 @@ def main():
         c.refused('{"verb": "status"}', 'JSON commands')
         c.refused('fly 3', 'unknown command')
         assert set(c.ok('help')) >= {'status', 'tune', 'center', 'gain', 'agc', 'mode',
-                                     'volume', 'mute', 'screenshot', 'wait'}
+                                     'station', 'scan', 'volume', 'mute', 'screenshot', 'wait'}
         assert 'status' in c.ask('status')     # every reply carries the status line
 
         # A second window finds the socket taken, and leaves it be.

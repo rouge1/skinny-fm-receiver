@@ -43,10 +43,19 @@ workflows, commands and constraints. Read the file that fits before acting:
 JSON; `fmctl help` lists them. Each works the widget a click would, so the
 user sees it, and is refused where the window would refuse it.
 
-- Look: `status`, `screenshot PATH`, `peaks [DB [START STOP]]` (the
+- Look: `status` (JSON: the RDS block has the flags, clock, RT+ and groups
+  heard as well as the name; `hd` has the station, programs and now playing:
+  read the data from it, not from a screenshot), `screenshot PATH` (to
+  check what the user sees, not to read data), `peaks [DB [START STOP]]` (the
   spectrum's signals as numbers; from the held trace while `peakhold on`).
+- Survey: `scan START STOP [step KHZ] [quick S] [listen S] [snr DB]` tunes each
+  channel and replies with one row each (level, SNR, pilot, RDS, HD Radio);
+  channels with a pilot or SNR over `snr` are heard `listen` s more. A band
+  takes minutes: run it in the background and read the reply from the file.
 - Move: `tune`, `center`, `gain`, `agc`, `rate`, `mode`, `sweep START STOP`,
-  `volume`, `mute`, `hd 1-8|analog` (HD Radio's program, or analog FM; the
+  `volume`, `mute`, `station rds|hd` (the RDS | HD Radio tab on show: put
+  RDS up while reading RDS, so the user sees what you read),
+  `hd 1-8|analog` (HD Radio's program, or analog FM; the
   decoder is always on where nrsc5 is installed, with no off;
   `status`'s `hd` says what plays, what is chosen and the lamp).
 - View: `view rf|mpx|audio span X center X ref DB range DB avg N` (any of

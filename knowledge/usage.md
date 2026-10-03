@@ -819,7 +819,7 @@ tools/fmctl help                          # every command
 
 | Command | Does |
 |---|---|
-| `status` | Radio, tab, Tuner and its range, Center, IQ bandwidth, gain and AGC, volume and mute, channel filter, step, clipped %, recording; in Receive the signal (dBFS in the channel, SNR), stereo pilot, RDS (PI, call sign, PS, name, RadioText, PTY, % blocks good) and HD Radio (on, program, what is heard, sync, station, programs, BER, now playing, the status line) |
+| `status` | Radio, tab, the RDS or HD Radio tab on show, Tuner and its range, Center, IQ bandwidth, gain and AGC, volume and mute, channel filter, step, clipped %, recording; in Receive the signal (dBFS in the channel, SNR), stereo pilot, RDS (PI, call sign and whether it is confirmed, PS, name, RadioText, PTY, % blocks good, the TP and TA flags, TMC, the station clock, RT+ title and artist, data applications, and how many groups of each type came) and HD Radio (on, program, what is heard, sync, station, programs, BER, now playing, the status line) |
 | `tune MHZ` | The Tuner. Outside the band around the Center, the Center moves first, as **Center on tuner** does (not for an IQ file, whose band is fixed) |
 | `center MHZ` | The Radio box's Center (Receive tab only) |
 | `gain PERCENT` | The RF gain slider |
@@ -827,6 +827,7 @@ tools/fmctl help                          # every command
 | `mode sweep` / `receive` / `recordings` | The tabs |
 | `volume PERCENT`, `mute on` / `off` | Audio |
 | `hd 1`-`8` / `analog` | HD Radio: the program to play (lights that HD button), or `analog` for analog FM (none lit). HD Radio is always on: there is no off, in the window or here. `status`'s `hd` has the lamp too. Needs nrsc5 |
+| `station rds` / `hd` | The **RDS \| HD Radio** tabs under the Tuner, as a click on a tab does (a folded box opens). Receive's: refused from the other tabs. Show **RDS** while reading RDS, so the person at the window sees what is being read |
 | `screenshot PATH.png` | A picture of the window, as it is on screen |
 | `sweep START STOP` | The Sweep tab over START-STOP MHz (switching to it first) |
 | `peakhold on` / `off` / `clear` | The RF spectrum's **Peak hold**: the most each frequency reached, which catches short bursts |
@@ -835,7 +836,15 @@ tools/fmctl help                          # every command
 | `rate MSPS` | The IQ bandwidth |
 | `record audio` / `iq-channel` / `iq-band` `on` / `off`, `record start` / `stop` | The Record box. `stop` replies with the files saved, the `.sigmf-meta` beside each IQ file included |
 | `capture SECONDS [iq-band` / `iq-channel` / `audio]` | Records only that (IQ of the whole band by default) for SECONDS and replies with the files; the Record box's ticks are put back after. Refused over 4 GB: at 40 MS/s the whole band is 320 MB/s, so 12 s at most |
+| `scan START STOP [step KHZ] [quick S] [listen S] [snr DB]` | Tunes each channel from START to STOP MHz and replies with one row for each: level, SNR, stereo pilot, and `rds` (the same block as `status`) and `hd` (station, programs, now playing, BER) where something was decoded. The step is the Tuner's Step unless given. Each channel is heard for `quick` seconds (2); one with a pilot or an SNR of `snr` dB (6) or more is heard `listen` seconds more (12; 0 for none), long enough for RDS and for HD Radio's name. A channel outside an IQ file's band is a row with the reason. Receive's, refused while recording (retuning would spoil it). The Tuner goes back where it was afterwards, and also if the client leaves, which ends the scan. Up to 30 minutes, worst case |
 | `wait SECONDS` | Replies after that long (up to 120 s) with the window running meanwhile, so a later command sees the result: RDS takes a few seconds |
+
+A survey of the FM band, for example: every channel of the US band is read for 2 s, and the ones that look like stations for 12 s more (about 10 minutes on the BB60D, with 33 channels heard for the longer time; the reply, a table of the channels with their RDS and HD Radio, comes at the end, so run it in the background):
+
+```sh
+tools/fmctl 'mode receive; scan 87.9 107.9' > fm-band.json
+tools/fmctl 'scan 98.5 99.1 quick 3 listen 20'        # four channels, listened to longer
+```
 
 A survey of the ISM bands, for example (a BB60D, which sweeps itself):
 

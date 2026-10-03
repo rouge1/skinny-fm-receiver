@@ -28,11 +28,13 @@ import json
 import os
 import shlex
 import sys
+import time
 
 import numpy as np  # type: ignore
 from PyQt5 import Qt, QtCore, QtNetwork  # type: ignore
 
 from .config import control_path
+from .rds_core import clock_text
 
 #: A command line longer than this is refused, and the client dropped.
 MAX_LINE = 64 * 1024
@@ -48,11 +50,15 @@ class CommandError(Exception):
 
 
 class Later:
-    """A reply that comes after ``seconds``, from ``then()``."""
+    """A reply that comes after ``seconds``, from ``then()``. ``then()`` may
+    return another :class:`Later`: the command goes on in steps (``scan``).
+    ``abort()``, if given, undoes what the command changed when it is cut
+    short: the client left, or a step failed."""
 
-    def __init__(self, seconds, then):
+    def __init__(self, seconds, then, abort=None):
         self.seconds = seconds
         self.then = then
+        self.abort = abort
 
 
 def _plain(html_text):
@@ -94,6 +100,9 @@ def _args(args, low, high, usage):
 HELP = {}
 COMMANDS = {}
 
+#: The Receive tab's RDS | HD Radio tabs, in the order the window has them.
+STATION_TABS = ('rds', 'hd')
+
 
 def command(name, usage, text):
     def register(fn):
@@ -132,6 +141,7 @@ def cmd_status(w, args):
         'running': bool(e.running),
         'tab': w._tab_mode(),
         'mode': w._mode,
+        'station_tab': STATION_TABS[w.station_tabs.currentIndex()],
         'tuner_mhz': _mhz(w.tuner.value()),
         'tuner_range_mhz': [_mhz(hz) for hz in _tuner_range(w)],
         'center_mhz': _mhz(e.lo_hz if w._mode == 'receive' else w.center_entry.value()),
@@ -159,7 +169,6 @@ def cmd_status(w, args):
     }
     rx = e.rx
     if rx is not None and w._mode in ('receive', 'playback'):
-        snap = rx.rds.snapshot()
         snr = w._snr_db()
         out['signal'] = {
             'channel_dbfs': round(float(rx.channel_power_db()), 1),
@@ -167,20 +176,45 @@ def cmd_status(w, args):
         }
         out['stereo'] = {'enabled': w.stereo_check.isChecked(),
                          'pilot_locked': bool(rx.pilot_locked())}
-        good = (None if not snap['blocks_seen']
-                else round(100 * (1 - (snap['block_error_rate'] or 0)), 1))
-        out['rds'] = {
-            'pi': snap['pi_hex'] or None,
-            'callsign': snap['callsign_confirmed'] or snap['callsign'] or None,
-            'ps': snap['ps'] or None,
-            'station': snap['station_short'] or snap['station_name'] or None,
-            'radiotext': snap['radiotext'] or None,
-            'pty': snap['pty'] or None,
-            'groups': snap['groups'],
-            'blocks_good_percent': good,
-        }
+        out['rds'] = _rds_state(rx.rds.snapshot())
         out['hd'] = _hd_state(w)
     return out
+
+
+def _rds_state(snap):
+    """The RDS decoder's reading as `status` and `scan` give it: what the RDS
+    tab shows (the flags and the station clock too) and what the decoder
+    keeps besides (RT+, the data applications, the groups heard)."""
+    good = (None if not snap['blocks_seen']
+            else round(100 * (1 - (snap['block_error_rate'] or 0)), 1))
+    clock = snap['clock']
+    return {
+        'pi': snap['pi_hex'] or None,
+        'callsign': snap['callsign_confirmed'] or snap['callsign'] or None,
+        # False: the call sign is only what the PI code works out to, which a
+        # station whose PI is not made from its call (a translator, a network
+        # that uses its own) gets wrong; its PS and RadioText name it better.
+        'callsign_confirmed': bool(snap['callsign_confirmed']),
+        'ps': snap['ps'] or None,
+        'station': snap['station_short'] or snap['station_name'] or None,
+        'radiotext': snap['radiotext'] or None,
+        'pty': snap['pty'] or None,
+        'groups': snap['groups'],
+        'blocks_good_percent': good,
+        'blocks_ok': snap['blocks_ok'],
+        'blocks_seen': snap['blocks_seen'],
+        'tp': None if snap['tp'] is None else bool(snap['tp']),    # traffic program
+        'ta': None if snap['ta'] is None else bool(snap['ta']),    # traffic announcement
+        'tmc': bool(snap['has_tmc']),
+        # The station's clock (group 4A): its fields, as local time in `text`.
+        'clock': (dict(clock, synced_ago_s=round(clock['synced_ago_s'], 1),
+                       text=clock_text(clock)) if clock else None),
+        'title': snap['title'] or None,         # RT+: the song, when the station tags it
+        'artist': snap['artist'] or None,
+        'rtplus': snap['rtplus'] or None,
+        'oda': snap['oda'] or None,             # applications: id -> the group they use
+        'group_counts': snap['group_counts'],   # '0A': how many, '2A': ...
+    }
 
 
 def _hd_state(w):
@@ -328,6 +362,23 @@ def cmd_hd(w, args):
         raise CommandError(f"hd: expected 1-{len(w.hd_buttons)} or analog, got {word!r}")
     w._refresh_hd()
     return _hd_state(w)
+
+
+@command('station', 'station rds|hd', "The RDS | HD Radio tabs under the Tuner (Receive's): "
+         "the one to show, as a click on its tab does (a folded box opens). Show RDS "
+         "while reading RDS, so the user sees what is being read.")
+def cmd_station(w, args):
+    word = _args(args, 1, 1, 'station rds|hd')[0].lower()
+    if word not in STATION_TABS:
+        raise CommandError("station: rds or hd")
+    if w._tab_mode() != 'receive':
+        raise CommandError("the RDS and HD Radio tabs are Receive's: "
+                           "switch with 'mode receive' first")
+    tabs = w.station_tabs
+    index = STATION_TABS.index(word)
+    tabs.tabBarClicked.emit(index)       # what a click sends first: opens a folded box
+    tabs.setCurrentIndex(index)
+    return {'station_tab': STATION_TABS[tabs.currentIndex()]}
 
 
 @command('screenshot', 'screenshot PATH.png', "The window, grabbed, as the user sees it.")
@@ -508,6 +559,110 @@ def cmd_peaks(w, args):
             'floor_db': round(floor, 1),
             'bin_khz': round((freqs[-1] - freqs[0]) / max(1, len(freqs) - 1) / 1e3, 3),
             'span_mhz': [_mhz(freqs[0]), _mhz(freqs[-1])], 'peaks': peaks}
+
+
+#: A scan's longest, worst case (every channel listened to).
+MAX_SCAN_S = 1800.0
+SCAN_USAGE = 'scan START STOP [step KHZ] [quick S] [listen S] [snr DB]'
+#: What a scan's rows keep of the HD Radio state: who and what is on the air.
+SCAN_HD_KEYS = ('synced', 'station', 'slogan', 'programs', 'title', 'artist', 'album',
+                'genre', 'message', 'ber', 'lamp')
+
+
+def _scan_row(w, freq, listened):
+    """One channel as ``scan`` reports it: what the window reads now. ``rds``
+    and ``hd`` are there only when something was decoded."""
+    rx = w.engine.rx
+    if rx is None:
+        raise CommandError("scan: the radio stopped")
+    snr = w._snr_db()
+    row = {'freq_mhz': freq,
+           'channel_dbfs': round(float(rx.channel_power_db()), 1),
+           'snr_db': round(snr, 1) if snr is not None else None,
+           'pilot_locked': bool(rx.pilot_locked()),
+           'listened_s': listened}
+    snap = rx.rds.snapshot()
+    if snap['groups']:
+        row['rds'] = _rds_state(snap)
+    hd = _hd_state(w)
+    if hd['synced'] or hd['station'] or hd['programs']:
+        row['hd'] = {key: hd[key] for key in SCAN_HD_KEYS}
+    return row
+
+
+@command('scan', SCAN_USAGE, "Tune each channel from START to STOP MHz (by step, the "
+         "Tuner's Step by default) and report what the window reads on each: level, SNR, "
+         "stereo pilot, and RDS and HD Radio where decoded, as one reply. Each channel "
+         "is heard for `quick` seconds (2); one with a pilot or an SNR of `snr` dB (6) "
+         "or more is heard for `listen` more (12; 0 for none), long enough for RDS "
+         "and HD Radio's name. Receive's; the Tuner goes back where it was, also if "
+         "the client leaves, which ends the scan.")
+def cmd_scan(w, args):
+    if len(args) < 2 or len(args) % 2:
+        raise CommandError(f"usage: {SCAN_USAGE}")
+    start, stop = _number(args[0], 'scan START'), _number(args[1], 'scan STOP')
+    options = {'step': w._step_hz() / 1e3, 'quick': 2.0, 'listen': 12.0, 'snr': 6.0}
+    for i in range(2, len(args), 2):
+        key = args[i].lower()
+        if key not in options:
+            raise CommandError(f"scan: unknown setting {args[i]!r} ({SCAN_USAGE})")
+        options[key] = _number(args[i + 1], f"scan {key}")
+    step, quick, listen, min_snr = (options[k] for k in ('step', 'quick', 'listen', 'snr'))
+    if stop < start:
+        raise CommandError("scan: STOP is below START")
+    if step <= 0 or quick <= 0 or listen < 0:
+        raise CommandError("scan: step and quick above 0, listen 0 or more")
+    freqs = [round(start + i * step / 1e3, 6)
+             for i in range(int((stop - start) / (step / 1e3) + 1e-9) + 1)]
+    if len(freqs) * (quick + listen) > MAX_SCAN_S:
+        raise CommandError(f"scan: {len(freqs)} channels at up to {quick + listen:g} s each "
+                           f"is over {MAX_SCAN_S / 60:.0f} minutes; fewer, or shorter")
+    if w._tab_mode() != 'receive' or w._mode != 'receive' or w.engine.rx is None:
+        raise CommandError("scan is Receive's: switch with 'mode receive' first")
+    if w.rec_btn.isChecked():
+        raise CommandError("scan: recording (retuning would spoil it; 'record stop' first)")
+    station0, center0 = w.tuner.value(), w.center_entry.value()
+    rows, todo, began = [], list(freqs), time.monotonic()
+
+    def restore():
+        try:
+            if abs(w.center_entry.value() - center0) > 1:     # a far channel moved it
+                w.center_entry.setValue(center0, emit=True)
+            w.tuner.setValue(station0, emit=True)
+        except Exception as exc:
+            print(f"FM receiver: scan could not put the tuner back: {exc}", file=sys.stderr)
+
+    def later(seconds, then):
+        return Later(seconds, then, abort=restore)
+
+    def next_channel():
+        while todo:
+            freq = todo.pop(0)
+            try:
+                cmd_tune(w, [str(freq)])
+            except CommandError as exc:                         # outside the band
+                rows.append({'freq_mhz': freq, 'error': str(exc)})
+                continue
+            return later(quick, lambda f=freq: heard(f))
+        restore()
+        return {'start_mhz': start, 'stop_mhz': stop, 'step_khz': step, 'quick_s': quick,
+                'listen_s': listen, 'min_snr_db': min_snr,
+                'seconds': round(time.monotonic() - began, 1),
+                'with_rds': sum('rds' in r for r in rows),
+                'with_hd': sum('hd' in r for r in rows), 'channels': rows}
+
+    def heard(freq):
+        row = _scan_row(w, freq, 0.0)
+        if listen > 0 and (row['pilot_locked'] or (row['snr_db'] or -99.0) >= min_snr):
+            return later(listen, lambda: listened(freq))
+        rows.append(row)
+        return next_channel()
+
+    def listened(freq):
+        rows.append(_scan_row(w, freq, listen))
+        return next_channel()
+
+    return next_channel()
 
 
 @command('rate', 'rate MSPS', "The Radio box's IQ bandwidth (Receive).")
@@ -740,9 +895,22 @@ class ControlServer(QtCore.QObject):
             self._send(sock, reply)
 
     def _finish(self, sock, later):
+        if sock not in self._buffers:               # the client left: stop here
+            if later.abort is not None:
+                later.abort()
+            self._busy = False
+            self._pump()
+            return
         try:
-            reply = self._reply(later.then())
+            result = later.then()
+            if isinstance(result, Later):           # a step done: the next one
+                QtCore.QTimer.singleShot(int(result.seconds * 1000),
+                                         lambda s=sock, l=result: self._finish(s, l))
+                return
+            reply = self._reply(result)
         except Exception as exc:
+            if later.abort is not None:
+                later.abort()
             reply = self._error(exc)
         self._busy = False
         self._send(sock, reply)
