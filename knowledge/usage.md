@@ -689,6 +689,10 @@ What you see and hear depends on the file:
   - The waterfall is drawn **from the file**, so choosing a recording, or
     jumping, shows that stretch at once, before anything plays; playing then
     carries on from it. The numbers over the map say where the playhead is.
+  - The waterfall's **time scale reads the recording's own time** (0:35,
+    0:30, ...), not seconds ago as it does live: the marks are at round times
+    in the recording and move down with the picture as it plays, and there are
+    none before the recording began. The top is the playhead.
   - At the very start the box rests on the bottom edge: nothing came before.
 - **Loop** starts again from the beginning at the end. Without it, playback
   stops and goes back to the start.

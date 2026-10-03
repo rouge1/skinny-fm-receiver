@@ -2777,6 +2777,7 @@ class MainWindow(Qt.QWidget):
         self._prepared = None
         self._scrubbing = False
         for view in (self.rf_view, self.audio_view):   # the live waterfall: no map
+            view.set_time_origin(None)                 # seconds ago again
             view.set_map(False)
             view.wf_clock = None
             view.wf_frozen = False
@@ -3070,7 +3071,9 @@ class MainWindow(Qt.QWidget):
         total = track.seconds if track is not None else 0.0
         self._shown_at = seconds
         self.time_label.setText(f"{library.clock(seconds)} / {library.clock(total)}")
-        self._map_view().minimap.set_position(seconds)
+        view = self._map_view()
+        view.minimap.set_position(seconds)
+        view.set_time_origin(seconds if track is not None and self._live is not None else None)
         self._show_map_info()
 
     def _show_map_info(self):

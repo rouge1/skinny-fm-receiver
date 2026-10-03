@@ -1955,11 +1955,46 @@ def _ago(seconds):
     return f"{whole // 60}:{whole % 60:02d}"
 
 
+def _stamp(seconds, step):
+    """A time in a recording: 0:35, 1:05 or 1:02:05; a tenth of a second
+    where the ticks are closer than a second."""
+    if step < 1:
+        tenths = int(round(max(seconds, 0.0) * 10))
+        whole, tenth = divmod(tenths, 10)
+        m, s = divmod(whole, 60)
+        return f"{m}:{s:02d}.{tenth}"
+    whole = int(round(max(seconds, 0.0)))
+    h, rest = divmod(whole, 3600)
+    m, s = divmod(rest, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
 class TimeAxis(pg.AxisItem):
-    """The waterfall's left axis: seconds ago, "now" at the top, at steps
-    that read as time (1, 2, 5, 10, 15, 30 s, then minutes)."""
+    """The waterfall's left axis, at steps that read as time (1, 2, 5, 10,
+    15, 30 s, then minutes). Live it is seconds ago, "now" at the top. In
+    Recordings it is the recording's own time: :meth:`set_origin` says where
+    the playhead is, and the ticks are at round times in the recording
+    (0:30, 0:35, ...), so they move down the axis with the picture as it
+    plays, and none is drawn before the recording began."""
 
     STEPS = (0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300)
+
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        self.origin = None                    # the playhead's time; None: live
+
+    def set_origin(self, seconds):
+        """The playhead's time in the recording, or None for seconds ago.
+        The axis is drawn again only when the ticks have moved a little."""
+        seconds = None if seconds is None else float(seconds)
+        if seconds == self.origin:
+            return
+        was = self.origin
+        self.origin = seconds
+        span = abs(self.range[1] - self.range[0]) if self.range else 0.0
+        if was is None or seconds is None or not span or abs(seconds - was) >= span / 400:
+            self.picture = None               # pyqtgraph keeps the drawing until told
+            self.update()
 
     def tickSpacing(self, minVal, maxVal, size):
         span = abs(maxVal - minVal)
@@ -1968,8 +2003,21 @@ class TimeAxis(pg.AxisItem):
                 return [(step, 0)]
         return [(self.STEPS[-1], 0)]
 
+    def tickValues(self, minVal, maxVal, size):
+        if self.origin is None:
+            return super().tickValues(minVal, maxVal, size)
+        step = self.tickSpacing(minVal, maxVal, size)[0][0]
+        low, high = min(minVal, maxVal), max(minVal, maxVal)
+        # An age is the playhead's time less a time; ticks at whole steps of
+        # the recording's time, none before it began.
+        first = max(0, math.ceil((self.origin - high) / step - 1e-9))
+        last = math.floor((self.origin - low) / step + 1e-9)
+        return [(step, [self.origin - k * step for k in range(first, last + 1)])]
+
     def tickStrings(self, values, scale, spacing):
-        return [_ago(v * scale) for v in values]
+        if self.origin is None:
+            return [_ago(v * scale) for v in values]
+        return [_stamp(self.origin - v * scale, spacing) for v in values]
 
 
 class SpectrumView(Qt.QWidget):
@@ -2071,6 +2119,7 @@ class SpectrumView(Qt.QWidget):
         #: What stamps a row as it comes: None, the wall clock; a recording
         #: gives the playhead, so its rows sit on its own time.
         self.wf_clock = None
+        self.time_axis = None
         #: True while a recording's stretch is being drawn from its file:
         #: rows from the radio that came meanwhile are on the wrong time.
         self.wf_frozen = False
@@ -2148,7 +2197,8 @@ class SpectrumView(Qt.QWidget):
 
         self.wf_plot = None
         if waterfall:
-            self.wf_plot = pg.PlotWidget(axisItems={'left': TimeAxis('left')})
+            self.time_axis = TimeAxis('left')
+            self.wf_plot = pg.PlotWidget(axisItems={'left': self.time_axis})
             self.wf_plot.setObjectName('waterfall')
             self.wf_plot.setMenuEnabled(False)
             self.wf_plot.hideButtons()
@@ -2797,6 +2847,12 @@ class SpectrumView(Qt.QWidget):
             self.map_info.setVisible(width > 0 and self.wf_check.isChecked())
         except Exception as exc:                  # never abort the app
             print(f"spectrum view: {exc}")
+
+    def set_time_origin(self, seconds):
+        """The waterfall's time scale in a recording's own time, the playhead
+        at ``seconds`` (the top); None for seconds ago, as live."""
+        if self.time_axis is not None:
+            self.time_axis.set_origin(seconds)
 
     def pan_to(self, centre_hz):
         """Move the spectrum's window to be centred on ``centre_hz`` (as far

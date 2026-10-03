@@ -1148,8 +1148,10 @@ own recordings (IQ band, IQ channel, WAV)**
 - [x] Docs: usage, capabilities, the project skill
 - [ ] Looked at on the user's window, with a real recording (only synthetic
   recordings so far, offscreen)
-- [ ] The time scale labelled in the recording's own time (0:35) rather than
-  seconds ago, in Recordings (idea)
+- [x] The time scale labelled in the recording's own time (0:35) rather than
+  seconds ago, in Recordings (asked 2026-10-03): `TimeAxis.set_origin`, ticks at
+  round times of the recording that move down with the picture, none before it
+  began; seconds ago again live
 
 **Phase 2: a Sceptre IQ DVR (`.sdvr`) and `.cdif` in the list, playing**
 

@@ -399,6 +399,30 @@ def part1b_minimap():
     view.set_data(x, np.full(256, -50.0))
     order, times = view._hist.newest_first()
     assert view._hist.n == 2 and np.all(np.diff(times) < 0), times
+
+    # The waterfall's time scale: live it is seconds ago; in a recording it
+    # is the recording's own time, ticks at round times (so they move with the
+    # picture), none before it began, a tenth of a second where they are close.
+    axis = view.time_axis
+    assert axis.origin is None
+    assert axis.tickStrings([0.0, 5.0, 10.0], 1, 5) == ['now', '5 s', '10 s']
+
+    def labels(origin, low, high):
+        view.set_time_origin(origin)
+        [(step, values)] = axis.tickValues(low, high, 200)
+        return sorted(zip(values, axis.tickStrings(values, 1, step)), reverse=True)
+
+    got = labels(35.3, 0.0, 20.0)
+    assert [t for _, t in got] == ['0:20', '0:25', '0:30', '0:35'], got
+    assert abs(got[-1][0] - 0.3) < 1e-9 and abs(got[0][0] - 15.3) < 1e-9, got
+    assert [t for _, t in labels(7.0, 0.0, 20.0)] == ['0:00', '0:05'], 'none before the start'
+    assert [t for _, t in labels(0.0, 0.0, 20.0)] == ['0:00']
+    assert [t for _, t in labels(10.2, 0.0, 2.5)] == [
+        '0:08.0', '0:08.5', '0:09.0', '0:09.5', '0:10.0'], labels(10.2, 0.0, 2.5)
+    assert [t for _, t in labels(3725.3, 0.0, 20.0)] == [
+        '1:01:50', '1:01:55', '1:02:00', '1:02:05'], labels(3725.3, 0.0, 20.0)
+    view.set_time_origin(None)
+    assert axis.tickStrings([0.0, 5.0], 1, 5) == ['now', '5 s']
     view.close()
     print("part 1b passed")
 
@@ -506,6 +530,7 @@ def part2_window():
     assert abs(newest(view) - 8.0) < view.wf_span_s / view.WF_ROWS + 0.05, newest(view)
     assert view._wf is not None and view._x is not None and not w.play_btn.isChecked()
     assert abs(mini.position - 8.0) < 0.1 and seconds_shown(w) == 8
+    assert abs(view.time_axis.origin - 8.0) < 0.01, 'the time scale is the recording\'s own'
     # Played on from there, the radio's rows carry on from the file's, on
     # the track's own time, at the same level.
     # What was done to the view before Play (zoomed, the box carried sideways,
@@ -543,7 +568,8 @@ def part2_window():
     # Playing, the view's own saved scale, and the map follows it.
     assert mini._levels == (view.ref_knob.value() - view.range_knob.value(),
                             view.ref_knob.value())
-    # The waterfall's rows are on the track's own time.
+    # The waterfall's rows are on the track's own time, and so is its scale.
+    assert abs(view.time_axis.origin - w._shown_at) < 0.3, (view.time_axis.origin, w._shown_at)
     assert view.wf_clock is not None and not view.wf_frozen
     here = w._play.radio.position() / w._play.radio.rate
     assert abs(newest(view) - here) < 0.6, (newest(view), here)
@@ -702,6 +728,8 @@ def part2_window():
     w.tabs.setCurrentIndex(1)
     assert pump(3, lambda: view.minimap.isHidden() and av.minimap.isHidden()), 'the maps stay open'
     assert view.wf_clock is None and av.wf_clock is None and not view.wf_frozen
+    assert view.time_axis.origin is None and av.time_axis.origin is None, 'seconds ago again'
+
     assert e.running and w.radio is not None and w._mode == 'receive', w.status.text()
     assert w.radio_combo.isEnabled() and w.rec_btn.isEnabled()
     assert abs(w.tuner.value() - live_tuner) < 1, (w.tuner.value(), live_tuner)
