@@ -3155,11 +3155,12 @@ class SpectrumView(Qt.QWidget):
 
 class MiniMap(Qt.QWidget):
     """A recording from end to end, small, beside the waterfall: **time
-    up the map, later at the top, as in the waterfall; frequency across it**,
-    in the theme's waterfall colours. A **window** on it is what the big
-    waterfall shows - the span of time before the playhead, and the band the
-    spectrum has zoomed to - so what is inside the window is a shrunk copy of
-    the waterfall. The playhead is the window's top edge.
+    down the map, the start at the top and the end at the bottom, as a
+    timeline reads; frequency across it**, in the theme's waterfall colours.
+    A **window** on it is what the big waterfall shows - the span of time
+    before the playhead, and the band the spectrum has zoomed to - so what is
+    inside the window is a shrunk copy of the waterfall. The playhead is the
+    window's bottom edge.
 
     It is the scrubber. Press where you want to look and the window goes
     there, centred on the pointer; press inside the window and it is carried
@@ -3186,15 +3187,15 @@ class MiniMap(Qt.QWidget):
         self.setMinimumWidth(0)
         self.setMouseTracking(True)
         self.setCursor(QtCore.Qt.OpenHandCursor)
-        self.setToolTip("The whole recording: time up (later at the top), frequency\n"
-                        "across. The box is what the waterfall shows. Click or drag\n"
-                        "to move it; the wheel shows more or less time.")
+        self.setToolTip("The whole recording: time down (the start at the top),\n"
+                        "frequency across. The box is what the waterfall shows. Click\n"
+                        "or drag to move it; the wheel shows more or less time.")
         self.duration = 0.0
-        self.position = 0.0                 # the playhead: the window's top
+        self.position = 0.0                 # the playhead: the window's bottom
         self.span = 0.0                     # seconds the window covers, below it
         self.extent_hz = None               # (low, high) the image covers
         self.window_hz = None               # (low, high) the spectrum shows
-        self._db = None                     # (rows, cols) dB, latest row first
+        self._db = None                     # (rows, cols) dB, earliest row first
         self._levels = None                 # (bottom, top) dB, from the view
         self._index = None                  # (rows, cols) uint8
         self._image = None
@@ -3210,7 +3211,7 @@ class MiniMap(Qt.QWidget):
         if img is None:
             self._db, self.extent_hz = None, extent_hz
         else:
-            self._db = np.asarray(img, dtype=np.float64)[::-1]
+            self._db = np.asarray(img, dtype=np.float64)
             self.extent_hz = (float(extent_hz[0]), float(extent_hz[1]))
         self._colour()
 
@@ -3272,17 +3273,17 @@ class MiniMap(Qt.QWidget):
         return QtCore.QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
 
     def y_of(self, seconds):
-        """The y of a time: the start at the bottom, the end at the top."""
+        """The y of a time: the start at the top, the end at the bottom."""
         frame = self._frame()
         if not self.duration:
-            return frame.bottom()
-        return frame.bottom() - frame.height() * seconds / self.duration
+            return frame.top()
+        return frame.top() + frame.height() * seconds / self.duration
 
     def time_at(self, y):
         frame = self._frame()
         if frame.height() <= 0 or not self.duration:
             return 0.0
-        return (frame.bottom() - y) / frame.height() * self.duration
+        return (y - frame.top()) / frame.height() * self.duration
 
     def x_of(self, hz):
         frame = self._frame()
@@ -3305,10 +3306,10 @@ class MiniMap(Qt.QWidget):
         frame = self._frame()
         if not self.duration or self.span <= 0 or frame.height() < 4:
             return None
-        # At the very start the box would hang below the map: it rests on
-        # the bottom edge instead, as small as it may be.
-        top = min(self.y_of(self.position), frame.bottom() - self.WINDOW_MIN_PX)
-        bottom = max(self.y_of(self.position - self.span), top + self.WINDOW_MIN_PX)
+        # At the very start the box would hang above the map: it rests on
+        # the top edge instead, as small as it may be.
+        bottom = max(self.y_of(self.position), frame.top() + self.WINDOW_MIN_PX)
+        top = min(self.y_of(self.position - self.span), bottom - self.WINDOW_MIN_PX)
         if self.window_hz and self.extent_hz:
             left, right = self.x_of(self.window_hz[0]), self.x_of(self.window_hz[1])
         else:
@@ -3361,8 +3362,8 @@ class MiniMap(Qt.QWidget):
                           self._window_centre_hz() - self.hz_at(pos.x()))
         else:
             # Put there: the window's middle on the pointer - or, when the
-            # box is longer than the recording, its top edge (the middle
-            # would be past the end).
+            # box is longer than the recording, its playhead edge (the
+            # middle would be before the start).
             self._grab = (self.span / 2 if self.span < self.duration else 0.0, 0.0)
         self.setCursor(QtCore.Qt.ClosedHandCursor)
         self._move_to(pos)
@@ -3443,10 +3444,10 @@ class MiniMap(Qt.QWidget):
             p.setBrush(QtCore.Qt.NoBrush)
             p.setPen(Qt.QPen(Qt.QColor(t['ink']), 1))
             p.drawRect(box)
-            # The playhead: the window's top edge, the newest row.
+            # The playhead: the window's bottom edge, the newest row.
             p.setPen(Qt.QPen(Qt.QColor(t['ink']), 2))
-            p.drawLine(QtCore.QPointF(frame.left(), box.top()),
-                       QtCore.QPointF(frame.right(), box.top()))
+            p.drawLine(QtCore.QPointF(frame.left(), box.bottom()),
+                       QtCore.QPointF(frame.right(), box.bottom()))
         p.setPen(Qt.QPen(Qt.QColor(t['rule']), 1))
         p.setBrush(QtCore.Qt.NoBrush)
         p.drawRect(frame)

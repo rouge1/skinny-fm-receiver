@@ -670,12 +670,14 @@ What you see and hear depends on the file:
   the waterfall to listen to it. The Receive tab's controls (channel filter,
   stereo, region, the RDS details) work on the recording too.
 - **The mini map** is the narrow picture down the right of the spectrum and the waterfall, as tall as both: the
-  whole recording at a glance, **time up it with later at the top, as in
-  the waterfall, and frequency across it**, in the waterfall's colours. A
-  station is a line up it. The **box** on it is what the waterfall shows: the
-  time before the playhead (as long as the waterfall's time scale is set to,
-  2 s to 5 min), and the band the spectrum is zoomed to; the box's top edge
-  is the playhead. Inside the box is a shrunk copy of the waterfall.
+  whole recording at a glance, **time down it, the start at the top and the
+  end at the bottom, and frequency across it**, in the waterfall's colours. A
+  station is a line down it. (The waterfall itself has the newest row at the
+  top; the map reads like a timeline.) The **box** on it is what the waterfall
+  shows: the time before the playhead (as long as the waterfall's time scale
+  is set to, 2 s to 5 min), and the band the spectrum is zoomed to; the box's
+  bottom edge is the playhead. Inside the box is a shrunk copy of the
+  waterfall, upside down.
   - **Click** where you want to look and the box goes there, its middle on
     your pointer. **Drag the box** and it is carried: up and down is time,
     sideways moves the spectrum's window (it does not tune; click a station
@@ -698,7 +700,7 @@ What you see and hear depends on the file:
     0:30, ...), not seconds ago as it does live: the marks are at round times
     in the recording and move down with the picture as it plays, and there are
     none before the recording began. The top is the playhead.
-  - At the very start the box rests on the bottom edge: nothing came before.
+  - At the very start the box rests on the top edge: nothing came before.
 - **Loop** starts again from the beginning at the end. Without it, playback
   stops and goes back to the start.
 - There is **no RF gain and no Record box** in this tab: a file has no radio

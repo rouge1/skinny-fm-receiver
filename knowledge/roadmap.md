@@ -1130,8 +1130,9 @@ own recordings (IQ band, IQ channel, WAV)**
 - [x] `library.render(track, t0, t1, rows, cols)`: any stretch of a track as
   a waterfall in the spectrum views' own dB, NaN outside the file, native
   columns equal to the views' bins; a WAV's frequencies linear (they were log)
-- [x] `widgets.MiniMap`: time up (later at the top), frequency across, a box
-  for the waterfall's span and band, the playhead its top edge; click puts the
+- [x] `widgets.MiniMap`: time down (the start at the top; first built the
+  other way up, flipped 2026-10-03), frequency across, a box
+  for the waterfall's span and band, the playhead its bottom edge; click puts the
   box's middle there, drag carries it (time seeks on release, frequency pans the
   spectrum without tuning), the wheel zooms time; colours from the view's Ref
   level and Range

@@ -270,20 +270,20 @@ def part1b_minimap():
     mini.set_extent((97e6, 99e6))
     mini.set_window(20.0, 97.5e6, 98.0e6)
     mini.set_position(50.0)
-    # Later at the top: the playhead is the box's top edge, and the box runs
-    # down the time it shows; its width is the band the spectrum shows.
+    # Time runs down: the playhead is the box's bottom edge, and the box runs
+    # up the time it shows; its width is the band the spectrum shows.
     box = mini.window_rect()
     frame = mini._frame()
-    assert abs(box.top() - mini.y_of(50.0)) < 1 and abs(box.bottom() - mini.y_of(30.0)) < 1, box
+    assert abs(box.bottom() - mini.y_of(50.0)) < 1 and abs(box.top() - mini.y_of(30.0)) < 1, box
     assert abs(box.height() - frame.height() * 0.2) < 1, box
     assert abs(box.left() - mini.x_of(97.5e6)) < 1 and abs(box.right() - mini.x_of(98.0e6)) < 1
-    assert mini.y_of(100.0) <= frame.top() + 1 and mini.y_of(0.0) >= frame.bottom() - 1, \
-        'the end is at the top and the start at the bottom'
+    assert mini.y_of(0.0) <= frame.top() + 1 and mini.y_of(100.0) >= frame.bottom() - 1, \
+        'the start is at the top and the end at the bottom'
     assert abs(mini.time_at(mini.y_of(37.0)) - 37.0) < 1e-6
     assert abs(mini.hz_at(mini.x_of(98.4e6)) - 98.4e6) < 1
 
     # Pressing outside the box puts its middle on the pointer: the playhead
-    # is the top, so half the span above where it was pressed.
+    # is the bottom, so half the span past where it was pressed.
     press(point(80.0, 98.6e6))
     assert abs(sent['scrub'][-1] - 90.0) < 0.6, sent['scrub']
     assert abs(sent['pan'][-1] - 98.6e6) < 25e3, sent['pan']
@@ -313,20 +313,19 @@ def part1b_minimap():
     # Dragged past either end it stops there.
     press(point(30.0, 97.75e6))
     move(QtCore.QPoint(50, -40))
-    assert abs(sent['scrub'][-1] - 100.0) < 1e-6, sent['scrub'][-1]
-    move(QtCore.QPoint(50, 400))
     assert sent['scrub'][-1] == 0.0, sent['scrub'][-1]
+    move(QtCore.QPoint(50, 400))
+    assert abs(sent['scrub'][-1] - 100.0) < 1e-6, sent['scrub'][-1]
     release(QtCore.QPoint(50, 400))
-    assert sent['seek'][-1] == 0.0
+    assert abs(sent['seek'][-1] - 100.0) < 1e-6, sent['seek']
 
-    # At the very start the box rests on the bottom edge, as small as it may
-    # be, and the map is not dimmed all over.
+    # At the very start the box rests on the top edge, as small as it may be.
     mini.set_position(0.0)
     box = mini.window_rect()
     assert box is not None and box.height() >= mini.WINDOW_MIN_PX - 1e-6 \
-        and abs(box.bottom() - frame.bottom()) < 1, box
+        and abs(box.top() - frame.top()) < 1, box
     mini.set_position(100.0)
-    assert abs(mini.window_rect().top() - frame.top()) < 1.5
+    assert abs(mini.window_rect().bottom() - frame.bottom()) < 1.5
 
     # The wheel is the waterfall's time zoom; Shift makes it fine.
     for key in sent:
@@ -342,14 +341,15 @@ def part1b_minimap():
     mini.set_window(20.0, 97.5e6, 98.0e6)
     mini.set_position(18000.0)
     assert mini.window_rect().height() >= mini.WINDOW_MIN_PX - 1e-6
-    # A picture in dB, later at the top, and NaN (before the file) left clear.
+    # A picture in dB, the earliest row at the top, and NaN (before the file)
+    # left clear.
     img = np.full((8, 4), -90.0)
     img[7, 1] = -20.0                               # the latest row
     img[0] = np.nan
     mini.set_levels(-20, 60)
     mini.set_image(img, (97e6, 99e6))
     assert mini._index is not None and mini._index.shape == (8, 4)
-    assert mini._index[0, 1] == 255 and mini._index[7].max() == 0, mini._index
+    assert mini._index[7, 1] == 255 and mini._index[0].max() == 0, mini._index
     mini.set_image(None, (97e6, 99e6))
     assert mini._index is None
 
@@ -547,7 +547,7 @@ def part2_window():
         return ring.t[(ring.head - 1) % len(ring.t)]
 
     # Before it plays, a seek draws the waterfall's stretch from the file,
-    # ending where the box's top edge is.
+    # ending where the box's bottom edge is.
     w._seek_to(8.0)
     assert pump(3, lambda: view._hist is not None and view._hist.n > 0
                 and not view.wf_frozen), 'no waterfall drawn from the file'
@@ -705,7 +705,7 @@ def part2_window():
     # Where it is playing: this WAV was recorded across a retune, so its
     # loudest moment is not now.
     rows = amini._db.shape[0]
-    at = int((amini.duration - w._play.source.position / 48000) / amini.duration * rows)
+    at = int(w._play.source.position / 48000 / amini.duration * rows)
     # A tone shares its map column (8 of the view's bins, the mean of their
     # power) with silence: some 6 dB under the view's own peak.
     shown = float(np.max(db))
