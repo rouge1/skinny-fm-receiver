@@ -1142,9 +1142,10 @@ own recordings (IQ band, IQ channel, WAV)**
   with a blank gutter above), its words and the band it covers beside the
   dials, and shuts on
   leaving; Sweep and Receive are as they were
-- [x] The Recordings waterfall runs the way the map does, the oldest row at the
-  top and the playhead at the bottom (asked for 2026-10-03: "the water falls
-  need to match"); Sweep and Receive keep the newest at the top
+- [x] The Recordings waterfall falls, the newest row at the top, as Sweep and
+  Receive's do (2026-10-03: first flipped to match the map's time-down, the
+  oldest row at the top, then put back at "the waterfall should fall
+  downward"); the map's time runs down, so the box is the waterfall upside down
 - [x] The box is resized by its edges (top: the time shown; sides: the band;
   Ref level and Range untouched), asked for 2026-10-03
 - [x] The list takes Shift- and Ctrl-click picks, and a right click slides a

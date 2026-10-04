@@ -598,14 +598,14 @@ def part2_window():
     # The mini map slides open beside the waterfall and is drawn from the
     # file; the audio view's stays shut.
     assert w.top_stack.currentWidget() is view
-    # The waterfall runs the way the map does: time down, the newest row at
-    # the bottom, the playhead's time at its bottom edge.
+    # The waterfall falls: the newest row at the top, the older ones below
+    # it, in Recordings as live.
     wf_vb = view.wf_plot.getPlotItem().getViewBox()
-    def newest_is_lower():
+    def newest_is_higher():
         now = wf_vb.mapViewToScene(QtCore.QPointF(0, 0)).y()
         old = wf_vb.mapViewToScene(QtCore.QPointF(0, view.wf_span_s)).y()
-        return now > old
-    assert view.wf_down and not wf_vb.yInverted() and newest_is_lower()
+        return now < old
+    assert wf_vb.yInverted() and newest_is_higher()
     assert pump(5, lambda: mini._index is not None), 'no map'
     assert pump(3, lambda: not mini.isHidden() and mini.width() == view.MAP_W), mini.width()
     assert w.audio_view.minimap.isHidden() and mini.duration == w._track.seconds
@@ -824,7 +824,7 @@ def part2_window():
     amini = av.minimap
     assert pump(3, lambda: not amini.isHidden() and amini.width() == av.MAP_W), amini.width()
     assert pump(2, lambda: mini.isHidden()), 'the RF map shuts'
-    assert av.wf_down and not view.wf_down, 'each waterfall runs the way its own map does'
+    assert av.wf_plot.getPlotItem().getViewBox().yInverted(), "the sound's waterfall falls too"
     assert amini._levels == (av.ref_knob.value() - av.range_knob.value(),
                              av.ref_knob.value()), amini._levels
     assert amini.extent_hz == (0.0, 24000.0), amini.extent_hz
@@ -891,8 +891,7 @@ def part2_window():
     assert pump(3, lambda: view.minimap.isHidden() and av.minimap.isHidden()), 'the maps stay open'
     assert not w.record_box.isHidden(), 'Receive has its Record box'
     assert w.rx_gain_slot.isAncestorOf(w.gain_row), 'Receive has its RF gain row'
-    assert pump(2, lambda: not view.wf_down), 'live waterfalls keep the newest at the top'
-    assert wf_vb.yInverted() and not newest_is_lower()
+    assert wf_vb.yInverted() and newest_is_higher(), 'live: the newest at the top'
     assert view.wf_clock is None and av.wf_clock is None and not view.wf_frozen
     assert view.time_axis.origin is None and av.time_axis.origin is None, 'seconds ago again'
 

@@ -1946,8 +1946,7 @@ class _RowRing:
 
 
 def _ago(seconds):
-    """A waterfall's time scale: how long ago, from "now" at the top (at the
-    bottom in Recordings, where time runs down)."""
+    """A waterfall's time scale: how long ago, from "now" at the top."""
     if seconds < 0.05:
         return "now"
     if seconds < 90:
@@ -1973,11 +1972,10 @@ def _stamp(seconds, step):
 class TimeAxis(pg.AxisItem):
     """The waterfall's left axis, at steps that read as time (1, 2, 5, 10,
     15, 30 s, then minutes). Live it is seconds ago, "now" at the top. In
-    Recordings it is the recording's own time, running down the axis with the
-    playhead at the bottom: :meth:`set_origin` says where the playhead is, and
-    the ticks are at round times in the recording (0:30, 0:35, ...), so they
-    move up the axis with the picture as it plays, and none is drawn before
-    the recording began."""
+    Recordings it is the recording's own time: :meth:`set_origin` says where
+    the playhead is, and the ticks are at round times in the recording
+    (0:30, 0:35, ...), so they move down the axis with the picture as it
+    plays, and none is drawn before the recording began."""
 
     STEPS = (0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300)
 
@@ -2048,10 +2046,8 @@ class SpectrumView(Qt.QWidget):
     middle-button drag up or down moves the Ref level. The knobs follow.
 
     The waterfall keeps the last :attr:`WF_HISTORY_S` seconds and shows
-    :attr:`wf_span_s` of them, "now" at the top (at the bottom, with the
-    oldest row at the top, while the Recordings mini map is open, as the map
-    runs: :attr:`wf_down`), with a time scale down its left side; the wheel
-    over that scale shows more or less of the past.
+    :attr:`wf_span_s` of them, "now" at the top, with a time scale down its
+    left side; the wheel over that scale shows more or less of the past.
     Where a row on screen covers several rows of data it shows their
     maximum, so a short burst is not lost however far out it is zoomed.
     """
@@ -2135,7 +2131,6 @@ class SpectrumView(Qt.QWidget):
         self._map_shown = False
         self._map_anim = None
         self.wf_span_s = self.WF_SPAN_S[1]
-        self.wf_down = False              # time down the waterfall: Recordings
         self._time_hot = False
         self._wf_later = Qt.QTimer(self)
         self._wf_later.setSingleShot(True)
@@ -2813,20 +2808,10 @@ class SpectrumView(Qt.QWidget):
         self._light_time_axis(self._over_time_axis(scene_pos))
 
     def zoom_time(self, notches, fine=False):
-        """Show less of the past (``notches`` up) or more (down), the newest
-        row staying where it is."""
+        """Show less of the past (``notches`` up) or more (down), "now"
+        staying at the top."""
         step = 1 + (self.TIME_ZOOM - 1) / (5 if fine else 1)
         self.set_wf_span(self.wf_span_s * step ** -notches)
-
-    def set_waterfall_down(self, down):
-        """Time down the waterfall, the oldest row at the top and the newest
-        at the bottom - the way the Recordings mini map runs - or, as live,
-        the newest at the top."""
-        down = bool(down)
-        if self.wf_plot is None or down == self.wf_down:
-            return
-        self.wf_down = down
-        self.wf_plot.getPlotItem().invertY(not down)
 
     def set_band_window(self, low_hz, high_hz):
         """Show the band ``low_hz`` to ``high_hz``: the mini map's box
@@ -2861,7 +2846,6 @@ class SpectrumView(Qt.QWidget):
         if self.minimap is None or bool(shown) == self._map_shown:
             return
         self._map_shown = bool(shown)
-        self.set_waterfall_down(shown)         # it runs the way the map does
         if self._map_anim is not None:
             self._map_anim.stop()
         anim = QtCore.QVariantAnimation(self)
@@ -2885,8 +2869,7 @@ class SpectrumView(Qt.QWidget):
 
     def set_time_origin(self, seconds):
         """The waterfall's time scale in a recording's own time, the playhead
-        at ``seconds`` (the newest row: the bottom); None for seconds ago, as
-        live."""
+        at ``seconds`` (the top); None for seconds ago, as live."""
         if self.time_axis is not None:
             self.time_axis.set_origin(seconds)
 
