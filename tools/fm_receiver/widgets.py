@@ -3531,20 +3531,35 @@ class MiniMap(Qt.QWidget):
             p.setPen(colour('ink_3'))
             p.drawText(frame.adjusted(4, 0, -4, 0),
                        QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap, self.note)
-        box = self.window_rect()
-        if box is not None:
-            # Outlined, not dimmed around: the map is the waterfall in small,
-            # at the waterfall's own brightness, with a frame on what it shows.
-            p.setBrush(QtCore.Qt.NoBrush)
-            p.setPen(Qt.QPen(Qt.QColor(t['ink']), 1))
-            p.drawRect(box)
-            # The playhead: the window's bottom edge, the newest row.
-            p.setPen(Qt.QPen(Qt.QColor(t['ink']), 2))
-            p.drawLine(QtCore.QPointF(frame.left(), box.bottom()),
-                       QtCore.QPointF(frame.right(), box.bottom()))
+        # The frame first, so the window is over it: at the very start, or the
+        # very end, the window's edge is the frame's, and drawn under it was
+        # not to be seen.
         p.setPen(Qt.QPen(Qt.QColor(t['rule']), 1))
         p.setBrush(QtCore.Qt.NoBrush)
         p.drawRect(frame)
+        box = self.window_rect()
+        if box is not None:
+            # Outlined in the on-air orange, not dimmed around: the map is the
+            # waterfall in small, at the waterfall's own brightness, with a
+            # frame on what it shows. A dark line under the orange keeps it
+            # clear of the orange stations. It is drawn inside the frame, so
+            # no edge of it is cut off.
+            inner = frame.adjusted(1.5, 1.5, -1.5, -1.5)
+            outline = box.intersected(inner)
+            if not outline.isValid():
+                outline = box
+            under = Qt.QColor(t['ground'])
+            under.setAlpha(150)
+            orange = Qt.QColor(t['live'])
+            for pen in (Qt.QPen(under, 4), Qt.QPen(orange, 2)):
+                p.setPen(pen)
+                p.drawRect(outline)
+            # The playhead: the window's bottom edge, the newest row, across
+            # the whole map.
+            y = min(max(box.bottom(), inner.top()), inner.bottom())
+            for pen in (Qt.QPen(under, 5), Qt.QPen(orange, 3)):
+                p.setPen(pen)
+                p.drawLine(QtCore.QPointF(inner.left(), y), QtCore.QPointF(inner.right(), y))
         p.end()
 
 

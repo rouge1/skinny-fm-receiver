@@ -701,7 +701,7 @@ station is a line down it. **The waterfall falls, as it does live**: the
   - The map's colours follow the spectrum's **Ref level** and **Range**, as
     the waterfall's do. Its levels are the spectrum's own, so a station that
     reads -30 dBFS there has the same colour in the map, and the background
-    is the same blue. It is outlined, not dimmed round the box. Each column
+    is the same blue. The box is outlined in orange (the same orange as the playhead line across the map), not dimmed round it, and its edge is still there when the box is at the very top or bottom of the map. Each column
     of it is the mean power of the bins it covers, which is what keeps the
     background level; a lone narrow carrier is fainter on the map than in
     the spectrum (a tone in a WAV by some 6 dB), a whole station is not. A
