@@ -1946,7 +1946,8 @@ class _RowRing:
 
 
 def _ago(seconds):
-    """A waterfall's time scale: how long ago, from "now" at the top."""
+    """A waterfall's time scale: how long ago, from "now" at the top (at the
+    bottom in Recordings, where time runs down)."""
     if seconds < 0.05:
         return "now"
     if seconds < 90:
@@ -1972,10 +1973,11 @@ def _stamp(seconds, step):
 class TimeAxis(pg.AxisItem):
     """The waterfall's left axis, at steps that read as time (1, 2, 5, 10,
     15, 30 s, then minutes). Live it is seconds ago, "now" at the top. In
-    Recordings it is the recording's own time: :meth:`set_origin` says where
-    the playhead is, and the ticks are at round times in the recording
-    (0:30, 0:35, ...), so they move down the axis with the picture as it
-    plays, and none is drawn before the recording began."""
+    Recordings it is the recording's own time, running down the axis with the
+    playhead at the bottom: :meth:`set_origin` says where the playhead is, and
+    the ticks are at round times in the recording (0:30, 0:35, ...), so they
+    move up the axis with the picture as it plays, and none is drawn before
+    the recording began."""
 
     STEPS = (0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300)
 
@@ -2046,8 +2048,10 @@ class SpectrumView(Qt.QWidget):
     middle-button drag up or down moves the Ref level. The knobs follow.
 
     The waterfall keeps the last :attr:`WF_HISTORY_S` seconds and shows
-    :attr:`wf_span_s` of them, "now" at the top, with a time scale down its
-    left side; the wheel over that scale shows more or less of the past.
+    :attr:`wf_span_s` of them, "now" at the top (at the bottom, with the
+    oldest row at the top, while the Recordings mini map is open, as the map
+    runs: :attr:`wf_down`), with a time scale down its left side; the wheel
+    over that scale shows more or less of the past.
     Where a row on screen covers several rows of data it shows their
     maximum, so a short burst is not lost however far out it is zoomed.
     """
@@ -2131,6 +2135,7 @@ class SpectrumView(Qt.QWidget):
         self._map_shown = False
         self._map_anim = None
         self.wf_span_s = self.WF_SPAN_S[1]
+        self.wf_down = False              # time down the waterfall: Recordings
         self._time_hot = False
         self._wf_later = Qt.QTimer(self)
         self._wf_later.setSingleShot(True)
@@ -2308,6 +2313,8 @@ class SpectrumView(Qt.QWidget):
             self.minimap.setMinimumWidth(0)
             self.minimap.hide()
             self.minimap.zoomRequested.connect(lambda n, fine: self.zoom_time(n, fine))
+            self.minimap.spanRequested.connect(self.set_wf_span)
+            self.minimap.bandRequested.connect(self.set_band_window)
             self.map_info = Qt.QLabel('')
             self.map_info.setWordWrap(True)
             self.map_info.setAlignment(QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
@@ -2806,10 +2813,29 @@ class SpectrumView(Qt.QWidget):
         self._light_time_axis(self._over_time_axis(scene_pos))
 
     def zoom_time(self, notches, fine=False):
-        """Show less of the past (``notches`` up) or more (down), "now"
-        staying at the top."""
+        """Show less of the past (``notches`` up) or more (down), the newest
+        row staying where it is."""
         step = 1 + (self.TIME_ZOOM - 1) / (5 if fine else 1)
         self.set_wf_span(self.wf_span_s * step ** -notches)
+
+    def set_waterfall_down(self, down):
+        """Time down the waterfall, the oldest row at the top and the newest
+        at the bottom - the way the Recordings mini map runs - or, as live,
+        the newest at the top."""
+        down = bool(down)
+        if self.wf_plot is None or down == self.wf_down:
+            return
+        self.wf_down = down
+        self.wf_plot.getPlotItem().invertY(not down)
+
+    def set_band_window(self, low_hz, high_hz):
+        """Show the band ``low_hz`` to ``high_hz``: the mini map's box
+        resized. The Span dial and the centre follow; the levels stay."""
+        span = float(high_hz) - float(low_hz)
+        if span <= 0:
+            return
+        self.span_knob.setValue(span)
+        self.set_center((float(low_hz) + float(high_hz)) / 2)
 
     def set_wf_span(self, seconds):
         low, _, high = self.WF_SPAN_S
@@ -2835,6 +2861,7 @@ class SpectrumView(Qt.QWidget):
         if self.minimap is None or bool(shown) == self._map_shown:
             return
         self._map_shown = bool(shown)
+        self.set_waterfall_down(shown)         # it runs the way the map does
         if self._map_anim is not None:
             self._map_anim.stop()
         anim = QtCore.QVariantAnimation(self)
@@ -2858,7 +2885,8 @@ class SpectrumView(Qt.QWidget):
 
     def set_time_origin(self, seconds):
         """The waterfall's time scale in a recording's own time, the playhead
-        at ``seconds`` (the top); None for seconds ago, as live."""
+        at ``seconds`` (the newest row: the bottom); None for seconds ago, as
+        live."""
         if self.time_axis is not None:
             self.time_axis.set_origin(seconds)
 
@@ -3168,7 +3196,12 @@ class MiniMap(Qt.QWidget):
     (seconds) and :attr:`panRequested` (hertz, the window's centre) say where
     the window is; when it comes up :attr:`seekRequested` (seconds) says where
     to play from. The wheel is the waterfall's time zoom: :attr:`zoomRequested`
-    (notches, fine).
+    (notches, fine). The window's **top edge** is its length of time and its
+    **sides** are its band: dragged, they say how long the waterfall should
+    show (:attr:`spanRequested`, seconds, the playhead staying) and which
+    band the spectrum should (:attr:`bandRequested`, low and high hertz, the
+    other side staying). Only the window changes: not the levels, not the
+    playhead.
 
     With no image yet (it is worked out in the background) it is a plain
     frame that seeks all the same."""
@@ -3177,10 +3210,16 @@ class MiniMap(Qt.QWidget):
     scrubbed = pyqtSignal(float)
     panRequested = pyqtSignal(float)
     zoomRequested = pyqtSignal(float, bool)
+    spanRequested = pyqtSignal(float)
+    bandRequested = pyqtSignal(float, float)
 
     #: The window is drawn at least this big, as the channel band is: a
     #: second of an hour is no pixel, and nothing the pointer could find.
     WINDOW_MIN_PX = 8
+
+    #: How near its edge the pointer must be to take it, as far as a third
+    #: of the window's size.
+    EDGE_PX = 5
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3189,7 +3228,8 @@ class MiniMap(Qt.QWidget):
         self.setCursor(QtCore.Qt.OpenHandCursor)
         self.setToolTip("The whole recording: time down (the start at the top),\n"
                         "frequency across. The box is what the waterfall shows. Click\n"
-                        "or drag to move it; the wheel shows more or less time.")
+                        "or drag to move it; drag its top edge for more or less time\n"
+                        "and its sides for more or less band; the wheel is the time.")
         self.duration = 0.0
         self.position = 0.0                 # the playhead: the window's bottom
         self.span = 0.0                     # seconds the window covers, below it
@@ -3201,6 +3241,7 @@ class MiniMap(Qt.QWidget):
         self._image = None
         self._image_theme = None
         self._grab = None                   # (seconds, hertz) offsets at the press
+        self._resize = None                 # the edges taken, and the window at the press
         self.note = ''
 
     # -- what is drawn
@@ -3349,13 +3390,63 @@ class MiniMap(Qt.QWidget):
     def hideEvent(self, event):
         # Shut or hidden mid-drag, no release will come.
         self._grab = None
+        self._resize = None
         super().hideEvent(event)
+
+    def _edges_at(self, pos):
+        """The edges of the window the pointer is on: a set of 'top' (its
+        time), 'left' and 'right' (its band). The bottom edge is the
+        playhead, which carries the window like the rest of it."""
+        box = self.window_rect()
+        if box is None:
+            return set()
+        near_x = min(self.EDGE_PX, box.width() / 3)
+        near_y = min(self.EDGE_PX, box.height() / 3)
+        x, y = pos.x(), pos.y()
+        edges = set()
+        if box.top() - near_y <= y <= box.bottom() + near_y:
+            if self.window_hz and self.extent_hz:
+                if abs(x - box.left()) <= near_x:
+                    edges.add('left')
+                elif abs(x - box.right()) <= near_x:
+                    edges.add('right')
+        if abs(y - box.top()) <= near_y and box.left() - near_x <= x <= box.right() + near_x:
+            edges.add('top')
+        return edges
+
+    def _edge_cursor(self, edges):
+        if edges == {'top'}:
+            return QtCore.Qt.SizeVerCursor
+        if edges and 'top' not in edges:
+            return QtCore.Qt.SizeHorCursor
+        if edges == {'top', 'left'}:
+            return QtCore.Qt.SizeFDiagCursor
+        if edges == {'top', 'right'}:
+            return QtCore.Qt.SizeBDiagCursor
+        return None
+
+    def _hover(self, pos):
+        edges = self._edges_at(pos)
+        shape = self._edge_cursor(edges)
+        if shape is None:
+            box = self.window_rect()
+            shape = (QtCore.Qt.OpenHandCursor if box is not None
+                     and box.contains(QtCore.QPointF(pos)) else QtCore.Qt.PointingHandCursor)
+        self.setCursor(shape)
 
     def _press(self, event):
         if event.button() != QtCore.Qt.LeftButton or not self.duration:
             return
         box = self.window_rect()
         pos = event.pos()
+        edges = self._edges_at(pos)
+        if edges:
+            # An edge taken: the window grows or shrinks by what the pointer
+            # moves from here, so nothing jumps. The playhead stays.
+            self._resize = {'edges': edges, 'time': self.time_at(pos.y()),
+                            'hz': self.hz_at(pos.x()), 'span': self.span,
+                            'window': self.window_hz}
+            return
         if box is not None and box.contains(QtCore.QPointF(pos)):
             # Carried from where it was taken.
             self._grab = (self.position - self.time_at(pos.y()),
@@ -3369,13 +3460,27 @@ class MiniMap(Qt.QWidget):
         self._move_to(pos)
 
     def _moved(self, event):
-        if self._grab is not None:
+        if self._resize is not None:
+            self._resized(event.pos())
+        elif self._grab is not None:
             self._move_to(event.pos())
         else:
-            box = self.window_rect()
-            self.setCursor(QtCore.Qt.OpenHandCursor if box is not None
-                           and box.contains(QtCore.QPointF(event.pos()))
-                           else QtCore.Qt.PointingHandCursor)
+            self._hover(event.pos())
+
+    def _resized(self, pos):
+        r = self._resize
+        if 'top' in r['edges']:
+            # Dragged up it takes in more time: the top edge is earlier.
+            self.spanRequested.emit(r['span'] - (self.time_at(pos.y()) - r['time']))
+        if r['window'] and r['edges'] & {'left', 'right'}:
+            low, high = r['window']
+            moved = self.hz_at(pos.x()) - r['hz']
+            if 'left' in r['edges']:
+                low += moved
+            if 'right' in r['edges']:
+                high += moved
+            if high > low:
+                self.bandRequested.emit(low, high)
 
     def _move_to(self, pos):
         seconds = min(max(self.time_at(pos.y()) + self._grab[0], 0.0), self.duration)
@@ -3386,6 +3491,12 @@ class MiniMap(Qt.QWidget):
             self.panRequested.emit(self.hz_at(pos.x()) + self._grab[1])
 
     def _released(self, event):
+        if self._resize is not None and event.button() == QtCore.Qt.LeftButton:
+            self._resized(event.pos())
+            self._resize = None
+            self._hover(event.pos())
+            self.update()
+            return
         if self._grab is not None and event.button() == QtCore.Qt.LeftButton:
             self._move_to(event.pos())
             seconds = self.position

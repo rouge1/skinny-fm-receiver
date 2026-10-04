@@ -554,7 +554,8 @@ goes with the pointer. The knobs follow either way.
 
 **The waterfall's time scale** runs down its left side: the newest row at
 the top ("now"), then 2 s, 4 s ... ago. The waterfall remembers the last
-five minutes. Its numbers light orange under the pointer; roll the wheel
+five minutes (in Recordings it runs the other way, the oldest row at the
+top; see *Recordings*). Its numbers light orange under the pointer; roll the wheel
 over them to show more of the past or less (2 s to 5 minutes, 20 s at
 first; Shift for fine). Zoomed out, each row on screen shows the strongest
 of the rows it covers, so a short burst stays visible. The view remembers
@@ -672,17 +673,27 @@ What you see and hear depends on the file:
 - **The mini map** is the narrow picture down the right of the spectrum and the waterfall, as tall as both: the
   whole recording at a glance, **time down it, the start at the top and the
   end at the bottom, and frequency across it**, in the waterfall's colours. A
-  station is a line down it. (The waterfall itself has the newest row at the
-  top; the map reads like a timeline.) The **box** on it is what the waterfall
-  shows: the time before the playhead (as long as the waterfall's time scale
-  is set to, 2 s to 5 min), and the band the spectrum is zoomed to; the box's
-  bottom edge is the playhead. Inside the box is a shrunk copy of the
-  waterfall, upside down.
+  station is a line down it. **The waterfall runs the same way in this tab**:
+  the oldest row at the top and the newest, the playhead, at the bottom, so
+  the map and the waterfall read alike (Sweep and Receive keep the newest at
+  the top). The **box** on the map is what the waterfall shows: the time
+  before the playhead (as long as the waterfall's time scale is set to, 2 s to
+  5 min), and the band the spectrum is zoomed to; the box's bottom edge is the
+  playhead. Inside the box is a shrunk copy of the waterfall.
   - **Click** where you want to look and the box goes there, its middle on
     your pointer. **Drag the box** and it is carried: up and down is time,
     sideways moves the spectrum's window (it does not tune; click a station
     to tune). The waterfall follows while you drag, and the sound jumps when
     you let go.
+  - **Resize the box** by its edges (the pointer turns to an arrow): drag its
+    **top edge** up for more time in the waterfall and down for less (2 s to
+    5 min, as the wheel does), and a **side** for a wider or narrower band (the
+    Span dial follows, and the other side stays); a corner does both. Only
+    the window changes. The playhead stays, the sound is not seeked, nothing
+    is retuned, and **Ref level and Range stay as they are**: they are the
+    colours, set by their dials and by the wheel on the level axis, not by
+    the box. (A recording's very start has the box clipped to the map's top
+    edge: its top edge can still be taken.)
   - The **wheel** over the map shows more or less time in the waterfall,
     as the wheel over the waterfall's time scale does (Shift for fine).
   - The map's colours follow the spectrum's **Ref level** and **Range**, as
@@ -698,8 +709,8 @@ What you see and hear depends on the file:
     carries on from it. The numbers over the map say where the playhead is.
   - The waterfall's **time scale reads the recording's own time** (0:35,
     0:30, ...), not seconds ago as it does live: the marks are at round times
-    in the recording and move down with the picture as it plays, and there are
-    none before the recording began. The top is the playhead.
+    in the recording and move up with the picture as it plays, and there are
+    none before the recording began. The bottom is the playhead.
   - At the very start the box rests on the top edge: nothing came before.
 - **Loop** starts again from the beginning at the end. Without it, playback
   stops and goes back to the start.

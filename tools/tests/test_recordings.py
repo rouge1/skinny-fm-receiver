@@ -243,11 +243,13 @@ def part1b_minimap():
     mini.resize(100, 200)
     mini.show()
     pump(0.1)
-    sent = {'scrub': [], 'seek': [], 'pan': [], 'zoom': []}
+    sent = {'scrub': [], 'seek': [], 'pan': [], 'zoom': [], 'span': [], 'band': []}
     mini.scrubbed.connect(sent['scrub'].append)
     mini.seekRequested.connect(sent['seek'].append)
     mini.panRequested.connect(sent['pan'].append)
     mini.zoomRequested.connect(lambda n, fine: sent['zoom'].append((n, fine)))
+    mini.spanRequested.connect(sent['span'].append)
+    mini.bandRequested.connect(lambda lo, hi: sent['band'].append((lo, hi)))
 
     def point(seconds, hz):
         return QtCore.QPoint(int(mini.x_of(hz)), int(mini.y_of(seconds)))
@@ -310,8 +312,71 @@ def part1b_minimap():
     release(point(25.0, 98.25e6))
     assert abs(sent['seek'][-1] - 30.0) < 0.6, sent['seek']
 
+    # Its edges resize it, and only it: the top edge is the time it covers
+    # (dragged up it takes in more), the sides are its band (the other side
+    # stays). 100 px for 2 MHz is 20 kHz a pixel; 200 px for 100 s, half a
+    # second. Nothing is scrubbed or seeked, and the playhead stays.
+    for key in sent:
+        sent[key].clear()
+    mini.set_position(50.0)
+    mini.set_window(20.0, 97.5e6, 98.0e6)
+    box = mini.window_rect()
+
+    def hover(pos):
+        Qt.QApplication.sendEvent(mini, Qt.QMouseEvent(
+            QtCore.QEvent.MouseMove, QtCore.QPointF(pos), QtCore.Qt.NoButton,
+            QtCore.Qt.NoButton, QtCore.Qt.NoModifier))
+        return mini.cursor().shape()
+
+    top = QtCore.QPoint(int(box.center().x()), int(round(box.top())))
+    left = QtCore.QPoint(int(round(box.left())), int(box.center().y()))
+    right = QtCore.QPoint(int(round(box.right())), int(box.center().y()))
+    corner = QtCore.QPoint(int(round(box.left())), int(round(box.top())))
+    assert hover(top) == QtCore.Qt.SizeVerCursor
+    assert hover(left) == QtCore.Qt.SizeHorCursor and hover(right) == QtCore.Qt.SizeHorCursor
+    assert hover(corner) == QtCore.Qt.SizeFDiagCursor
+    assert hover(box.center().toPoint()) == QtCore.Qt.OpenHandCursor, 'the middle carries it'
+    assert hover(QtCore.QPoint(5, 190)) == QtCore.Qt.PointingHandCursor
+    press(top)
+    assert mini._resize is not None and mini._resize['edges'] == {'top'}
+    move(top + QtCore.QPoint(0, -20))             # 20 px up: 10 s earlier
+    assert abs(sent['span'][-1] - 30.0) < 0.6, sent['span']
+    move(top + QtCore.QPoint(0, 20))              # 20 px down: 10 s less
+    assert abs(sent['span'][-1] - 10.0) < 0.6, sent['span']
+    release(top + QtCore.QPoint(0, 20))
+    assert mini._resize is None
+    press(left)
+    move(left + QtCore.QPoint(10, 0))             # 10 px right: 0.2 MHz
+    lo, hi = sent['band'][-1]
+    assert abs(lo - 97.7e6) < 25e3 and abs(hi - 98.0e6) < 1, sent['band']
+    release(left + QtCore.QPoint(10, 0))
+    press(right)
+    move(right + QtCore.QPoint(-10, 0))
+    lo, hi = sent['band'][-1]
+    assert abs(lo - 97.5e6) < 1 and abs(hi - 97.8e6) < 25e3, sent['band']
+    release(right + QtCore.QPoint(-10, 0))
+    press(corner)                                 # a corner takes both
+    assert mini._resize['edges'] == {'top', 'left'}
+    move(corner + QtCore.QPoint(-10, -10))
+    assert abs(sent['span'][-1] - 25.0) < 0.6 and abs(sent['band'][-1][0] - 97.3e6) < 25e3, sent
+    release(corner + QtCore.QPoint(-10, -10))
+    assert not sent['seek'] and not sent['scrub'] and not sent['pan'], sent
+    assert mini.position == 50.0, 'the playhead stays'
+    # At the very start the box is clipped to the top edge, and its top edge
+    # is still there to take: it is by what the pointer moves.
+    mini.set_position(0.0)
+    box = mini.window_rect()
+    top = QtCore.QPoint(int(box.center().x()), int(round(box.top())))
+    sent['span'].clear()
+    press(top)
+    move(top + QtCore.QPoint(0, 20))              # 10 s less of the 20 s
+    assert abs(sent['span'][-1] - 10.0) < 0.6, sent['span']
+    release(top + QtCore.QPoint(0, 20))
+    mini.set_position(50.0)
+    mini.set_window(20.0, 97.5e6, 98.0e6)
+
     # Dragged past either end it stops there.
-    press(point(30.0, 97.75e6))
+    press(point(40.0, 97.75e6))
     move(QtCore.QPoint(50, -40))
     assert sent['scrub'][-1] == 0.0, sent['scrub'][-1]
     move(QtCore.QPoint(50, 400))
@@ -320,6 +385,7 @@ def part1b_minimap():
     assert abs(sent['seek'][-1] - 100.0) < 1e-6, sent['seek']
 
     # At the very start the box rests on the top edge, as small as it may be.
+    mini.set_window(20.0, 97.5e6, 98.0e6)
     mini.set_position(0.0)
     box = mini.window_rect()
     assert box is not None and box.height() >= mini.WINDOW_MIN_PX - 1e-6 \
@@ -525,6 +591,14 @@ def part2_window():
     # The mini map slides open beside the waterfall and is drawn from the
     # file; the audio view's stays shut.
     assert w.top_stack.currentWidget() is view
+    # The waterfall runs the way the map does: time down, the newest row at
+    # the bottom, the playhead's time at its bottom edge.
+    wf_vb = view.wf_plot.getPlotItem().getViewBox()
+    def newest_is_lower():
+        now = wf_vb.mapViewToScene(QtCore.QPointF(0, 0)).y()
+        old = wf_vb.mapViewToScene(QtCore.QPointF(0, view.wf_span_s)).y()
+        return now > old
+    assert view.wf_down and not wf_vb.yInverted() and newest_is_lower()
     assert pump(5, lambda: mini._index is not None), 'no map'
     assert pump(3, lambda: not mini.isHidden() and mini.width() == view.MAP_W), mini.width()
     assert w.audio_view.minimap.isHidden() and mini.duration == w._track.seconds
@@ -657,6 +731,51 @@ def part2_window():
     assert view.wf_span_s > 5.0 and mini.span == view.wf_span_s, view.wf_span_s
     assert pump(3, lambda: not view.wf_frozen), 'zoomed: drawn again from the file'
     view.set_wf_span(20.0)
+    # The box's edges resize it: the top edge is the time the waterfall
+    # shows, the sides the band the spectrum shows. Only those change: the
+    # sound is not seeked, nothing is retuned, and Ref level and Range stay.
+    view.set_wf_span(10.0)
+    view.span_knob.setValue(1.5e6)
+    assert pump(2, lambda: mini.span == 10.0 and abs(mini.window_hz[1] - mini.window_hz[0] - 1.5e6) < 1e3)
+    seeks, scrubs = [], []
+    mini.seekRequested.connect(seeks.append)
+    mini.scrubbed.connect(scrubs.append)
+    levels = (view.ref_knob.value(), view.range_knob.value())
+    station = e.station_hz
+
+    def take_edge(where, dx=0, dy=0):
+        box = mini.window_rect()
+        x = {'top': box.center().x(), 'left': box.left(), 'right': box.right()}[where]
+        y = box.top() if where == 'top' else box.center().y()
+        start = QtCore.QPoint(int(round(x)), int(round(y)))
+        end = start + QtCore.QPoint(dx, dy)
+        QtTest.QTest.mousePress(mini, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, start)
+        mouse_move(mini, end)
+        QtTest.QTest.mouseRelease(mini, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, end)
+        QAPP.processEvents()
+
+    per_px = total / mini._frame().height()               # seconds a pixel
+    hz_px = (mini.extent_hz[1] - mini.extent_hz[0]) / mini._frame().width()
+    take_edge('top', dy=-30)                              # up: more time
+    assert abs(view.wf_span_s - (10.0 + 30 * per_px)) < 0.6, (view.wf_span_s, per_px)
+    assert mini.span == view.wf_span_s, 'the box follows'
+    assert pump(3, lambda: not view.wf_frozen), 'the longer stretch is drawn from the file'
+    take_edge('top', dy=+20)                              # down: less
+    assert abs(view.wf_span_s - (10.0 + 10 * per_px)) < 0.6, (view.wf_span_s, per_px)
+    low, high = mini.window_hz
+    take_edge('left', dx=+10)
+    assert abs(mini.window_hz[0] - (low + 10 * hz_px)) < 60e3 and abs(mini.window_hz[1] - high) < 60e3, \
+        (mini.window_hz, low, high)
+    assert abs(view.span_knob.value() - (mini.window_hz[1] - mini.window_hz[0])) < 1e3
+    low, high = mini.window_hz
+    take_edge('right', dx=+8)
+    assert abs(mini.window_hz[1] - (high + 8 * hz_px)) < 60e3 and abs(mini.window_hz[0] - low) < 60e3, \
+        (mini.window_hz, low, high)
+    assert not seeks and not scrubs and not w._scrubbing, (seeks, scrubs)
+    assert (view.ref_knob.value(), view.range_knob.value()) == levels, 'the levels are not the box'
+    assert e.station_hz == station, 'resizing is not tuning'
+    view.full_btn.click()
+    view.set_wf_span(20.0)
     # A click on the spectrum tunes within the recorded band.
     w.tune(98.6e6)
     assert abs(e.station_hz - 98.6e6) < 1 and w._mode == 'playback'
@@ -698,6 +817,7 @@ def part2_window():
     amini = av.minimap
     assert pump(3, lambda: not amini.isHidden() and amini.width() == av.MAP_W), amini.width()
     assert pump(2, lambda: mini.isHidden()), 'the RF map shuts'
+    assert av.wf_down and not view.wf_down, 'each waterfall runs the way its own map does'
     assert amini._levels == (av.ref_knob.value() - av.range_knob.value(),
                              av.ref_knob.value()), amini._levels
     assert amini.extent_hz == (0.0, 24000.0), amini.extent_hz
@@ -764,6 +884,8 @@ def part2_window():
     assert pump(3, lambda: view.minimap.isHidden() and av.minimap.isHidden()), 'the maps stay open'
     assert not w.record_box.isHidden(), 'Receive has its Record box'
     assert w.rx_gain_slot.isAncestorOf(w.gain_row), 'Receive has its RF gain row'
+    assert pump(2, lambda: not view.wf_down), 'live waterfalls keep the newest at the top'
+    assert wf_vb.yInverted() and not newest_is_lower()
     assert view.wf_clock is None and av.wf_clock is None and not view.wf_frozen
     assert view.time_axis.origin is None and av.time_axis.origin is None, 'seconds ago again'
 

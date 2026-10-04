@@ -1142,6 +1142,11 @@ own recordings (IQ band, IQ channel, WAV)**
   with a blank gutter above), its words and the band it covers beside the
   dials, and shuts on
   leaving; Sweep and Receive are as they were
+- [x] The Recordings waterfall runs the way the map does, the oldest row at the
+  top and the playhead at the bottom (asked for 2026-10-03: "the water falls
+  need to match"); Sweep and Receive keep the newest at the top
+- [x] The box is resized by its edges (top: the time shown; sides: the band;
+  Ref level and Range untouched), asked for 2026-10-03
 - [x] The big waterfall drawn from the file: on choosing a recording, on a
   seek, on a drag and on a zoom; the radio's rows after it are stamped with the
   playhead's time (`wf_clock`) and held back while a stretch is drawn
