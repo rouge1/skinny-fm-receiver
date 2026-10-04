@@ -1469,9 +1469,10 @@ class MainWindow(Qt.QWidget):
         return page
 
     def _build_gain(self):
-        """The RF gain row, in its own box under the tabs (Recordings); in
-        Sweep and Receive the row leaves it for a row of the tab's top card
-        (:meth:`_place_side_boxes`)."""
+        """The RF gain row's home, a box that is never shown: in Sweep and
+        Receive the row leaves it for a row of the tab's top card, and in
+        Recordings it stays, out of sight (a file has no radio to set the
+        gain of; :meth:`_place_side_boxes`)."""
         box = Qt.QGroupBox("RF gain")
         self._gain_box_layout = Qt.QVBoxLayout(box)
         self.gain_row = Qt.QWidget()
@@ -1851,7 +1852,8 @@ class MainWindow(Qt.QWidget):
         """RF gain is a row at the top of the tab: of the Sweep card in
         Sweep, of the Radio card in Receive. In Sweep, Audio and Record are
         hidden: there is nothing to hear or record while the radio sweeps.
-        In Recordings all three sit under the tabs."""
+        In Recordings only Audio sits under the tabs: a file has no radio to
+        set the gain of, and what is played back is not recorded."""
         mode = self._tab_mode()
         if mode == 'receive':
             self.rx_gain_slot.layout().addWidget(self.gain_row)
@@ -1859,7 +1861,7 @@ class MainWindow(Qt.QWidget):
             self.sw_gain_slot.layout().addWidget(self.gain_row)
         else:
             self._gain_box_layout.addWidget(self.gain_row)
-        self.gain_box.setVisible(mode not in ('receive', 'sweep'))
+        self.gain_box.setVisible(False)          # in its slot, or no radio: nothing to set
         self._left_box.insertWidget(1, self.gain_box)
         quiet = mode == 'sweep'                  # nothing to hear or record
         self.audio_box.setVisible(not quiet)
@@ -2994,7 +2996,7 @@ class MainWindow(Qt.QWidget):
         view._map_window()
         mini.set_note("...")
         self._map_job = (track.path, self._pool.submit(
-            library.render, track, 0.0, track.seconds, self.MAP_ROWS, self.MAP_COLS, 4))
+            library.render, track, 0.0, track.seconds, self.MAP_ROWS, self.MAP_COLS, 4, 'mean'))
         self._request_window(0.0)
 
     def _collect_jobs(self):

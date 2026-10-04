@@ -3438,19 +3438,8 @@ class MiniMap(Qt.QWidget):
                        QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap, self.note)
         box = self.window_rect()
         if box is not None:
-            # Outside the window is dimmed, so the window is what is seen.
-            veil = Qt.QColor(t['ground'])
-            veil.setAlpha(120)
-            for part in (QtCore.QRectF(frame.left(), frame.top(), frame.width(),
-                                       box.top() - frame.top()),
-                         QtCore.QRectF(frame.left(), box.bottom(), frame.width(),
-                                       frame.bottom() - box.bottom()),
-                         QtCore.QRectF(frame.left(), box.top(), box.left() - frame.left(),
-                                       box.height()),
-                         QtCore.QRectF(box.right(), box.top(), frame.right() - box.right(),
-                                       box.height())):
-                if part.width() > 0 and part.height() > 0:
-                    p.fillRect(part, veil)
+            # Outlined, not dimmed around: the map is the waterfall in small,
+            # at the waterfall's own brightness, with a frame on what it shows.
             p.setBrush(QtCore.Qt.NoBrush)
             p.setPen(Qt.QPen(Qt.QColor(t['ink']), 1))
             p.drawRect(box)

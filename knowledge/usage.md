@@ -685,8 +685,12 @@ What you see and hear depends on the file:
     as the wheel over the waterfall's time scale does (Shift for fine).
   - The map's colours follow the spectrum's **Ref level** and **Range**, as
     the waterfall's do. Its levels are the spectrum's own, so a station that
-    reads -30 dBFS there has the same colour in the map. A WAV's frequencies
-    run 0 to 24 kHz, as in the audio spectrum.
+    reads -30 dBFS there has the same colour in the map, and the background
+    is the same blue. It is outlined, not dimmed round the box. Each column
+    of it is the mean power of the bins it covers, which is what keeps the
+    background level; a lone narrow carrier is fainter on the map than in
+    the spectrum (a tone in a WAV by some 6 dB), a whole station is not. A
+    WAV's frequencies run 0 to 24 kHz, as in the audio spectrum.
   - The waterfall is drawn **from the file**, so choosing a recording, or
     jumping, shows that stretch at once, before anything plays; playing then
     carries on from it. The numbers over the map say where the playhead is.
@@ -697,6 +701,9 @@ What you see and hear depends on the file:
   - At the very start the box rests on the bottom edge: nothing came before.
 - **Loop** starts again from the beginning at the end. Without it, playback
   stops and goes back to the start.
+- There is **no RF gain and no Record box** in this tab: a file has no radio
+  to set the gain of, and what is played back is not recorded. They are in
+  Sweep and Receive.
 - **Delete...** removes every file of the chosen recording, after asking.
   **Show in folder** opens the folder in your file manager (Finder on a
   Mac), and **Folder...** chooses another one; Record saves there too.

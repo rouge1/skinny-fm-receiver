@@ -360,17 +360,23 @@ def bin_freqs(track):
     return (track.center_hz or 0.0) + (np.arange(n) - n / 2) * track.rate / n
 
 
-def _pool(power, cols):
-    """``power`` (rows, bins) as ``cols`` columns, each the most of the bins
-    it covers: a narrow carrier must not vanish when the band is squeezed."""
+def _pool(power, cols, how='max'):
+    """``power`` (rows, bins) as ``cols`` columns. ``how`` 'max' gives each
+    the most of the bins it covers: a narrow carrier must not vanish when the
+    band is squeezed. 'mean' gives each their mean power, which keeps the
+    noise at the level a view draws it (the most of 32 noise bins is some
+    6 dB above it) at the price of a lone carrier fading as the bins it
+    shares."""
     bins = power.shape[1]
     if cols is None or cols >= bins:
         return power
     edges = (np.arange(cols) * bins / cols).astype(np.intp)
+    if how == 'mean':
+        return np.add.reduceat(power, edges, axis=1) / np.diff(np.append(edges, bins))
     return np.maximum.reduceat(power, edges, axis=1)
 
 
-def render(track, t0, t1, rows, cols=None, frames=2):
+def render(track, t0, t1, rows, cols=None, frames=2, pool='max'):
     """``track`` from ``t0`` to ``t1`` seconds as a waterfall: a (rows,
     columns) float32 array in dB and the frequency of each column in Hz.
     **Row 0 is the earliest** slot, and a slot outside the file is NaN.
@@ -381,8 +387,10 @@ def render(track, t0, t1, rows, cols=None, frames=2):
     drawn from the file sits beside rows the radio makes. Each row is the
     mean power of ``frames`` FFTs spread over its slot. ``cols`` None gives
     the views' own bins (:func:`bin_freqs`); a number squeezes them into
-    that many columns, each the most of its bins. The columns cover the
-    whole band (:func:`extent`); a view's zoom is its own business.
+    that many columns, each the most (``pool`` 'max') or the mean power
+    (``pool`` 'mean': a picture that looks like the views' waterfalls) of its
+    bins. The columns cover the whole band (:func:`extent`); a view's zoom is
+    its own business.
 
     A WAV's columns are linear in frequency, 0 to half its rate, as the
     audio spectrum's are; its channels are mixed to one. It reads a few
@@ -433,7 +441,7 @@ def render(track, t0, t1, rows, cols=None, frames=2):
         else:
             power = np.fft.fftshift(np.abs(np.fft.fft(segs, axis=1)) ** 2, axes=1) / norm
         power = power.reshape(len(chunk), frames, nbins).mean(axis=1)
-        out[chunk] = 10 * np.log10(_pool(power, width) + 1e-20)
+        out[chunk] = 10 * np.log10(_pool(power, width, pool) + 1e-20)
     if width != nbins:
         groups = (np.arange(width) * nbins / width).astype(np.intp)
         ends = np.append(groups[1:], nbins)

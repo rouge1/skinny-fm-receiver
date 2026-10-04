@@ -159,6 +159,14 @@ def part1_pieces():
     assert library.extent(band) == (97.15e6, 99.65e6), library.extent(band)
     profile = np.nanmean(img, axis=0)
     assert abs(freqs[np.argmax(profile)] - 98.7e6) < 50e3, freqs[np.argmax(profile)]
+    # Squeezed by the mean, the columns keep the noise where a view draws it:
+    # never above the most of their bins, a few dB under it over noise, and
+    # a flat spectrum stays what it is whatever the group sizes.
+    mean, _ = library.render(band, 0.0, 3.0, 24, cols=60, pool='mean')
+    assert mean.shape == img.shape and np.all(mean <= img + 1e-3)
+    assert np.median(img - mean) > 2, np.median(img - mean)
+    flat = library._pool(np.full((2, 100), 5.0), 7, 'mean')
+    assert flat.shape == (2, 7) and np.allclose(flat, 5.0), flat
     # Natively its columns are the spectrum views' own bins, on their scale.
     native, nf = library.render(band, 0.5, 2.5, 10)
     assert native.shape == (10, library.RF_FFT) and np.array_equal(nf, library.bin_freqs(band))
@@ -511,8 +519,9 @@ def part2_window():
     assert w.track_combo.count() == 4 and w._track.kind == 'iq-band'
     view = w.rf_view
     mini = view.minimap
-    # There is nothing to record in Recordings: no Record box there.
-    assert w.record_box.isHidden() and not w.audio_box.isHidden()
+    # There is nothing to record in Recordings, and no radio to set the
+    # gain of: no Record box, no RF gain; Audio stays.
+    assert w.record_box.isHidden() and w.gain_box.isHidden() and not w.audio_box.isHidden()
     # The mini map slides open beside the waterfall and is drawn from the
     # file; the audio view's stays shut.
     assert w.top_stack.currentWidget() is view
@@ -546,6 +555,12 @@ def part2_window():
     assert view._wf is not None and view._x is not None and not w.play_btn.isChecked()
     assert abs(mini.position - 8.0) < 0.1 and seconds_shown(w) == 8
     assert abs(view.time_axis.origin - 8.0) < 0.01, 'the time scale is the recording\'s own'
+    # The map looks like the waterfall: the same noise at the same level (the
+    # most of 32 bins reads some 4 dB brighter at the median).
+    order, _ = view._hist.newest_first()
+    drawn = float(np.median(view._hist.rows[order].astype(float)))
+    mapped = float(np.nanmedian(mini._db))
+    assert abs(drawn - mapped) < 2.5, ('map vs waterfall, dB', mapped, drawn)
     # Played on from there, the radio's rows carry on from the file's, on
     # the track's own time, at the same level.
     # What was done to the view before Play (zoomed, the box carried sideways,
@@ -691,9 +706,11 @@ def part2_window():
     # loudest moment is not now.
     rows = amini._db.shape[0]
     at = int((amini.duration - w._play.source.position / 48000) / amini.duration * rows)
+    # A tone shares its map column (8 of the view's bins, the mean of their
+    # power) with silence: some 6 dB under the view's own peak.
     shown = float(np.max(db))
     mapped = float(np.nanmax(amini._db[max(0, at - 3):at + 4]))
-    assert abs(shown - mapped) < 3, (shown, mapped, float(np.nanmax(amini._db)))
+    assert abs((shown - 6) - mapped) < 3, (shown, mapped, float(np.nanmax(amini._db)))
     assert av.wf_clock is not None and pump(3, lambda: av._hist is not None and av._hist.n > 0)
     av.range_knob.setValue(av.range_knob.value() - 20)
     assert amini._levels[0] == av.ref_knob.value() - av.range_knob.value()
@@ -746,6 +763,7 @@ def part2_window():
     w.tabs.setCurrentIndex(1)
     assert pump(3, lambda: view.minimap.isHidden() and av.minimap.isHidden()), 'the maps stay open'
     assert not w.record_box.isHidden(), 'Receive has its Record box'
+    assert w.rx_gain_slot.isAncestorOf(w.gain_row), 'Receive has its RF gain row'
     assert view.wf_clock is None and av.wf_clock is None and not view.wf_frozen
     assert view.time_axis.origin is None and av.time_axis.origin is None, 'seconds ago again'
 
