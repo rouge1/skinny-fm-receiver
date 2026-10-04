@@ -500,6 +500,13 @@ def main():
         chosen = c.ok(f"recording {iq['index']}")
         assert chosen['recording'] == iq['index'] and chosen['kind'] == 'iq-channel', chosen
         assert chosen['tracks'] and chosen['position_s'] == 0.0, chosen
+        # Choosing is a plain click: this one alone is picked, though the list
+        # takes Shift- and Ctrl-clicks.
+        w.rec_list.item(0).setSelected(True)
+        w.rec_list.item(1).setSelected(True)
+        c.ok(f"recording {iq['index']}")
+        flags = [r['picked'] for r in c.ok('recordings')['recordings']]
+        assert flags.count(True) == 1 and flags[iq['index']], flags
         assert pump(8, lambda: c.ok('status')['playback']['map']['drawn']), 'no map drawn'
         pb = c.ok('status')['playback']
         box = pb['map']['window']

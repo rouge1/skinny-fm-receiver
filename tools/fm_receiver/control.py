@@ -433,14 +433,16 @@ def _recordings_tab(w):
 
 
 @command('recordings', 'recordings', "The Recordings tab's list, newest first: each one's "
-         "index, station, name, call sign, start, length, files and size. Choose one with "
+         "index, station, name, call sign, start, length, files and size, and whether it is "
+         "picked in the window's list (Shift-click picks a range). Choose one with "
          "'recording N'. Needs 'mode recordings'.")
 def cmd_recordings(w, args):
     _args(args, 0, 0, 'recordings')
     _recordings_tab(w)
     rows = [{'index': i, 'station_mhz': _mhz(r.station_hz), 'name': r.name.strip() or None,
              'callsign': r.callsign or None, 'started': r.started.isoformat(timespec='seconds'),
-             'seconds': round(r.seconds, 2), 'kinds': r.kinds_text(), 'bytes': r.bytes}
+             'seconds': round(r.seconds, 2), 'kinds': r.kinds_text(), 'bytes': r.bytes,
+             'picked': w.rec_list.item(i).isSelected()}
             for i, r in enumerate(w._recordings)]
     state = _playback_state(w)
     return {'recordings': rows, 'selected': state['recording']}
@@ -464,7 +466,11 @@ def cmd_recording(w, args):
         tracks = w._recordings[int(n)].tracks
         if not math.isfinite(m) or m != int(m) or not 0 <= m < len(tracks):
             raise CommandError(f"recording: track 0 to {len(tracks) - 1}")
+    # As a plain click: this one alone is picked (setCurrentRow leaves the
+    # selection of a list that takes several as it was).
+    w.rec_list.clearSelection()
     w.rec_list.setCurrentRow(int(n))
+    w.rec_list.item(int(n)).setSelected(True)
     if m is not None:
         w.track_combo.setCurrentIndex(int(m))
         w._track_chosen(int(m))

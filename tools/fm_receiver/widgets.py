@@ -3563,3 +3563,214 @@ class MiniMap(Qt.QWidget):
         p.setBrush(QtCore.Qt.NoBrush)
         p.drawRect(frame)
         p.end()
+
+
+# ------------------------------------------------- a list whose rows slide
+
+class _RevealDelegate(Qt.QStyledItemDelegate):
+    """A row as the style draws it, slid aside by the list's offset, with the
+    list's red button in the strip it uncovers."""
+
+    def paint(self, painter, option, index):
+        try:
+            view = self.parent()
+            offset = view.slide_of(index)
+            if offset <= 0:
+                super().paint(painter, option, index)
+                return
+            rect = option.rect
+            # The button is as wide as it will be and the strip shows it
+            # bit by bit, so the label does not squeeze as the row slides.
+            strip = QtCore.QRect(rect.left(), rect.top(), offset, rect.height())
+            full = QtCore.QRect(rect.left(), rect.top(), view.BUTTON_W, rect.height())
+            painter.save()
+            painter.setClipRect(strip)
+            fill = colour('bad')
+            if view.button_hot:
+                fill = fill.lighter(115)
+            painter.fillRect(full, fill)
+            painter.setPen(Qt.QColor('#ffffff') if fill.lightness() < 130 else colour('ground'))
+            painter.drawText(full, QtCore.Qt.AlignCenter, view.button_text())
+            painter.restore()
+            painter.save()
+            painter.translate(offset, 0)
+            super().paint(painter, option, index)
+            painter.restore()
+        except Exception as exc:                  # never abort the app
+            print(f"list paint: {exc}")
+
+
+class RevealList(Qt.QListWidget):
+    """A list with the usual selection - Shift-click a range, Ctrl-click one
+    more or less - whose rows slide aside to show a **Delete** button.
+
+    A right click on a row slides it (all the selected rows, if it is one of
+    several) to the right, uncovering a red button at the left edge; the
+    button deletes (:attr:`deleteRequested`, the rows' keys: their
+    ``Qt.UserRole``) and no question is asked: that was the right click's.
+    Anything else - a click elsewhere, Esc, scrolling, a second right click -
+    slides them back. The right click leaves the selection as it was, so what
+    plays does not change. Rows are told apart by their key, so a list made
+    again keeps the rows that are slid aside."""
+
+    deleteRequested = pyqtSignal(list)
+
+    BUTTON_W = 84
+    SLIDE_MS = 170
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSelectionMode(Qt.QAbstractItemView.ExtendedSelection)
+        self.setItemDelegate(_RevealDelegate(self))
+        self.setMouseTracking(True)
+        self._keys = []                      # the rows slid aside
+        self._progress = 0.0                 # 0 in place, 1 slid all the way
+        self._anim = None
+        self.button_hot = False              # the pointer is on a button
+        self.verticalScrollBar().valueChanged.connect(lambda _v: self.slide_back(False))
+
+    # -- what is slid
+    def revealed_keys(self):
+        return list(self._keys)
+
+    def button_text(self):
+        return "Delete" if len(self._keys) < 2 else f"Delete {len(self._keys)}"
+
+    def slide_of(self, index):
+        """How far the row is slid, in pixels."""
+        if not self._keys or index.data(QtCore.Qt.UserRole) not in self._keys:
+            return 0
+        return int(round(self.BUTTON_W * self._progress))
+
+    def button_rect(self, item):
+        rect = self.visualItemRect(item)
+        return QtCore.QRect(rect.left(), rect.top(), self.BUTTON_W, rect.height())
+
+    def reveal(self, keys):
+        """Slide the rows with these keys aside."""
+        keys = list(keys)
+        if not keys:
+            self.slide_back()
+            return
+        if keys != self._keys:
+            self._progress = 0.0              # one slid aside before snaps back
+        self._keys = keys
+        self._glide(1.0)
+
+    def slide_back(self, animate=True):
+        if not self._keys:
+            return
+        if animate and self.isVisible():
+            self._glide(0.0)
+        else:
+            self._stop_glide()
+            self._progress = 0.0
+            self._keys = []
+            self.button_hot = False
+            self.viewport().update()
+
+    def _stop_glide(self):
+        if self._anim is not None:
+            self._anim.stop()
+            self._anim = None
+
+    def _glide(self, target):
+        self._stop_glide()
+        if not self.isVisible():
+            self._progress = target
+            if not target:
+                self._keys = []
+            return
+        anim = QtCore.QVariantAnimation(self)
+        anim.setDuration(self.SLIDE_MS)
+        anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+        anim.setStartValue(self._progress)
+        anim.setEndValue(float(target))
+        anim.valueChanged.connect(self._slid)
+        anim.finished.connect(lambda t=target: self._glided(t))
+        self._anim = anim
+        anim.start()
+
+    def _slid(self, value):
+        self._progress = float(value)
+        self.viewport().update()
+
+    def _glided(self, target):
+        self._progress = float(target)
+        if not target:
+            self._keys = []
+            self.button_hot = False
+        self.viewport().update()
+
+    # -- the mouse and keys
+    def _button_at(self, pos):
+        """The item whose button the pointer is on (once it shows)."""
+        item = self.itemAt(pos)
+        if (item is not None and self._keys and self._progress >= 0.5
+                and item.data(QtCore.Qt.UserRole) in self._keys
+                and self.button_rect(item).contains(pos)):
+            return item
+        return None
+
+    def mousePressEvent(self, event):
+        try:
+            if event.button() == QtCore.Qt.RightButton:
+                item = self.itemAt(event.pos())
+                key = item.data(QtCore.Qt.UserRole) if item is not None else None
+                if key is None or key in self._keys:
+                    self.slide_back()
+                else:
+                    picked = [i.data(QtCore.Qt.UserRole) for i in self.selectedItems()]
+                    self.reveal(picked if key in picked and len(picked) > 1 else [key])
+                event.accept()
+                return
+            if event.button() == QtCore.Qt.LeftButton and self._keys:
+                if self._button_at(event.pos()) is not None:
+                    keys = list(self._keys)
+                    self.slide_back(False)
+                    self.deleteRequested.emit(keys)
+                    event.accept()
+                    return
+                self.slide_back()                 # and the click goes on as it would
+        except Exception as exc:                  # never abort the app
+            print(f"list: {exc}")
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        try:
+            hot = self._button_at(event.pos()) is not None
+            if hot != self.button_hot:
+                self.button_hot = hot
+                self.viewport().setCursor(QtCore.Qt.PointingHandCursor if hot
+                                          else QtCore.Qt.ArrowCursor)
+                self.viewport().update()
+        except Exception as exc:
+            print(f"list: {exc}")
+        super().mouseMoveEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        try:
+            if self._button_at(event.pos()) is not None:
+                event.accept()
+                return                            # two quick presses on Delete are one
+        except Exception as exc:
+            print(f"list: {exc}")
+        super().mouseDoubleClickEvent(event)
+
+    def leaveEvent(self, event):
+        if self.button_hot:
+            self.button_hot = False
+            self.viewport().unsetCursor()
+            self.viewport().update()
+        super().leaveEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() == QtCore.Qt.Key_Escape and self._keys:
+            self.slide_back()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def hideEvent(self, event):
+        self.slide_back(False)
+        super().hideEvent(event)

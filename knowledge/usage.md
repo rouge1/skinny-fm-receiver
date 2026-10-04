@@ -652,7 +652,9 @@ where it was.
 
 1. **Pick a recording.** Each line is one press of Record: the station, its
    RDS name and call sign if they were heard, then the date, the length,
-   what was recorded and the size.
+   what was recorded and the size. **Shift-click** picks a range of lines
+   and **Ctrl-click** one more (or one fewer); the player follows the line
+   you clicked last.
 2. **Choose what to play** in **Play**, if the recording has more than one
    file. The IQ is chosen first (the whole band before the channel), and
    the WAV is in the list too.
@@ -717,7 +719,16 @@ What you see and hear depends on the file:
 - There is **no RF gain and no Record box** in this tab: a file has no radio
   to set the gain of, and what is played back is not recorded. They are in
   Sweep and Receive.
-- **Delete...** removes every file of the chosen recording, after asking.
+- **Delete a recording: right-click its line.** The line slides to the right
+  and a red **Delete** button comes out at the left edge; press it and the
+  recording's files are gone. There is no question: the right click was it.
+  Right-click a line that is one of several picked and **all the picked
+  lines** slide (the buttons read *Delete 3*), and one press deletes them
+  together. A right click changes nothing that is picked or playing. Click
+  anywhere else, press Esc, scroll, or right-click the line again to slide it
+  back.
+- **Delete...** below the Player does the same for what is picked (the chosen
+  recording if you have picked none), after asking.
   **Show in folder** opens the folder in your file manager (Finder on a
   Mac), and **Folder...** chooses another one; Record saves there too.
 - **Parts.** A recording that was retuned has parts (`-part2` and on). Each
@@ -867,7 +878,7 @@ tools/fmctl help                          # every command
 | `volume PERCENT`, `mute on` / `off` | Audio |
 | `hd 1`-`8` / `analog` | HD Radio: the program to play (lights that HD button), or `analog` for analog FM (none lit). HD Radio is always on: there is no off, in the window or here. `status`'s `hd` has the lamp too. Needs nrsc5 |
 | `station rds` / `hd` | The **RDS \| HD Radio** tabs under the Tuner, as a click on a tab does (a folded box opens). Receive's: refused from the other tabs. Show **RDS** while reading RDS, so the person at the window sees what is being read |
-| `recordings` | The Recordings tab's list, newest first: index, station, name, call sign, start, length, files, size, and which is chosen. Needs `mode recordings` |
+| `recordings` | The Recordings tab's list, newest first: index, station, name, call sign, start, length, files, size, whether it is picked in the window's list, and which is chosen. Needs `mode recordings` |
 | `recording N [TRACK]` | Choose the Nth recording (0 is the newest) as a click on its line does, and with TRACK which of its files plays (`status`'s `playback.tracks` is the order). Its map and waterfall draw in the background: wait a moment |
 | `play on` / `off` | The Play button: play the chosen recording, or pause it |
 | `seek SECONDS` | Jump to a time, as dragging the map's box there does (before it plays, too); the waterfall shows the stretch ending there |

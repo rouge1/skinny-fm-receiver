@@ -69,7 +69,7 @@ user sees it, and is refused where the window would refuse it.
   files and their `.sigmf-meta`; `record ...` works the Record box.
 - Recordings (everything recorded plays in the Recordings tab; Sweep and
   Receive are live only): `mode recordings`, `recordings` (the list, newest
-  first), `recording N [TRACK]`, `play on|off`, `seek SECONDS`,
+  first, with which lines are `picked`), `recording N [TRACK]` (picks that one line), `play on|off`, `seek SECONDS`,
   `view rf|audio window S` (the seconds the waterfall, and the mini map's
   box, show). `status`'s `playback` block says what is chosen and playing,
   where the playhead is, the box on the map and how much waterfall is drawn.

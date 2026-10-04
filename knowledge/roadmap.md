@@ -1147,6 +1147,9 @@ own recordings (IQ band, IQ channel, WAV)**
   need to match"); Sweep and Receive keep the newest at the top
 - [x] The box is resized by its edges (top: the time shown; sides: the band;
   Ref level and Range untouched), asked for 2026-10-03
+- [x] The list takes Shift- and Ctrl-click picks, and a right click slides a
+  line (or all the picked ones) aside to a red Delete button, with no popup
+  (asked for 2026-10-03); the Delete... button asks and deletes what is picked
 - [x] The big waterfall drawn from the file: on choosing a recording, on a
   seek, on a drag and on a zoom; the radio's rows after it are stamped with the
   playhead's time (`wf_clock`) and held back while a stretch is drawn

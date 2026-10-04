@@ -49,7 +49,7 @@ from .recording import (NAME_STEADY_S, IqRecording, RecordingInfo, WavWriter,
 from .style import apply_window_theme
 from .sweep import SweepPlan, to_db
 from .widgets import (Card, DigitEntry, Form, PageTabs, Knob, LevelMeter, Marquee, Orb,
-                      SpectrumView, StepRoller, ThemeDisc, fade, on_raster)
+                      RevealList, SpectrumView, StepRoller, ThemeDisc, fade, on_raster)
 
 #: (name, start MHz, stop MHz); 'full' is the whole of the radio's sweep
 #: range, whichever radio it is (9 kHz-6 GHz on the BB60D).
@@ -1394,13 +1394,16 @@ class MainWindow(Qt.QWidget):
         box = Qt.QVBoxLayout(page)
         box.setContentsMargins(6, 8, 6, 6)
         box.setSpacing(8)
-        self.rec_list = Qt.QListWidget()
+        self.rec_list = RevealList()
         self.rec_list.setMinimumHeight(180)
         self.rec_list.setWordWrap(True)
         self.rec_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.rec_list.setToolTip("One line for each press of Record, newest first. "
-                                 "Double-click to play.")
+                                 "Double-click to play. Shift-click picks a range and "
+                                 "Ctrl-click one more; a right click slides a line aside "
+                                 "to show Delete.")
         self.rec_list.currentItemChanged.connect(self._recording_selected)
+        self.rec_list.deleteRequested.connect(self._delete_keys)
         self.rec_list.itemDoubleClicked.connect(lambda _item: self.play_btn.setChecked(True))
         box.addWidget(self.rec_list, 1)
         self.lib_note = _wrapping(Qt.QLabel(""))
@@ -2829,6 +2832,7 @@ class MainWindow(Qt.QWidget):
         folder = self._recording_dir()
         self._watch_folder(folder)
         keep = self._rec_sel.key if self._rec_sel is not None else None
+        picked = {i.data(QtCore.Qt.UserRole) for i in self.rec_list.selectedItems()}
         try:
             self._recordings = library.scan(folder)
         except Exception:
@@ -2837,11 +2841,13 @@ class MainWindow(Qt.QWidget):
         self.rec_list.blockSignals(True)
         self.rec_list.clear()
         chosen = None
+        items = []
         for rec in self._recordings:
             item = Qt.QListWidgetItem(self._recording_text(rec))
             item.setData(QtCore.Qt.UserRole, rec.key)
             item.setToolTip("\n".join(os.path.basename(p) for p in rec.files()))
             self.rec_list.addItem(item)
+            items.append(item)
             if rec.key == keep:
                 chosen = item
         self.rec_list.blockSignals(False)
@@ -2859,6 +2865,12 @@ class MainWindow(Qt.QWidget):
         if chosen is not None:
             self.rec_list.blockSignals(True)
             self.rec_list.setCurrentItem(chosen)
+            # The lines that were picked still are - or, if none is left, the
+            # chosen one is.
+            for item in items:
+                item.setSelected(item.data(QtCore.Qt.UserRole) in picked)
+            if not self.rec_list.selectedItems():
+                chosen.setSelected(True)
             self.rec_list.blockSignals(False)
         self._recording_selected(chosen)
 
@@ -3359,26 +3371,52 @@ class MainWindow(Qt.QWidget):
             return
         Qt.QDesktopServices.openUrl(Qt.QUrl.fromLocalFile(folder))
 
+    def _picked_recordings(self):
+        """The recordings picked in the list (Shift- and Ctrl-click), in its
+        order; the chosen one if none is."""
+        keys = {i.data(QtCore.Qt.UserRole) for i in self.rec_list.selectedItems()}
+        picked = [r for r in self._recordings if r.key in keys]
+        return picked or ([self._rec_sel] if self._rec_sel is not None else [])
+
     def _delete_clicked(self):
-        rec = self._rec_sel
-        if rec is None:
+        recs = self._picked_recordings()
+        if not recs:
             return
-        files = rec.files()
+        files = [f for rec in recs for f in rec.files()]
+        size = library.size_text(sum(rec.bytes for rec in recs))
+        if len(recs) == 1:
+            rec = recs[0]
+            what = (f"Delete the recording of {rec.station_hz / 1e6:.2f} MHz from "
+                    f"{rec.started.strftime('%b %d %H:%M')}?\n\n{len(files)} files, "
+                    f"{size}, in {os.path.dirname(rec.key)}.")
+        else:
+            what = (f"Delete these {len(recs)} recordings?\n\n{len(files)} files, "
+                    f"{size}, in {os.path.dirname(recs[0].key)}.")
         answer = Qt.QMessageBox.question(
-            self, "Delete recording",
-            f"Delete the recording of {rec.station_hz / 1e6:.2f} MHz from "
-            f"{rec.started.strftime('%b %d %H:%M')}?\n\n{len(files)} files, "
-            f"{library.size_text(rec.bytes)}, in {os.path.dirname(rec.key)}.\n"
-            "This cannot be undone.",
+            self, "Delete recording" if len(recs) == 1 else "Delete recordings",
+            what + "\nThis cannot be undone.",
             Qt.QMessageBox.Yes | Qt.QMessageBox.Cancel, Qt.QMessageBox.Cancel)
         if answer == Qt.QMessageBox.Yes:
-            self._delete_recording(rec)
+            self._delete_recordings(recs)
+
+    def _delete_keys(self, keys):
+        """The Delete button a right click slid out: no question, that was
+        the right click's."""
+        keys = set(keys)
+        self._delete_recordings([r for r in self._recordings if r.key in keys])
 
     def _delete_recording(self, rec):
-        if self._play is not None and self._play.recording.key == rec.key:
+        self._delete_recordings([rec])
+
+    def _delete_recordings(self, recs):
+        keys = {rec.key for rec in recs}
+        if self._play is not None and self._play.recording.key in keys:
             self._stop_playback(show=False)
-        failed = library.delete(rec)
-        self._rec_sel = None
+        failed = []
+        for rec in recs:
+            failed += library.delete(rec)
+        if self._rec_sel is not None and self._rec_sel.key in keys:
+            self._rec_sel = None                  # the next in the list is chosen
         self._refresh_library()
         if failed:
             self.lib_note.setText(_coloured("Could not delete " + "; ".join(failed), 'bad'))

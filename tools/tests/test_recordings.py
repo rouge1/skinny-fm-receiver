@@ -23,6 +23,13 @@ plays with its spectrum and the RadioText logged at record time, a
 recording is deleted, and going back to Receive closes the map and opens the
 radio where it was.
 
+Part 3 drives the list: Shift-click picks a range and Ctrl-click one more,
+the picks survive the list being made again, a right click slides the row
+(or all the picked rows, if it is one of them) aside to show a Delete button
+without changing what is picked or playing, a click elsewhere, Esc or a second
+right click slides them back, the button deletes with no question asked, and
+the Delete... button asks and deletes the picked recordings.
+
 Run:  python tools/tests/test_recordings.py     (about a minute)
 """
 
@@ -904,12 +911,142 @@ def part2_window():
     print("part 2 passed")
 
 
+def part3_list():
+    folder = signals.ensure_dir(os.path.join(FOLDER, 'list-recordings'))
+    stamps = [f"20260920-1{i}0000" for i in range(6)]       # the sixth is the newest
+    for i, stamp in enumerate(stamps):
+        base = recording.session_base(folder, 98.1e6 + 0.2e6 * i, stamp=stamp)
+        write_wav(base + '-audio.wav', 1.0)
+    station = signals.write_station(os.path.join(FOLDER, 'synth3'), seconds=2.0)
+    w = make_window(['--file', station], {'recording_dir': folder})
+    w.tabs.setCurrentIndex(2)
+    lst = w.rec_list
+    assert pump(5, lambda: lst.count() == 6), lst.count()
+    assert lst.selectionMode() == Qt.QAbstractItemView.ExtendedSelection
+    shift, ctrl, none = QtCore.Qt.ShiftModifier, QtCore.Qt.ControlModifier, QtCore.Qt.NoModifier
+    left, right = QtCore.Qt.LeftButton, QtCore.Qt.RightButton
+
+    def at(row):
+        return lst.visualItemRect(lst.item(row)).center()
+
+    def click(row, mods=none, button=left, pos=None):
+        QtTest.QTest.mouseClick(lst.viewport(), button, mods, at(row) if pos is None else pos)
+        QAPP.processEvents()
+
+    def picked():
+        return [i for i in range(lst.count()) if lst.item(i).isSelected()]
+
+    def key_of(row):
+        return lst.item(row).data(QtCore.Qt.UserRole)
+
+    def chosen_row():
+        return lst.currentRow()
+
+    # Shift-click picks a range, Ctrl-click one more or less; the player
+    # follows the line clicked last (a Ctrl-click that takes a line out of the
+    # picks included: it is the line the pointer is on).
+    click(0)
+    assert picked() == [0] and w._rec_sel.key == key_of(0)
+    click(2, shift)
+    assert picked() == [0, 1, 2] and chosen_row() == 2 and w._rec_sel.key == key_of(2), \
+        (picked(), chosen_row())
+    click(1, ctrl)
+    assert picked() == [0, 2] and chosen_row() == 1, (picked(), chosen_row())
+    w._refresh_library()                                  # made again: the picks stay
+    assert picked() == [0, 2] and chosen_row() == 1 and w._rec_sel.key == key_of(1), \
+        (picked(), chosen_row())
+
+    # A right click on a picked row slides all the picked rows aside, and
+    # changes neither what is picked nor what is chosen.
+    chosen = w._rec_sel.key
+    keys = [key_of(0), key_of(2)]
+    click(0, button=right)
+    assert pump(2, lambda: lst._progress == 1.0), lst._progress
+    assert sorted(lst.revealed_keys()) == sorted(keys), lst.revealed_keys()
+    assert picked() == [0, 2] and w._rec_sel.key == chosen, 'a right click picks nothing'
+    index = lambda row: lst.indexFromItem(lst.item(row))
+    assert [lst.slide_of(index(r)) for r in range(6)] == [lst.BUTTON_W, 0, lst.BUTTON_W, 0, 0, 0]
+    assert lst.button_text() == 'Delete 2'
+    # What is drawn: the red button where the row was, and not beside a row
+    # that stayed.
+    image = lst.viewport().grab().toImage()
+    from fm_receiver.style import colour
+    red = colour('bad')
+    def near(c, ref):
+        return abs(c.red() - ref.red()) + abs(c.green() - ref.green()) + abs(c.blue() - ref.blue()) < 40
+    assert near(image.pixelColor(10, at(0).y()), red), image.pixelColor(10, at(0).y()).name()
+    assert not near(image.pixelColor(10, at(1).y()), red)
+    # A click elsewhere slides them back, and goes on to do what it does.
+    click(3)
+    assert pump(2, lambda: not lst.revealed_keys()), lst.revealed_keys()
+    assert picked() == [3] and lst._progress == 0.0
+    # On a row that is not picked it is that row alone; a second right click,
+    # and Esc, slide it back.
+    click(1, button=right)
+    assert pump(2, lambda: lst._progress == 1.0) and lst.revealed_keys() == [key_of(1)]
+    assert picked() == [3] and lst.button_text() == 'Delete'
+    click(1, button=right)
+    assert pump(2, lambda: not lst.revealed_keys()), 'a second right click closes it'
+    click(1, button=right)
+    assert pump(2, lambda: lst._progress == 1.0)
+    QtTest.QTest.keyClick(lst, QtCore.Qt.Key_Escape)
+    assert pump(2, lambda: not lst.revealed_keys()), 'Esc closes it'
+    click(4, button=right)                 # one row, then another: the first goes back
+    assert pump(2, lambda: lst._progress == 1.0)
+    click(5, button=right)
+    assert pump(2, lambda: lst._progress == 1.0) and lst.revealed_keys() == [key_of(5)]
+    click(5, button=right)
+    assert pump(2, lambda: not lst.revealed_keys())
+
+    # The button deletes with no question asked; the other recordings, and
+    # what is chosen, stay.
+    asked = []
+    real_question = Qt.QMessageBox.question
+    Qt.QMessageBox.question = staticmethod(lambda *a, **k: asked.append(a[2]) or Qt.QMessageBox.Cancel)
+    try:
+        click(3)
+        chosen = w._rec_sel.key
+        gone = os.path.basename(key_of(5))
+        click(5, button=right)
+        assert pump(2, lambda: lst._progress == 1.0)
+        click(5, pos=lst.button_rect(lst.item(5)).center())
+        assert pump(2, lambda: lst.count() == 5), lst.count()
+        assert not asked, 'the right click was the question'
+        assert not any(gone.split('-audio')[0] in f for f in os.listdir(folder)), os.listdir(folder)
+        assert w._rec_sel.key == chosen and picked() == [3]
+        assert not lst.revealed_keys()
+        # Several picked rows go together, from any one of their buttons.
+        click(0)
+        click(2, shift)
+        assert picked() == [0, 1, 2]
+        click(1, button=right)
+        assert pump(2, lambda: lst._progress == 1.0) and len(lst.revealed_keys()) == 3
+        assert lst.button_text() == 'Delete 3'
+        click(2, pos=lst.button_rect(lst.item(2)).center())
+        assert pump(2, lambda: lst.count() == 2), lst.count()
+        assert not asked and len(os.listdir(folder)) == 2, os.listdir(folder)
+        # The Delete... button below asks, for what is picked.
+        click(0)
+        click(1, shift)
+        assert picked() == [0, 1]
+        w.delete_btn.click()
+        assert asked and 'these 2 recordings' in asked[-1] and lst.count() == 2, asked
+        Qt.QMessageBox.question = staticmethod(
+            lambda *a, **k: asked.append(a[2]) or Qt.QMessageBox.Yes)
+        w.delete_btn.click()
+        assert lst.count() == 0 and not os.listdir(folder), os.listdir(folder)
+        assert 'No recordings' in w.lib_note.text()
+    finally:
+        Qt.QMessageBox.question = real_question
+
+
 def main():
     keep = '--keep' in sys.argv
     try:
         part1_pieces()
         part1b_minimap()
         part2_window()
+        part3_list()
     finally:
         # A failed check must not leave a flowgraph running into interpreter
         # shutdown: collecting its Python blocks under it aborts the process.
