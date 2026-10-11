@@ -660,6 +660,17 @@ where it was.
 3. **Press Play**, or double-click the line. Press it again to pause.
 4. **Jump** by clicking or dragging the **mini map** down the right of the view (below).
 
+**Sceptre's IQ files** play here too. **Add folders...** (under the list)
+names the folders to list besides the recordings folder: a Sceptre IQ DVR
+(`.sdvr`, made from its IQ tab) and its BLUE IQ exports (`.cdif`) in them
+each become a line (a sweep DVR, and anything else, is passed over for now),
+and play like a band recording: spectrum, waterfall, click a station to hear
+it. Nothing is assumed about where Sceptre keeps its files. The app only
+reads them: no description file is written beside one, and **Delete** leaves
+them to Sceptre. Only their headers are read to list them, so a 1 GB ring is
+quick. A `.cdif`'s level reads in dBm (its `DATA_GAIN` is taken off), a DVR's
+in dBFS as before. `fmctl folders [add PATH | remove PATH]` does the same.
+
 What you see and hear depends on the file:
 
 | File | On the right | Sound | RDS |
@@ -742,7 +753,8 @@ station is a line down it. **The waterfall falls, as it does live**: the
 
 ## Playing other IQ files
 
-The Recordings tab plays this app's recordings. For any other IQ file, such
+The Recordings tab plays this app's recordings, and Sceptre's `.sdvr` and
+`.cdif` from the folders you add there (above). For any other IQ file, such
 as SigMF or the RF bench toolkit's captures, choose **IQ recording
 (playback)** in the Radio list and open the `.cfile`, `.sigmf-meta` or
 `.json` file. Or start the app with `./fm-receiver --file PATH`.
@@ -878,6 +890,7 @@ tools/fmctl help                          # every command
 | `volume PERCENT`, `mute on` / `off` | Audio |
 | `hd 1`-`8` / `analog` | HD Radio: the program to play (lights that HD button), or `analog` for analog FM (none lit). HD Radio is always on: there is no off, in the window or here. `status`'s `hd` has the lamp too. Needs nrsc5 |
 | `station rds` / `hd` | The **RDS \| HD Radio** tabs under the Tuner, as a click on a tab does (a folded box opens). Receive's: refused from the other tabs. Show **RDS** while reading RDS, so the person at the window sees what is being read |
+| `folders [add PATH` / `remove PATH]` | The extra folders the Recordings tab lists Sceptre's `.sdvr` and `.cdif` from, kept in the settings; add or remove one and the list is made again |
 | `recordings` | The Recordings tab's list, newest first: index, station, name, call sign, start, length, files, size, whether it is picked in the window's list, and which is chosen. Needs `mode recordings` |
 | `recording N [TRACK]` | Choose the Nth recording (0 is the newest) as a click on its line does, and with TRACK which of its files plays (`status`'s `playback.tracks` is the order). Its map and waterfall draw in the background: wait a moment |
 | `play on` / `off` | The Play button: play the chosen recording, or pause it |

@@ -68,7 +68,8 @@ user sees it, and is refused where the window would refuse it.
 - Record: `capture SECONDS [iq-band|iq-channel|audio]` replies with the
   files and their `.sigmf-meta`; `record ...` works the Record box.
 - Recordings (everything recorded plays in the Recordings tab; Sweep and
-  Receive are live only): `mode recordings`, `recordings` (the list, newest
+  Receive are live only; `folders add PATH` lists Sceptre's `.sdvr` IQ DVRs
+  and `.cdif` exports from another folder, read-only): `mode recordings`, `recordings` (the list, newest
   first, with which lines are `picked`), `recording N [TRACK]` (picks that one line), `play on|off`, `seek SECONDS`,
   `view rf|audio window S` (the seconds the waterfall, and the mini map's
   box, show). `status`'s `playback` block says what is chosen and playing,

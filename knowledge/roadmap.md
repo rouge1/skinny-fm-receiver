@@ -1167,15 +1167,25 @@ own recordings (IQ band, IQ channel, WAV)**
   began; seconds ago again live
 
 **Phase 2: a Sceptre IQ DVR (`.sdvr`) and `.cdif` in the list, playing**
+(built 2026-10-11)
 
-- [ ] Extra folders to list, a setting kept with `config.update_config` (the
-  app must not assume where Sceptre keeps its files: the repo is public and runs on a Mac)
-- [ ] The listing reads headers only: Sceptre rewrites a 1 GB ring, and the
+- [x] Extra folders to list, a setting kept with `config.update_config`
+  (`library_folders`; **Add folders...** under the list and `fmctl folders`;
+  the app does not assume where Sceptre keeps its files: the repo is public
+  and runs on a Mac)
+- [x] The listing reads headers only (`library.scan_external`; a header scan
+  cached by path, mtime and size): Sceptre rewrites a 1 GB ring, and the
   folder watcher must not make it scan the whole ring again each time
-- [ ] An IQ `.sdvr` as a track (`radios.read_iq_metadata` already reads it;
-  the runs in time order through `sceptre_dvr.Reader`), played as a band
-  recording
-- [ ] `.cdif` (BLUE IQ) as a source: `sceptre_blue.py` reads it, `IQFile` does not
+- [x] An IQ `.sdvr` as a track (the runs in time order through
+  `sceptre_dvr.Reader`), played as a band recording; a sweep DVR is passed
+  over until phase 3
+- [x] `.cdif` (BLUE IQ) as a source: `radios.BlueReader`, scaled to dBm by
+  its `DATA_GAIN`; nothing written beside a Sceptre file, none deleted
+- [x] `test_sceptre_library.py`; usage, capabilities, the project skill
+- [ ] Looked at on the user's window, with the real `.cdif` and `.sdvr`
+  (offscreen only: listed, drawn and played from synthetic files; the real
+  ones listed and drawn in a script)
+- [ ] The level in dBm for a DVR (`full_scale_dbm`), phase 3's
 
 **Phase 3: spectrum recordings (a sweep `.sdvr`, `.fft`) played without sound**
 

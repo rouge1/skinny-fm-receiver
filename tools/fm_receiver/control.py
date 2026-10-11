@@ -448,6 +448,31 @@ def cmd_recordings(w, args):
     return {'recordings': rows, 'selected': state['recording']}
 
 
+@command('folders', 'folders [add PATH | remove PATH]', "The extra folders the Recordings "
+         "tab lists Sceptre's IQ DVRs (.sdvr) and BLUE IQ exports (.cdif) from, besides the "
+         "recordings folder; with add or remove, change them (kept in the settings) and "
+         "list again.")
+def cmd_folders(w, args):
+    words = _args(args, 0, 2, 'folders [add PATH | remove PATH]')
+    current = w._library_folders()
+    if words:
+        if len(words) != 2 or words[0] not in ('add', 'remove'):
+            raise CommandError("folders: add PATH or remove PATH")
+        path = os.path.abspath(os.path.expanduser(words[1]))
+        if words[0] == 'add':
+            if not os.path.isdir(path):
+                raise CommandError(f"folders: {path} is not a folder")
+            current = current + [path]
+        else:
+            if path not in current:
+                raise CommandError(f"folders: {path} is not listed")
+            current = [f for f in current if f != path]
+        w.set_library_folders(current)
+        current = w._library_folders()
+    return {'folders': current, 'recordings_folder': w._recording_dir(),
+            'recordings': len(w._recordings)}
+
+
 @command('recording', 'recording N [TRACK]', "Choose the Nth recording of the list (0 is the "
          "newest), as a click on its line does, and with TRACK which of its files to play "
          "(the order of 'status''s playback tracks). Its mini map and waterfall are drawn "

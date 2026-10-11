@@ -140,6 +140,9 @@ DEFAULTS = {
     'sweep_fft': 4096, 'sweep_frames': 16,
     'snap': True, 'record_audio': True,
     'record_iq_channel': False, 'record_iq_band': False, 'recording_dir': '',
+    # Other folders the Recordings tab lists Sceptre's IQ DVRs and BLUE IQ
+    # exports from (none assumed: the user adds them).
+    'library_folders': [],
     'view_receive': {'span_hz': 1.2e6, 'ref_db': -10, 'range_db': 110, 'avg': 4},
     # A span wider than any sweep: the Span dial clamps it to the whole sweep.
     'view_sweep': {'span_hz': 1e12, 'ref_db': -10, 'range_db': 110, 'avg': 1},
@@ -1451,12 +1454,19 @@ class MainWindow(Qt.QWidget):
         self.lib_folder_btn = Qt.QPushButton("Folder...")
         self.lib_folder_btn.setToolTip("Choose the recordings folder (Record saves there too).")
         self.lib_folder_btn.clicked.connect(self._choose_folder)
+        self.more_folders_btn = Qt.QPushButton("Add folders...")
+        self.more_folders_btn.setToolTip(
+            "Other folders to list: Sceptre's IQ DVR (.sdvr) and its BLUE IQ exports "
+            "(.cdif)\nplay here too. Nothing is written to them and the app does not "
+            "delete from them.")
+        self.more_folders_btn.clicked.connect(self._edit_library_folders)
         self.reveal_btn = Qt.QPushButton("Show in folder")
         self.reveal_btn.clicked.connect(self._reveal_folder)
         self.delete_btn = Qt.QPushButton("Delete...")
         self.delete_btn.setToolTip("Delete every file of the chosen recording.")
         self.delete_btn.clicked.connect(self._delete_clicked)
-        for button in (self.lib_folder_btn, self.reveal_btn, self.delete_btn):
+        for button in (self.lib_folder_btn, self.more_folders_btn, self.reveal_btn,
+                       self.delete_btn):
             files.addWidget(button)
         files.addStretch(1)
         box.addLayout(files)
@@ -1823,7 +1833,7 @@ class MainWindow(Qt.QWidget):
                   or self._recording_dir())
         path, _ = Qt.QFileDialog.getOpenFileName(
             self, "Play an IQ recording", folder,
-            "IQ recordings (*.sigmf-meta *.sigmf-data *.cfile *.json *.sdvr);;All files (*)")
+            "IQ recordings (*.sigmf-meta *.sigmf-data *.cfile *.json *.sdvr *.cdif);;All files (*)")
         if not path:
             return False
         self.cfg['iq_file'] = path
@@ -2819,22 +2829,28 @@ class MainWindow(Qt.QWidget):
         self.bottom.setCurrentWidget(self.rx_page)
         self.meter.set_levels((0.0, 0.0), (0.0, 0.0))
 
-    def _watch_folder(self, folder):
-        watched = self._lib_watch.directories()
-        if watched != [folder]:
+    def _library_folders(self):
+        """The folders besides the recordings folder that are listed."""
+        return [f for f in (self.cfg.get('library_folders') or []) if isinstance(f, str) and f]
+
+    def _watch_folders(self, folders):
+        want = sorted({f for f in folders if os.path.isdir(f)})
+        watched = sorted(self._lib_watch.directories())
+        if watched != want:
             if watched:
                 self._lib_watch.removePaths(watched)
-            if os.path.isdir(folder):
-                self._lib_watch.addPath(folder)
+            if want:
+                self._lib_watch.addPaths(want)
 
     def _refresh_library(self):
         """Read the folder again, keeping the one chosen."""
         folder = self._recording_dir()
-        self._watch_folder(folder)
+        extra = self._library_folders()
+        self._watch_folders([folder] + extra)
         keep = self._rec_sel.key if self._rec_sel is not None else None
         picked = {i.data(QtCore.Qt.UserRole) for i in self.rec_list.selectedItems()}
         try:
-            self._recordings = library.scan(folder)
+            self._recordings = library.scan_all(folder, extra)
         except Exception:
             self._recordings = []
             self._report('recordings')
@@ -2853,7 +2869,10 @@ class MainWindow(Qt.QWidget):
         self.rec_list.blockSignals(False)
         count = len(self._recordings)
         if count:
-            self.lib_note.setText(f"{count} recording{'s' if count > 1 else ''} in {folder}")
+            more = (f" and {len(extra)} other folder{'s' if len(extra) > 1 else ''}"
+                    if extra else "")
+            self.lib_note.setText(f"{count} recording{'s' if count > 1 else ''} "
+                                  f"in {folder}{more}")
         else:
             self.lib_note.setText(f"No recordings in {folder} yet. Record in the "
                                   "Receive tab, then come back here.")
@@ -3342,8 +3361,8 @@ class MainWindow(Qt.QWidget):
         title, artist = snap['title'], snap['artist']
         self._show_rds_text(snap['radiotext'], ' - '.join(x for x in (artist, title) if x))
         rec = p.recording
-        if abs(station - rec.station_hz) >= 50e3:
-            return
+        if rec.external or abs(station - rec.station_hz) >= 50e3:
+            return                       # a Sceptre file gets nothing written beside it
         now = time.monotonic()
         if name != self._heard[0]:
             self._heard = (name, now)
@@ -3364,6 +3383,60 @@ class MainWindow(Qt.QWidget):
                 if item.data(QtCore.Qt.UserRole) == rec.key:
                     item.setText(self._recording_text(rec))
 
+    def set_library_folders(self, folders):
+        """Keep ``folders`` as the extra folders listed, and list again."""
+        clean = []
+        for f in folders:
+            f = os.path.abspath(os.path.expanduser(str(f)))
+            if f not in clean:
+                clean.append(f)
+        self.cfg['library_folders'] = clean
+        try:
+            update_config({'library_folders': clean})
+        except Exception as exc:
+            print(f"FM receiver: could not save settings: {exc}", file=sys.stderr)
+        if self._live is not None:
+            self._refresh_library()
+
+    def _edit_library_folders(self):
+        """A short dialog: the folders listed besides the recordings folder."""
+        dialog = Qt.QDialog(self)
+        dialog.setWindowTitle("Folders to list")
+        lay = Qt.QVBoxLayout(dialog)
+        lay.addWidget(_wrapping(Qt.QLabel(
+            f"Listed beside {self._recording_dir()}: Sceptre's IQ DVR (.sdvr) and BLUE IQ "
+            "exports (.cdif) in these folders. They are only read.")))
+        folders = Qt.QListWidget()
+        folders.addItems(self._library_folders())
+        lay.addWidget(folders)
+        row = Qt.QHBoxLayout()
+        add = Qt.QPushButton("Add...")
+        remove = Qt.QPushButton("Remove")
+        done = Qt.QPushButton("Done")
+        for b in (add, remove):
+            row.addWidget(b)
+        row.addStretch(1)
+        row.addWidget(done)
+        lay.addLayout(row)
+
+        def add_one():
+            start = folders.item(folders.count() - 1).text() if folders.count() \
+                else self._recording_dir()
+            chosen = Qt.QFileDialog.getExistingDirectory(dialog, "Add a folder", start)
+            if chosen and not folders.findItems(chosen, QtCore.Qt.MatchExactly):
+                folders.addItem(chosen)
+
+        def remove_one():
+            for item in folders.selectedItems():
+                folders.takeItem(folders.row(item))
+
+        add.clicked.connect(add_one)
+        remove.clicked.connect(remove_one)
+        done.clicked.connect(dialog.accept)
+        dialog.resize(520, 300)
+        dialog.exec_()
+        self.set_library_folders([folders.item(i).text() for i in range(folders.count())])
+
     def _reveal_folder(self):
         folder = self._recording_dir()
         if not os.path.isdir(folder):
@@ -3381,6 +3454,11 @@ class MainWindow(Qt.QWidget):
     def _delete_clicked(self):
         recs = self._picked_recordings()
         if not recs:
+            return
+        if any(rec.external for rec in recs):
+            self.lib_note.setText(_coloured(
+                "A Sceptre file is not deleted here: Sceptre writes and lists it. "
+                "Remove its folder from the list, or delete it in the file manager.", 'warn'))
             return
         files = [f for rec in recs for f in rec.files()]
         size = library.size_text(sum(rec.bytes for rec in recs))
@@ -3403,7 +3481,13 @@ class MainWindow(Qt.QWidget):
         """The Delete button a right click slid out: no question, that was
         the right click's."""
         keys = set(keys)
-        self._delete_recordings([r for r in self._recordings if r.key in keys])
+        recs = [r for r in self._recordings if r.key in keys]
+        if any(r.external for r in recs):
+            self.lib_note.setText(_coloured(
+                "A Sceptre file is not deleted here: Sceptre writes and lists it. "
+                "Remove its folder from the list, or delete it in the file manager.", 'warn'))
+            return
+        self._delete_recordings(recs)
 
     def _delete_recording(self, rec):
         self._delete_recordings([rec])

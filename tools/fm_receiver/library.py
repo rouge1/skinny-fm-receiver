@@ -14,6 +14,13 @@ spectrum views' own dB: the whole track, small, for the Recordings tab's
 mini map, and the stretch the big waterfall shows, from the file. It
 samples the file - a few FFT frames for each row - rather than reading it
 all, so a gigabyte of band IQ takes as long as a minute of WAV.
+
+**Other folders** (:func:`scan_external`): Sceptre's IQ DVR (``.sdvr``) and
+its BLUE IQ exports (``.cdif``) are recordings too, one file each. They are
+listed from folders the user adds, never assumed, and only their headers are
+read (a DVR is a ring Sceptre rewrites, 1 GB of it: its chunk headers are a
+page in each megabyte). The app does not write beside them: no description
+file, no deleting.
 """
 
 import datetime as _dt
@@ -24,7 +31,8 @@ import struct
 
 import numpy as np  # type: ignore
 
-from .radios import read_iq_metadata
+from . import sceptre_blue, sceptre_dvr
+from .radios import iq_reader, read_iq_metadata
 from .recording import RecordingInfo
 
 #: fm-98.70MHz-20260922-181500[-2]-iq-band[-2][-part3].cfile - the ``-2``
@@ -37,8 +45,11 @@ INFO = re.compile(r'^(?P<base>fm-(?P<mhz>\d+\.\d+)MHz-(?P<stamp>\d{8}-\d{6})'
                   r'(?:-(?P<dup>\d+))?)' + re.escape(RecordingInfo.SUFFIX) + '$')
 #: Kinds named this close together, on one station, are one recording.
 MERGE_S = 2.0
-KIND_ORDER = ('iq-band', 'iq-channel', 'audio')
-KIND_TEXT = {'audio': 'WAV', 'iq-channel': 'IQ channel', 'iq-band': 'IQ band'}
+KIND_ORDER = ('iq-band', 'iq-channel', 'audio', 'dvr-iq', 'cdif')
+KIND_TEXT = {'audio': 'WAV', 'iq-channel': 'IQ channel', 'iq-band': 'IQ band',
+             'dvr-iq': 'Sceptre IQ DVR', 'cdif': 'Sceptre BLUE IQ'}
+#: The files other folders are searched for, and what each is.
+EXTERNAL_KINDS = {'.sdvr': 'dvr-iq', '.cdif': 'cdif'}
 
 
 def clock(seconds):
@@ -121,19 +132,41 @@ class Track:
         self.center_hz = None
         self.station_hz = None
         self.error = None
+        #: Where the IQ of a Sceptre file is (``sceptre_dvr.scan``, or a
+        #: BLUE file's sample count); None for this app's own files.
+        self.layout = None
+        #: Seconds since 1970 the recording began, when its file says.
+        self.start = None
+        #: A Sceptre DVR with spectra in it and no IQ: not played yet.
+        self.spectra = False
         try:
             if kind == 'audio':
                 _, frames, _, _, rate = wav_layout(path)
                 self.rate = float(rate)
                 self.seconds = frames / self.rate
+            elif kind in ('dvr-iq', 'cdif'):
+                meta = _external_meta(path, kind)
+                self.rate = meta['rate']
+                self.center_hz = meta['center_hz']
+                self.layout = meta['layout']
+                self.start = meta['layout'].get('start')
+                self.seconds = meta['layout']['samples'] / self.rate
             else:
                 meta = read_iq_metadata(path)
                 self.rate = meta['rate']
                 self.center_hz = meta['center_hz']
                 self.station_hz = meta['station_hz']
                 self.seconds = self.bytes / 8 / self.rate
+        except sceptre_dvr.NoIQError as exc:
+            self.error = str(exc)
+            self.spectra = True
         except Exception as exc:
             self.error = str(exc)
+
+    @property
+    def external(self):
+        """A Sceptre file, kept in a folder that is not this app's."""
+        return self.kind in ('dvr-iq', 'cdif')
 
     @property
     def is_iq(self):
@@ -141,14 +174,17 @@ class Track:
 
     def sidecars(self):
         """The files that describe this one."""
+        if self.external:
+            return []
         base = os.path.splitext(self.path)[0]
         return [base + ext for ext in ('.json', '.sigmf-meta')
                 if self.is_iq and os.path.exists(base + ext)]
 
     def label(self):
         what = {'audio': "Audio (WAV)", 'iq-channel': "IQ - channel",
-                'iq-band': "IQ - whole band"}[self.kind]
-        if self.kind == 'iq-band' and self.rate:
+                'iq-band': "IQ - whole band", 'dvr-iq': "Sceptre IQ DVR",
+                'cdif': "Sceptre BLUE IQ"}[self.kind]
+        if self.kind in ('iq-band', 'dvr-iq', 'cdif') and self.rate:
             what += f", {self.rate / 1e6:g} MS/s"
         if self.part > 1:
             what += f", part {self.part}"
@@ -170,7 +206,15 @@ class Recording:
         self.info = {}
 
     @property
+    def external(self):
+        """One Sceptre file in a folder the user added: the app lists and
+        plays it and writes nothing beside it."""
+        return any(t.external for t in self.tracks)
+
+    @property
     def name(self):
+        if self.external:
+            return os.path.basename(self.key)
         return self.info.get('station_name') or ''
 
     @property
@@ -292,6 +336,72 @@ def scan(folder):
     return out
 
 
+#: A Sceptre file's header read, by (path, mtime, size): the folder is read
+#: again at every change, and a 1 GB ring is scanned once for each write.
+_META = {}
+
+
+def _external_meta(path, kind):
+    st = os.stat(path)
+    key = (path, st.st_mtime_ns, st.st_size)
+    hit = _META.get(key)
+    if hit is None:
+        if kind == 'dvr-iq':
+            layout = sceptre_dvr.scan(path)
+            hit = {'rate': layout['rate'], 'center_hz': layout['center_hz'],
+                   'layout': layout}
+        else:
+            hit = read_iq_metadata(path)
+        if len(_META) > 64:
+            _META.clear()
+        _META[key] = hit
+    return hit
+
+
+def scan_external(folders, skip=()):
+    """The Sceptre IQ files (``.sdvr``, ``.cdif``) in ``folders``, as one
+    recording each, newest first. A folder that is not there is passed over,
+    and so is a file that is not IQ (a sweep DVR has spectra: later)."""
+    out, seen = [], set()
+    for folder in folders:
+        real = os.path.realpath(folder)
+        if real in seen or real in skip:
+            continue
+        seen.add(real)
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            continue
+        for name in names:
+            kind = EXTERNAL_KINDS.get(os.path.splitext(name)[1].lower())
+            if kind is None or name.startswith('.'):
+                continue
+            path = os.path.join(folder, name)
+            if not os.path.isfile(path):
+                continue
+            try:
+                track = Track(path, kind, 1)
+            except OSError:
+                continue
+            if track.spectra:
+                continue
+            when = track.start if track.start else os.path.getmtime(path)
+            rec = Recording(path, track.center_hz or 0.0,
+                            _dt.datetime.fromtimestamp(when))
+            rec.tracks.append(track)
+            out.append(rec)
+    out.sort(key=lambda r: (r.started, r.key), reverse=True)
+    return out
+
+
+def scan_all(folder, extra=()):
+    """This app's recordings in ``folder`` and the Sceptre files in ``extra``
+    folders, newest first."""
+    out = scan(folder) + scan_external(extra, skip={os.path.realpath(folder)})
+    out.sort(key=lambda r: (r.started, r.key), reverse=True)
+    return out
+
+
 def learn(rec, **fields):
     """Keep what playing ``rec`` back decoded (``station_name``, ``pi``,
     ``callsign``) in its ``-recording.json`` - made now for a recording
@@ -311,7 +421,10 @@ def learn(rec, **fields):
 
 
 def delete(rec):
-    """Remove every file of ``rec``. Returns the ones that would not go."""
+    """Remove every file of ``rec``. Returns the ones that would not go. A
+    Sceptre file is left to Sceptre, which rewrites and lists it."""
+    if rec.external:
+        return [f"{os.path.basename(rec.key)}: Sceptre's file, left alone"]
     failed = []
     for path in rec.files():
         try:
@@ -376,6 +489,19 @@ def _pool(power, cols, how='max'):
     return np.maximum.reduceat(power, edges, axis=1)
 
 
+class _Samples:
+    """A Sceptre file's IQ (``radios.iq_reader``) sliced like an array."""
+
+    def __init__(self, reader):
+        self._reader = reader
+
+    def __len__(self):
+        return self._reader.total
+
+    def __getitem__(self, key):
+        return self._reader.read(int(key.start), int(key.stop))
+
+
 def render(track, t0, t1, rows, cols=None, frames=2, pool='max'):
     """``track`` from ``t0`` to ``t1`` seconds as a waterfall: a (rows,
     columns) float32 array in dB and the frequency of each column in Hz.
@@ -402,6 +528,12 @@ def render(track, t0, t1, rows, cols=None, frames=2, pool='max'):
         nfft = AUDIO_FFT
         scale = 1.0 / 32768.0 if data.dtype == np.int16 else 1.0
         win = blackman_harris(nfft)
+        rate = track.rate
+    elif track.layout is not None:
+        data = _Samples(iq_reader(track.path, track.layout))
+        nfft = RF_FFT
+        scale = 1.0
+        win = blackman_harris(nfft).astype(np.float32)
         rate = track.rate
     else:
         # An empty file cannot be mapped: it is a recording of nothing.

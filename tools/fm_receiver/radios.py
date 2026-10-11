@@ -38,7 +38,7 @@ import numpy as np
 from gnuradio import blocks, gr  # type: ignore
 
 from . import bb60_source as _bb60
-from . import sceptre_dvr
+from . import sceptre_blue, sceptre_dvr
 
 # SoapySDR loads its driver modules once, on first use, from the paths it
 # knows then. The BB60D's module is a system one, found only through
@@ -572,9 +572,25 @@ def read_iq_metadata(path):
     recording. Only complex float32 is read - and, alone, a Sceptre DVR file
     (``.sdvr``) recorded from its IQ tab, whose layout is read in place
     (``sceptre_dvr``): the reply then has a ``layout`` in place of a plain
-    data file's samples.
+    data file's samples. A Sceptre BLUE export (``.cdif``, complex) is read
+    the same way, its ``layout`` saying only that it is BLUE and how many
+    samples it has.
     """
     base, ext = os.path.splitext(path)
+    if ext.lower() == '.cdif':
+        try:
+            blue = sceptre_blue.read(path)
+            if blue.fmt[0] != 'C' or not blue.rate or not blue.samples:
+                raise sceptre_blue.BlueError(
+                    f"{os.path.basename(path)} holds {blue.fmt!r}, not IQ "
+                    "(complex samples)." if blue.fmt[0] != 'C'
+                    else f"{os.path.basename(path)} holds no samples.")
+        except sceptre_blue.BlueError as exc:
+            raise RadioError(str(exc)) from exc
+        return {'data': path, 'rate': float(blue.rate),
+                'center_hz': float(blue.center_hz or 0.0), 'station_hz': None,
+                'layout': {'blue': True, 'samples': blue.samples,
+                           'start': blue.start}}
     if ext == '.sdvr':
         try:
             layout = sceptre_dvr.scan(path)
@@ -633,8 +649,42 @@ class _file_source(gr.hier_block2):
             self.connect(self.file, self)
 
 
+class BlueReader:
+    """A BLUE file's IQ with the interface of ``sceptre_dvr.Reader``: ``total``,
+    ``fill`` and ``read``, by sample number.
+
+    **In dBm**: Sceptre's ``.cdif`` samples are counts it says how to read
+    with ``DATA_GAIN`` - ``dBm = 10*log10(|x|**2) - DATA_GAIN`` - so each is
+    scaled by ``10**(-DATA_GAIN / 20)`` and ``|x|**2`` is milliwatts, as a
+    DVR's IQ is in dBFS: the views' level axis reads dBm for one. A file
+    without the keyword is read as it is."""
+
+    def __init__(self, path):
+        self._blue = sceptre_blue.read(path)
+        self.total = self._blue.samples
+        gain = self._blue.keywords.get('DATA_GAIN')
+        self.scale = np.float32(10 ** (-gain / 20.0)) if gain is not None else np.float32(1.0)
+
+    def fill(self, pos, out):
+        n = max(0, min(len(out), self.total - pos))
+        if n:
+            np.multiply(self._blue.iq(pos, pos + n), self.scale, out=out[:n])
+        return n
+
+    def read(self, start, stop):
+        return self._blue.iq(max(0, start), min(stop, self.total)) * self.scale
+
+
+def iq_reader(path, layout):
+    """The reader for a ``layout`` :func:`read_iq_metadata` gave."""
+    if layout.get('blue'):
+        return BlueReader(path)
+    return sceptre_dvr.Reader(path, layout)
+
+
 class sdvr_source(gr.sync_block):
-    """The IQ of a scanned Sceptre DVR file as complex float32, in time order.
+    """The IQ of a scanned Sceptre DVR file (or a BLUE one) as complex
+    float32, in time order.
 
     ``seek`` and ``repeat`` work like a ``file_source``'s, in samples.
     """
@@ -642,7 +692,7 @@ class sdvr_source(gr.sync_block):
     def __init__(self, path, layout, repeat=True):
         gr.sync_block.__init__(self, name='sdvr_source', in_sig=None,
                                out_sig=[np.complex64])
-        self._reader = sceptre_dvr.Reader(path, layout)
+        self._reader = iq_reader(path, layout)
         self.total = self._reader.total
         self.repeat = repeat
         self._pos = 0

@@ -99,6 +99,11 @@ class SdvrError(Exception):
     """The file is not one this can play; the message says why."""
 
 
+class NoIQError(SdvrError):
+    """The file is a Sceptre DVR with no IQ in it: a sweep DVR, whose tiles
+    :class:`Sweeps` reads."""
+
+
 def _time(mm, offset):
     whole, frac = struct.unpack_from('<dd', mm, offset)
     return whole + frac
@@ -235,7 +240,7 @@ def scan(path, live=None):
     runs = [c for c in chunks if c.tag == b'CI']
     tiles = len(chunks) - len(runs)
     if not runs:
-        raise SdvrError(f"{name} holds no IQ. This DVR was recording sweeps "
+        raise NoIQError(f"{name} holds no IQ. This DVR was recording sweeps "
                         "or spectra; switch Sceptre to its IQ tab and record "
                         "again (Sweeps reads the sweeps it does hold).")
     # One recording: the newest run's sample interval and centre.
