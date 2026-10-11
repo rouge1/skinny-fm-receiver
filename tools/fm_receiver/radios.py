@@ -580,18 +580,20 @@ def read_iq_metadata(path):
     if ext.lower() == '.cdif':
         try:
             blue = sceptre_blue.read(path)
-            if blue.fmt[0] != 'C' or not blue.rate or not blue.samples:
+            name = os.path.basename(path)
+            if blue.fmt[0] != 'C' or blue.type >= 2000:
                 raise sceptre_blue.BlueError(
-                    f"{os.path.basename(path)} holds {blue.fmt!r}, not IQ "
-                    "(complex samples)." if blue.fmt[0] != 'C'
-                    else f"{os.path.basename(path)} holds no samples.")
+                    f"{name} holds {blue.fmt!r} in rows, not IQ (a series of "
+                    "complex samples).")
+            if not blue.rate or not blue.samples:
+                raise sceptre_blue.BlueError(f"{name} holds no samples.")
         except sceptre_blue.BlueError as exc:
             raise RadioError(str(exc)) from exc
         return {'data': path, 'rate': float(blue.rate),
                 'center_hz': float(blue.center_hz or 0.0), 'station_hz': None,
                 'layout': {'blue': True, 'samples': blue.samples,
                            'start': blue.start}}
-    if ext == '.sdvr':
+    if ext.lower() == '.sdvr':
         try:
             layout = sceptre_dvr.scan(path)
         except sceptre_dvr.SdvrError as exc:
@@ -662,7 +664,10 @@ class BlueReader:
     def __init__(self, path):
         self._blue = sceptre_blue.read(path)
         self.total = self._blue.samples
-        gain = self._blue.keywords.get('DATA_GAIN')
+        try:
+            gain = float(self._blue.keywords.get('DATA_GAIN'))
+        except (TypeError, ValueError):
+            gain = None
         self.scale = np.float32(10 ** (-gain / 20.0)) if gain is not None else np.float32(1.0)
 
     def fill(self, pos, out):

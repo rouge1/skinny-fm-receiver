@@ -23,6 +23,7 @@ Run:  python tools/tests/test_sceptre_library.py [--keep]     (about 30 s)
 import json
 import os
 import shutil
+import struct
 import sys
 import tempfile
 import time
@@ -39,6 +40,7 @@ os.environ['FMRX_CONFIG'] = os.path.join(FOLDER, 'config.json')
 
 from fm_receiver import app as fmapp  # noqa: E402
 from fm_receiver import control, library  # noqa: E402
+from fm_receiver.radios import read_iq_metadata  # noqa: E402
 from tests import signals  # noqa: E402
 
 QAPP = Qt.QApplication.instance() or Qt.QApplication(sys.argv[:1])
@@ -106,6 +108,33 @@ def pieces(folder):
     again = library.scan_external([folder])
     assert library._external_meta(sdvr, 'dvr-iq') is library._external_meta(sdvr, 'dvr-iq')
     assert len(again) == 2
+
+    # a garbage time in a header does not empty the list; an upper-case
+    # extension is listed and plays; a sweep DVR is not scanned twice
+    odd = signals.ensure_dir(os.path.join(FOLDER, 'odd'))
+    bad = os.path.join(odd, 'bad-time.cdif')
+    shutil.copy(cdif, bad)
+    with open(bad, 'r+b') as fh:
+        fh.seek(256)
+        fh.write(struct.pack('<d', 1e300))
+    shout = os.path.join(odd, 'LOUD.SDVR')
+    shutil.copy(sdvr, shout)
+    got_odd = library.scan_external([odd])
+    assert sorted(r.name for r in got_odd) == ['LOUD.SDVR', 'bad-time.cdif'], \
+        [r.name for r in got_odd]
+    assert all(r.tracks[0].error is None for r in got_odd)
+    assert read_iq_metadata(shout)['layout']['samples'] > 0
+    sweep = os.path.join(folder, 'sweep.sdvr')
+    scans = []
+    real_scan = library.sceptre_dvr.scan
+    library.sceptre_dvr.scan = lambda *a, **k: scans.append(a) or real_scan(*a, **k)
+    try:
+        library.scan_external([folder])
+        library.scan_external([folder])
+    finally:
+        library.sceptre_dvr.scan = real_scan
+    assert not [a for a in scans if a[0] == sweep and len(scans) > 0] or \
+        sum(1 for a in scans if a[0] == sweep) <= 1, scans
 
     # drawn exactly as this app's own file of the same samples
     own = os.path.join(FOLDER, 'own')

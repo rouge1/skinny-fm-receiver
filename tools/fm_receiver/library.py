@@ -149,7 +149,10 @@ class Track:
                 self.rate = meta['rate']
                 self.center_hz = meta['center_hz']
                 self.layout = meta['layout']
-                self.start = meta['layout'].get('start')
+                start = meta['layout'].get('start')
+                # a garbage time in a header must not stop the list
+                self.start = float(start) if start and np.isfinite(start) \
+                    and 0 < start < 4e9 else None
                 self.seconds = meta['layout']['samples'] / self.rate
             else:
                 meta = read_iq_metadata(path)
@@ -346,15 +349,20 @@ def _external_meta(path, kind):
     key = (path, st.st_mtime_ns, st.st_size)
     hit = _META.get(key)
     if hit is None:
-        if kind == 'dvr-iq':
-            layout = sceptre_dvr.scan(path)
-            hit = {'rate': layout['rate'], 'center_hz': layout['center_hz'],
-                   'layout': layout}
-        else:
-            hit = read_iq_metadata(path)
+        try:
+            if kind == 'dvr-iq':
+                layout = sceptre_dvr.scan(path)
+                hit = {'rate': layout['rate'], 'center_hz': layout['center_hz'],
+                       'layout': layout}
+            else:
+                hit = read_iq_metadata(path)
+        except sceptre_dvr.NoIQError as exc:
+            hit = exc                       # a sweep DVR: asked again, same answer
         if len(_META) > 64:
             _META.clear()
         _META[key] = hit
+    if isinstance(hit, Exception):
+        raise hit
     return hit
 
 

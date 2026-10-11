@@ -1940,7 +1940,9 @@ class MainWindow(Qt.QWidget):
         self._mode = mode
         if not keep_view:
             self.rf_view.load_state(self.cfg[VIEW_KEYS[mode]])
-        self.rf_view.set_level_unit('dBFS')
+        self.rf_view.set_level_unit(
+            'dBm' if mode == 'playback' and self._track is not None
+            and self._track.kind == 'cdif' else 'dBFS')
         self.rf_view.clear_density()
         # Receiving, the view is the band the radio streams: no limits.
         self.rf_view.set_pan_limits(None, None)
@@ -2831,7 +2833,11 @@ class MainWindow(Qt.QWidget):
 
     def _library_folders(self):
         """The folders besides the recordings folder that are listed."""
-        return [f for f in (self.cfg.get('library_folders') or []) if isinstance(f, str) and f]
+        listed = self.cfg.get('library_folders')
+        if not isinstance(listed, list):
+            return []
+        return [os.path.abspath(os.path.expanduser(f)) for f in listed
+                if isinstance(f, str) and f]
 
     def _watch_folders(self, folders):
         want = sorted({f for f in folders if os.path.isdir(f)})
@@ -3018,7 +3024,7 @@ class MainWindow(Qt.QWidget):
         else:
             view.load_state(self.cfg[VIEW_KEYS['playback']])
             view.set_extent(low, high, center_hz=track.station_hz or track.center_hz)
-        view.set_level_unit('dBFS')
+        view.set_level_unit('dBm' if track.kind == 'cdif' else 'dBFS')
         view.set_message("Press Play")
         mini = view.minimap
         mini.set_extent((low, high))
