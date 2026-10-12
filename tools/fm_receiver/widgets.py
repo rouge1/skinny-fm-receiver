@@ -3495,6 +3495,9 @@ class MiniMap(Qt.QWidget):
         grip = self._grip_rect()
         if grip is not None and grip.contains(QtCore.QPointF(pos)):
             edges.add('top')
+        for side, rect in self._side_grips().items():
+            if rect.contains(QtCore.QPointF(pos)):
+                edges.add(side)
         return edges
 
     #: The handle on the window's top edge: a flat tab with two grooves
@@ -3517,6 +3520,29 @@ class MiniMap(Qt.QWidget):
                  inner.right() - self.GRIP_W / 2)
         return QtCore.QRectF(cx - self.GRIP_W / 2, box.top() - self.GRIP_H / 2,
                              self.GRIP_W, self.GRIP_H)
+
+    def _side_grips(self):
+        """The handles on the window's sides, as {'left': rect, 'right':
+        rect}: centred on each edge, half way up the window, kept in the
+        frame."""
+        box = self.window_rect()
+        if box is None or not (self.window_hz and self.extent_hz):
+            return {}
+        frame = self._frame()
+        inner = frame.adjusted(1.5, 1.5, -1.5, -1.5)
+        if box.height() < self.GRIP_W + 10:
+            return {}
+        cy = min(max(box.center().y(), inner.top() + self.GRIP_W / 2),
+                 inner.bottom() - self.GRIP_W / 2)
+        # An edge at the map's own side can still be pulled in, so the
+        # handle is there; it is kept inside the frame.
+        half = self.GRIP_H / 2
+        out = {}
+        for side, x in (('left', box.left()), ('right', box.right())):
+            x = min(max(x, inner.left() + half), inner.right() - half)
+            out[side] = QtCore.QRectF(x - half, cy - self.GRIP_W / 2,
+                                      self.GRIP_H, self.GRIP_W)
+        return out
 
     def _edge_cursor(self, edges):
         if edges == {'top'}:
@@ -3707,6 +3733,18 @@ class MiniMap(Qt.QWidget):
                 p.setPen(Qt.QPen(orange, 3.5))
                 p.drawLine(QtCore.QPointF(outline.left(), outline.top()),
                            QtCore.QPointF(outline.right(), outline.top()))
+            # The side handles: the same tab, upright.
+            for side, rect in self._side_grips().items():
+                held = self._resize is not None and side in self._resize['edges']
+                lit = held or side in hot
+                p.setPen(Qt.QPen(orange if lit else orange.darker(115), 1.5))
+                p.setBrush(orange if held else Qt.QColor(t['ground']))
+                p.drawRoundedRect(rect, 2.5, 2.5)
+                p.setPen(Qt.QPen(Qt.QColor(t['ground'] if held else t['ink' if lit else 'ink_2']),
+                                 1.2, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap))
+                cx, cy = rect.center().x(), rect.center().y()
+                for dx in (-1.2, 1.4):
+                    p.drawLine(QtCore.QPointF(cx + dx, cy - 5), QtCore.QPointF(cx + dx, cy + 5))
             # The handle: a flat tab on the top edge, dark with an orange
             # border (not the edge's own orange: it is a different thing, a
             # control) and two grooves along it, which is across the way it
@@ -3754,14 +3792,20 @@ HEADER_ROLE = QtCore.Qt.UserRole + 1
 #: into :data:`GROUP_TOKENS`.
 GROUP_ROLE = QtCore.Qt.UserRole + 2
 #: The theme colour of each group, so the three read apart at a glance.
-GROUP_TOKENS = ('live', 'good', 'trace')
+GROUP_TOKENS = ('live', 'good', None)
 
 
 def _group_colour(index):
+    """The group's colour: the orange, the green, and a blue made for the
+    theme's lightness (no theme has a blue of its own)."""
     group = index.data(GROUP_ROLE)
-    if isinstance(group, int) and not isinstance(group, bool):
-        return colour(GROUP_TOKENS[group % len(GROUP_TOKENS)])
-    return None
+    if not isinstance(group, int) or isinstance(group, bool):
+        return None
+    token = GROUP_TOKENS[group % len(GROUP_TOKENS)]
+    if token is not None:
+        return colour(token)
+    dark = colour('ground').lightness() < 128
+    return Qt.QColor.fromHsl(212, 190, 160 if dark else 85)
 
 
 class _RevealDelegate(Qt.QStyledItemDelegate):
@@ -3776,6 +3820,7 @@ class _RevealDelegate(Qt.QStyledItemDelegate):
             view = self.parent()
             offset = view.slide_of(index)
             if offset <= 0:
+                self._paint_wash(painter, option.rect, index)
                 super().paint(painter, option, index)
                 self._paint_bar(painter, option.rect, index)
                 return
@@ -3795,6 +3840,7 @@ class _RevealDelegate(Qt.QStyledItemDelegate):
             painter.restore()
             painter.save()
             painter.translate(offset, 0)
+            self._paint_wash(painter, rect, index)
             super().paint(painter, option, index)
             self._paint_bar(painter, rect, index)
             painter.restore()
@@ -3802,12 +3848,22 @@ class _RevealDelegate(Qt.QStyledItemDelegate):
             print(f"list paint: {exc}")
 
     @staticmethod
-    def _paint_bar(painter, rect, index):
-        """A row's group, as a slim bar of the group's colour at its edge."""
+    def _paint_wash(painter, rect, index):
+        """A faint wash of the group's colour behind the row, under the
+        style's own painting (selection stays over it)."""
         tint = _group_colour(index)
         if tint is not None:
-            painter.fillRect(QtCore.QRect(rect.left(), rect.top() + 2, 3,
-                                          rect.height() - 4), tint)
+            wash = Qt.QColor(tint)
+            wash.setAlpha(34)
+            painter.fillRect(rect, wash)
+
+    @staticmethod
+    def _paint_bar(painter, rect, index):
+        """A row's group, as a bar of the group's colour at its edge."""
+        tint = _group_colour(index)
+        if tint is not None:
+            painter.fillRect(QtCore.QRect(rect.left(), rect.top() + 1, 5,
+                                          rect.height() - 2), tint)
 
     @staticmethod
     def _paint_header(painter, option, index):

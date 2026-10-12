@@ -475,6 +475,22 @@ def part1b_minimap():
     mini.leaveEvent(QtCore.QEvent(QtCore.QEvent.Leave))
     assert not mini._hot
     mini.grab()                                   # painted in each state without an error
+    # Side handles, upright on each side edge, half way up the window.
+    sides = mini._side_grips()
+    box = mini.window_rect()
+    assert set(sides) == {'left', 'right'}, (sides, box)
+    for side, x in (('left', box.left()), ('right', box.right())):
+        c = sides[side].center()
+        assert abs(c.x() - x) <= mini.GRIP_H and abs(c.y() - box.center().y()) <= 1.0
+        assert mini._edges_at(c.toPoint()) == {side}
+        assert mini._edge_cursor({side}) == QtCore.Qt.SizeHorCursor
+        mini._hover(c.toPoint())
+        assert side in mini._hot
+        mini.grab()
+    mini.leaveEvent(QtCore.QEvent(QtCore.QEvent.Leave))
+    mini.set_window(20.0, 98.0e6, 98.1e6)         # narrow: still pulled by its sides
+    assert len(mini._side_grips()) == 2
+    mini.set_window(20.0, 97.2e6, 98.8e6)
     press(mouse_hover)
     assert mini._resize is not None and 'top' in mini._hot
     mini.grab()
