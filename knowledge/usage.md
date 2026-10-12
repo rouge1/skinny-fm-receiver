@@ -550,8 +550,8 @@ be set from a script too: `fmctl view` (see
 **The level axis** (dBFS, or dBm on the BB60D's own sweep) is a handle too.
 Its numbers light orange under the pointer. Roll the wheel over it to zoom
 the amplitude scale about the level under the pointer, as the wheel zooms
-the span: Ref level and Range change together (Shift for fine). Press the
-middle button on it and drag up or down to move the Ref level; the trace
+the span: Ref level and Range change together (Shift for fine). Drag it
+with the left (or middle) button up or down to move the Ref level; the trace
 goes with the pointer. The knobs follow either way.
 
 **The waterfall's time scale** runs down its left side: the newest row at
@@ -565,7 +565,7 @@ how much time it showed.
 down; hold Shift for fine steps. A dial under the pointer lights orange, and
 glows in Slate and Walnut or lifts on a shadow in Reading Room, so you can
 see which one the wheel will turn. Zooming the plot or waterfall lights
-Span the same way, and the wheel or middle-drag on the level axis lights
+Span the same way, and the wheel or a drag on the level axis lights
 Ref level and Range, for a moment after the last change, so you can see
 which dials moved. The same goes for the Volume, Step and Channel filter
 knobs. A double-click does nothing to any knob (there is no reset).

@@ -1089,6 +1089,22 @@ def level_axis(w):
     moved = view.ref_knob.value() - top
     assert moved > 5, ('dragging down raises the Ref level', top, view.ref_knob.value())
     assert view.range_knob.value() == span, 'a drag leaves the Range'
+    # the left button does the same, the other way (the plot's own left drag
+    # pans: the axis is a handle of its own)
+    before, x_range = view.ref_knob.value(), view.plot.getPlotItem().getViewBox().viewRange()[0]
+    _send(port, QtGui.QMouseEvent(QtCore.QEvent.MouseButtonPress, QtCore.QPointF(at),
+                                  QtCore.Qt.LeftButton, QtCore.Qt.LeftButton,
+                                  QtCore.Qt.NoModifier))
+    for dy in range(-5, -45, -5):                # 35 px up
+        _move(port, at + QtCore.QPoint(0, dy), QtCore.Qt.LeftButton)
+    _send(port, QtGui.QMouseEvent(QtCore.QEvent.MouseButtonRelease,
+                                  QtCore.QPointF(at + QtCore.QPoint(0, -35)),
+                                  QtCore.Qt.LeftButton, QtCore.Qt.NoButton,
+                                  QtCore.Qt.NoModifier))
+    pump(0.1)
+    assert view.ref_knob.value() < before - 5, ('a left drag up lowers the Ref level',
+                                                before, view.ref_knob.value())
+    assert view.plot.getPlotItem().getViewBox().viewRange()[0] == x_range, 'it panned'
     _move(port, QtCore.QPoint(port.width() // 2, port.height() // 2))
     pump(0.1)
     assert not view._axis_hot

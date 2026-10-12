@@ -2183,7 +2183,7 @@ class SpectrumView(Qt.QWidget):
     The level axis is a handle too: under the pointer it lights, the wheel
     over it zooms the amplitude scale about the level under the pointer
     (Range and Ref level together, as the wheel zooms the span), and a
-    middle-button drag up or down moves the Ref level. The knobs follow.
+    left- or middle-button drag up or down moves the Ref level. The knobs follow.
 
     The waterfall keeps the last :attr:`WF_HISTORY_S` seconds and shows
     :attr:`wf_span_s` of them, "now" at the top, with a time scale down its
@@ -3020,15 +3020,15 @@ class SpectrumView(Qt.QWidget):
         self.set_center(centre_hz)
 
     def _axis_event(self, kind, event):
-        """The wheel and the middle button on the level axis; True if the
+        """The wheel and a left or middle drag on the level axis; True if the
         event was the axis's."""
         if kind == QtCore.QEvent.GraphicsSceneWheel and self._over_axis(event.scenePos()):
             fine = bool(event.modifiers() & QtCore.Qt.ShiftModifier)
             self.zoom_levels(event.delta() / 120.0, event.scenePos().y(), fine)
             event.accept()
             return True
-        middle = QtCore.Qt.MiddleButton
-        if kind == QtCore.QEvent.GraphicsSceneMousePress and event.button() == middle \
+        drags = (QtCore.Qt.LeftButton, QtCore.Qt.MiddleButton)
+        if kind == QtCore.QEvent.GraphicsSceneMousePress and event.button() in drags \
                 and self._over_axis(event.scenePos()):
             self._axis_drag = (event.scenePos().y(), self.ref_knob.value())
             event.accept()
@@ -3037,7 +3037,7 @@ class SpectrumView(Qt.QWidget):
             y0, ref0 = self._axis_drag
             self.drag_levels(ref0, event.scenePos().y() - y0)
             return True
-        if kind == QtCore.QEvent.GraphicsSceneMouseRelease and event.button() == middle \
+        if kind == QtCore.QEvent.GraphicsSceneMouseRelease and event.button() in drags \
                 and self._axis_drag is not None:
             self._axis_drag = None
             self._light_axis(self._over_axis(event.scenePos()))
