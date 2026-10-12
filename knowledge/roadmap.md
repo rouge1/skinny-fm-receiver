@@ -1091,7 +1091,7 @@ Signal Hound's Sceptre keeps what the BB60D received in a ring file
 - [x] Checked against a `.fft` float export of the same capture: identical to
   float rounding (1.5e-5 dB over 95 million bins); the export is the DVR decoded
 - [ ] Look at an IQ DVR's tile headers (do they carry a gain and offset too?)
-- [ ] Draw the tiles: **in the Recordings tab** (Round 23, phase 3), not the Sweep tab
+- [x] Draw the tiles: **in the Recordings tab** (Round 23, phase 3), not the Sweep tab
 - [ ] Show dBm in the app for a DVR (the offset is `full_scale_dbm`)
 - [ ] **A way to classify what is seen, not a decoder per signal** (decided
   2026-09-30, since the signals to come are OOK, FSK, ASK, NTSC and more, and
@@ -1110,7 +1110,7 @@ Signal Hound's Sceptre keeps what the BB60D received in a ring file
   Its ASK, FSK, PSK and PPM-OOK generators are GNU Radio apps with dialogs, so
   their modulation would be taken into a test rather than the apps run. A bench
   of known signals, each measured, checks that the measurements name the class
-- [ ] The sweep DVR: its tiles (16 sweeps of 1,228,800 bytes) as a waterfall,
+- [x] The sweep DVR: its tiles (16 sweeps of 1,228,800 bytes) as a waterfall,
   now that their dBm is known (`Sweeps.read(dbm=True)`): **played in the
   Recordings tab** (Round 23, phase 3). A mockup that used the Sweep tab was
   rejected on 2026-10-03: Sweep and IQ are real time, Recordings is old stuff
@@ -1177,8 +1177,8 @@ own recordings (IQ band, IQ channel, WAV)**
   cached by path, mtime and size): Sceptre rewrites a 1 GB ring, and the
   folder watcher must not make it scan the whole ring again each time
 - [x] An IQ `.sdvr` as a track (the runs in time order through
-  `sceptre_dvr.Reader`), played as a band recording; a sweep DVR is passed
-  over until phase 3
+  `sceptre_dvr.Reader`), played as a band recording; a sweep DVR is a
+  spectrum recording (phase 3)
 - [x] `.cdif` (BLUE IQ) as a source: `radios.BlueReader`, scaled to dBm by
   its `DATA_GAIN`; nothing written beside a Sceptre file, none deleted
 - [x] `test_sceptre_library.py`; usage, capabilities, the project skill
@@ -1188,7 +1188,8 @@ own recordings (IQ band, IQ channel, WAV)**
 - [ ] The level in dBm for a DVR (`full_scale_dbm`), phase 3's
 
 **Phase 3: spectrum recordings (a sweep `.sdvr`, `.fft`) played without sound**
+(built 2026-10-12; the real 1 GB ring's timing is not yet measured)
 
-- [ ] No engine: the playhead runs on a timer, the waterfall and trace come
+- [x] No engine: the playhead runs on a timer, the waterfall and trace come
   from the file (`Sweeps.read(dbm=True)`, in dBm), Loop applies, the radio
   stays closed

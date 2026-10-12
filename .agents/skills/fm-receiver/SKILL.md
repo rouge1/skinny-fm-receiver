@@ -24,7 +24,8 @@ workflows, commands and constraints. Read the file that fits before acting:
   (`tools/dvr-hd DVR.sdvr` decodes HD Radio from one, offline; `--info` and
   `--scan` say what is in it; `tools/dvr-sweep` reads and draws a sweep DVR's
   spectra, also while Sceptre is still recording it; `tools/dvr-to-iq` makes a channel of one a
-  plain `.cfile` + SigMF; `sceptre_blue.py` reads Sceptre's `.cdif` and `.fft`)
+  plain `.cfile` + SigMF; `sceptre_blue.py` reads Sceptre's `.cdif` and `.fft`;
+  `spectra.py` reads a sweep DVR or a `.fft` as dBm for the Recordings tab)
 
 ## The radio
 
