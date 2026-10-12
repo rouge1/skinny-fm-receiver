@@ -3380,9 +3380,17 @@ class MainWindow(Qt.QWidget):
         self._show_audio_view(False)
         view = self.rf_view
         view.set_level_unit('dBm')
+        # Receiving, the view is the band the radio streams: no limits - nor
+        # here, where the file may lie outside the Sweep tab's 0-6 GHz.
+        view.set_pan_limits(None, None)
         view.set_message('')
         self._spec_drawn = self._start_at
         self._follow_clock(view)
+        if self._start_at <= 0:
+            # The stretch ending at 0 shows nothing: keep the first stretch,
+            # drawn when the track was chosen, instead (one stretch is drawn:
+            # this asks after it, before the timer fires).
+            self._request_window(min(view.wf_span_s, track.seconds))
         self._spec_timer.start()
 
     def _follow_clock(self, view):
@@ -3412,6 +3420,8 @@ class MainWindow(Qt.QWidget):
     def _resume(self):
         p = self._play
         if p.is_spectrum:
+            if self._shown_at >= p.track.seconds:
+                self._seek_to(0.0)              # at the end: round again
             p.at = self._shown_at
             p.t0 = time.monotonic()
             self._spec_timer.start()
@@ -3538,7 +3548,11 @@ class MainWindow(Qt.QWidget):
     def _play_ended(self):
         name = self._play.name
         self.play_btn.setChecked(False)          # pauses
-        self._seek_to(0.0)
+        if self._play.is_spectrum:
+            # The playhead stays on the end; Play again starts from 0.
+            self._show_time(self._play.track.seconds)
+        else:
+            self._seek_to(0.0)
         self._set_status(f"Finished {name}")
 
     def _draw_wav(self):
@@ -3571,7 +3585,10 @@ class MainWindow(Qt.QWidget):
             return
         self._spec_drawn = head
         try:
-            times, freqs, db = p.track.layout.read(lo, head, max_cols=view.WF_COLS)
+            # The stretch's own columns: pooled any narrower, the live rows
+            # would land on another extent and start the history again.
+            times, freqs, db = p.track.layout.read(
+                lo, head, max_cols=library.SPECTRUM_MAX_COLS)
         except Exception:
             self._report('spectrum')
             return
