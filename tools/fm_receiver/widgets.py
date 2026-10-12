@@ -1958,12 +1958,26 @@ def _span_text(hz):
     return f"{hz / 1e3:.3g} kHz"
 
 
+class _PanViewBox(pg.ViewBox):
+    """A view box whose middle button does not pan: the left drag pans, and
+    the middle one is for moving the tuner (:class:`ChannelBand`) and the
+    level axis, so on the plain spectrum it does nothing rather than a
+    second way to pan that looks like the same gesture."""
+
+    def mouseDragEvent(self, ev, axis=None):
+        if ev.button() == QtCore.Qt.MouseButton.MiddleButton:
+            ev.ignore()
+            return
+        super().mouseDragEvent(ev, axis)
+
+
 class ChannelBand(pg.LinearRegionItem):
     """The channel filter drawn on the spectrum, and a handle on it: the
     wheel over it asks for a wider or narrower filter, and a drag with the
     middle button asks to move it - :class:`SpectrumView` passes both on as
-    signals, and the window decides. Every other button and the wheel
-    elsewhere still pan and zoom the view."""
+    signals, and the window decides. The left drag and the wheel
+    elsewhere still pan and zoom the view; the middle button does nothing
+    there (:class:`_PanViewBox`)."""
 
     def __init__(self, view):
         super().__init__(movable=False)
@@ -2242,7 +2256,7 @@ class SpectrumView(Qt.QWidget):
             self._tune_action.triggered.connect(self._tuner_chosen)
         self.title = title
 
-        self.plot = pg.PlotWidget()
+        self.plot = pg.PlotWidget(viewBox=_PanViewBox())
         self.plot.setObjectName('spectrum')
         self.plot.setMenuEnabled(False)
         self.plot.hideButtons()
@@ -2294,7 +2308,7 @@ class SpectrumView(Qt.QWidget):
         self.wf_plot = None
         if waterfall:
             self.time_axis = TimeAxis('left')
-            self.wf_plot = pg.PlotWidget(axisItems={'left': self.time_axis})
+            self.wf_plot = pg.PlotWidget(viewBox=_PanViewBox(), axisItems={'left': self.time_axis})
             self.wf_plot.setObjectName('waterfall')
             self.wf_plot.setMenuEnabled(False)
             self.wf_plot.hideButtons()

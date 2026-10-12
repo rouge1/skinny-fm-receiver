@@ -435,7 +435,7 @@ tuner. It brightens under the pointer.
   it and the tuner goes there; press Escape or click away and nothing
   happens. Sweeping, that only says where **Listen**, the Receive tab and
   **Real time** will start from; the radio goes on sweeping.
-- Everywhere else the wheel zooms and a left or middle drag pans the view,
+- Everywhere else the wheel zooms and a left drag pans the view (the middle button does not pan: it moves the tuner, on its orange band, and the level axis),
   as before.
 
 Peak hold starts again whenever the Center moves. The MPX view's peak hold

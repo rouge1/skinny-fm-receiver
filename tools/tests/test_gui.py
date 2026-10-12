@@ -154,6 +154,11 @@ def spectrum_mouse(w):
     assert abs(e.station_hz - 98.8e6) < 1, e.station_hz
     assert abs(w.tuner.value() - 98.8e6) < 1
     assert view.plot.getPlotItem().getViewBox().viewRange()[0] == [x0, x1]
+    # Off the band, the middle button does not pan: the left drag does.
+    before = view.plot.getPlotItem().getViewBox().viewRange()[0]
+    _middle_drag(port, _plot_point(view, 98.52e6), _plot_point(view, 98.58e6))
+    assert view.plot.getPlotItem().getViewBox().viewRange()[0] == before
+    assert abs(e.station_hz - 98.8e6) < 1, e.station_hz
     # Dragged past the edge of the band, it stops there - and says so.
     view.span_knob.setValue(view.span_knob._max)
     _middle_drag(port, _plot_point(view, 98.8e6), _plot_point(view, 100.2e6))
