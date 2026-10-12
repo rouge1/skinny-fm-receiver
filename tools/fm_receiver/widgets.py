@@ -3750,6 +3750,18 @@ class MiniMap(Qt.QWidget):
 
 #: Set on a list item that is a group's title, not a row.
 HEADER_ROLE = QtCore.Qt.UserRole + 1
+#: Set on a group's title and on each of its rows: which group, as an index
+#: into :data:`GROUP_TOKENS`.
+GROUP_ROLE = QtCore.Qt.UserRole + 2
+#: The theme colour of each group, so the three read apart at a glance.
+GROUP_TOKENS = ('live', 'good', 'trace')
+
+
+def _group_colour(index):
+    group = index.data(GROUP_ROLE)
+    if isinstance(group, int) and not isinstance(group, bool):
+        return colour(GROUP_TOKENS[group % len(GROUP_TOKENS)])
+    return None
 
 
 class _RevealDelegate(Qt.QStyledItemDelegate):
@@ -3765,6 +3777,7 @@ class _RevealDelegate(Qt.QStyledItemDelegate):
             offset = view.slide_of(index)
             if offset <= 0:
                 super().paint(painter, option, index)
+                self._paint_bar(painter, option.rect, index)
                 return
             rect = option.rect
             # The button is as wide as it will be and the strip shows it
@@ -3783,39 +3796,54 @@ class _RevealDelegate(Qt.QStyledItemDelegate):
             painter.save()
             painter.translate(offset, 0)
             super().paint(painter, option, index)
+            self._paint_bar(painter, rect, index)
             painter.restore()
         except Exception as exc:                  # never abort the app
             print(f"list paint: {exc}")
 
     @staticmethod
+    def _paint_bar(painter, rect, index):
+        """A row's group, as a slim bar of the group's colour at its edge."""
+        tint = _group_colour(index)
+        if tint is not None:
+            painter.fillRect(QtCore.QRect(rect.left(), rect.top() + 2, 3,
+                                          rect.height() - 4), tint)
+
+    @staticmethod
     def _paint_header(painter, option, index):
-        """A group's title: small, quiet, over a hairline."""
+        """A group's title: a band of the group's colour, a bar at its edge,
+        the title bold in that colour and the count after it."""
         painter.save()
         rect = option.rect
+        tint = _group_colour(index) or colour('ink_2')
+        band = Qt.QColor(tint)
+        band.setAlpha(46)
+        painter.fillRect(rect.adjusted(0, 2, 0, 0), band)
+        painter.fillRect(QtCore.QRect(rect.left(), rect.top() + 2, 4, rect.height() - 2),
+                         tint)
         font = Qt.QFont(option.font)
         font.setBold(True)
         painter.setFont(font)
-        painter.setPen(colour('ink_2'))
+        painter.setPen(tint)
         title = str(index.data(QtCore.Qt.DisplayRole))
-        area = rect.adjusted(6, 4, -6, -2)
-        painter.drawText(area, QtCore.Qt.AlignLeft | QtCore.Qt.AlignBottom, title)
+        area = rect.adjusted(12, 4, -6, -2)
+        painter.drawText(area, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, title)
         # The count, after it and lighter.
         count = index.data(HEADER_ROLE)
         if isinstance(count, int) and not isinstance(count, bool):
             after = Qt.QFontMetrics(font).horizontalAdvance(title) + 8
-            plain = Qt.QFont(option.font)
-            painter.setFont(plain)
-            painter.setPen(colour('ink_3'))
+            painter.setFont(Qt.QFont(option.font))
+            painter.setPen(colour('ink_2'))
             painter.drawText(area.adjusted(after, 0, 0, 0),
-                             QtCore.Qt.AlignLeft | QtCore.Qt.AlignBottom, str(count))
-        painter.setPen(Qt.QPen(colour('rule'), 1))
-        painter.drawLine(rect.left() + 4, rect.bottom(), rect.right() - 4, rect.bottom())
+                             QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, str(count))
+        painter.setPen(Qt.QPen(tint, 1))
+        painter.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
         painter.restore()
 
     def sizeHint(self, option, index):
         size = super().sizeHint(option, index)
         if index.data(HEADER_ROLE):
-            size.setHeight(int(option.fontMetrics.height() * 1.2) + 8)
+            size.setHeight(int(option.fontMetrics.height() * 1.2) + 12)
         return size
 
 

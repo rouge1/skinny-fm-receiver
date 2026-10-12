@@ -653,7 +653,10 @@ where it was.
 
 1. **Pick a recording.** With Sceptre files listed too, the list has
    titles over its groups - FM recordings (what Record made), Sceptre IQ DVR,
-   Sceptre BLUE IQ - the newest first in each. Each line is one press of Record: the station, its
+   Sceptre BLUE IQ - the newest first in each. Each group has its own
+   colour, on its title band and on a bar at the edge of its lines. In
+   Recordings the list takes the height of the window, and Audio sits at the
+   bottom, level with the multiplex's controls. Each line is one press of Record: the station, its
    RDS name and call sign if they were heard, then the date, the length,
    what was recorded and the size. **Shift-click** picks a range of lines
    and **Ctrl-click** one more (or one fewer); the player follows the line

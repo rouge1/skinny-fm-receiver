@@ -50,7 +50,7 @@ from .style import apply_window_theme
 from .sweep import SweepPlan, to_db
 from .widgets import (Card, DigitEntry, Form, PageTabs, Knob, LevelMeter, Marquee, Orb,
                       RevealList, SpectrumView, StepRoller, ThemeDisc, fade, on_raster)
-from .widgets import HEADER_ROLE
+from .widgets import HEADER_ROLE, GROUP_ROLE
 
 #: (name, start MHz, stop MHz); 'full' is the whole of the radio's sweep
 #: range, whichever radio it is (9 kHz-6 GHz on the BB60D).
@@ -564,7 +564,9 @@ class MainWindow(Qt.QWidget):
         box.addWidget(self.gain_box)
         box.addWidget(self.audio_box)
         box.addWidget(self.record_box)
-        box.addStretch(1)
+        # What takes the height the boxes leave (:meth:`_place_side_boxes`).
+        self._left_fill = Qt.QWidget()
+        box.addWidget(self._left_fill, 1)
         self._left_box = box
         self._place_side_boxes()
         scroll = Qt.QScrollArea()
@@ -1898,6 +1900,12 @@ class MainWindow(Qt.QWidget):
         self._left_box.insertWidget(1, self.gain_box)
         quiet = mode == 'sweep'                  # nothing to hear or record
         self.audio_box.setVisible(not quiet)
+        # In Recordings the tab takes the whole height, so the list is as
+        # tall as the window allows and Audio sits at the bottom, level with
+        # the multiplex's controls; elsewhere the tab is its own height.
+        tall = mode == 'recordings'
+        self._left_box.setStretchFactor(self.tabs, 1 if tall else 0)
+        self._left_box.setStretchFactor(self._left_fill, 0 if tall else 1)
         # Recording is for the radio: what is played back is not recorded.
         self.record_box.setVisible(mode == 'receive')
 
@@ -2894,10 +2902,12 @@ class MainWindow(Qt.QWidget):
                 n = sum(1 for r in self._recordings if r.group == title)
                 head = Qt.QListWidgetItem(title)
                 head.setData(HEADER_ROLE, n)           # the count, drawn after it
+                head.setData(GROUP_ROLE, library.GROUPS.index(title))
                 head.setFlags(QtCore.Qt.NoItemFlags)
                 self.rec_list.addItem(head)
             item = Qt.QListWidgetItem(self._recording_text(rec))
             item.setData(QtCore.Qt.UserRole, rec.key)
+            item.setData(GROUP_ROLE, library.GROUPS.index(rec.group))
             item.setToolTip("\n".join(os.path.basename(p) for p in rec.files()))
             self.rec_list.addItem(item)
             items.append(item)
