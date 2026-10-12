@@ -309,8 +309,9 @@ def _plain_text(rich):
 
 
 class Playback:
-    """What the Recordings tab has loaded: an IQ track on its file radio,
-    or a WAV track on its source block."""
+    """What the Recordings tab has loaded: an IQ track on its file radio, a
+    WAV track on its source block, or a spectrum track on nothing - its rows
+    come from the file on a timer, with no sound."""
 
     def __init__(self, recording, track, radio=None, source=None):
         self.recording = recording
@@ -318,10 +319,18 @@ class Playback:
         self.radio = radio                  # radios.IQFile, for IQ
         self.source = source                # dsp.wav_source, for a WAV
         self.paused = False
+        #: A spectrum track's clock: the file time at ``t0`` (monotonic), set
+        #: when Play is pressed or it is sought.
+        self.at = 0.0
+        self.t0 = time.monotonic()
 
     @property
     def is_iq(self):
         return self.radio is not None
+
+    @property
+    def is_spectrum(self):
+        return self.radio is None and self.source is None
 
     @property
     def name(self):
@@ -463,6 +472,13 @@ class MainWindow(Qt.QWidget):
         self._window_timer.setSingleShot(True)
         self._window_timer.setInterval(self.WINDOW_SETTLE_MS)
         self._window_timer.timeout.connect(self._start_window)
+        #: A spectrum recording playing: its rows come from the file, about
+        #: 25 a second, each stamped with its own time; and the file time
+        #: drawn up to.
+        self._spec_timer = Qt.QTimer(self)
+        self._spec_timer.setInterval(40)
+        self._spec_timer.timeout.connect(self._draw_spectrum)
+        self._spec_drawn = 0.0
         self._build()
         # HD Radio is always on where nrsc5 is installed: HD1 plays the
         # analog until the digital is clean, and the lamp says which.
@@ -2026,7 +2042,7 @@ class MainWindow(Qt.QWidget):
         elif self._mode == 'sweep':
             self.cfg['view_sweep'] = self.rf_view.state()
         elif self._mode == 'playback' and self._play is not None:
-            if self._play.is_iq:
+            if self._play.is_spectrum or self._play.is_iq:
                 self.cfg['view_playback'] = self.rf_view.state()
             else:
                 self.cfg['view_audio'] = self.audio_view.state()
@@ -3075,7 +3091,8 @@ class MainWindow(Qt.QWidget):
         if self._rec_sel is None or not 0 <= index < len(self._rec_sel.tracks):
             return
         track = self._rec_sel.tracks[index]
-        if self._track is not None and track.path == self._track.path:
+        if self._track is not None and track.path == self._track.path \
+                and track.kind == self._track.kind:
             return
         playing = self._play is not None and not self._play.paused
         self._stop_playback(show=False)
@@ -3162,7 +3179,8 @@ class MainWindow(Qt.QWidget):
         else:
             view.load_state(self.cfg[VIEW_KEYS['playback']])
             view.set_extent(low, high, center_hz=track.station_hz or track.center_hz)
-        view.set_level_unit('dBm' if track.kind == 'cdif' else 'dBFS')
+        view.set_level_unit('dBm' if (track.kind == 'cdif' or track.is_spectrum)
+                            else 'dBFS')
         view.set_message("Press Play")
         mini = view.minimap
         mini.set_extent((low, high))
@@ -3172,7 +3190,12 @@ class MainWindow(Qt.QWidget):
         mini.set_note("...")
         self._map_job = (track.path, self._pool.submit(
             library.render, track, 0.0, track.seconds, self.MAP_ROWS, self.MAP_COLS, 4, 'mean'))
-        self._request_window(0.0)
+        # The waterfall's stretch ends at the playhead, which is at 0: of an
+        # IQ file or a WAV that shows nothing yet, and the radio's rows carry
+        # on from there. A spectrum track has no radio, so its first stretch
+        # is drawn instead - as much of it as the waterfall shows.
+        at = min(view.wf_span_s, track.seconds) if track.is_spectrum else 0.0
+        self._request_window(at)
 
     def _collect_jobs(self):
         """What the pool has finished: the mini map, and the waterfall's
@@ -3290,12 +3313,14 @@ class MainWindow(Qt.QWidget):
             self.play_btn.setChecked(False)
             return
         p = self._play
-        if p is not None and p.track.path == track.path:
+        if p is not None and p.track.path == track.path and p.track.kind == track.kind:
             self._resume()
         else:
             self._stop_playback(show=False)
             if track.is_iq:
                 self._open_iq(track)
+            elif track.is_spectrum:
+                self._open_spectrum(track)
             else:
                 self._open_wav(track)
         self.play_btn.setText("Pause")
@@ -3342,6 +3367,24 @@ class MainWindow(Qt.QWidget):
         self._show_audio_note()
         self._follow_clock(view)
 
+    def _open_spectrum(self, track):
+        """Play a spectrum recording: no engine and no radio - the playhead
+        moves on a timer from where it is, the waterfall's rows and the trace
+        come from the file at the playhead, in dBm, and the audio box does
+        nothing."""
+        self.engine.close()
+        self._play = Playback(self._rec_sel, track)
+        self._play.at = self._start_at
+        self._play.t0 = time.monotonic()
+        self._mode = 'playback'
+        self._show_audio_view(False)
+        view = self.rf_view
+        view.set_level_unit('dBm')
+        view.set_message('')
+        self._spec_drawn = self._start_at
+        self._follow_clock(view)
+        self._spec_timer.start()
+
     def _follow_clock(self, view):
         """The waterfall's rows are on the track's own time, and its first
         stretch is drawn from the file (starting a view clears it)."""
@@ -3354,7 +3397,10 @@ class MainWindow(Qt.QWidget):
         p = self._play
         if p is None or p.paused:
             return
-        if p.is_iq:
+        if p.is_spectrum:
+            self._show_time(self._playhead())
+            self._spec_timer.stop()
+        elif p.is_iq:
             p.radio.counting(False)
             self.engine.pause()
         else:
@@ -3365,7 +3411,11 @@ class MainWindow(Qt.QWidget):
 
     def _resume(self):
         p = self._play
-        if p.is_iq:
+        if p.is_spectrum:
+            p.at = self._shown_at
+            p.t0 = time.monotonic()
+            self._spec_timer.start()
+        elif p.is_iq:
             p.radio.place(p.radio.position())    # exactly where it stopped
             self.engine.resume()
             p.radio.counting(True)
@@ -3379,6 +3429,7 @@ class MainWindow(Qt.QWidget):
         open something next say no."""
         if self._play is None:
             return
+        self._spec_timer.stop()
         self._save_view()
         self._play = None
         self.engine.close()
@@ -3400,7 +3451,8 @@ class MainWindow(Qt.QWidget):
 
     def _loop_toggled(self, on):
         self.cfg['play_loop'] = bool(on)
-        if self._play is not None and not self._play.is_iq:
+        if self._play is not None and not self._play.is_iq \
+                and not self._play.is_spectrum:
             self._play.source.loop = bool(on)
 
     def _playhead(self):
@@ -3411,6 +3463,8 @@ class MainWindow(Qt.QWidget):
             return self._shown_at
         if p.is_iq:
             return (p.radio.played() % p.radio.total) / p.radio.rate
+        if p.is_spectrum:
+            return min(p.at + (time.monotonic() - p.t0), p.track.seconds)
         return p.source.position / AUDIO_RATE
 
     def _scrubbed(self, seconds):
@@ -3426,6 +3480,11 @@ class MainWindow(Qt.QWidget):
         p = self._play
         if p is None:
             self._start_at = seconds
+        elif p.is_spectrum:
+            p.at = seconds
+            p.t0 = time.monotonic()
+            self._spec_drawn = seconds
+            self.rf_view.clear_peak()
         elif p.is_iq:
             p.radio.seek(int(seconds * p.radio.rate))
             rx = self.engine.rx
@@ -3458,6 +3517,14 @@ class MainWindow(Qt.QWidget):
                 self._play_ended()
                 return
             seconds = (played % total) / p.radio.rate
+        elif p.is_spectrum:
+            seconds = self._playhead()
+            if seconds >= p.track.seconds:
+                if self.loop_check.isChecked():
+                    self._seek_to(0.0)
+                else:
+                    self._play_ended()
+                return
         else:
             if p.source.finished:
                 self._play_ended()
@@ -3484,6 +3551,39 @@ class MainWindow(Qt.QWidget):
                                      to_db(spectrum[:half]))
         peak, rms = player.tap.levels()
         self.meter.set_levels(peak, rms)
+
+    def _draw_spectrum(self):
+        """A spectrum recording's rows while it plays: the sweeps since the
+        last ones, each stamped with its own time, and the trace the latest.
+        Only what has not been drawn is read from the file, never the whole
+        of it. While a stretch is being drawn from the file anyway, or the
+        mini map's box is being dragged, the rows wait: the stretch replaces
+        them, and the next ones carry on from where it ends."""
+        p = self._play
+        if p is None or p.paused or not p.is_spectrum or self._scrubbing:
+            return
+        view = self.rf_view
+        if view.wf_frozen:
+            return
+        head = self._playhead()
+        lo = self._spec_drawn
+        if head <= lo:
+            return
+        self._spec_drawn = head
+        try:
+            times, freqs, db = p.track.layout.read(lo, head, max_cols=view.WF_COLS)
+        except Exception:
+            self._report('spectrum')
+            return
+        if not len(times):
+            return
+        try:
+            x = np.asarray(freqs, dtype=np.float64) / view.scale
+            for t, row in zip(times, np.asarray(db, dtype=np.float64)):
+                view._add_row(x, row, now=float(t))
+            view.set_data(freqs, db[-1], waterfall_row=False)
+        except Exception:
+            self._report('spectrum')
 
     def _refresh_wav(self):
         """A WAV has no RDS: show what the recording logged at this time."""
@@ -4142,6 +4242,7 @@ class MainWindow(Qt.QWidget):
     def closeEvent(self, event):
         self.fast_timer.stop()
         self.slow_timer.stop()
+        self._spec_timer.stop()
         self._stop_recording("closing")
         if not self.args.no_save:
             self.save_settings()
