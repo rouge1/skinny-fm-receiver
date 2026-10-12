@@ -365,11 +365,21 @@ def scan_sweeps(path, live=None):
         raise SdvrError(f"{name} holds no spectrum tiles. This DVR was "
                         "recording IQ only, which sceptre_dvr.Reader reads.")
     newest = max(tiles, key=lambda c: c.when)
-    kind = (newest.start_hz, newest.bin_hz, newest.bins, newest.count,
-            newest.interval)
-    tiles = _streak(sorted((c for c in tiles
-                            if (c.start_hz, c.bin_hz, c.bins, c.count,
-                                c.interval) == kind), key=lambda c: c.when))
+    def same(c):
+        return (c.start_hz, c.bin_hz, c.bins) == (newest.start_hz, newest.bin_hz,
+                                                  newest.bins) \
+            and abs(c.interval - newest.interval) < 1e-3 * newest.interval
+
+    tiles = [c for c in tiles if same(c)]
+    # The tile being written when recording stopped holds fewer sweeps than
+    # the rest, and is often the newest: a tile's sweep count is not part of
+    # its kind. Rows are counted a whole tile at a time, so it is left out.
+    counts = {}
+    for c in tiles:
+        counts[c.count] = counts.get(c.count, 0) + 1
+    whole = max(counts, key=lambda n: (counts[n], n))
+    tiles = _streak(sorted((c for c in tiles if c.count == whole),
+                           key=lambda c: c.when))
     gaps = sum(1 for a, b in zip(tiles, tiles[1:])
                if (b.when - a.when) > 1.5 * a.seconds)
     return {
@@ -377,7 +387,7 @@ def scan_sweeps(path, live=None):
         'start_hz': newest.start_hz,
         'bin_hz': newest.bin_hz,
         'bins': newest.bins,
-        'sweeps': newest.count,
+        'sweeps': whole,
         'interval': newest.interval,
         'start': tiles[0].when,
         'end': tiles[-1].when + tiles[-1].seconds,

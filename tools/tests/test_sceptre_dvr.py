@@ -118,6 +118,12 @@ def sweep_checks(folder):
     assert lay['bins'] == bins and lay['sweeps'] == sweeps, lay
     assert lay['bin_hz'] == 4882.8125 and lay['start_hz'] == 4882.8125, lay
     assert [w for _, w in lay['tiles']] == sorted(w for _, w in lay['tiles'])
+    # The tile Sceptre was writing when it stopped holds fewer sweeps, and is
+    # the newest: the whole tiles before it are still the recording.
+    part = os.path.join(folder, 'partial.sdvr')
+    signals.write_sweep_sdvr(part, tiles=tiles, bins=bins, partial=4)
+    play = sceptre_dvr.scan_sweeps(part)
+    assert len(play['tiles']) == tiles - 1 and play['sweeps'] == sweeps, play
     sw = sceptre_dvr.Sweeps(path)
     times, freqs, db = sw.read()
     assert db.shape == (tiles * sweeps, bins) and db.dtype == np.int8, db.shape
