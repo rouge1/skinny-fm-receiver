@@ -2201,6 +2201,7 @@ class SpectrumView(Qt.QWidget):
     bandDragFinished = pyqtSignal()
     tunerRequested = pyqtSignal(float)
     waterfallSpanChanged = pyqtSignal(float)
+    windowChanged = pyqtSignal()               # the span or centre moved (zoomed, panned)
 
     #: The mini map's column beside the waterfall (Recordings), and how long
     #: it takes to slide open or shut.
@@ -3208,6 +3209,7 @@ class SpectrumView(Qt.QWidget):
         # Zoomed out, the band may now be thinner than it is drawn.
         self._place_band()
         self._map_window()
+        self.windowChanged.emit()
         if self._syncing:
             return
         x0, x1 = rng

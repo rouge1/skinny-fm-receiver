@@ -622,11 +622,13 @@ class _Samples:
         return self._reader.read(int(key.start), int(key.stop))
 
 
-def _render_spectrum(track, t0, t1, rows, cols):
+def _render_spectrum(track, t0, t1, rows, cols, band=None):
     """A spectrum track as a waterfall in dBm. Row ``r`` is the sweep nearest
     the middle of slot ``r`` of ``[t0, t1)``; a middle that lands exactly
     between two sweeps takes the earlier one. A sweep outside ``[0, seconds)``
-    is NaN. Only the rows and the band that picture needs are read."""
+    is NaN. Only the rows and the band that picture needs are read: ``band``
+    (low Hz, high Hz) the part of the sweep to draw, ``cols`` columns of it."""
+    f_lo, f_hi = band if band else (None, None)
     spec = track.layout if isinstance(track.layout, spectra.SpectrumFile) \
         else _spectrum_file(track.path)
     rows = max(1, int(rows))
@@ -634,7 +636,7 @@ def _render_spectrum(track, t0, t1, rows, cols):
     # usefully show, which is thinned by the loudest bin of each column.
     max_cols = SPECTRUM_MAX_COLS if cols is None and spec.bins > SPECTRUM_MAX_COLS \
         else (None if cols is None else int(cols))
-    _, freqs, _ = spec.read(0.0, 0.0, max_cols=max_cols)   # no row: the column frequencies
+    _, freqs, _ = spec.read(0.0, 0.0, f_lo, f_hi, max_cols=max_cols)   # no row: the columns
     out = np.full((rows, len(freqs)), np.nan, np.float32)
     rs = float(spec.row_seconds)
     if rs <= 0 or spec.rows <= 0 or not len(freqs):
@@ -657,7 +659,8 @@ def _render_spectrum(track, t0, t1, rows, cols):
         mine = want[want // per == tile]
         lo_k, hi_k = int(mine[0]), int(mine[-1])
         # Half a row of slack, so the ends stay the sweeps asked for.
-        times, _, db = spec.read((lo_k - 0.5) * rs, (hi_k + 0.5) * rs, max_cols=max_cols)
+        times, _, db = spec.read((lo_k - 0.5) * rs, (hi_k + 0.5) * rs, f_lo, f_hi,
+                                 max_cols=max_cols)
         if len(times):
             got_k.append(np.rint(times / rs).astype(np.int64))
             got_db.append(db)
@@ -674,7 +677,7 @@ def _render_spectrum(track, t0, t1, rows, cols):
     return out, freqs
 
 
-def render(track, t0, t1, rows, cols=None, frames=2, pool='max'):
+def render(track, t0, t1, rows, cols=None, frames=2, pool='max', band=None):
     """``track`` from ``t0`` to ``t1`` seconds as a waterfall: a (rows,
     columns) float32 array in dB and the frequency of each column in Hz.
     **Row 0 is the earliest** slot, and a slot outside the file is NaN.
@@ -682,7 +685,9 @@ def render(track, t0, t1, rows, cols=None, frames=2, pool='max'):
     A spectrum track (a sweep DVR, a ``.fft``) is the file's own dBm: each
     row is the sweep nearest the middle of its slot, pooled by the loudest
     bin, and ``cols`` None is the file's bins (at most :data:`SPECTRUM_MAX_COLS`).
-    The rest of this function is IQ and WAV.
+    ``band`` (low Hz, high Hz) draws only that part of it, at ``cols``
+    columns: a window zoomed into a 6 GHz sweep. The rest of this function is
+    IQ and WAV.
 
     **In the spectrum views' own dB** (dBFS for IQ): the same window, FFT
     size and scaling as their taps, so what is drawn here can be coloured
@@ -700,7 +705,7 @@ def render(track, t0, t1, rows, cols=None, frames=2, pool='max'):
     frames of the file for each row rather than all of it, so a gigabyte of
     band IQ takes as long as a minute of WAV."""
     if track.is_spectrum:
-        return _render_spectrum(track, t0, t1, rows, cols)
+        return _render_spectrum(track, t0, t1, rows, cols, band)
     rows = max(1, int(rows))
     if track.kind == 'audio':
         data = wav_frames(track.path)

@@ -446,6 +446,7 @@ class MainWindow(Qt.QWidget):
         self._rec_items = []              # the list's item of each
         self._rec_sel = None
         self._spectrum_fit = False
+        self._spec_band = None             # (low, high) Hz drawn of a wide spectrum track
         self._track = None
         self._play = None
         self._start_at = 0.0
@@ -1654,6 +1655,7 @@ class MainWindow(Qt.QWidget):
             view.minimap.scrubbed.connect(self._scrubbed)
             view.minimap.panRequested.connect(view.pan_to)
             view.waterfallSpanChanged.connect(lambda _s: self._request_window())
+            view.windowChanged.connect(self._follow_window)
         self.right_split.addWidget(self.top_stack)
         self._build_transport()
 
@@ -3196,6 +3198,8 @@ class MainWindow(Qt.QWidget):
             view.span_knob.setValue(max(min(span, high - low), view.span_knob._min), emit=False)
             view.set_center(centre)
             self._spectrum_fit = True
+            self._spec_band = None
+            self._follow_window(force=True)
         view.set_message("Press Play")
         mini = view.minimap
         mini.set_extent((low, high))
@@ -3211,6 +3215,44 @@ class MainWindow(Qt.QWidget):
         # is drawn instead - as much of it as the waterfall shows.
         at = min(view.wf_span_s, track.seconds) if track.is_spectrum else 0.0
         self._request_window(at)
+
+    #: Columns drawn of the band of a wide spectrum recording: a 6 GHz sweep
+    #: of 1.2 M bins is read for the window on show (and some either side),
+    #: not squeezed whole into 16 k columns.
+    BAND_COLS = 4096
+
+    def _follow_window(self, force=False):
+        """A spectrum recording wider than the view can resolve is read for
+        the window on show, with half a window either side so a little
+        panning stays inside it. When the window leaves that band, or is
+        much narrower than it, the band is moved and the waterfall's
+        stretch drawn again on the new columns."""
+        track = self._track
+        if track is None or not track.is_spectrum or self._live is None or track.error:
+            return
+        view = self._map_view()
+        low, high = library.extent(track)
+        (x0, x1), _ = view.plot.getPlotItem().getViewBox().viewRange()
+        shown = (x0 * view.scale, x1 * view.scale)
+        span = shown[1] - shown[0]
+        if span <= 0:
+            return
+        bins = getattr(track.layout, 'bins', 0)
+        if bins <= self.BAND_COLS * 1.5 or span >= 0.5 * (high - low):
+            want = None                          # the file's own columns, as before
+        else:
+            cur = self._spec_band
+            if cur is not None and not force and cur[0] <= shown[0] and shown[1] <= cur[1] \
+                    and (cur[1] - cur[0]) <= 8 * span:
+                return
+            want = (max(low, shown[0] - span), min(high, shown[1] + span))
+        if want == self._spec_band and not force:
+            return
+        self._spec_band = want
+        p = self._play
+        if p is not None and p.is_spectrum:
+            self._spec_drawn = self._playhead()
+        self._request_window(None if p is None else self._playhead())
 
     def _collect_jobs(self):
         """What the pool has finished: the mini map, and the waterfall's
@@ -3277,8 +3319,10 @@ class MainWindow(Qt.QWidget):
         view = self._map_view()
         self._window_serial += 1
         span = view.wf_span_s
+        band = self._spec_band if track.is_spectrum else None
+        cols = self.BAND_COLS if band else None
         self._window_job = (self._window_serial, track.path, at, span, self._pool.submit(
-            library.render, track, at - span, at, view.WF_ROWS, None, 2))
+            library.render, track, at - span, at, view.WF_ROWS, cols, 2, 'max', band))
 
     def _show_station(self, hz, name):
         name = (name or '').strip()
@@ -3608,8 +3652,11 @@ class MainWindow(Qt.QWidget):
         try:
             # The stretch's own columns: pooled any narrower, the live rows
             # would land on another extent and start the history again.
+            band = self._spec_band
+            f_lo, f_hi = band if band else (None, None)
             times, freqs, db = p.track.layout.read(
-                lo, head, max_cols=library.SPECTRUM_MAX_COLS)
+                lo, head, f_lo, f_hi,
+                max_cols=self.BAND_COLS if band else library.SPECTRUM_MAX_COLS)
         except Exception:
             self._report('spectrum')
             return

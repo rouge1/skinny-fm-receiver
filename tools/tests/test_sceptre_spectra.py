@@ -108,6 +108,12 @@ def pieces(folder):
     assert img.shape == (TILES * SWEEPS, BINS) and img.dtype == np.float32, img.shape
     assert np.allclose(img, whole, atol=1e-4), np.nanmax(np.abs(img - whole))
     assert abs(freqs[0] - 4882.8125) < 1e-3 and len(freqs) == BINS
+    # a band of it, at its own columns: the part asked for, from the file's bins
+    lo_hz, hi_hz = freqs[1000], freqs[1999]
+    part, pf = library.render(st, 0.0, st.seconds, 8, 500, band=(lo_hz, hi_hz))
+    assert part.shape == (8, 500) and lo_hz - 10 * 4882.8125 <= pf[0] and pf[-1] <= hi_hz + 10 * 4882.8125, \
+        (part.shape, pf[0], pf[-1])
+    assert np.nanmax(part) < -60.0 and np.isfinite(part).all()
     # squeezed: the loudest bin of each column, and the carrier survives
     small, sf = library.render(st, 0.0, st.seconds, 8, 64)
     assert small.shape == (8, 64) and len(sf) == 64
@@ -171,6 +177,17 @@ def gui(folder):
         (view.ref_knob.value(), view.range_knob.value())
     total = w._track.seconds
     assert abs(view.minimap.duration - total) < 1e-6, view.minimap.duration
+    # zoomed into a sweep wider than the view's columns, it is read for the
+    # window on show: the waterfall is redrawn on that band's own columns
+    w.BAND_COLS = 256                            # this file's 4096 bins are "wide" now
+    full_x = view._wf_extent
+    view.span_knob.setValue((view.full[1] - view.full[0]) / 10, emit=False)
+    view.set_center(view.full[0] + 0.3 * (view.full[1] - view.full[0]))
+    assert pump(8, lambda: w._spec_band is not None and view._wf_extent is not None
+                and (view._wf_extent[1] - view._wf_extent[0]) < 0.5 * (full_x[1] - full_x[0])), \
+        (w._spec_band, view._wf_extent, full_x)
+    low_hz = view.full[0] + 0.3 * (view.full[1] - view.full[0])
+    assert w._spec_band[0] <= low_hz <= w._spec_band[1]
 
     # playing: no engine, no radio, the playhead on a timer
     w.play_btn.setChecked(True)
