@@ -218,13 +218,16 @@ def gui(folder):
     heads = [i for i in range(lst.count()) if lst.item(i).data(HEADER_ROLE)]
     assert len(heads) == 3 and lst.count() == 6, (heads, lst.count())
     assert [lst.item(i).text() for i in heads] == [
-        'FM recordings (1)', 'Sceptre IQ DVR (1)', 'Sceptre BLUE IQ (1)']
+        'FM recordings', 'Sceptre IQ DVR', 'Sceptre BLUE IQ']
+    assert [lst.item(i).data(HEADER_ROLE) for i in heads] == [1, 1, 1]      # the counts
     assert all(not lst.item(i).flags() & QtCore.Qt.ItemIsSelectable for i in heads)
     assert [it.data(QtCore.Qt.UserRole) for it in w._rec_items] == \
         [r.key for r in w._recordings]
     assert 'other folder' in w.lib_note.text(), w.lib_note.text()
     text = ' '.join(it.text() for it in w._rec_items)
     assert 'Sceptre IQ DVR' in text and 'Sceptre BLUE IQ' in text, text
+    assert 'dvr.sdvr' not in text and '.cdif' not in text, text    # file names are in the tooltips
+    assert 'dvr.sdvr' in w._rec_items[1].toolTip()
     # one file to a recording: nothing to choose, so no Play: list
     assert pump(5, lambda: w.track_combo.isHidden()), 'the Play: list is shown for one file'
 

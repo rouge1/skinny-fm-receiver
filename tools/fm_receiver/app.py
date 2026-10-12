@@ -1476,22 +1476,17 @@ class MainWindow(Qt.QWidget):
         box.addWidget(player)
 
         files = Qt.QHBoxLayout()
-        self.lib_folder_btn = Qt.QPushButton("Folder...")
-        self.lib_folder_btn.setToolTip("Choose the recordings folder (Record saves there too).")
-        self.lib_folder_btn.clicked.connect(self._choose_folder)
-        self.more_folders_btn = Qt.QPushButton("Add folders...")
-        self.more_folders_btn.setToolTip(
-            "Other folders to list: Sceptre's IQ DVR (.sdvr) and its BLUE IQ exports "
-            "(.cdif)\nplay here too. Nothing is written to them and the app does not "
-            "delete from them.")
-        self.more_folders_btn.clicked.connect(self._edit_library_folders)
-        self.reveal_btn = Qt.QPushButton("Show in folder")
-        self.reveal_btn.clicked.connect(self._reveal_folder)
+        self.folders_btn = Qt.QPushButton("Folders...")
+        self.folders_btn.setToolTip(
+            "Where recordings are kept (Record saves there too), and other folders to "
+            "list:\nSceptre's IQ DVR (.sdvr) and BLUE IQ exports (.cdif) play here too. "
+            "Nothing is\nwritten to them and the app does not delete from them. Each "
+            "can be opened in the file manager.")
+        self.folders_btn.clicked.connect(self._edit_folders)
         self.delete_btn = Qt.QPushButton("Delete...")
         self.delete_btn.setToolTip("Delete every file of the chosen recording.")
         self.delete_btn.clicked.connect(self._delete_clicked)
-        for button in (self.lib_folder_btn, self.more_folders_btn, self.reveal_btn,
-                       self.delete_btn):
+        for button in (self.folders_btn, self.delete_btn):
             files.addWidget(button)
         files.addStretch(1)
         box.addLayout(files)
@@ -2670,8 +2665,8 @@ class MainWindow(Qt.QWidget):
             f" ({self._receive_rate() * 8 / 1e6:.0f} MB/s)"
             if self.radio is not None and self.rx_rate_combo.count() else ""))
 
-    def _choose_folder(self):
-        folder = Qt.QFileDialog.getExistingDirectory(self, "Recordings folder",
+    def _choose_folder(self, parent=None):
+        folder = Qt.QFileDialog.getExistingDirectory(parent or self, "Recordings folder",
                                                      self._recording_dir())
         if folder:
             self.cfg['recording_dir'] = folder
@@ -2897,8 +2892,8 @@ class MainWindow(Qt.QWidget):
             if len(groups) > 1 and rec.group != title:
                 title = rec.group
                 n = sum(1 for r in self._recordings if r.group == title)
-                head = Qt.QListWidgetItem(f"{title} ({n})")
-                head.setData(HEADER_ROLE, True)
+                head = Qt.QListWidgetItem(title)
+                head.setData(HEADER_ROLE, n)           # the count, drawn after it
                 head.setFlags(QtCore.Qt.NoItemFlags)
                 self.rec_list.addItem(head)
             item = Qt.QListWidgetItem(self._recording_text(rec))
@@ -2939,7 +2934,7 @@ class MainWindow(Qt.QWidget):
     @staticmethod
     def _recording_text(rec):
         head = f"{rec.station_hz / 1e6:.2f} MHz"
-        if rec.name:
+        if rec.name and not rec.external:           # a Sceptre file's name is in its tooltip
             head += f"   {rec.name.strip()}"
         if rec.callsign:
             head += f"   {rec.callsign}"
@@ -3451,26 +3446,45 @@ class MainWindow(Qt.QWidget):
         if self._live is not None:
             self._refresh_library()
 
-    def _edit_library_folders(self):
-        """A short dialog: the folders listed besides the recordings folder."""
+    def _edit_folders(self):
+        """The Folders... dialog: where recordings are kept (Record saves
+        there too), and the other folders listed beside it - Sceptre's IQ DVR
+        (.sdvr) and BLUE IQ exports (.cdif), which are only read. Either can
+        be opened in the file manager from here."""
         dialog = Qt.QDialog(self)
-        dialog.setWindowTitle("Folders to list")
+        dialog.setWindowTitle("Folders")
         lay = Qt.QVBoxLayout(dialog)
+        lay.addWidget(Qt.QLabel("Recordings folder (Record saves here)"))
+        row = Qt.QHBoxLayout()
+        where = Qt.QLabel(self._recording_dir())
+        where.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        row.addWidget(where, 1)
+        change = Qt.QPushButton("Change...")
+        open_main = Qt.QPushButton("Open")
+        row.addWidget(change)
+        row.addWidget(open_main)
+        lay.addLayout(row)
+        lay.addSpacing(8)
         lay.addWidget(_wrapping(Qt.QLabel(
-            f"Listed beside {self._recording_dir()}: Sceptre's IQ DVR (.sdvr) and BLUE IQ "
-            "exports (.cdif) in these folders. They are only read.")))
+            "Also list Sceptre's IQ DVR (.sdvr) and BLUE IQ exports (.cdif) in these "
+            "folders. They are only read: nothing is written to them or deleted.")))
         folders = Qt.QListWidget()
         folders.addItems(self._library_folders())
         lay.addWidget(folders)
         row = Qt.QHBoxLayout()
         add = Qt.QPushButton("Add...")
         remove = Qt.QPushButton("Remove")
+        open_one = Qt.QPushButton("Open")
         done = Qt.QPushButton("Done")
-        for b in (add, remove):
+        for b in (add, remove, open_one):
             row.addWidget(b)
         row.addStretch(1)
         row.addWidget(done)
         lay.addLayout(row)
+
+        def change_main():
+            self._choose_folder(dialog)
+            where.setText(self._recording_dir())
 
         def add_one():
             start = folders.item(folders.count() - 1).text() if folders.count() \
@@ -3483,17 +3497,20 @@ class MainWindow(Qt.QWidget):
             for item in folders.selectedItems():
                 folders.takeItem(folders.row(item))
 
+        change.clicked.connect(change_main)
+        open_main.clicked.connect(lambda: self._open_folder(self._recording_dir()))
         add.clicked.connect(add_one)
         remove.clicked.connect(remove_one)
+        open_one.clicked.connect(lambda: [self._open_folder(i.text())
+                                          for i in folders.selectedItems()])
         done.clicked.connect(dialog.accept)
-        dialog.resize(520, 300)
+        dialog.resize(560, 360)
         dialog.exec_()
         self.set_library_folders([folders.item(i).text() for i in range(folders.count())])
 
-    def _reveal_folder(self):
-        folder = self._recording_dir()
+    def _open_folder(self, folder):
         if not os.path.isdir(folder):
-            self.lib_note.setText(_coloured(f"{folder} does not exist yet.", 'warn'))
+            self.lib_note.setText(_coloured(f"{folder} does not exist.", 'warn'))
             return
         Qt.QDesktopServices.openUrl(Qt.QUrl.fromLocalFile(folder))
 

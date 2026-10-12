@@ -1170,7 +1170,7 @@ own recordings (IQ band, IQ channel, WAV)**
 (built 2026-10-11)
 
 - [x] Extra folders to list, a setting kept with `config.update_config`
-  (`library_folders`; **Add folders...** under the list and `fmctl folders`;
+  (`library_folders`; **Folders...** under the list and `fmctl folders`;
   the app does not assume where Sceptre keeps its files: the repo is public
   and runs on a Mac)
 - [x] The listing reads headers only (`library.scan_external`; a header scan

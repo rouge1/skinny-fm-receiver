@@ -458,6 +458,28 @@ def part1b_minimap():
     mini.set_window(20.0, 98.0e6, 98.1e6)
     assert mini._grip_rect() is None, mini.window_rect()
     mini.set_window(20.0, 97.2e6, 98.8e6)
+    # None where the window's top is the map's own: nothing to pull there.
+    mini.set_position(0.0)
+    pump(0.05)
+    assert mini._grip_rect() is None, mini.window_rect()
+    mini.set_position(10.0)                    # 10 s in, 20 s of window: still cut by the start
+    assert mini._grip_rect() is None
+    mini.set_position(60.0)
+    pump(0.05)
+    assert mini._grip_rect() is not None
+    # Held, the handle says how much it takes in; hovered, the edge is hot.
+    grip = mini._grip_rect().center().toPoint()
+    mouse_hover = QtCore.QPoint(grip.x(), grip.y())
+    mini._hover(mouse_hover)
+    assert 'top' in mini._hot
+    mini.leaveEvent(QtCore.QEvent(QtCore.QEvent.Leave))
+    assert not mini._hot
+    mini.grab()                                   # painted in each state without an error
+    press(mouse_hover)
+    assert mini._resize is not None and 'top' in mini._hot
+    mini.grab()
+    release(mouse_hover)
+    assert mini._resize is None
     # Panned wholly off the recorded band, the box rests against the edge.
     mini.set_window(20.0, 120e6, 121e6)
     box = mini.window_rect()

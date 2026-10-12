@@ -3319,6 +3319,7 @@ class MiniMap(Qt.QWidget):
         self._image = None
         self._image_theme = None
         self._grab = None                   # (seconds, hertz) offsets at the press
+        self._hot = frozenset()             # the edges the pointer is on (or has)
         self._resize = None                 # the edges taken, and the window at the press
         self.note = ''
 
@@ -3469,6 +3470,7 @@ class MiniMap(Qt.QWidget):
         # Shut or hidden mid-drag, no release will come.
         self._grab = None
         self._resize = None
+        self._hot = frozenset()
         super().hideEvent(event)
 
     def _edges_at(self, pos):
@@ -3495,23 +3497,25 @@ class MiniMap(Qt.QWidget):
             edges.add('top')
         return edges
 
-    #: The handle on the window's top edge: a pill with grip dots, which
-    #: says the window can be pulled to show more or less time.
-    GRIP_W, GRIP_H = 24, 9
+    #: The handle on the window's top edge: a flat tab with two grooves
+    #: along it, which says the edge can be pulled to show more or less time.
+    GRIP_W, GRIP_H = 20, 7
 
     def _grip_rect(self):
-        """Where the handle is, or None: centred on the window's top edge
-        (kept inside the frame, so it shows at the very start too), and only
-        when the window is big enough to carry it."""
+        """Where the handle is, or None: centred on the window's top edge,
+        when the window is wide enough to carry it and the edge is free. At
+        the start the window's top is the map's own (there is no time before
+        it): pulling it would show nothing, so it has no handle."""
         box = self.window_rect()
         frame = self._frame()
         if box is None or box.width() < self.GRIP_W + 10:
             return None
         inner = frame.adjusted(1.5, 1.5, -1.5, -1.5)
-        cy = max(box.top(), inner.top() + self.GRIP_H / 2)
+        if box.top() <= inner.top() + 1.0:
+            return None
         cx = min(max(box.center().x(), inner.left() + self.GRIP_W / 2),
                  inner.right() - self.GRIP_W / 2)
-        return QtCore.QRectF(cx - self.GRIP_W / 2, cy - self.GRIP_H / 2,
+        return QtCore.QRectF(cx - self.GRIP_W / 2, box.top() - self.GRIP_H / 2,
                              self.GRIP_W, self.GRIP_H)
 
     def _edge_cursor(self, edges):
@@ -3525,8 +3529,19 @@ class MiniMap(Qt.QWidget):
             return QtCore.Qt.SizeBDiagCursor
         return None
 
+    def _set_hot(self, edges):
+        hot = frozenset(edges)
+        if hot != self._hot:
+            self._hot = hot
+            self.update()
+
+    def leaveEvent(self, event):
+        self._set_hot(())
+        super().leaveEvent(event)
+
     def _hover(self, pos):
         edges = self._edges_at(pos)
+        self._set_hot(edges)
         shape = self._edge_cursor(edges)
         if shape is None:
             box = self.window_rect()
@@ -3546,6 +3561,8 @@ class MiniMap(Qt.QWidget):
             self._resize = {'edges': edges, 'time': self.time_at(pos.y()),
                             'hz': self.hz_at(pos.x()), 'span': self.span,
                             'window': self.window_hz}
+            self._set_hot(edges)
+            self.update()
             return
         if box is not None and box.contains(QtCore.QPointF(pos)):
             # Carried from where it was taken.
@@ -3677,18 +3694,55 @@ class MiniMap(Qt.QWidget):
             for pen in (Qt.QPen(under, 5), Qt.QPen(orange, 3)):
                 p.setPen(pen)
                 p.drawLine(QtCore.QPointF(inner.left(), y), QtCore.QPointF(inner.right(), y))
-            # The handle: a small orange pill with three dark grip dots, on
-            # the top edge, where the window is pulled to show more or less.
+            # The edges the pointer is on (or has hold of) thicken, so what
+            # can be pulled is shown where it is pulled from.
+            hot = self._hot
+            if hot & {'left', 'right'}:
+                p.setPen(Qt.QPen(orange, 3.5))
+                for side, x in (('left', outline.left()), ('right', outline.right())):
+                    if side in hot:
+                        p.drawLine(QtCore.QPointF(x, outline.top()),
+                                   QtCore.QPointF(x, outline.bottom()))
+            if 'top' in hot and self._grip_rect() is not None:
+                p.setPen(Qt.QPen(orange, 3.5))
+                p.drawLine(QtCore.QPointF(outline.left(), outline.top()),
+                           QtCore.QPointF(outline.right(), outline.top()))
+            # The handle: a flat tab on the top edge, dark with an orange
+            # border (not the edge's own orange: it is a different thing, a
+            # control) and two grooves along it, which is across the way it
+            # is pulled. It fills with orange while it is held, and says
+            # how much time the window then takes in.
             grip = self._grip_rect()
             if grip is not None:
-                p.setPen(Qt.QPen(under, 1))
-                p.setBrush(orange)
-                p.drawRoundedRect(grip, grip.height() / 2, grip.height() / 2)
-                p.setPen(QtCore.Qt.NoPen)
-                p.setBrush(Qt.QColor(t['ground']))
-                for k in (-1, 0, 1):
-                    p.drawEllipse(QtCore.QPointF(grip.center().x() + k * 5, grip.center().y()),
-                                  1.2, 1.2)
+                held = self._resize is not None and 'top' in self._resize['edges']
+                lit = held or 'top' in hot
+                p.setPen(Qt.QPen(orange if lit else orange.darker(115), 1.5))
+                p.setBrush(orange if held else Qt.QColor(t['ground']))
+                p.drawRoundedRect(grip, 2.5, 2.5)
+                p.setPen(Qt.QPen(Qt.QColor(t['ground'] if held else t['ink' if lit else 'ink_2']),
+                                 1.2, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap))
+                cx, cy = grip.center().x(), grip.center().y()
+                for dy in (-1.2, 1.4):
+                    p.drawLine(QtCore.QPointF(cx - 5, cy + dy), QtCore.QPointF(cx + 5, cy + dy))
+                if held:
+                    word = f"{self.span:.0f} s" if self.span >= 10 else f"{self.span:.1f} s"
+                    font = Qt.QFont(self.font())
+                    font.setBold(True)
+                    font.setPixelSize(10)
+                    p.setFont(font)
+                    w = Qt.QFontMetricsF(font).horizontalAdvance(word) + 8
+                    # Beside the handle, on the side with the room, and
+                    # always inside the map.
+                    x = grip.right() + 4
+                    if x + w > frame.right():
+                        x = grip.left() - 4 - w
+                    x = min(max(x, frame.left() + 1), frame.right() - w - 1)
+                    tag = QtCore.QRectF(x, grip.center().y() - 8, w, 16)
+                    p.setPen(Qt.QPen(orange, 1))
+                    p.setBrush(Qt.QColor(t['ground']))
+                    p.drawRoundedRect(tag, 3, 3)
+                    p.setPen(orange)
+                    p.drawText(tag, QtCore.Qt.AlignCenter, word)
         p.end()
 
 
@@ -3739,17 +3793,21 @@ class _RevealDelegate(Qt.QStyledItemDelegate):
         painter.save()
         rect = option.rect
         font = Qt.QFont(option.font)
-        if font.pixelSize() > 0:
-            font.setPixelSize(max(10, font.pixelSize() - 2))
-        else:
-            font.setPointSizeF(max(font.pointSizeF() - 1.5, 7.0))
         font.setBold(True)
-        font.setLetterSpacing(Qt.QFont.AbsoluteSpacing, 0.6)
         painter.setFont(font)
-        painter.setPen(colour('ink_3'))
-        painter.drawText(rect.adjusted(6, 4, -6, -2),
-                         QtCore.Qt.AlignLeft | QtCore.Qt.AlignBottom,
-                         str(index.data(QtCore.Qt.DisplayRole)).upper())
+        painter.setPen(colour('ink_2'))
+        title = str(index.data(QtCore.Qt.DisplayRole))
+        area = rect.adjusted(6, 4, -6, -2)
+        painter.drawText(area, QtCore.Qt.AlignLeft | QtCore.Qt.AlignBottom, title)
+        # The count, after it and lighter.
+        count = index.data(HEADER_ROLE)
+        if isinstance(count, int) and not isinstance(count, bool):
+            after = Qt.QFontMetrics(font).horizontalAdvance(title) + 8
+            plain = Qt.QFont(option.font)
+            painter.setFont(plain)
+            painter.setPen(colour('ink_3'))
+            painter.drawText(area.adjusted(after, 0, 0, 0),
+                             QtCore.Qt.AlignLeft | QtCore.Qt.AlignBottom, str(count))
         painter.setPen(Qt.QPen(colour('rule'), 1))
         painter.drawLine(rect.left() + 4, rect.bottom(), rect.right() - 4, rect.bottom())
         painter.restore()

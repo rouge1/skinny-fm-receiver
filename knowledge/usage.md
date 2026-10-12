@@ -665,7 +665,7 @@ where it was.
 3. **Press Play**, or double-click the line. Press it again to pause.
 4. **Jump** by clicking or dragging the **mini map** down the right of the view (below).
 
-**Sceptre's IQ files** play here too. **Add folders...** (under the list)
+**Sceptre's IQ files** play here too. **Folders...** (under the list)
 names the folders to list besides the recordings folder: a Sceptre IQ DVR
 (`.sdvr`, made from its IQ tab) and its BLUE IQ exports (`.cdif`) in them
 each become a line (a sweep DVR, and anything else, is passed over for now),
@@ -745,8 +745,10 @@ station is a line down it. **The waterfall falls, as it does live**: the
   back.
 - **Delete...** below the Player does the same for what is picked (the chosen
   recording if you have picked none), after asking.
-  **Show in folder** opens the folder in your file manager (Finder on a
-  Mac), and **Folder...** chooses another one; Record saves there too.
+  **Folders...** is one dialog for every folder: the recordings folder
+  (**Change...** chooses another; Record saves there too), the other folders
+  listed (**Add...**, **Remove**), and **Open** on either, which shows the
+  folder in your file manager (Finder on a Mac).
 - **Parts.** A recording that was retuned has parts (`-part2` and on). Each
   is its own entry in **Play**, with the station it was on.
 - **Names.** Record saves the station's RDS name, PI and call sign, and each
