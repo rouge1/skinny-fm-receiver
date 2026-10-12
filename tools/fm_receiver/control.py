@@ -442,7 +442,7 @@ def cmd_recordings(w, args):
     rows = [{'index': i, 'station_mhz': _mhz(r.station_hz), 'name': r.name.strip() or None,
              'callsign': r.callsign or None, 'started': r.started.isoformat(timespec='seconds'),
              'seconds': round(r.seconds, 2), 'kinds': r.kinds_text(), 'bytes': r.bytes,
-             'picked': w.rec_list.item(i).isSelected()}
+             'picked': w._rec_items[i].isSelected()}
             for i, r in enumerate(w._recordings)]
     state = _playback_state(w)
     return {'recordings': rows, 'selected': state['recording']}
@@ -494,8 +494,8 @@ def cmd_recording(w, args):
     # As a plain click: this one alone is picked (setCurrentRow leaves the
     # selection of a list that takes several as it was).
     w.rec_list.clearSelection()
-    w.rec_list.setCurrentRow(int(n))
-    w.rec_list.item(int(n)).setSelected(True)
+    w.rec_list.setCurrentItem(w._rec_items[int(n)])
+    w._rec_items[int(n)].setSelected(True)
     if m is not None:
         w.track_combo.setCurrentIndex(int(m))
         w._track_chosen(int(m))

@@ -46,6 +46,8 @@ INFO = re.compile(r'^(?P<base>fm-(?P<mhz>\d+\.\d+)MHz-(?P<stamp>\d{8}-\d{6})'
 #: Kinds named this close together, on one station, are one recording.
 MERGE_S = 2.0
 KIND_ORDER = ('iq-band', 'iq-channel', 'audio', 'dvr-iq', 'cdif')
+#: The list's groups, in order: where a recording came from.
+GROUPS = ('FM recordings', 'Sceptre IQ DVR', 'Sceptre BLUE IQ')
 KIND_TEXT = {'audio': 'WAV', 'iq-channel': 'IQ channel', 'iq-band': 'IQ band',
              'dvr-iq': 'Sceptre IQ DVR', 'cdif': 'Sceptre BLUE IQ'}
 #: The files other folders are searched for, and what each is.
@@ -207,6 +209,16 @@ class Recording:
         self.tracks = []
         self.info_path = None
         self.info = {}
+
+    @property
+    def group(self):
+        """Which of :data:`GROUPS` the list puts this under."""
+        for track in self.tracks:
+            if track.kind == 'dvr-iq':
+                return GROUPS[1]
+            if track.kind == 'cdif':
+                return GROUPS[2]
+        return GROUPS[0]
 
     @property
     def external(self):
@@ -404,9 +416,10 @@ def scan_external(folders, skip=()):
 
 def scan_all(folder, extra=()):
     """This app's recordings in ``folder`` and the Sceptre files in ``extra``
-    folders, newest first."""
+    folders, grouped by kind (:data:`GROUPS`), newest first in each."""
     out = scan(folder) + scan_external(extra, skip={os.path.realpath(folder)})
-    out.sort(key=lambda r: (r.started, r.key), reverse=True)
+    # By kind of recording (:data:`GROUPS`), the newest first in each.
+    out.sort(key=lambda r: (GROUPS.index(r.group), -r.started.timestamp(), r.key))
     return out
 
 

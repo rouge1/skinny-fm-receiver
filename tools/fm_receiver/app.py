@@ -50,6 +50,7 @@ from .style import apply_window_theme
 from .sweep import SweepPlan, to_db
 from .widgets import (Card, DigitEntry, Form, PageTabs, Knob, LevelMeter, Marquee, Orb,
                       RevealList, SpectrumView, StepRoller, ThemeDisc, fade, on_raster)
+from .widgets import HEADER_ROLE
 
 #: (name, start MHz, stop MHz); 'full' is the whole of the radio's sweep
 #: range, whichever radio it is (9 kHz-6 GHz on the BB60D).
@@ -421,6 +422,7 @@ class MainWindow(Qt.QWidget):
         # chosen and playing, and the overview being worked out.
         self._live = None
         self._recordings = []
+        self._rec_items = []              # the list's item of each
         self._rec_sel = None
         self._track = None
         self._play = None
@@ -997,10 +999,32 @@ class MainWindow(Qt.QWidget):
         self.station_tabs.addTab(self._build_hd_page(), "HD Radio")
         self.station_tabs.setCurrentIndex(1 if self.cfg.get('station_tab') == 1 else 0)
         # Folds on a chevron, as the boxes above do; remembered with theirs.
-        self.station_tabs.foldable(folded=bool(self.cfg['folded'].get('station')))
+        self.station_tabs.foldable(folded=bool(self.cfg['folded'].get('station')),
+                                   summary=True)
         self.station_tabs.folded.connect(
             lambda folded: self.cfg['folded'].__setitem__('station', folded))
+        self.station_tabs.folded.connect(lambda _folded: self._summarise_station())
+        self.station_tabs.currentChanged.connect(lambda _i: self._summarise_station())
         return self.station_tabs
+
+    def _summarise_station(self):
+        """The two lines the folded station tabs keep: of the tab on show,
+        the station and its type, then what it is playing or saying."""
+        try:
+            def text(label):
+                t = _plain_text(label.text()).strip() if label is not None else ''
+                return '' if t in ('-', '') else t
+            if self.station_tabs.currentIndex() == 1:
+                head = text(self.hd_lbl.get('station'))
+                tail = text(self.hd_lbl.get('nowplaying'))
+            else:
+                name = text(self.lbl.get('station_name')) or text(self.lbl.get('ps'))
+                kind = text(self.lbl.get('pty'))
+                head = " · ".join(x for x in (name, kind) if x)
+                tail = text(self.lbl.get('nowplaying')) or text(self.lbl.get('radiotext'))
+            self.station_tabs.set_summary(head, tail)
+        except Exception:
+            self._report('station summary')
 
     def _build_hd_page(self):
         """What the station's digital data says (the buttons and the status
@@ -1422,6 +1446,7 @@ class MainWindow(Qt.QWidget):
             "from it again. The WAV\nis the sound as it was heard.")
         self.track_combo.activated.connect(self._track_chosen)
         form.addRow("Play:", self.track_combo)
+        self._player_form = form
         row = Qt.QHBoxLayout()
         self.play_btn = Qt.QPushButton("Play")
         self.play_btn.setCheckable(True)
@@ -2864,7 +2889,18 @@ class MainWindow(Qt.QWidget):
         self.rec_list.clear()
         chosen = None
         items = []
+        # Titles over the groups - only when there is more than one kind of
+        # recording to tell apart.
+        groups = {r.group for r in self._recordings}
+        title = None
         for rec in self._recordings:
+            if len(groups) > 1 and rec.group != title:
+                title = rec.group
+                n = sum(1 for r in self._recordings if r.group == title)
+                head = Qt.QListWidgetItem(f"{title} ({n})")
+                head.setData(HEADER_ROLE, True)
+                head.setFlags(QtCore.Qt.NoItemFlags)
+                self.rec_list.addItem(head)
             item = Qt.QListWidgetItem(self._recording_text(rec))
             item.setData(QtCore.Qt.UserRole, rec.key)
             item.setToolTip("\n".join(os.path.basename(p) for p in rec.files()))
@@ -2885,8 +2921,9 @@ class MainWindow(Qt.QWidget):
         if self._play is not None and not any(r.key == self._play.recording.key
                                               for r in self._recordings):
             self._stop_playback(show=False)         # deleted from outside
-        if chosen is None and self.rec_list.count():
-            chosen = self.rec_list.item(0)
+        self._rec_items = items               # one for each of _recordings
+        if chosen is None and items:
+            chosen = items[0]
         if chosen is not None:
             self.rec_list.blockSignals(True)
             self.rec_list.setCurrentItem(chosen)
@@ -2925,13 +2962,23 @@ class MainWindow(Qt.QWidget):
         self._rec_sel = rec
         self.track_combo.clear()
         if rec is None:
+            self._show_track_choice(False)
             self._load_track(None)
             return
         for track in rec.tracks:
             self.track_combo.addItem(track.label(), track.path)
         best = rec.best_track()
         self.track_combo.setCurrentIndex(rec.tracks.index(best))
+        self._show_track_choice(len(rec.tracks) > 1)
         self._load_track(best)
+
+    def _show_track_choice(self, shown):
+        """The Play: list is there to choose between a recording's files
+        (the WAV, the channel, the band); with one file there is nothing to
+        choose, and the file is named above it."""
+        for w in (self.track_combo, self._player_form.labelForField(self.track_combo)):
+            if w is not None:
+                fade(w, shown)
 
     def _track_chosen(self, index):
         if self._rec_sel is None or not 0 <= index < len(self._rec_sel.tracks):
@@ -3611,6 +3658,7 @@ class MainWindow(Qt.QWidget):
             if not self.engine.running:
                 return
             self._check_health()
+            self._summarise_station()
             if self._mode in ('receive', 'playback') and self.engine.rx is not None:
                 self._refresh_receive()
             elif self._mode == 'playback' and self.engine.player is not None:

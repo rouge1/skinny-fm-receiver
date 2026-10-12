@@ -442,6 +442,22 @@ def part1b_minimap():
     mini.hide()
     assert mini._grab is None
     mini.show()
+    # A handle sits on the window's top edge: a pill, on the edge, which is
+    # the edge's own grip (pulling it shows more or less time), and which a
+    # window too narrow to carry it leaves out.
+    mini.set_duration(100.0)
+    mini.set_window(20.0, 97.2e6, 98.8e6)
+    mini.set_position(60.0)
+    pump(0.05)
+    box = mini.window_rect()
+    grip = mini._grip_rect()
+    assert grip is not None and abs(grip.center().y() - box.top()) <= 1.0, (grip, box)
+    assert abs(grip.center().x() - box.center().x()) <= 1.0
+    assert mini._edges_at(grip.center().toPoint()) == {'top'}
+    assert mini._edge_cursor(mini._edges_at(grip.center().toPoint())) == QtCore.Qt.SizeVerCursor
+    mini.set_window(20.0, 98.0e6, 98.1e6)
+    assert mini._grip_rect() is None, mini.window_rect()
+    mini.set_window(20.0, 97.2e6, 98.8e6)
     # Panned wholly off the recorded band, the box rests against the edge.
     mini.set_window(20.0, 120e6, 121e6)
     box = mini.window_rect()

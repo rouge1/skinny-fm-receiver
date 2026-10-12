@@ -339,8 +339,10 @@ box its **Tuner range** (↔) and tuner, and no taller than those, each
 gliding to the middle of the box once it has folded
 (the Step and Channel filter knobs fade out as the Tuner box folds, and
 back in as it opens, and its HD Radio rows go). The **RDS / HD Radio**
-tabs have their chevron at the right of the tab bar: folded, only the tabs
-show; click a tab to open them again. The app remembers which are folded.
+tabs have their chevron at the right of the tab bar, level with the tabs:
+folded, the tabs show with two lines under them, the station (its name and
+type, or HD Radio's name) and what it is saying or playing; click a tab to
+open them again. The app remembers which are folded.
 
 ```
 ┌ Radio ───────────────────────────────────────┐
@@ -649,13 +651,16 @@ so other programs can use it (except a BB60D on a Mac, which stays open
 until the app quits). Going back to Sweep or Receive opens it again, tuned
 where it was.
 
-1. **Pick a recording.** Each line is one press of Record: the station, its
+1. **Pick a recording.** With Sceptre files listed too, the list has
+   titles over its groups - FM recordings (what Record made), Sceptre IQ DVR,
+   Sceptre BLUE IQ - the newest first in each. Each line is one press of Record: the station, its
    RDS name and call sign if they were heard, then the date, the length,
    what was recorded and the size. **Shift-click** picks a range of lines
    and **Ctrl-click** one more (or one fewer); the player follows the line
    you clicked last.
-2. **Choose what to play** in **Play**, if the recording has more than one
-   file. The IQ is chosen first (the whole band before the channel), and
+2. **Choose what to play** in **Play**: it appears only when the recording
+   has more than one file (a Sceptre file is one, so there is nothing to
+   choose). The IQ is chosen first (the whole band before the channel), and
    the WAV is in the list too.
 3. **Press Play**, or double-click the line. Press it again to pause.
 4. **Jump** by clicking or dragging the **mini map** down the right of the view (below).

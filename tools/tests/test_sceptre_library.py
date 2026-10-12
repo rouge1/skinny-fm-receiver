@@ -27,6 +27,7 @@ import struct
 import sys
 import tempfile
 import time
+import wave
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -40,6 +41,7 @@ os.environ['FMRX_CONFIG'] = os.path.join(FOLDER, 'config.json')
 
 from fm_receiver import app as fmapp  # noqa: E402
 from fm_receiver import control, library  # noqa: E402
+from fm_receiver.widgets import HEADER_ROLE  # noqa: E402
 from fm_receiver.radios import read_iq_metadata  # noqa: E402
 from tests import signals  # noqa: E402
 
@@ -182,8 +184,8 @@ def window(folder, own):
 def play_row(w, kind):
     row = next(i for i, r in enumerate(w._recordings) if r.tracks[0].kind == kind)
     w.rec_list.clearSelection()
-    w.rec_list.setCurrentRow(row)
-    w.rec_list.item(row).setSelected(True)
+    w.rec_list.setCurrentItem(w._rec_items[row])
+    w._rec_items[row].setSelected(True)
     assert pump(5, lambda: w._track is not None and w._track.kind == kind)
     assert pump(8, lambda: w.play_btn.isEnabled())
     w.play_btn.setChecked(True)
@@ -201,15 +203,30 @@ def play_row(w, kind):
 
 def gui(folder):
     own = signals.ensure_dir(os.path.join(FOLDER, 'own-recordings'))
+    with wave.open(os.path.join(own, 'fm-98.70MHz-20260920-100000-audio.wav'), 'wb') as fh:
+        fh.setnchannels(2)
+        fh.setsampwidth(2)
+        fh.setframerate(48000)
+        fh.writeframes(bytes(48000 * 4))
     w = window(folder, own)
     w.tabs.setCurrentIndex(2)
     lst = w.rec_list
-    assert pump(10, lambda: lst.count() == 2), lst.count()
-    kinds = {r.tracks[0].kind for r in w._recordings}
-    assert kinds == {'dvr-iq', 'cdif'}, kinds
+    assert pump(10, lambda: len(w._recordings) == 3), len(w._recordings)
+    kinds = [r.tracks[0].kind for r in w._recordings]
+    assert kinds == ['audio', 'dvr-iq', 'cdif'], kinds       # this app's, then each Sceptre kind
+    # grouped under titles that are not rows: three of them, and not chosen
+    heads = [i for i in range(lst.count()) if lst.item(i).data(HEADER_ROLE)]
+    assert len(heads) == 3 and lst.count() == 6, (heads, lst.count())
+    assert [lst.item(i).text() for i in heads] == [
+        'FM recordings (1)', 'Sceptre IQ DVR (1)', 'Sceptre BLUE IQ (1)']
+    assert all(not lst.item(i).flags() & QtCore.Qt.ItemIsSelectable for i in heads)
+    assert [it.data(QtCore.Qt.UserRole) for it in w._rec_items] == \
+        [r.key for r in w._recordings]
     assert 'other folder' in w.lib_note.text(), w.lib_note.text()
-    text = lst.item(0).text() + lst.item(1).text()
+    text = ' '.join(it.text() for it in w._rec_items)
     assert 'Sceptre IQ DVR' in text and 'Sceptre BLUE IQ' in text, text
+    # one file to a recording: nothing to choose, so no Play: list
+    assert pump(5, lambda: w.track_combo.isHidden()), 'the Play: list is shown for one file'
 
     # the folders: through fmctl, kept in the settings
     reply = control.cmd_folders(w, [])
@@ -225,7 +242,7 @@ def gui(folder):
     assert json.load(open(os.environ['FMRX_CONFIG']))['library_folders'] == [folder, other]
     reply = control.cmd_folders(w, ['remove', other])
     assert reply['folders'] == [folder]
-    assert pump(5, lambda: lst.count() == 2)
+    assert pump(5, lambda: len(w._recordings) == 3)
 
     # playing: the IQ file radio, from the DVR's runs and the BLUE file's samples
     layout = play_row(w, 'dvr-iq')
@@ -234,7 +251,7 @@ def gui(folder):
     assert layout.get('blue') and layout['samples'] == int(SECONDS * 1e6), layout
 
     # a Sceptre file is not deleted from the list, and nothing is written beside it
-    keys = [r.key for r in w._recordings]
+    keys = [r.key for r in w._recordings if r.external]
     w._delete_keys(keys)
     assert all(os.path.exists(k) for k in keys)
     assert 'not deleted' in w.lib_note.text(), w.lib_note.text()

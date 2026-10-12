@@ -1163,8 +1163,9 @@ class PageTabs(Qt.QTabWidget):
     jumping (asked for on the RDS / HD Radio tabs, 2026-09-28).
 
     :meth:`foldable` puts a chevron in the tab bar's corner, as a
-    :class:`Card` has on its title: folded, only the tabs show, and a
-    click on a tab opens it again.
+    :class:`Card` has on its title: folded, only the tabs show - and, if a
+    summary was asked for, :meth:`set_summary`'s two lines under them - and
+    a click on a tab opens it again.
     """
 
     #: Folded (True) or opened, by the chevron or a tab.
@@ -1182,11 +1183,18 @@ class PageTabs(Qt.QTabWidget):
         self._fade_page = None
         self._folded = False
         self.chevron = None
+        self._summary = None
         if self._animate_ms > 0:
             self.currentChanged.connect(self._animate)
 
     # -- folding
-    def foldable(self, folded=False):
+    def foldable(self, folded=False, summary=False):
+        """A chevron in the corner folds the tabs to their bar. With
+        ``summary`` the folded tabs keep two lines of what the page says
+        (:meth:`set_summary`), so a folded box still shows the station."""
+        if summary:
+            self._summary = _Summary(self)
+            self._summary.hide()
         self.chevron = _Chevron()
         self.chevron.setToolTip("Fold or open these tabs.")
         corner = Qt.QWidget()
@@ -1201,6 +1209,46 @@ class PageTabs(Qt.QTabWidget):
         self.set_folded(folded)
         return self
 
+    def set_summary(self, head, tail=''):
+        """The two lines shown under the tabs while they are folded: ``head``
+        in the strong type and ``tail`` under it."""
+        if self._summary is not None:
+            self._summary.set_lines(head, tail)
+
+    # The corner widget of a QTabWidget is laid at the foot of the tab bar's
+    # box, a few pixels under the tabs' own middle: put it level with them.
+    def _centre_corner(self):
+        try:
+            corner = self.cornerWidget(QtCore.Qt.TopRightCorner)
+            if corner is None:
+                return
+            tab = self.tabBar().tabRect(0) if self.count() else self.tabBar().rect()
+            corner.move(corner.x(), self.tabBar().y() + tab.y()
+                        + (tab.height() - corner.height()) // 2)
+        except Exception as exc:                   # never abort the app
+            print(f"tabs: {exc}")
+
+    def _place_summary(self):
+        try:
+            if self._summary is None:
+                return
+            top = self.tabBar().y() + self.tabBar().height() + 2
+            self._summary.setGeometry(8, top, max(self.width() - 16, 0),
+                                      self._summary.fixed_height())
+            self._summary.raise_()
+        except Exception as exc:
+            print(f"tabs: {exc}")
+
+    def event(self, event):
+        done = super().event(event)
+        # Qt lays the corner widget out again on each of these.
+        if event.type() in (QtCore.QEvent.LayoutRequest, QtCore.QEvent.Resize,
+                            QtCore.QEvent.Show, QtCore.QEvent.StyleChange,
+                            QtCore.QEvent.FontChange):
+            self._centre_corner()
+            self._place_summary()
+        return done
+
     def is_folded(self):
         return self._folded
 
@@ -1213,6 +1261,10 @@ class PageTabs(Qt.QTabWidget):
                 self.chevron.setChecked(not folded)
                 self.chevron.turn_to(folded, ms)
             end = (self._folded_height() if folded else self._open_height())
+            if self._summary is not None:
+                self._place_summary()
+                fade(self._summary, folded, ms or FADE_MS) if self.isVisible() \
+                    else self._summary.setVisible(folded)
             if ms > 0 and self.isVisible():
                 self._glide_to(end, ms, release=not folded)
             elif folded:
@@ -1240,7 +1292,10 @@ class PageTabs(Qt.QTabWidget):
             print(f"tabs: {exc}")
 
     def _folded_height(self):
-        return self.tabBar().sizeHint().height()
+        height = self.tabBar().sizeHint().height()
+        if self._summary is not None:
+            height += self._summary.fixed_height() + 6
+        return height
 
     def _open_height(self):
         return (self.heightForWidth(self.width()) if self.hasHeightForWidth()
@@ -1352,6 +1407,46 @@ class PageTabs(Qt.QTabWidget):
 
     def minimumSizeHint(self):
         return self._fit(super().minimumSizeHint(), lambda p: p.minimumSizeHint())
+
+
+class _Summary(Qt.QWidget):
+    """Two lines of text under folded tabs: the first in bold, each cut to
+    the width with an ellipsis rather than making the column wider."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setSizePolicy(Qt.QSizePolicy.Ignored, Qt.QSizePolicy.Fixed)
+        self._head = self._tail = ''
+        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+
+    def fixed_height(self):
+        return 2 * self.fontMetrics().lineSpacing() + 4
+
+    def set_lines(self, head, tail):
+        if (head, tail) != (self._head, self._tail):
+            self._head, self._tail = head, tail
+            self.update()
+
+    def paintEvent(self, event):
+        try:
+            p = Qt.QPainter(self)
+            fm = self.fontMetrics()
+            line = fm.lineSpacing()
+            bold = Qt.QFont(self.font())
+            bold.setBold(True)
+            for row, (text, font, token) in enumerate(
+                    ((self._head, bold, 'ink'), (self._tail, self.font(), 'ink_2'))):
+                if not text:
+                    continue
+                p.setFont(font)
+                p.setPen(Qt.QColor(theme.TOKENS[token]))
+                shown = Qt.QFontMetrics(font).elidedText(text, QtCore.Qt.ElideRight,
+                                                         self.width())
+                p.drawText(0, row * line + 2, self.width(), line,
+                           QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, shown)
+            p.end()
+        except Exception as exc:                  # never abort the app
+            print(f"summary: {exc}")
 
 
 class _Chevron(Qt.QAbstractButton):
@@ -3395,7 +3490,29 @@ class MiniMap(Qt.QWidget):
                     edges.add('right')
         if abs(y - box.top()) <= near_y and box.left() - near_x <= x <= box.right() + near_x:
             edges.add('top')
+        grip = self._grip_rect()
+        if grip is not None and grip.contains(QtCore.QPointF(pos)):
+            edges.add('top')
         return edges
+
+    #: The handle on the window's top edge: a pill with grip dots, which
+    #: says the window can be pulled to show more or less time.
+    GRIP_W, GRIP_H = 24, 9
+
+    def _grip_rect(self):
+        """Where the handle is, or None: centred on the window's top edge
+        (kept inside the frame, so it shows at the very start too), and only
+        when the window is big enough to carry it."""
+        box = self.window_rect()
+        frame = self._frame()
+        if box is None or box.width() < self.GRIP_W + 10:
+            return None
+        inner = frame.adjusted(1.5, 1.5, -1.5, -1.5)
+        cy = max(box.top(), inner.top() + self.GRIP_H / 2)
+        cx = min(max(box.center().x(), inner.left() + self.GRIP_W / 2),
+                 inner.right() - self.GRIP_W / 2)
+        return QtCore.QRectF(cx - self.GRIP_W / 2, cy - self.GRIP_H / 2,
+                             self.GRIP_W, self.GRIP_H)
 
     def _edge_cursor(self, edges):
         if edges == {'top'}:
@@ -3560,10 +3677,26 @@ class MiniMap(Qt.QWidget):
             for pen in (Qt.QPen(under, 5), Qt.QPen(orange, 3)):
                 p.setPen(pen)
                 p.drawLine(QtCore.QPointF(inner.left(), y), QtCore.QPointF(inner.right(), y))
+            # The handle: a small orange pill with three dark grip dots, on
+            # the top edge, where the window is pulled to show more or less.
+            grip = self._grip_rect()
+            if grip is not None:
+                p.setPen(Qt.QPen(under, 1))
+                p.setBrush(orange)
+                p.drawRoundedRect(grip, grip.height() / 2, grip.height() / 2)
+                p.setPen(QtCore.Qt.NoPen)
+                p.setBrush(Qt.QColor(t['ground']))
+                for k in (-1, 0, 1):
+                    p.drawEllipse(QtCore.QPointF(grip.center().x() + k * 5, grip.center().y()),
+                                  1.2, 1.2)
         p.end()
 
 
 # ------------------------------------------------- a list whose rows slide
+
+#: Set on a list item that is a group's title, not a row.
+HEADER_ROLE = QtCore.Qt.UserRole + 1
+
 
 class _RevealDelegate(Qt.QStyledItemDelegate):
     """A row as the style draws it, slid aside by the list's offset, with the
@@ -3571,6 +3704,9 @@ class _RevealDelegate(Qt.QStyledItemDelegate):
 
     def paint(self, painter, option, index):
         try:
+            if index.data(HEADER_ROLE):
+                self._paint_header(painter, option, index)
+                return
             view = self.parent()
             offset = view.slide_of(index)
             if offset <= 0:
@@ -3596,6 +3732,33 @@ class _RevealDelegate(Qt.QStyledItemDelegate):
             painter.restore()
         except Exception as exc:                  # never abort the app
             print(f"list paint: {exc}")
+
+    @staticmethod
+    def _paint_header(painter, option, index):
+        """A group's title: small, quiet, over a hairline."""
+        painter.save()
+        rect = option.rect
+        font = Qt.QFont(option.font)
+        if font.pixelSize() > 0:
+            font.setPixelSize(max(10, font.pixelSize() - 2))
+        else:
+            font.setPointSizeF(max(font.pointSizeF() - 1.5, 7.0))
+        font.setBold(True)
+        font.setLetterSpacing(Qt.QFont.AbsoluteSpacing, 0.6)
+        painter.setFont(font)
+        painter.setPen(colour('ink_3'))
+        painter.drawText(rect.adjusted(6, 4, -6, -2),
+                         QtCore.Qt.AlignLeft | QtCore.Qt.AlignBottom,
+                         str(index.data(QtCore.Qt.DisplayRole)).upper())
+        painter.setPen(Qt.QPen(colour('rule'), 1))
+        painter.drawLine(rect.left() + 4, rect.bottom(), rect.right() - 4, rect.bottom())
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        if index.data(HEADER_ROLE):
+            size.setHeight(int(option.fontMetrics.height() * 1.2) + 8)
+        return size
 
 
 class RevealList(Qt.QListWidget):

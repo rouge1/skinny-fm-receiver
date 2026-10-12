@@ -1227,14 +1227,31 @@ def folding(w):
     # The tabs fold on their chevron to just the tab bar, and a click on a
     # tab opens them again.
     bar = tabs.tabBar().sizeHint().height()
+    keep = tabs._summary.fixed_height() + 6
+    # The chevron is level with the tabs, not a few pixels under them.
+    level = tabs.chevron.mapTo(tabs, tabs.chevron.rect().center()).y() \
+        - tabs.tabBar().tabRect(0).center().y()
+    assert abs(level) <= 2, ('the chevron off the tabs\' middle by', level)
+    tabs.setCurrentIndex(0)
+    w.lbl['station_name'].setText('TEST FM')
+    w.lbl['pty'].setText('Country')
+    w.lbl['radiotext'].setText('Hello from the station')
+    w.lbl['nowplaying'].setText('-')
+    w._summarise_station()
+    assert tabs._summary._head == 'TEST FM · Country', tabs._summary._head
+    assert tabs._summary._tail == 'Hello from the station', tabs._summary._tail
+    tabs.setCurrentIndex(1)
     tabs.chevron.click()
     pump(0.5)
-    assert tabs.is_folded() and tabs.height() <= bar + 2, (tabs.height(), bar)
+    # Folded: the tab bar, and under it a summary of what the page says.
+    assert tabs.is_folded() and tabs.height() <= bar + keep + 2, (tabs.height(), bar)
+    assert tabs._summary.isVisible() and tabs._summary.y() >= bar, tabs._summary.geometry()
     assert w.cfg['folded']['station'] is True
     tabs.tabBarClicked.emit(0)
     tabs.setCurrentIndex(0)
     pump(0.5)
     assert not tabs.is_folded() and tabs.maximumHeight() == 16777215
+    assert tabs._summary.isHidden() or tabs._summary.graphicsEffect() is not None
     assert tabs.height() > bar + 40 and w.cfg['folded']['station'] is False
     tabs.setCurrentIndex(1)
     pump(0.4)
