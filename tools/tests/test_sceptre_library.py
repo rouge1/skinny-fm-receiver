@@ -223,7 +223,7 @@ def gui(folder):
     assert all(not lst.item(i).flags() & QtCore.Qt.ItemIsSelectable for i in heads)
     assert [it.data(QtCore.Qt.UserRole) for it in w._rec_items] == \
         [r.key for r in w._recordings]
-    assert 'other folder' in w.lib_note.text(), w.lib_note.text()
+    assert w.lib_note.text() == '' and not w.lib_note.isVisible(), w.lib_note.text()
     text = ' '.join(it.text() for it in w._rec_items)
     assert 'Sceptre IQ DVR' in text and 'Sceptre BLUE IQ' in text, text
     assert 'dvr.sdvr' not in text and '.cdif' not in text, text    # file names are in the tooltips

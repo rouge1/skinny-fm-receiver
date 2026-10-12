@@ -254,6 +254,18 @@ def _wrapping(label):
     return label
 
 
+class _Note(Qt.QLabel):
+    """A line of text that takes no room while it is empty."""
+
+    def __init__(self):
+        super().__init__("")
+        self.setVisible(False)
+
+    def setText(self, text):
+        super().setText(text)
+        self.setVisible(bool(text))
+
+
 def _mono_font(pixels=None):
     """A fixed-pitch face, for text where a gap or a stray character must
     show. Linux has the "Monospace" alias; a Mac has none, and Qt picked
@@ -1435,7 +1447,7 @@ class MainWindow(Qt.QWidget):
         self.rec_list.deleteRequested.connect(self._delete_keys)
         self.rec_list.itemDoubleClicked.connect(lambda _item: self.play_btn.setChecked(True))
         box.addWidget(self.rec_list, 1)
-        self.lib_note = _wrapping(Qt.QLabel(""))
+        self.lib_note = _wrapping(_Note())
         self.lib_note.setTextFormat(QtCore.Qt.RichText)
         box.addWidget(self.lib_note)
 
@@ -2973,12 +2985,10 @@ class MainWindow(Qt.QWidget):
             if rec.key == keep:
                 chosen = item
         self.rec_list.blockSignals(False)
-        count = len(self._recordings)
-        if count:
-            more = (f" and {len(extra)} other folder{'s' if len(extra) > 1 else ''}"
-                    if extra else "")
-            self.lib_note.setText(f"{count} recording{'s' if count > 1 else ''} "
-                                  f"in {folder}{more}")
+        # The note is for what wants saying: an empty list, a refusal. How
+        # many there are is the list's own business.
+        if self._recordings:
+            self.lib_note.setText("")
         else:
             self.lib_note.setText(f"No recordings in {folder} yet. Record in the "
                                   "Receive tab, then come back here.")
@@ -3521,23 +3531,27 @@ class MainWindow(Qt.QWidget):
         dialog = Qt.QDialog(self)
         dialog.setWindowTitle("Folders")
         lay = Qt.QVBoxLayout(dialog)
-        lay.addWidget(Qt.QLabel("Recordings folder (Record saves here)"))
-        row = Qt.QHBoxLayout()
+        lay.setSpacing(14)
+        # Two boxes: the one folder that is the app's own, and the folders
+        # that are only read from.
+        mine = Qt.QGroupBox("Recordings folder - Record saves here")
+        mine_lay = Qt.QHBoxLayout(mine)
         where = Qt.QLabel(self._recording_dir())
         where.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        row.addWidget(where, 1)
+        mine_lay.addWidget(where, 1)
         change = Qt.QPushButton("Change...")
         open_main = Qt.QPushButton("Open")
-        row.addWidget(change)
-        row.addWidget(open_main)
-        lay.addLayout(row)
-        lay.addSpacing(8)
-        lay.addWidget(_wrapping(Qt.QLabel(
-            "Also list Sceptre's IQ DVR (.sdvr) and BLUE IQ exports (.cdif) in these "
-            "folders. They are only read: nothing is written to them or deleted.")))
+        mine_lay.addWidget(change)
+        mine_lay.addWidget(open_main)
+        lay.addWidget(mine)
+        theirs = Qt.QGroupBox("Other folders - Sceptre's DVR and BLUE IQ files, read only")
+        theirs_lay = Qt.QVBoxLayout(theirs)
+        theirs_lay.addWidget(_wrapping(Qt.QLabel(
+            "Sceptre IQ DVR (.sdvr) and BLUE IQ exports (.cdif) in these folders are "
+            "listed too. They are only read: nothing is written to them or deleted.")))
         folders = Qt.QListWidget()
         folders.addItems(self._library_folders())
-        lay.addWidget(folders)
+        theirs_lay.addWidget(folders)
         row = Qt.QHBoxLayout()
         add = Qt.QPushButton("Add...")
         remove = Qt.QPushButton("Remove")
@@ -3546,8 +3560,12 @@ class MainWindow(Qt.QWidget):
         for b in (add, remove, open_one):
             row.addWidget(b)
         row.addStretch(1)
-        row.addWidget(done)
-        lay.addLayout(row)
+        theirs_lay.addLayout(row)
+        lay.addWidget(theirs, 1)
+        bottom = Qt.QHBoxLayout()
+        bottom.addStretch(1)
+        bottom.addWidget(done)
+        lay.addLayout(bottom)
 
         def change_main():
             self._choose_folder(dialog)
