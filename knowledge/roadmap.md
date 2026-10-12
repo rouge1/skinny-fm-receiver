@@ -1110,7 +1110,7 @@ Signal Hound's Sceptre keeps what the BB60D received in a ring file
   Its ASK, FSK, PSK and PPM-OOK generators are GNU Radio apps with dialogs, so
   their modulation would be taken into a test rather than the apps run. A bench
   of known signals, each measured, checks that the measurements name the class
-- [ ] The sweep DVR: its tiles (16 sweeps of 1,228,800 bytes) as a waterfall,
+- [x] The sweep DVR: its tiles (16 sweeps of 1,228,800 bytes) as a waterfall,
   now that their dBm is known (`Sweeps.read(dbm=True)`): **played in the
   Recordings tab** (Round 23, phase 3). A mockup that used the Sweep tab was
   rejected on 2026-10-03: Sweep and IQ are real time, Recordings is old stuff
@@ -1188,7 +1188,8 @@ own recordings (IQ band, IQ channel, WAV)**
 - [ ] The level in dBm for a DVR (`full_scale_dbm`), phase 3's
 
 **Phase 3: spectrum recordings (a sweep `.sdvr`, `.fft`) played without sound**
+(built 2026-10-12; the real 1 GB ring's timing is not yet measured)
 
-- [ ] No engine: the playhead runs on a timer, the waterfall and trace come
+- [x] No engine: the playhead runs on a timer, the waterfall and trace come
   from the file (`Sweeps.read(dbm=True)`, in dBm), Loop applies, the radio
   stays closed

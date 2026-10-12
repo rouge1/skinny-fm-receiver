@@ -653,7 +653,7 @@ where it was.
 
 1. **Pick a recording.** With Sceptre files listed too, the list has
    titles over its groups - FM recordings (what Record made), Sceptre IQ DVR,
-   Sceptre BLUE IQ - the newest first in each. Each group has its own
+   Sceptre BLUE IQ, Sceptre spectrum - the newest first in each. Each group has its own
    colour, on its title band and on a bar at the edge of its lines. In
    Recordings the list takes the height of the window, and Audio sits at the
    bottom, level with the multiplex's controls. Each line is one press of Record: the station, its
@@ -672,7 +672,7 @@ where it was.
 **Sceptre's IQ files** play here too. **Folders...** (under the list)
 names the folders to list besides the recordings folder: a Sceptre IQ DVR
 (`.sdvr`, made from its IQ tab) and its BLUE IQ exports (`.cdif`) in them
-each become a line (a sweep DVR, and anything else, is passed over for now),
+each become a line (a sweep DVR and a `.fft` are spectrum lines, below; anything else is passed over),
 and play like a band recording: spectrum, waterfall, click a station to hear
 it. Nothing is assumed about where Sceptre keeps its files. The app only
 reads them: no description file is written beside one, and **Delete** leaves
@@ -687,6 +687,7 @@ What you see and hear depends on the file:
 | **IQ – whole band** | The RF spectrum and waterfall of the whole band, and the multiplex, as in Receive | Made from the IQ, as in Receive | Decoded as it plays |
 | **IQ – channel** | The same, for the one station | The same | The same |
 | **WAV** | The sound's spectrum, left and right together (0-16 kHz shown; Span goes to 24), and its waterfall | The WAV as it was recorded | The RadioText and Now Playing logged while it was recorded |
+| **Sceptre spectrum** (a sweep `.sdvr`, a `.fft`) | The spectrum and waterfall of the file's own band, in dBm | None: no radio is opened | None |
 
 - **In a whole-band recording, click another station** in the spectrum or
   the waterfall to listen to it. The Receive tab's controls (channel filter,
@@ -762,6 +763,15 @@ station is a line down it. **The waterfall falls, as it does live**: the
   stations scroll words through the name.
 - A WAV plays at 48 kHz only, which is what Record makes.
 
+**Sceptre spectrum** is a Sceptre sweep DVR (`.sdvr`, from its Sweep tab) or a
+spectrum `.fft` exported from it, listed from the same folders. Choose it and
+press **Play**: the waterfall and the trace are read from the file in dBm (the
+level axis says so), and the playhead moves in real time. No radio is opened,
+and there is no sound: the audio box does nothing. **Pause** holds the place,
+and seeking (clicking or dragging the mini map) works paused or playing. At the
+end it stops with the playhead on the end; with **Loop** on, it starts again
+from 0. Only the rows and bins on screen are read from the file, not all of it.
+
 ## Playing other IQ files
 
 The Recordings tab plays this app's recordings, and Sceptre's `.sdvr` and
@@ -779,8 +789,8 @@ opened, and the newest run is then left out). It holds about 8.6 s in
 a 1 GB ring, played on a loop, and the tuner reaches the whole 27 MHz, so
 every station in it can be tuned in turn (a lower reference level in
 Sceptre, -20 to -30 dBm, gives a better signal than 0). A DVR made from
-Sceptre's **Sweep** tab holds spectra, not IQ, and is refused here (see
-`tools/dvr-sweep` below). How the file
+Sceptre's **Sweep** tab holds spectra, not IQ, so it is refused as a source here; it plays as a spectrum (see
+*Sceptre spectrum* under Recordings, and `tools/dvr-sweep` below). How the file
 is laid out: [sceptre-dvr.md](sceptre-dvr.md).
 
 HD Radio works on a DVR (the **HD Radio** row lights on the stations that
