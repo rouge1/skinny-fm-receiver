@@ -1449,23 +1449,18 @@ class MainWindow(Qt.QWidget):
         self.track_combo.activated.connect(self._track_chosen)
         form.addRow("Play:", self.track_combo)
         self._player_form = form
-        row = Qt.QHBoxLayout()
+        # These three sit on the spectrum (:meth:`_build_transport`).
         self.play_btn = Qt.QPushButton("Play")
         self.play_btn.setCheckable(True)
         self.play_btn.setEnabled(False)
         self.play_btn.toggled.connect(self._play_toggled)
-        row.addWidget(self.play_btn)
         self.loop_check = Qt.QCheckBox("Loop")
         self.loop_check.setToolTip("At the end, start again from the beginning "
                                    "rather than stop.")
         self.loop_check.setChecked(bool(self.cfg['play_loop']))
         self.loop_check.toggled.connect(self._loop_toggled)
-        row.addWidget(self.loop_check)
-        row.addStretch(1)
         self.time_label = Qt.QLabel("0:00 / 0:00")
         self.time_label.setFont(_mono_font())
-        row.addWidget(self.time_label)
-        form.addRow(row)
         big = Qt.QFont()
         big.setPixelSize(17)
         big.setBold(True)
@@ -1612,6 +1607,7 @@ class MainWindow(Qt.QWidget):
             view.minimap.panRequested.connect(view.pan_to)
             view.waterfallSpanChanged.connect(lambda _s: self._request_window())
         self.right_split.addWidget(self.top_stack)
+        self._build_transport()
 
         # Under the RF spectrum in Receive: the multiplex (RDS is in the
         # Receive tab). Sweeping, it is hidden and the spectrum has the
@@ -1632,6 +1628,58 @@ class MainWindow(Qt.QWidget):
         self.mpx_view.load_state(self.cfg['view_mpx'])
         self.mpx_view.set_extent(0, MPX_RATE / 2, keep_span=False)
         return self.right_split
+
+    def _build_transport(self):
+        """Play, Loop and the time, on the spectrum: a small bar over the
+        top left of whichever view is on show, in Recordings only."""
+        bar = Qt.QFrame(self.top_stack)
+        bar.setObjectName('transport')
+        row = Qt.QHBoxLayout(bar)
+        row.setContentsMargins(6, 4, 8, 4)
+        row.setSpacing(8)
+        for widget in (self.play_btn, self.loop_check, self.time_label):
+            widget.setParent(bar)
+            row.addWidget(widget)
+        self.transport = bar
+        self._style_transport()
+        self.top_stack.installEventFilter(self)
+        for view in (self.rf_view, self.audio_view):
+            view.plot.getPlotItem().getViewBox().sigResized.connect(self._place_transport)
+        self.top_stack.currentChanged.connect(lambda _i: self._place_transport())
+        bar.setVisible(self._tab_mode() == 'recordings')
+        self._place_transport()
+
+    def _style_transport(self):
+        """In the theme's colours, again when the theme changes."""
+        t = theme.TOKENS
+        ground = Qt.QColor(t['ground'])
+        self.transport.setStyleSheet(
+            "QFrame#transport { background: rgba(%d, %d, %d, 215); "
+            "border: 1px solid %s; border-radius: 4px; }"
+            "QFrame#transport QLabel, QFrame#transport QCheckBox { color: %s; }"
+            % (ground.red(), ground.green(), ground.blue(), t['rule'], t['ink']))
+
+    def _place_transport(self, *_):
+        """Over the top left of the plot on show, clear of the level axis."""
+        try:
+            bar = getattr(self, 'transport', None)
+            if bar is None:
+                return
+            view = self.top_stack.currentWidget()
+            box = view.plot.getPlotItem().getViewBox()
+            corner = view.plot.mapTo(self.top_stack,
+                                     view.plot.mapFromScene(box.sceneBoundingRect().topLeft()))
+            bar.adjustSize()
+            bar.move(corner.x() + 8, corner.y() + 8)
+            bar.raise_()
+        except Exception as exc:                  # never abort the app
+            print(f"transport: {exc}")
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, 'top_stack', None) and event.type() in (
+                QtCore.QEvent.Resize, QtCore.QEvent.Show, QtCore.QEvent.LayoutRequest):
+            self._place_transport()
+        return super().eventFilter(obj, event)
 
     def _shortcuts(self):
         def add(keys, action):
@@ -1900,6 +1948,9 @@ class MainWindow(Qt.QWidget):
         self._left_box.insertWidget(1, self.gain_box)
         quiet = mode == 'sweep'                  # nothing to hear or record
         self.audio_box.setVisible(not quiet)
+        if getattr(self, 'transport', None) is not None:
+            self.transport.setVisible(mode == 'recordings')
+            self._place_transport()
         # In Recordings the tab takes the whole height, so the list is as
         # tall as the window allows and Audio sits at the bottom, level with
         # the multiplex's controls; elsewhere the tab is its own height.
@@ -2661,6 +2712,7 @@ class MainWindow(Qt.QWidget):
         self.theme_disc.describe()
         self.theme_word.setToolTip(self.theme_disc.toolTip())
         self._refit_left()
+        self._style_transport()
         self.update()
 
     # ============================================================ recording

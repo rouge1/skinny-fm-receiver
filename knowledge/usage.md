@@ -665,7 +665,8 @@ where it was.
    has more than one file (a Sceptre file is one, so there is nothing to
    choose). The IQ is chosen first (the whole band before the channel), and
    the WAV is in the list too.
-3. **Press Play**, or double-click the line. Press it again to pause.
+3. **Press Play**, or double-click the line. Press it again to pause. Play,
+   **Loop** and the time are on the spectrum, at its top left.
 4. **Jump** by clicking or dragging the **mini map** down the right of the view (below).
 
 **Sceptre's IQ files** play here too. **Folders...** (under the list)
