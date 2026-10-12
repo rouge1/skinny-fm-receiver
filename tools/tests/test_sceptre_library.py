@@ -5,8 +5,8 @@ Files built to the layout the code reads (``signals.write_sdvr``,
 
 - list them from the folders added, as one recording each: its centre as the
   station, its length from the samples, the time it began, the file's name for
-  a name, the kind - and pass over what is not IQ (a sweep DVR, whose tiles
-  come in a later phase), a stray file, and a folder that is not there;
+  a name, the kind - and pass over a stray file and a folder that is not there
+  (sweep DVRs and spectrum files are test_sceptre_spectra.py's);
 - read only their headers, and the same header once while the file is as it
   was;
 - draw them (``library.render``) exactly as the same samples in this app's own
@@ -81,7 +81,6 @@ def build(folder):
                               blue_iq, 1e6, keywords={'RF_FREQ': 99.269e6, 'SAMPLE_RATE': 1e6,
                                                       'DATA_GAIN': GAIN_DB,
                                                       'TIME_EPOCH': '2026-09-30T10:44:21Z'})
-    signals.write_sweep_sdvr(os.path.join(folder, 'sweep.sdvr'), age=60.0)
     with open(os.path.join(folder, 'notes.txt'), 'w') as fh:
         fh.write('not a recording')
     return sdvr, cdif, got, blue_iq
@@ -92,7 +91,7 @@ def pieces(folder):
     gone = os.path.join(FOLDER, 'not-there')
     before = sorted(os.listdir(folder))
     recs = library.scan_external([folder, gone, folder])
-    assert len(recs) == 2, [r.key for r in recs]          # the sweep DVR and notes passed over
+    assert len(recs) == 2, [r.key for r in recs]          # notes passed over
     by_kind = {r.tracks[0].kind: r for r in recs}
     d, b = by_kind['dvr-iq'], by_kind['cdif']
     assert d.external and b.external
@@ -126,17 +125,6 @@ def pieces(folder):
         [r.name for r in got_odd]
     assert all(r.tracks[0].error is None for r in got_odd)
     assert read_iq_metadata(shout)['layout']['samples'] > 0
-    sweep = os.path.join(folder, 'sweep.sdvr')
-    scans = []
-    real_scan = library.sceptre_dvr.scan
-    library.sceptre_dvr.scan = lambda *a, **k: scans.append(a) or real_scan(*a, **k)
-    try:
-        library.scan_external([folder])
-        library.scan_external([folder])
-    finally:
-        library.sceptre_dvr.scan = real_scan
-    assert not [a for a in scans if a[0] == sweep and len(scans) > 0] or \
-        sum(1 for a in scans if a[0] == sweep) <= 1, scans
 
     # drawn exactly as this app's own file of the same samples
     own = os.path.join(FOLDER, 'own')
@@ -258,7 +246,7 @@ def gui(folder):
     w._delete_keys(keys)
     assert all(os.path.exists(k) for k in keys)
     assert 'not deleted' in w.lib_note.text(), w.lib_note.text()
-    assert sorted(os.listdir(folder)) == sorted(['dvr.sdvr', 'sweep.sdvr', 'notes.txt',
+    assert sorted(os.listdir(folder)) == sorted(['dvr.sdvr', 'notes.txt',
                                                  os.path.basename(keys[0]) if keys[0].endswith('.cdif')
                                                  else os.path.basename(keys[1])]), os.listdir(folder)
     print("part 2 passed")
