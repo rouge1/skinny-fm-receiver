@@ -1243,8 +1243,10 @@ def folding(w):
     w.lbl['radiotext'].setText('Hello from the station')
     w.lbl['nowplaying'].setText('-')
     w._summarise_station()
-    assert tabs._summary._head == 'TEST FM · Country', tabs._summary._head
-    assert tabs._summary._tail == 'Hello from the station', tabs._summary._tail
+    lines = dict(tabs._summary._lines[1:])
+    assert tabs._summary._lines[0] == ('', 'TEST FM · Country'), tabs._summary._lines
+    assert lines['RadioText'] == 'Hello from the station', lines
+    assert 'Now playing' not in lines              # nothing to say: left out
     tabs.setCurrentIndex(1)
     tabs.chevron.click()
     pump(0.5)

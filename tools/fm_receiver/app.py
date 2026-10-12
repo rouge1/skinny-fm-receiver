@@ -1022,21 +1022,33 @@ class MainWindow(Qt.QWidget):
         return self.station_tabs
 
     def _summarise_station(self):
-        """The two lines the folded station tabs keep: of the tab on show,
-        the station and its type, then what it is playing or saying."""
+        """The lines the folded station tabs keep: of the tab on show, the
+        station and its type, then what it says - the fields that have
+        something to show."""
         try:
             def text(label):
                 t = _plain_text(label.text()).strip() if label is not None else ''
-                return '' if t in ('-', '') else t
+                return '' if t in ('-', '') else " ".join(t.split())
             if self.station_tabs.currentIndex() == 1:
-                head = text(self.hd_lbl.get('station'))
-                tail = text(self.hd_lbl.get('nowplaying'))
+                hd = self.hd_lbl
+                lines = [('', text(hd.get('station'))),
+                         ('Now playing', text(hd.get('nowplaying'))),
+                         ('Album', text(hd.get('album'))),
+                         ('Genre', text(hd.get('genre'))),
+                         ('Message', text(hd.get('message'))),
+                         ('Programs', text(hd.get('programs'))),
+                         ('Signal', text(hd.get('signal')))]
             else:
                 name = text(self.lbl.get('station_name')) or text(self.lbl.get('ps'))
                 kind = text(self.lbl.get('pty'))
-                head = " · ".join(x for x in (name, kind) if x)
-                tail = text(self.lbl.get('nowplaying')) or text(self.lbl.get('radiotext'))
-            self.station_tabs.set_summary(head, tail)
+                lines = [('', " · ".join(x for x in (name, kind) if x)),
+                         ('Now playing', text(self.lbl.get('nowplaying'))),
+                         ('RadioText', text(self.lbl.get('radiotext'))),
+                         ('ID (PI)', text(self.lbl.get('pi'))),
+                         ('Audio', text(self.stereo_label)),
+                         ('Signal', text(self.sig_label)),
+                         ('Decode', text(self.lbl.get('quality')))]
+            self.station_tabs.set_summary(lines)
         except Exception:
             self._report('station summary')
 
@@ -1620,6 +1632,7 @@ class MainWindow(Qt.QWidget):
         # The Recordings tab's mini map is beside each view's waterfall: the
         # box on it is what the waterfall shows, and dragging it moves both.
         for view in (self.rf_view, self.audio_view):
+            view.messageClicked.connect(self._message_clicked)
             view.minimap.seekRequested.connect(self._seek_to)
             view.minimap.scrubbed.connect(self._scrubbed)
             view.minimap.panRequested.connect(view.pan_to)
@@ -2451,6 +2464,12 @@ class MainWindow(Qt.QWidget):
             except Exception as exc:
                 self._stop_recording(f"could not continue recording: {exc}")
                 break
+
+    def _message_clicked(self, words):
+        """"Press Play", on the spectrum, is a Play button."""
+        if (words == "Press Play" and self.play_btn.isEnabled()
+                and not self.play_btn.isChecked()):
+            self.play_btn.setChecked(True)
 
     def _rf_clicked(self, hz):
         self.tune(hz, recentre=False)       # sweeping, this only moves the marker

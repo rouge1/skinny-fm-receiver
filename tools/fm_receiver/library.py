@@ -55,7 +55,10 @@ EXTERNAL_KINDS = {'.sdvr': 'dvr-iq', '.cdif': 'cdif'}
 
 
 def clock(seconds):
-    """1:05, or 1:02:05."""
+    """1:05, or 1:02:05; under a second, 14 ms - a stretch that short would
+    read as 0:00 and look like a file that is empty or broken."""
+    if 0 < seconds < 1:
+        return f"{max(1, round(seconds * 1000))} ms"
     seconds = max(0, int(seconds))
     h, rest = divmod(seconds, 3600)
     m, s = divmod(rest, 60)

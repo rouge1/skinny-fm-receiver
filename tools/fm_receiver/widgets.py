@@ -1190,7 +1190,7 @@ class PageTabs(Qt.QTabWidget):
     # -- folding
     def foldable(self, folded=False, summary=False):
         """A chevron in the corner folds the tabs to their bar. With
-        ``summary`` the folded tabs keep two lines of what the page says
+        ``summary`` the folded tabs keep some lines of what the page says
         (:meth:`set_summary`), so a folded box still shows the station."""
         if summary:
             self._summary = _Summary(self)
@@ -1209,11 +1209,24 @@ class PageTabs(Qt.QTabWidget):
         self.set_folded(folded)
         return self
 
-    def set_summary(self, head, tail=''):
-        """The two lines shown under the tabs while they are folded: ``head``
-        in the strong type and ``tail`` under it."""
-        if self._summary is not None:
-            self._summary.set_lines(head, tail)
+    def set_summary(self, lines):
+        """What is shown under the tabs while they are folded: ``lines``, a
+        list of (caption, text) - the first, in the strong type, has no
+        caption - of which those with no text are left out. The folded box
+        glides to the height they need."""
+        if self._summary is None:
+            return
+        before = self._summary.fixed_height()
+        self._summary.set_lines(lines)
+        if self._summary.fixed_height() != before:
+            self._place_summary()
+            if self._folded:
+                end = self._folded_height()
+                if self.isVisible():
+                    self._glide_to(end, FADE_MS, release=False)
+                else:
+                    self.setMaximumHeight(end)
+                self.updateGeometry()
 
     # The corner widget of a QTabWidget is laid at the foot of the tab bar's
     # box, a few pixels under the tabs' own middle: put it level with them.
@@ -1410,21 +1423,29 @@ class PageTabs(Qt.QTabWidget):
 
 
 class _Summary(Qt.QWidget):
-    """Two lines of text under folded tabs: the first in bold, each cut to
-    the width with an ellipsis rather than making the column wider."""
+    """What a folded page still says, under the tabs: a bold first line (the
+    station), then up to :attr:`MAX` more as caption and value, the values
+    lined up and each cut to the width with an ellipsis rather than making
+    the column wider."""
+
+    MAX = 7
 
     def __init__(self, parent):
         super().__init__(parent)
         self.setSizePolicy(Qt.QSizePolicy.Ignored, Qt.QSizePolicy.Fixed)
-        self._head = self._tail = ''
+        self._lines = []                       # [(caption, text)]
         self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
 
-    def fixed_height(self):
-        return 2 * self.fontMetrics().lineSpacing() + 4
+    def line_count(self):
+        return max(2, min(len(self._lines), self.MAX))
 
-    def set_lines(self, head, tail):
-        if (head, tail) != (self._head, self._tail):
-            self._head, self._tail = head, tail
+    def fixed_height(self):
+        return self.line_count() * self.fontMetrics().lineSpacing() + 4
+
+    def set_lines(self, lines):
+        lines = [(c, t) for c, t in lines if t][:self.MAX]
+        if lines != self._lines:
+            self._lines = lines
             self.update()
 
     def paintEvent(self, event):
@@ -1434,15 +1455,25 @@ class _Summary(Qt.QWidget):
             line = fm.lineSpacing()
             bold = Qt.QFont(self.font())
             bold.setBold(True)
-            for row, (text, font, token) in enumerate(
-                    ((self._head, bold, 'ink'), (self._tail, self.font(), 'ink_2'))):
-                if not text:
+            captions = [c for c, _ in self._lines[1:] if c]
+            indent = max([fm.horizontalAdvance(c + ':') for c in captions] or [0]) + 8
+            for row, (caption, text) in enumerate(self._lines):
+                y = row * line + 2
+                if row == 0:
+                    p.setFont(bold)
+                    p.setPen(Qt.QColor(theme.TOKENS['ink']))
+                    shown = Qt.QFontMetrics(bold).elidedText(text, QtCore.Qt.ElideRight,
+                                                             self.width())
+                    p.drawText(0, y, self.width(), line,
+                               QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, shown)
                     continue
-                p.setFont(font)
-                p.setPen(Qt.QColor(theme.TOKENS[token]))
-                shown = Qt.QFontMetrics(font).elidedText(text, QtCore.Qt.ElideRight,
-                                                         self.width())
-                p.drawText(0, row * line + 2, self.width(), line,
+                p.setFont(self.font())
+                p.setPen(Qt.QColor(theme.TOKENS['ink_3']))
+                p.drawText(0, y, indent, line,
+                           QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, caption + ':')
+                p.setPen(Qt.QColor(theme.TOKENS['ink_2']))
+                shown = fm.elidedText(text, QtCore.Qt.ElideRight, max(self.width() - indent, 0))
+                p.drawText(indent, y, self.width() - indent, line,
                            QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, shown)
             p.end()
         except Exception as exc:                  # never abort the app
@@ -2162,6 +2193,7 @@ class SpectrumView(Qt.QWidget):
     """
 
     clicked = pyqtSignal(float)
+    messageClicked = pyqtSignal(str)          # the words on the plot, pressed
     activated = pyqtSignal(float)
     averageChanged = pyqtSignal(int)
     bandWheel = pyqtSignal(int, bool)
@@ -3201,6 +3233,14 @@ class SpectrumView(Qt.QWidget):
 
     def _scene_clicked(self, event):
         if event.button() not in (QtCore.Qt.LeftButton, QtCore.Qt.RightButton):
+            return
+        # The words drawn on the plot ("Press Play") are a button.
+        words = self.message.toPlainText()
+        if (words and event.button() == QtCore.Qt.LeftButton and not event.double()
+                and self.message.isVisible()
+                and self.message.sceneBoundingRect().contains(event.scenePos())):
+            event.accept()
+            self.messageClicked.emit(words)
             return
         hz = self._to_hz(event.scenePos())
         if hz is None:

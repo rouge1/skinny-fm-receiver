@@ -738,6 +738,21 @@ def part2_window():
     view.span_knob.setValue(1e6)
     view.pan_to(98.2e6)
     centre = view.center_hz
+    # The words "Press Play" on the spectrum are the Play button.
+    class Click:
+        def __init__(self, pos, button=QtCore.Qt.LeftButton):
+            self._pos, self._button = pos, button
+        def button(self): return self._button
+        def scenePos(self): return self._pos
+        def double(self): return False
+        def accept(self): pass
+    view.set_message("Press Play")
+    pump(0.2)
+    words = view.message.sceneBoundingRect().center()
+    view._scene_clicked(Click(QtCore.QPointF(words.x() + 400, words.y() + 400),))
+    assert not w.play_btn.isChecked(), 'a click off the words played'
+    view._scene_clicked(Click(words))
+    assert w.play_btn.isChecked(), 'the words did not press Play'
     w.play_btn.setChecked(True)
     assert pump(8, lambda: newest(view) > 8.5 and not view.wf_frozen), newest(view)
     assert view.wf_clock is not None
