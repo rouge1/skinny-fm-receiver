@@ -165,6 +165,26 @@ def gui(folder):
     assert 'Sceptre sweep DVR' in text and 'Sceptre FFT' in text, text
     assert 'sweep.sdvr' not in text and '.fft' not in text, text
 
+    # a slow file: a spinner says so on the plot, then "Press Play" comes back
+    real_render = library.render
+
+    def slow(*a, **k):
+        time.sleep(1.2)
+        return real_render(*a, **k)
+
+    library.render = slow
+    try:
+        w.rec_list.clearSelection()
+        row = next(i for i, r in enumerate(w._recordings) if r.tracks[0].kind == 'fft')
+        w.rec_list.setCurrentItem(w._rec_items[row])
+        w._rec_items[row].setSelected(True)
+        assert pump(5, lambda: 'Loading' in w.rf_view.message.toPlainText()), \
+            repr(w.rf_view.message.toPlainText())
+        assert pump(8, lambda: w.rf_view.message.toPlainText() == 'Press Play'), \
+            repr(w.rf_view.message.toPlainText())
+    finally:
+        library.render = real_render
+
     # the sweep DVR: drawn on choosing it, in dBm, with the map beside it
     pick(w, 'dvr-sweep')
     view = w.rf_view

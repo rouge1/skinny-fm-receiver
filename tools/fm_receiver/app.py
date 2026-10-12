@@ -445,6 +445,8 @@ class MainWindow(Qt.QWidget):
         self._recordings = []
         self._rec_items = []              # the list's item of each
         self._rec_sel = None
+        self._loading_since = None         # when a stretch began drawing from the file
+        self._loading_shown = False
         self._spectrum_fit = False
         self._spec_band = None             # (low, high) Hz drawn of a wide spectrum track
         self._track = None
@@ -3254,6 +3256,34 @@ class MainWindow(Qt.QWidget):
             self._spec_drawn = self._playhead()
         self._request_window(None if p is None else self._playhead())
 
+    #: A spinner for the plot while the file is being read: a stretch that
+    #: takes longer than this shows it, so a quick redraw does not flash it.
+    LOADING_AFTER_S = 0.25
+    SPINNER = "\u25d0\u25d3\u25d1\u25d2"
+
+    def _loading_tick(self):
+        """Say so, on the plot, while the waterfall's stretch is read from
+        the file (a gigabyte takes a few seconds): a spinner and "Loading",
+        where "Press Play" would be drawn over a half-drawn trace. The
+        words go back when it is done."""
+        track = self._track
+        busy = (track is not None and not track.error and self._live is not None
+                and (self._window_job is not None or self._window_timer.isActive()))
+        view = self._map_view()
+        now = time.monotonic()
+        if busy:
+            if self._loading_since is None:
+                self._loading_since = now
+            if now - self._loading_since >= self.LOADING_AFTER_S:
+                frame = self.SPINNER[int(now * 8) % len(self.SPINNER)]
+                view.set_message(f"{frame}  Loading...")
+                self._loading_shown = True
+        elif self._loading_since is not None:
+            self._loading_since = None
+            if self._loading_shown:
+                self._loading_shown = False
+                view.set_message("Press Play" if self._play is None else '')
+
     def _collect_jobs(self):
         """What the pool has finished: the mini map, and the waterfall's
         stretch (the newest asked for - an older one is no use)."""
@@ -3868,6 +3898,7 @@ class MainWindow(Qt.QWidget):
     def _tick_fast(self):
         try:
             self._collect_jobs()
+            self._loading_tick()
             running = self.engine.running
             if running and self._mode in ('receive', 'playback') and self.engine.rx:
                 self._draw_receive()
