@@ -164,6 +164,11 @@ def gui(folder):
     view = w.rf_view
     assert pump(8, lambda: view._hist is not None and view._hist.n > 0), 'no waterfall from the file'
     assert view.level_unit == 'dBm', view.level_unit
+    # opened readable: the Ref level fitted to the rows (the saved -10 dBFS
+    # would leave a -100 dBm floor off the bottom), with no key pressed
+    assert pump(5, lambda: view.ref_knob.value() < -40), view.ref_knob.value()
+    assert -135 < view.ref_knob.value() - view.range_knob.value() < -95, \
+        (view.ref_knob.value(), view.range_knob.value())
     total = w._track.seconds
     assert abs(view.minimap.duration - total) < 1e-6, view.minimap.duration
 

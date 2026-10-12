@@ -296,10 +296,17 @@ class Recording:
 
     def best_track(self):
         """What plays unless another is chosen: the IQ - the whole band
-        first, it holds the most - else the WAV."""
+        first, it holds the most - else the WAV. A spectrum track that runs
+        far longer than the IQ beside it (a sweep DVR holds seconds of IQ
+        and minutes of sweeps) is the one worth opening."""
         for kind in KIND_ORDER:
             for track in self.tracks:
                 if track.kind == kind and not track.error:
+                    if track.is_iq and track.seconds < 1.0:
+                        longer = [t for t in self.tracks if t.is_spectrum and not t.error
+                                  and t.seconds > 10 * max(track.seconds, 0.1)]
+                        if longer:
+                            return longer[0]
                     return track
         return self.tracks[0] if self.tracks else None
 

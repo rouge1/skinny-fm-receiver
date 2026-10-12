@@ -445,6 +445,7 @@ class MainWindow(Qt.QWidget):
         self._recordings = []
         self._rec_items = []              # the list's item of each
         self._rec_sel = None
+        self._spectrum_fit = False
         self._track = None
         self._play = None
         self._start_at = 0.0
@@ -3181,6 +3182,20 @@ class MainWindow(Qt.QWidget):
             view.set_extent(low, high, center_hz=track.station_hz or track.center_hz)
         view.set_level_unit('dBm' if (track.kind == 'cdif' or track.is_spectrum)
                             else 'dBFS')
+        self._spectrum_fit = False
+        if track.is_spectrum:
+            # What was saved is an IQ file's band and dBFS levels. Open on
+            # the band the recording's IQ was made of, if it has one, else
+            # the whole of it; the levels are fitted to the first rows.
+            span, centre = high - low, (low + high) / 2
+            for other in (self._rec_sel.tracks if self._rec_sel is not None else ()):
+                if other.is_iq and other.rate and other.center_hz and not other.error \
+                        and low <= other.center_hz <= high:
+                    span, centre = min(span, other.rate), other.center_hz
+                    break
+            view.span_knob.setValue(max(min(span, high - low), view.span_knob._min), emit=False)
+            view.set_center(centre)
+            self._spectrum_fit = True
         view.set_message("Press Play")
         mini = view.minimap
         mini.set_extent((low, high))
@@ -3224,10 +3239,16 @@ class MainWindow(Qt.QWidget):
                     rows = len(img)
                     times = at - span + (np.arange(rows) + 0.5) * span / rows
                     view.set_waterfall_history(freqs, img, times)
-                    if self._play is None:
-                        known = np.flatnonzero(np.isfinite(img).all(axis=1))
-                        if len(known):
+                    known = np.flatnonzero(np.isfinite(img).all(axis=1))
+                    if self._play is None and len(known):
+                        view.set_data(freqs, img[known[-1]], waterfall_row=False)
+                    if self._spectrum_fit and len(known):
+                        # The first rows of a spectrum recording: fit the
+                        # Ref level and Range to them, once, so it opens
+                        # readable instead of at the last file's dBFS.
+                        if self._play is not None:
                             view.set_data(freqs, img[known[-1]], waterfall_row=False)
+                        self._spectrum_fit = not view.auto_scale()
             except Exception:
                 self._report('waterfall')
             finally:
