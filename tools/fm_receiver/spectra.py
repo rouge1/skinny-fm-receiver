@@ -15,9 +15,20 @@ import numpy as np
 
 from . import sceptre_blue, sceptre_dvr
 
-#: Slack, in rows or bins, for float error when a time or frequency lands on
-#: an exact row or bin.
+#: Slack for float error when a frequency lands on an exact bin, in bins.
 _EPS = 1e-9
+#: Slack for float error when a time lands on an exact row, relative to the
+#: row number: about 1e-12 of a row.
+_ROW_EPS = 1e-12
+
+
+def _ceil_row(x):
+    """``ceil(x)`` for a row position, except that a position within float error
+    of a whole row counts as that row."""
+    near = round(x)
+    if abs(x - near) <= _ROW_EPS * max(1.0, abs(x)):
+        return int(near)
+    return math.ceil(x)
 
 
 class SpectraError(Exception):
@@ -60,17 +71,17 @@ class SpectrumFile:
         else:
             ks, db = self._read_fft(ks, lo, hi)
         freqs = self.start_hz + np.arange(lo, hi) * self.bin_hz
-        if max_cols and hi - lo > max_cols:
-            db, freqs = _pool(db, freqs, max_cols)
+        if max_cols is not None and hi - lo > max_cols:
+            db, freqs = _pool(db, freqs, max_cols) if max_cols else (db[:, :0], freqs[:0])
         return ks * self.row_seconds, freqs, db
 
     def _row_numbers(self, t0, t1, max_rows):
         """The row numbers k in [t0, t1), thinned evenly to ``max_rows``."""
-        first = max(0, math.ceil(t0 / self.row_seconds - _EPS))
-        stop = self.rows if t1 is None else min(self.rows, math.ceil(t1 / self.row_seconds - _EPS))
+        first = max(0, _ceil_row(t0 / self.row_seconds))
+        stop = self.rows if t1 is None else min(self.rows, _ceil_row(t1 / self.row_seconds))
         ks = np.arange(first, max(first, stop))
         if max_rows is not None and len(ks) > max_rows:
-            ks = ks[np.arange(max_rows) * len(ks) // max_rows]
+            ks = ks[np.arange(max_rows) * len(ks) // max(max_rows, 1)]
         return ks
 
     def _bin_span(self, f_lo, f_hi):
@@ -91,20 +102,21 @@ class SpectrumFile:
         a time, so only the tiles the rows are in are read. A tile Sceptre
         overwrote meanwhile gives no rows: those are left out."""
         sweeps = self._source.sweeps
+        if hi <= lo:
+            return ks, np.empty((len(ks), 0), dtype=np.float32)
+        # Sweeps.read rounds Hz to bins itself: aim at the middle of the
+        # first bin, and at half a bin below the last one's centre, which
+        # it rounds up to that bin.
+        f_lo = self.start_hz + (lo + 0.5) * self.bin_hz
+        f_hi = self.start_hz + (hi - 1.5) * self.bin_hz
         kept, rows = [], []
-        if hi > lo:
-            # Sweeps.read rounds Hz to bins itself: aim at the middle of the
-            # first bin, and at half a bin below the last one's centre, which
-            # it rounds up to that bin.
-            f_lo = self.start_hz + (lo + 0.5) * self.bin_hz
-            f_hi = self.start_hz + (hi - 1.5) * self.bin_hz
-            for tile in np.unique(ks // sweeps):
-                _, _, block = self._source.read(f_lo, f_hi, first=tile, stop=tile + 1, dbm=True)
-                if not len(block):
-                    continue
-                mine = ks[ks // sweeps == tile]
-                kept.append(mine)
-                rows.append(block[mine - tile * sweeps])
+        for tile in np.unique(ks // sweeps):
+            _, _, block = self._source.read(f_lo, f_hi, first=tile, stop=tile + 1, dbm=True)
+            if not len(block):
+                continue
+            mine = ks[ks // sweeps == tile]
+            kept.append(mine)
+            rows.append(block[mine - tile * sweeps])
         if not rows:
             return np.empty(0, dtype=np.int64), np.empty((0, hi - lo), dtype=np.float32)
         return np.concatenate(kept), np.concatenate(rows)
