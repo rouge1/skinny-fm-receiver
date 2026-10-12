@@ -661,8 +661,8 @@ where it was.
    what was recorded and the size. **Shift-click** picks a range of lines
    and **Ctrl-click** one more (or one fewer); the player follows the line
    you clicked last.
-2. **Choose what to play** in **Play**: it appears only when the recording
-   has more than one file (a Sceptre file is one, so there is nothing to
+2. **Choose what to play** in the list at the left of the bar on the
+   spectrum: it appears only when the recording has more than one file (a Sceptre file is one, so there is nothing to
    choose). The IQ is chosen first (the whole band before the channel), and
    the WAV is in the list too.
 3. **Press Play**, or double-click the line. Press it again to pause. Play,
@@ -747,7 +747,7 @@ station is a line down it. **The waterfall falls, as it does live**: the
   together. A right click changes nothing that is picked or playing. Click
   anywhere else, press Esc, scroll, or right-click the line again to slide it
   back.
-- **Delete...** below the Player does the same for what is picked (the chosen
+- **Delete...** under the list does the same for what is picked (the chosen
   recording if you have picked none), after asking.
   **Folders...** is one dialog for every folder: the recordings folder
   (**Change...** chooses another; Record saves there too), the other folders

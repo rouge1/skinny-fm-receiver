@@ -1470,7 +1470,13 @@ class MainWindow(Qt.QWidget):
         self.play_text = _wrapping(Qt.QLabel("-"))
         self.play_text.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         form.addRow("RDS:", self.play_text)
-        box.addWidget(player)
+        # The Player box is not shown: the file chooser, Play, Loop and the
+        # time are on the spectrum (:meth:`_build_transport`), and the
+        # station and RDS text the box held are not shown at all (they are
+        # kept for ``fmctl``). It stays, hidden, to own them.
+        player.setParent(page)
+        player.hide()
+        self._player_box = player
 
         files = Qt.QHBoxLayout()
         self.folders_btn = Qt.QPushButton("Folders...")
@@ -1637,9 +1643,10 @@ class MainWindow(Qt.QWidget):
         row = Qt.QHBoxLayout(bar)
         row.setContentsMargins(6, 4, 8, 4)
         row.setSpacing(8)
-        for widget in (self.play_btn, self.loop_check, self.time_label):
+        for widget in (self.track_combo, self.play_btn, self.loop_check, self.time_label):
             widget.setParent(bar)
             row.addWidget(widget)
+        self.track_combo.hide()               # until a recording has several files
         self.transport = bar
         self._style_transport()
         self.top_stack.installEventFilter(self)
@@ -3030,12 +3037,10 @@ class MainWindow(Qt.QWidget):
         self._load_track(best)
 
     def _show_track_choice(self, shown):
-        """The Play: list is there to choose between a recording's files
-        (the WAV, the channel, the band); with one file there is nothing to
-        choose, and the file is named above it."""
-        for w in (self.track_combo, self._player_form.labelForField(self.track_combo)):
-            if w is not None:
-                fade(w, shown)
+        """The file list, in the bar on the spectrum, is there to choose
+        between a recording's files (the WAV, the channel, the band); with
+        one file there is nothing to choose."""
+        fade(self.track_combo, shown, done=self._place_transport)
 
     def _track_chosen(self, index):
         if self._rec_sel is None or not 0 <= index < len(self._rec_sel.tracks):
