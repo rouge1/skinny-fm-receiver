@@ -775,7 +775,7 @@ from 0. Only the rows and bins on screen are read from the file, not all of it.
 ## Playing other IQ files
 
 The Recordings tab plays this app's recordings, and Sceptre's `.sdvr` and
-`.cdif` from the folders you add there (above). For any other IQ file, such
+`.cdif` from the folders you add there (above), and a sweep DVR or a `.fft` as a spectrum (see *Sceptre spectrum*). For any other IQ file, such
 as SigMF or the RF bench toolkit's captures, choose **IQ recording
 (playback)** in the Radio list and open the `.cfile`, `.sigmf-meta` or
 `.json` file. Or start the app with `./fm-receiver --file PATH`.
