@@ -496,6 +496,40 @@ def part1b_minimap():
     mini.grab()
     release(mouse_hover)
     assert mini._resize is None
+    # The bottom handle is the playhead's: dragged, the playhead moves and
+    # the top edge stays, so the window takes in more or less time.
+    mini.set_window(20.0, 97.2e6, 98.8e6)
+    mini.set_position(60.0)
+    pump(0.05)
+    got = {'span': [], 'scrub': [], 'seek': []}
+    follow = lambda s: (got['span'].append(s), mini.set_window(s, 97.2e6, 98.8e6))
+    mini.spanRequested.connect(follow)
+    mini.scrubbed.connect(got['scrub'].append)
+    mini.seekRequested.connect(got['seek'].append)
+    bottom = mini._grip_rect('bottom')
+    assert bottom is not None and abs(bottom.center().y() - mini.window_rect().bottom()) <= 1.0
+    centre = bottom.center().toPoint()
+    assert mini._edges_at(centre) == {'bottom'}
+    assert mini._edge_cursor({'bottom'}) == QtCore.Qt.SizeVerCursor
+    top0 = mini.position - mini.span
+    mini._hover(centre)
+    assert 'bottom' in mini._hot
+    mini.grab()
+    press(centre)
+    assert mini._resize is not None
+    mini.grab()
+    drop = QtCore.QPoint(centre.x(), centre.y() + 10)
+    move(drop)
+    release(drop)
+    assert mini._resize is None and got['seek'], got
+    assert mini.position > 60.0 and abs(mini.position - mini.span - top0) < 1e-6, (
+        mini.position, mini.span, top0)
+    assert abs(got['seek'][-1] - mini.position) < 1e-6
+    mini.spanRequested.disconnect(follow)
+    mini.scrubbed.disconnect(got['scrub'].append)
+    mini.seekRequested.disconnect(got['seek'].append)
+    mini.set_window(20.0, 97.2e6, 98.8e6)
+    mini.set_position(60.0)
     # Panned wholly off the recorded band, the box rests against the edge.
     mini.set_window(20.0, 120e6, 121e6)
     box = mini.window_rect()
@@ -1027,8 +1061,10 @@ def part3_list():
     red = colour('bad')
     def near(c, ref):
         return abs(c.red() - ref.red()) + abs(c.green() - ref.green()) + abs(c.blue() - ref.blue()) < 40
-    assert near(image.pixelColor(10, at(0).y()), red), image.pixelColor(10, at(0).y()).name()
-    assert not near(image.pixelColor(10, at(1).y()), red)
+    edge = image.width() - 10                  # the button is at the right edge
+    assert near(image.pixelColor(edge, at(0).y()), red), image.pixelColor(edge, at(0).y()).name()
+    assert not near(image.pixelColor(edge, at(1).y()), red)
+    assert not near(image.pixelColor(10, at(0).y()), red)
     # A click elsewhere slides them back, and goes on to do what it does.
     click(3)
     assert pump(2, lambda: not lst.revealed_keys()), lst.revealed_keys()

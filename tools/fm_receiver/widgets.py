@@ -3492,9 +3492,18 @@ class MiniMap(Qt.QWidget):
                     edges.add('right')
         if abs(y - box.top()) <= near_y and box.left() - near_x <= x <= box.right() + near_x:
             edges.add('top')
-        grip = self._grip_rect()
-        if grip is not None and grip.contains(QtCore.QPointF(pos)):
-            edges.add('top')
+        if abs(y - box.bottom()) <= near_y and box.left() - near_x <= x <= box.right() + near_x:
+            edges.add('bottom')
+        for edge in ('top', 'bottom'):
+            grip = self._grip_rect(edge)
+            if grip is not None and grip.contains(QtCore.QPointF(pos)):
+                edges.add(edge)
+        # Both edges of a very short window are near the pointer: the top
+        # one, unless it is the bottom's handle that is under it.
+        if edges >= {'top', 'bottom'}:
+            grip = self._grip_rect('bottom')
+            edges.discard('top' if grip is not None and grip.contains(QtCore.QPointF(pos))
+                          else 'bottom')
         for side, rect in self._side_grips().items():
             if rect.contains(QtCore.QPointF(pos)):
                 edges.add(side)
@@ -3504,20 +3513,25 @@ class MiniMap(Qt.QWidget):
     #: along it, which says the edge can be pulled to show more or less time.
     GRIP_W, GRIP_H = 20, 7
 
-    def _grip_rect(self):
-        """Where the handle is, or None: centred on the window's top edge,
-        when the window is wide enough to carry it and the edge is free. At
-        the start the window's top is the map's own (there is no time before
-        it): pulling it would show nothing, so it has no handle."""
+    def _grip_rect(self, edge='top'):
+        """Where the handle is, or None: centred on the window's top edge
+        (or its bottom, the playhead: ``edge='bottom'``), when the window is
+        wide enough to carry it. At the start the window's top is the map's
+        own (there is no time before it): pulling it would show nothing, so
+        the top has no handle there. The bottom keeps inside the frame."""
         box = self.window_rect()
         frame = self._frame()
         if box is None or box.width() < self.GRIP_W + 10:
             return None
         inner = frame.adjusted(1.5, 1.5, -1.5, -1.5)
-        if box.top() <= inner.top() + 1.0:
-            return None
         cx = min(max(box.center().x(), inner.left() + self.GRIP_W / 2),
                  inner.right() - self.GRIP_W / 2)
+        if edge == 'bottom':
+            cy = min(box.bottom(), inner.bottom() - self.GRIP_H / 2)
+            return QtCore.QRectF(cx - self.GRIP_W / 2, cy - self.GRIP_H / 2,
+                                 self.GRIP_W, self.GRIP_H)
+        if box.top() <= inner.top() + 1.0:
+            return None
         return QtCore.QRectF(cx - self.GRIP_W / 2, box.top() - self.GRIP_H / 2,
                              self.GRIP_W, self.GRIP_H)
 
@@ -3545,13 +3559,13 @@ class MiniMap(Qt.QWidget):
         return out
 
     def _edge_cursor(self, edges):
-        if edges == {'top'}:
+        if edges in ({'top'}, {'bottom'}):
             return QtCore.Qt.SizeVerCursor
-        if edges and 'top' not in edges:
+        if edges and not edges & {'top', 'bottom'}:
             return QtCore.Qt.SizeHorCursor
-        if edges == {'top', 'left'}:
+        if edges in ({'top', 'left'}, {'bottom', 'right'}):
             return QtCore.Qt.SizeFDiagCursor
-        if edges == {'top', 'right'}:
+        if edges in ({'top', 'right'}, {'bottom', 'left'}):
             return QtCore.Qt.SizeBDiagCursor
         return None
 
@@ -3586,7 +3600,7 @@ class MiniMap(Qt.QWidget):
             # moves from here, so nothing jumps. The playhead stays.
             self._resize = {'edges': edges, 'time': self.time_at(pos.y()),
                             'hz': self.hz_at(pos.x()), 'span': self.span,
-                            'window': self.window_hz}
+                            'window': self.window_hz, 'position': self.position}
             self._set_hot(edges)
             self.update()
             return
@@ -3615,6 +3629,16 @@ class MiniMap(Qt.QWidget):
         if 'top' in r['edges']:
             # Dragged up it takes in more time: the top edge is earlier.
             self.spanRequested.emit(r['span'] - (self.time_at(pos.y()) - r['time']))
+        if 'bottom' in r['edges'] and self.duration:
+            # The playhead dragged, the top edge staying: the window takes
+            # in more or less time and the playback position follows.
+            top = r['position'] - r['span']
+            end = min(max(r['position'] + (self.time_at(pos.y()) - r['time']), 0.0),
+                      self.duration)
+            self.spanRequested.emit(max(end - top, 0.01))
+            self.position = min(max(top + self.span, 0.0), self.duration)
+            self.update()
+            self.scrubbed.emit(self.position)
         if r['window'] and r['edges'] & {'left', 'right'}:
             low, high = r['window']
             moved = self.hz_at(pos.x()) - r['hz']
@@ -3636,9 +3660,12 @@ class MiniMap(Qt.QWidget):
     def _released(self, event):
         if self._resize is not None and event.button() == QtCore.Qt.LeftButton:
             self._resized(event.pos())
+            edges = self._resize['edges']
             self._resize = None
             self._hover(event.pos())
             self.update()
+            if 'bottom' in edges:
+                self.seekRequested.emit(self.position)
             return
         if self._grab is not None and event.button() == QtCore.Qt.LeftButton:
             self._move_to(event.pos())
@@ -3745,15 +3772,18 @@ class MiniMap(Qt.QWidget):
                 cx, cy = rect.center().x(), rect.center().y()
                 for dx in (-1.2, 1.4):
                     p.drawLine(QtCore.QPointF(cx + dx, cy - 5), QtCore.QPointF(cx + dx, cy + 5))
-            # The handle: a flat tab on the top edge, dark with an orange
+            # The handles: a flat tab on the top edge and one on the bottom (the
+            # playhead), dark with an orange
             # border (not the edge's own orange: it is a different thing, a
             # control) and two grooves along it, which is across the way it
             # is pulled. It fills with orange while it is held, and says
             # how much time the window then takes in.
-            grip = self._grip_rect()
-            if grip is not None:
-                held = self._resize is not None and 'top' in self._resize['edges']
-                lit = held or 'top' in hot
+            for edge in ('top', 'bottom'):
+                grip = self._grip_rect(edge)
+                if grip is None:
+                    continue
+                held = self._resize is not None and edge in self._resize['edges']
+                lit = held or edge in hot
                 p.setPen(Qt.QPen(orange if lit else orange.darker(115), 1.5))
                 p.setBrush(orange if held else Qt.QColor(t['ground']))
                 p.drawRoundedRect(grip, 2.5, 2.5)
@@ -3827,8 +3857,9 @@ class _RevealDelegate(Qt.QStyledItemDelegate):
             rect = option.rect
             # The button is as wide as it will be and the strip shows it
             # bit by bit, so the label does not squeeze as the row slides.
-            strip = QtCore.QRect(rect.left(), rect.top(), offset, rect.height())
-            full = QtCore.QRect(rect.left(), rect.top(), view.BUTTON_W, rect.height())
+            strip = QtCore.QRect(rect.right() + 1 - offset, rect.top(), offset, rect.height())
+            full = QtCore.QRect(rect.right() + 1 - view.BUTTON_W, rect.top(),
+                                view.BUTTON_W, rect.height())
             painter.save()
             painter.setClipRect(strip)
             fill = colour('bad')
@@ -3839,7 +3870,7 @@ class _RevealDelegate(Qt.QStyledItemDelegate):
             painter.drawText(full, QtCore.Qt.AlignCenter, view.button_text())
             painter.restore()
             painter.save()
-            painter.translate(offset, 0)
+            painter.translate(-offset, 0)
             self._paint_wash(painter, rect, index)
             super().paint(painter, option, index)
             self._paint_bar(painter, rect, index)
@@ -3908,7 +3939,7 @@ class RevealList(Qt.QListWidget):
     more or less - whose rows slide aside to show a **Delete** button.
 
     A right click on a row slides it (all the selected rows, if it is one of
-    several) to the right, uncovering a red button at the left edge; the
+    several) to the left, uncovering a red button at the right edge; the
     button deletes (:attr:`deleteRequested`, the rows' keys: their
     ``Qt.UserRole``) and no question is asked: that was the right click's.
     Anything else - a click elsewhere, Esc, scrolling, a second right click -
@@ -3947,7 +3978,8 @@ class RevealList(Qt.QListWidget):
 
     def button_rect(self, item):
         rect = self.visualItemRect(item)
-        return QtCore.QRect(rect.left(), rect.top(), self.BUTTON_W, rect.height())
+        return QtCore.QRect(rect.right() + 1 - self.BUTTON_W, rect.top(),
+                            self.BUTTON_W, rect.height())
 
     def reveal(self, keys):
         """Slide the rows with these keys aside."""

@@ -738,8 +738,8 @@ station is a line down it. **The waterfall falls, as it does live**: the
 - There is **no RF gain and no Record box** in this tab: a file has no radio
   to set the gain of, and what is played back is not recorded. They are in
   Sweep and Receive.
-- **Delete a recording: right-click its line.** The line slides to the right
-  and a red **Delete** button comes out at the left edge; press it and the
+- **Delete a recording: right-click its line.** The line slides to the left
+  and a red **Delete** button comes out at the right edge; press it and the
   recording's files are gone. There is no question: the right click was it.
   Right-click a line that is one of several picked and **all the picked
   lines** slide (the buttons read *Delete 3*), and one press deletes them
