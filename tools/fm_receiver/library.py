@@ -15,12 +15,13 @@ mini map, and the stretch the big waterfall shows, from the file. It
 samples the file - a few FFT frames for each row - rather than reading it
 all, so a gigabyte of band IQ takes as long as a minute of WAV.
 
-**Other folders** (:func:`scan_external`): Sceptre's IQ DVR (``.sdvr``) and
-its BLUE IQ exports (``.cdif``) are recordings too, one file each. They are
-listed from folders the user adds, never assumed, and only their headers are
-read (a DVR is a ring Sceptre rewrites, 1 GB of it: its chunk headers are a
-page in each megabyte). The app does not write beside them: no description
-file, no deleting.
+**Other folders** (:func:`scan_external`): Sceptre's IQ DVR (``.sdvr``), its
+BLUE IQ exports (``.cdif``) and its spectrum (a sweep DVR, a ``.fft``) are
+recordings too, one file each. They are listed from folders the user adds,
+never assumed, and only their headers are read (a DVR is a ring Sceptre
+rewrites, 1 GB of it: its chunk headers are a page in each megabyte; the
+tiles are read when a stretch is drawn). The app does not write beside them:
+no description file, no deleting.
 """
 
 import datetime as _dt
@@ -31,7 +32,7 @@ import struct
 
 import numpy as np  # type: ignore
 
-from . import sceptre_blue, sceptre_dvr
+from . import sceptre_blue, sceptre_dvr, spectra
 from .radios import iq_reader, read_iq_metadata
 from .recording import RecordingInfo
 
@@ -45,13 +46,17 @@ INFO = re.compile(r'^(?P<base>fm-(?P<mhz>\d+\.\d+)MHz-(?P<stamp>\d{8}-\d{6})'
                   r'(?:-(?P<dup>\d+))?)' + re.escape(RecordingInfo.SUFFIX) + '$')
 #: Kinds named this close together, on one station, are one recording.
 MERGE_S = 2.0
-KIND_ORDER = ('iq-band', 'iq-channel', 'audio', 'dvr-iq', 'cdif')
+KIND_ORDER = ('iq-band', 'iq-channel', 'audio', 'dvr-iq', 'cdif', 'dvr-sweep', 'fft')
 #: The list's groups, in order: where a recording came from.
-GROUPS = ('FM recordings', 'Sceptre IQ DVR', 'Sceptre BLUE IQ')
+GROUPS = ('FM recordings', 'Sceptre IQ DVR', 'Sceptre BLUE IQ', 'Sceptre spectrum')
 KIND_TEXT = {'audio': 'WAV', 'iq-channel': 'IQ channel', 'iq-band': 'IQ band',
-             'dvr-iq': 'Sceptre IQ DVR', 'cdif': 'Sceptre BLUE IQ'}
-#: The files other folders are searched for, and what each is.
-EXTERNAL_KINDS = {'.sdvr': 'dvr-iq', '.cdif': 'cdif'}
+             'dvr-iq': 'Sceptre IQ DVR', 'cdif': 'Sceptre BLUE IQ',
+             'dvr-sweep': 'Sceptre sweep DVR', 'fft': 'Sceptre FFT'}
+#: The files other folders are searched for, and what each is. A ``.sdvr`` is
+#: listed as IQ and, when its tiles are a sweep of their own, as a spectrum too.
+EXTERNAL_KINDS = {'.sdvr': 'dvr-iq', '.cdif': 'cdif', '.fft': 'fft'}
+#: A spectrum drawn at its own resolution never keeps more columns than this.
+SPECTRUM_MAX_COLS = 16384
 
 
 def clock(seconds):
@@ -142,22 +147,26 @@ class Track:
         self.layout = None
         #: Seconds since 1970 the recording began, when its file says.
         self.start = None
-        #: A Sceptre DVR with spectra in it and no IQ: not played yet.
+        #: A Sceptre DVR asked for as IQ that holds none (a sweep DVR).
         self.spectra = False
         try:
             if kind == 'audio':
                 _, frames, _, _, rate = wav_layout(path)
                 self.rate = float(rate)
                 self.seconds = frames / self.rate
+            elif kind in ('dvr-sweep', 'fft'):
+                spec = _spectrum_file(path)
+                self.rate = None
+                self.center_hz = (spec.start_hz + spec.stop_hz) / 2
+                self.layout = spec
+                self._time_from(spec.start)
+                self.seconds = spec.seconds
             elif kind in ('dvr-iq', 'cdif'):
                 meta = _external_meta(path, kind)
                 self.rate = meta['rate']
                 self.center_hz = meta['center_hz']
                 self.layout = meta['layout']
-                start = meta['layout'].get('start')
-                # a garbage time in a header must not stop the list
-                self.start = float(start) if start and np.isfinite(start) \
-                    and 0 < start < 4e9 else None
+                self._time_from(meta['layout'].get('start'))
                 self.seconds = meta['layout']['samples'] / self.rate
             else:
                 meta = read_iq_metadata(path)
@@ -171,14 +180,25 @@ class Track:
         except Exception as exc:
             self.error = str(exc)
 
+    def _time_from(self, start):
+        """Seconds since 1970 the file says it began. A garbage time in a
+        header must not stop the list."""
+        self.start = float(start) if start and np.isfinite(start) \
+            and 0 < start < 4e9 else None
+
     @property
     def external(self):
         """A Sceptre file, kept in a folder that is not this app's."""
-        return self.kind in ('dvr-iq', 'cdif')
+        return self.kind in ('dvr-iq', 'cdif', 'dvr-sweep', 'fft')
+
+    @property
+    def is_spectrum(self):
+        """A sweep DVR or a spectrum ``.fft``: drawn in dBm, not played as IQ."""
+        return self.kind in ('dvr-sweep', 'fft')
 
     @property
     def is_iq(self):
-        return self.kind != 'audio'
+        return self.kind != 'audio' and not self.is_spectrum
 
     def sidecars(self):
         """The files that describe this one."""
@@ -191,7 +211,8 @@ class Track:
     def label(self):
         what = {'audio': "Audio (WAV)", 'iq-channel': "IQ - channel",
                 'iq-band': "IQ - whole band", 'dvr-iq': "Sceptre IQ DVR",
-                'cdif': "Sceptre BLUE IQ"}[self.kind]
+                'cdif': "Sceptre BLUE IQ", 'dvr-sweep': "Sceptre sweep DVR",
+                'fft': "Sceptre FFT"}[self.kind]
         if self.kind in ('iq-band', 'dvr-iq', 'cdif') and self.rate:
             what += f", {self.rate / 1e6:g} MS/s"
         if self.part > 1:
@@ -221,6 +242,8 @@ class Recording:
                 return GROUPS[1]
             if track.kind == 'cdif':
                 return GROUPS[2]
+        if any(track.is_spectrum for track in self.tracks):
+            return GROUPS[3]
         return GROUPS[0]
 
     @property
@@ -381,10 +404,58 @@ def _external_meta(path, kind):
     return hit
 
 
+def _spectrum_file(path):
+    """The spectrum at ``path``, header only, cached like :func:`_external_meta`.
+
+    A 1 GB ring is scanned once for each write: the tiles are not read here.
+    The cached value is a :class:`spectra.SpectrumFile` or the error that
+    opening it raised."""
+    st = os.stat(path)
+    key = ('spectra', path, st.st_mtime_ns, st.st_size)
+    hit = _META.get(key)
+    if hit is None:
+        try:
+            hit = spectra.open_spectra(path)
+        except Exception as exc:
+            hit = exc
+        if len(_META) > 64:
+            _META.clear()
+        _META[key] = hit
+    if isinstance(hit, Exception):
+        raise hit
+    return hit
+
+
+def _sdvr_tracks(path):
+    """The tracks one ``.sdvr`` lists as. IQ, and a sweep when the tiles are
+    a recording of their own: there is no IQ, or the tiles span more than one
+    and a half times the IQ rate (an IQ DVR's own tiles cover only its band)."""
+    tracks = []
+    rate = None
+    try:
+        iq = Track(path, 'dvr-iq', 1)
+    except OSError:
+        return []
+    if not iq.spectra:
+        tracks.append(iq)
+        rate = iq.rate
+    try:
+        spec = _spectrum_file(path)
+    except (spectra.SpectraError, OSError):
+        spec = None
+    if spec is not None and (rate is None or spec.bins * spec.bin_hz > 1.5 * rate):
+        try:
+            tracks.append(Track(path, 'dvr-sweep', 1))
+        except OSError:
+            pass
+    return tracks
+
+
 def scan_external(folders, skip=()):
-    """The Sceptre IQ files (``.sdvr``, ``.cdif``) in ``folders``, as one
-    recording each, newest first. A folder that is not there is passed over,
-    and so is a file that is not IQ (a sweep DVR has spectra: later)."""
+    """The Sceptre files (``.sdvr``, ``.cdif``, ``.fft``) in ``folders``, as
+    one recording each, newest first. A folder that is not there is passed
+    over. A sweep DVR is one spectrum track; an IQ DVR stays one IQ track
+    unless its tiles are a wider sweep, when both belong to the one recording."""
     out, seen = [], set()
     for folder in folders:
         real = os.path.realpath(folder)
@@ -396,22 +467,25 @@ def scan_external(folders, skip=()):
         except OSError:
             continue
         for name in names:
-            kind = EXTERNAL_KINDS.get(os.path.splitext(name)[1].lower())
+            ext = os.path.splitext(name)[1].lower()
+            kind = EXTERNAL_KINDS.get(ext)
             if kind is None or name.startswith('.'):
                 continue
             path = os.path.join(folder, name)
             if not os.path.isfile(path):
                 continue
             try:
-                track = Track(path, kind, 1)
+                tracks = _sdvr_tracks(path) if ext == '.sdvr' else [Track(path, kind, 1)]
             except OSError:
                 continue
-            if track.spectra:
+            if not tracks:
                 continue
-            when = track.start if track.start else os.path.getmtime(path)
-            rec = Recording(path, track.center_hz or 0.0,
-                            _dt.datetime.fromtimestamp(when))
-            rec.tracks.append(track)
+            # The IQ says what the recording was of, when the file has both.
+            lead = next((t for t in tracks if t.kind == 'dvr-iq'), tracks[0])
+            when = next((t.start for t in tracks if t.start), None)
+            when = when if when else os.path.getmtime(path)
+            rec = Recording(path, lead.center_hz or 0.0, _dt.datetime.fromtimestamp(when))
+            rec.tracks.extend(tracks)
             out.append(rec)
     out.sort(key=lambda r: (r.started, r.key), reverse=True)
     return out
@@ -479,7 +553,10 @@ def blackman_harris(n):
 
 def extent(track):
     """The (low, high) frequency, in Hz, a track covers: the band an IQ
-    file was recorded over, or 0 to half the rate of a WAV."""
+    file was recorded over, the first and last bin of a spectrum, or 0 to
+    half the rate of a WAV."""
+    if track.is_spectrum and isinstance(track.layout, spectra.SpectrumFile):
+        return track.layout.start_hz, track.layout.stop_hz
     if track.kind == 'audio':
         return 0.0, track.rate / 2
     centre = track.center_hz or 0.0
@@ -526,10 +603,64 @@ class _Samples:
         return self._reader.read(int(key.start), int(key.stop))
 
 
+def _render_spectrum(track, t0, t1, rows, cols):
+    """A spectrum track as a waterfall in dBm. Row ``r`` is the sweep nearest
+    the middle of slot ``r`` of ``[t0, t1)``; a middle that lands exactly
+    between two sweeps takes the earlier one. A sweep outside ``[0, seconds)``
+    is NaN. Only the rows and the band that picture needs are read."""
+    spec = track.layout if isinstance(track.layout, spectra.SpectrumFile) \
+        else _spectrum_file(track.path)
+    rows = max(1, int(rows))
+    # None keeps the file's own bins, except a sweep wider than the views can
+    # usefully show, which is thinned by the loudest bin of each column.
+    max_cols = SPECTRUM_MAX_COLS if cols is None and spec.bins > SPECTRUM_MAX_COLS \
+        else (None if cols is None else int(cols))
+    _, freqs, _ = spec.read(0.0, 0.0, max_cols=max_cols)   # no row: the column frequencies
+    out = np.full((rows, len(freqs)), np.nan, np.float32)
+    rs = float(spec.row_seconds)
+    if rs <= 0 or spec.rows <= 0 or not len(freqs):
+        return out, freqs
+    edges = np.linspace(t0, t1, rows + 1)
+    mids = (edges[:-1] + edges[1:]) * 0.5
+    # floor(x + 0.5 - a hair): nearest sweep, and a tie (.5) goes to the earlier.
+    k = np.floor(mids / rs + 0.5 - 1e-9).astype(np.int64)
+    valid = (k >= 0) & (k < spec.rows)
+    if not valid.any():
+        return out, freqs
+    want = np.unique(k[valid])
+    breaks = np.flatnonzero(np.diff(want) != 1)
+    starts = np.concatenate(([0], breaks + 1))
+    stops = np.concatenate((breaks + 1, [len(want)]))
+    got_k, got_db = [], []
+    for a, b in zip(starts, stops):
+        lo_k, hi_k = int(want[a]), int(want[b - 1])
+        # Half a row of slack, so the ends stay the sweeps asked for.
+        times, _, db = spec.read((lo_k - 0.5) * rs, (hi_k + 0.5) * rs, max_cols=max_cols)
+        if len(times):
+            got_k.append(np.rint(times / rs).astype(np.int64))
+            got_db.append(db)
+    if not got_k:
+        return out, freqs
+    all_k = np.concatenate(got_k)
+    all_db = np.concatenate(got_db, axis=0)
+    order = np.argsort(all_k, kind='stable')
+    all_k, all_db = all_k[order], all_db[order]
+    idx = np.searchsorted(all_k, k)
+    idx_c = np.clip(idx, 0, len(all_k) - 1)
+    take = valid & (idx < len(all_k)) & (all_k[idx_c] == k)
+    out[take] = all_db[idx_c[take]]
+    return out, freqs
+
+
 def render(track, t0, t1, rows, cols=None, frames=2, pool='max'):
     """``track`` from ``t0`` to ``t1`` seconds as a waterfall: a (rows,
     columns) float32 array in dB and the frequency of each column in Hz.
     **Row 0 is the earliest** slot, and a slot outside the file is NaN.
+
+    A spectrum track (a sweep DVR, a ``.fft``) is the file's own dBm: each
+    row is the sweep nearest the middle of its slot, pooled by the loudest
+    bin, and ``cols`` None is the file's bins (at most :data:`SPECTRUM_MAX_COLS`).
+    The rest of this function is IQ and WAV.
 
     **In the spectrum views' own dB** (dBFS for IQ): the same window, FFT
     size and scaling as their taps, so what is drawn here can be coloured
@@ -546,6 +677,8 @@ def render(track, t0, t1, rows, cols=None, frames=2, pool='max'):
     audio spectrum's are; its channels are mixed to one. It reads a few
     frames of the file for each row rather than all of it, so a gigabyte of
     band IQ takes as long as a minute of WAV."""
+    if track.is_spectrum:
+        return _render_spectrum(track, t0, t1, rows, cols)
     rows = max(1, int(rows))
     if track.kind == 'audio':
         data = wav_frames(track.path)
