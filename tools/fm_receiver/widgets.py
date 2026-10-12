@@ -3863,9 +3863,10 @@ class _RevealDelegate(Qt.QStyledItemDelegate):
                 return
             view = self.parent()
             offset = view.slide_of(index)
+            opt = self._indented(option)
             if offset <= 0:
                 self._paint_wash(painter, option.rect, index)
-                super().paint(painter, option, index)
+                super().paint(painter, opt, index)
                 self._paint_bar(painter, option.rect, index)
                 return
             rect = option.rect
@@ -3886,11 +3887,23 @@ class _RevealDelegate(Qt.QStyledItemDelegate):
             painter.save()
             painter.translate(-offset, 0)
             self._paint_wash(painter, rect, index)
-            super().paint(painter, option, index)
+            super().paint(painter, opt, index)
             self._paint_bar(painter, rect, index)
             painter.restore()
         except Exception as exc:                  # never abort the app
             print(f"list paint: {exc}")
+
+    #: The picked row's text sits this far in from the others': the style
+    #: pads a picked item and not the rest. All rows take the picked one's.
+    INDENT = 6
+
+    def _indented(self, option):
+        """The option with the text indented as the picked row's is, for the
+        rows that are not picked (they have no fill for the shift to show)."""
+        opt = Qt.QStyleOptionViewItem(option)
+        if not opt.state & Qt.QStyle.State_Selected:
+            opt.rect = opt.rect.adjusted(self.INDENT, 0, 0, 0)
+        return opt
 
     @staticmethod
     def _paint_wash(painter, rect, index):
