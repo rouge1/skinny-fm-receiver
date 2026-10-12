@@ -272,7 +272,16 @@ class Recording:
 
     @property
     def bytes(self):
-        return sum(track.bytes for track in self.tracks)
+        """The bytes of the recording's files. One path counts once: an IQ
+        DVR that also lists its sweep is still the one file."""
+        seen = set()
+        total = 0
+        for track in self.tracks:
+            if track.path in seen:
+                continue
+            seen.add(track.path)
+            total += track.bytes
+        return total
 
     def kinds(self):
         return [k for k in KIND_ORDER if any(t.kind == k for t in self.tracks)]
@@ -295,12 +304,15 @@ class Recording:
         return self.tracks[0] if self.tracks else None
 
     def files(self):
-        """Every file the recording is made of."""
-        out = []
+        """Every file the recording is made of. A path that two tracks share
+        (an IQ DVR and its sweep) is listed once."""
+        out, seen = [], set()
         for track in self.tracks:
-            out.append(track.path)
-            out.extend(track.sidecars())
-        if self.info_path:
+            for path in (track.path, *track.sidecars()):
+                if path not in seen:
+                    seen.add(path)
+                    out.append(path)
+        if self.info_path and self.info_path not in seen:
             out.append(self.info_path)
         return out
 
@@ -628,12 +640,15 @@ def _render_spectrum(track, t0, t1, rows, cols):
     if not valid.any():
         return out, freqs
     want = np.unique(k[valid])
-    breaks = np.flatnonzero(np.diff(want) != 1)
-    starts = np.concatenate(([0], breaks + 1))
-    stops = np.concatenate((breaks + 1, [len(want)]))
+    # One read per tile. A sweep DVR's read of a stretch pulls in the whole
+    # tile, so several runs inside one tile must not ask for it again. A
+    # ``.fft`` has no tiles: one read of the rows that are wanted.
+    per = spec._source.sweeps if spec.kind == 'dvr-sweep' else max(int(spec.rows), 1)
+    tiles = np.unique(want // per)
     got_k, got_db = [], []
-    for a, b in zip(starts, stops):
-        lo_k, hi_k = int(want[a]), int(want[b - 1])
+    for tile in tiles:
+        mine = want[want // per == tile]
+        lo_k, hi_k = int(mine[0]), int(mine[-1])
         # Half a row of slack, so the ends stay the sweeps asked for.
         times, _, db = spec.read((lo_k - 0.5) * rs, (hi_k + 0.5) * rs, max_cols=max_cols)
         if len(times):
