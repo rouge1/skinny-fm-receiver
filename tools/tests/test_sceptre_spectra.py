@@ -178,12 +178,21 @@ def gui(folder):
         row = next(i for i, r in enumerate(w._recordings) if r.tracks[0].kind == 'fft')
         w.rec_list.setCurrentItem(w._rec_items[row])
         w._rec_items[row].setSelected(True)
+        # choosing it draws it quietly: no spinner until Play is pressed
+        assert not pump(1.0, lambda: 'Loading' in w.rf_view.message.toPlainText()), \
+            'a spinner on choosing the file'
+        assert w.rf_view.message.toPlainText() == 'Press Play', w.rf_view.message.toPlainText()
+        assert 'Loading' not in w.rf_view.wf_message.toPlainText()
+        assert 'Loading' not in w.rf_view.minimap.note
+        w.play_btn.setChecked(True)
         assert pump(5, lambda: 'Loading' in w.rf_view.message.toPlainText()), \
             repr(w.rf_view.message.toPlainText())
         assert 'Loading' in w.rf_view.wf_message.toPlainText(), 'no words on the waterfall'
-        assert pump(8, lambda: w.rf_view.message.toPlainText() == 'Press Play'), \
+        assert pump(8, lambda: 'Loading' not in w.rf_view.message.toPlainText()), \
             repr(w.rf_view.message.toPlainText())
         assert w.rf_view.wf_message.toPlainText() == '', 'the waterfall keeps its words'
+        w.play_btn.setChecked(False)
+        w._seek_to(0.0)
     finally:
         library.render = real_render
 

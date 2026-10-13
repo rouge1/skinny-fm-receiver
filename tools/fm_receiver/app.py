@@ -3278,7 +3278,10 @@ class MainWindow(Qt.QWidget):
                 p.at, p.held = self._playhead(), True
             elif p.held and (not busy or p.paused):
                 p.held, p.t0 = False, now
-        if busy:
+        # Only once Play is pressed: choosing a file just draws it, quietly,
+        # under "Press Play".
+        shown = busy and p is not None
+        if shown:
             if self._loading_since is None:
                 self._loading_since = now
             if now - self._loading_since >= self.LOADING_AFTER_S:
@@ -3286,11 +3289,11 @@ class MainWindow(Qt.QWidget):
                 view.set_message(f"{frame}  Loading...")
                 view.set_wf_message(f"{frame}  Loading...")
                 self._loading_shown = True
-        if self._map_job is not None and self._track is not None:
+        if self._map_job is not None and self._track is not None and p is not None:
             # the mini map's strip: a gigabyte is read to draw it
             frame = self.SPINNER[int(now * 8) % len(self.SPINNER)]
             view.minimap.set_note(f"{frame} Loading")
-        if not busy and self._loading_since is not None:
+        if not shown and self._loading_since is not None:
             self._loading_since = None
             if self._loading_shown:
                 self._loading_shown = False
