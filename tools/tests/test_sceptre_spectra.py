@@ -180,8 +180,10 @@ def gui(folder):
         w._rec_items[row].setSelected(True)
         assert pump(5, lambda: 'Loading' in w.rf_view.message.toPlainText()), \
             repr(w.rf_view.message.toPlainText())
+        assert 'Loading' in w.rf_view.wf_message.toPlainText(), 'no words on the waterfall'
         assert pump(8, lambda: w.rf_view.message.toPlainText() == 'Press Play'), \
             repr(w.rf_view.message.toPlainText())
+        assert w.rf_view.wf_message.toPlainText() == '', 'the waterfall keeps its words'
     finally:
         library.render = real_render
 

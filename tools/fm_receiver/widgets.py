@@ -2339,6 +2339,7 @@ class SpectrumView(Qt.QWidget):
         self.plot.scene().sigMouseMoved.connect(self._plot_mouse_moved)
 
         self.wf_plot = None
+        self.wf_message = None
         if waterfall:
             self.time_axis = TimeAxis('left')
             self.wf_plot = pg.PlotWidget(viewBox=_PanViewBox(), axisItems={'left': self.time_axis})
@@ -2359,6 +2360,8 @@ class SpectrumView(Qt.QWidget):
             self.plot.getAxis('left').geometryChanged.connect(self._match_axes)
             self.wf_image = pg.ImageItem()
             self.wf_plot.addItem(self.wf_image)
+            self.wf_message = pg.TextItem('', anchor=(0.5, 0.5))
+            self.wf_plot.addItem(self.wf_message, ignoreBounds=True)
             self.wf_plot.scene().sigMouseClicked.connect(self._scene_clicked)
             self.wf_plot.scene().sigMouseMoved.connect(self._mouse_moved)
             self.wf_plot.scene().sigMouseMoved.connect(self._wf_mouse_moved)
@@ -2529,6 +2532,8 @@ class SpectrumView(Qt.QWidget):
             for line in region.lines:
                 line.setPen(edge)
         self.message.setColor(t['warn'])
+        if self.wf_message is not None:
+            self.wf_message.setColor(t['warn'])
         if self.map_info is not None:
             self.map_info.setStyleSheet(f"color: {t['ink_2']}; font-size: 11px;")
         # A chip of the panel behind the readout, nearly opaque, so a busy
@@ -3152,6 +3157,14 @@ class SpectrumView(Qt.QWidget):
         vb = self.plot.getPlotItem().getViewBox()
         (x0, x1), (y0, y1) = vb.viewRange()
         self.message.setPos((x0 + x1) / 2, (y0 + y1) / 2)
+
+    def set_wf_message(self, text):
+        """Words on the waterfall itself ("Loading..."), in its middle."""
+        if self.wf_message is None:
+            return
+        self.wf_message.setText(text)
+        (x0, x1), (y0, y1) = self.wf_plot.getPlotItem().getViewBox().viewRange()
+        self.wf_message.setPos((x0 + x1) / 2, (y0 + y1) / 2)
 
     # -- view state
     def state(self):

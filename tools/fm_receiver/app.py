@@ -3284,6 +3284,7 @@ class MainWindow(Qt.QWidget):
             if now - self._loading_since >= self.LOADING_AFTER_S:
                 frame = self.SPINNER[int(now * 8) % len(self.SPINNER)]
                 view.set_message(f"{frame}  Loading...")
+                view.set_wf_message(f"{frame}  Loading...")
                 self._loading_shown = True
         if self._map_job is not None and self._track is not None:
             # the mini map's strip: a gigabyte is read to draw it
@@ -3294,6 +3295,7 @@ class MainWindow(Qt.QWidget):
             if self._loading_shown:
                 self._loading_shown = False
                 view.set_message("Press Play" if self._play is None else '')
+                view.set_wf_message('')
 
     def _collect_jobs(self):
         """What the pool has finished: the mini map, and the waterfall's
