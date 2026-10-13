@@ -258,6 +258,22 @@ def part1b_minimap():
     mini.spanRequested.connect(sent['span'].append)
     mini.bandRequested.connect(lambda lo, hi: sent['band'].append((lo, hi)))
 
+    # a playhead that creeps (a tick's 0.07 s of a 1 s/px map) still repaints:
+    # the box must not stand still and then leap
+    mini.set_duration(100.0)
+    mini.set_position(10.0)
+    pump(0.05)
+    painted = []
+    real_update = mini.update
+    mini.update = lambda *a: (painted.append(mini.position), real_update(*a))[1]
+    for k in range(1, 41):                       # 40 ticks of 0.07 s = 2.8 s = 5.6 px
+        mini.set_position(10.0 + 0.07 * k)
+    mini.update = real_update
+    assert len(painted) >= 5, ('the box repainted too seldom', painted)
+    assert max(b - a for a, b in zip(painted, painted[1:])) < 1.0, painted
+    mini.set_position(0.0)
+    mini.set_duration(0.0)
+
     def point(seconds, hz):
         return QtCore.QPoint(int(mini.x_of(hz)), int(mini.y_of(seconds)))
 

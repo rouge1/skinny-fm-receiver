@@ -3366,6 +3366,7 @@ class MiniMap(Qt.QWidget):
                         "and its sides for more or less band; the wheel is the time.")
         self.duration = 0.0
         self.position = 0.0                 # the playhead: the window's bottom
+        self._painted = 0.0                 # where the box was last drawn
         self.span = 0.0                     # seconds the window covers, below it
         self.extent_hz = None               # (low, high) the image covers
         self.window_hz = None               # (low, high) the spectrum shows
@@ -3425,10 +3426,14 @@ class MiniMap(Qt.QWidget):
         if self._grab is not None:                 # carried: the pointer has it
             return
         seconds = min(max(float(seconds), 0.0), self.duration) if self.duration else 0.0
-        moved = (abs(seconds - self.position) * self.height() / self.duration
+        # Under half a pixel from where it was last drawn: no repaint. (From
+        # where it was last *set* it never would be, at a tick's small steps:
+        # the box stood still, then leapt.)
+        moved = (abs(seconds - self._painted) * self.height() / self.duration
                  if self.duration and self.height() else 1.0)
         self.position = seconds
-        if moved >= 0.5:                           # under a pixel: no repaint
+        if moved >= 0.5:
+            self._painted = seconds
             self.update()
 
     def set_window(self, span_s, low_hz=None, high_hz=None):
@@ -3743,6 +3748,7 @@ class MiniMap(Qt.QWidget):
 
     # -- paint
     def paintEvent(self, event):
+        self._painted = self.position
         try:
             self._paint()
         except Exception as exc:
