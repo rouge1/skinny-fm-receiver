@@ -916,6 +916,7 @@ tools/fmctl help                          # every command
 | `recording N [TRACK]` | Choose the Nth recording (0 is the newest) as a click on its line does, and with TRACK which of its files plays (`status`'s `playback.tracks` is the order). Its map and waterfall draw in the background: wait a moment |
 | `play on` / `off` | The Play button: play the chosen recording, or pause it |
 | `seek SECONDS` | Jump to a time, as dragging the map's box there does (before it plays, too); the waterfall shows the stretch ending there |
+| `loop on|off` | The Loop box: go round at the end of the recording |
 | `screenshot PATH.png` | A picture of the window, as it is on screen |
 | `sweep START STOP` | The Sweep tab over START-STOP MHz (switching to it first) |
 | `peakhold on` / `off` / `clear` | The RF spectrum's **Peak hold**: the most each frequency reached, which catches short bursts |
