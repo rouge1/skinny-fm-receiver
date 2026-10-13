@@ -3186,19 +3186,16 @@ class MainWindow(Qt.QWidget):
             view.set_extent(low, high, center_hz=track.station_hz or track.center_hz)
         view.set_level_unit('dBm' if (track.kind == 'cdif' or track.is_spectrum)
                             else 'dBFS')
+        view.set_pan_limits(None, None)
         self._spectrum_fit = False
         if track.is_spectrum:
             # What was saved is an IQ file's band and dBFS levels. Open on
-            # the band the recording's IQ was made of, if it has one, else
-            # the whole of it; the levels are fitted to the first rows.
-            span, centre = high - low, (low + high) / 2
-            for other in (self._rec_sel.tracks if self._rec_sel is not None else ()):
-                if other.is_iq and other.rate and other.center_hz and not other.error \
-                        and low <= other.center_hz <= high:
-                    span, centre = min(span, other.rate), other.center_hz
-                    break
-            view.span_knob.setValue(max(min(span, high - low), view.span_knob._min), emit=False)
-            view.set_center(centre)
+            # the whole of the recording, and let the view go no wider than
+            # it (the axis would otherwise run away on a wheel notch); the
+            # levels are fitted to the first rows.
+            view.span_knob.setValue(high - low, emit=False)
+            view.set_center((low + high) / 2)
+            view.set_pan_limits(low, high)
             self._spectrum_fit = True
             self._spec_band = None
             self._follow_window(force=True)
@@ -3270,6 +3267,11 @@ class MainWindow(Qt.QWidget):
         busy = (track is not None and not track.error and self._live is not None
                 and (self._window_job is not None or self._window_timer.isActive()))
         view = self._map_view()
+        p = self._play
+        if (not busy and p is not None and not p.paused and track is not None
+                and not track.error and p.track.path == track.path and track.kind != 'audio'
+                and (view._hist is None or view._hist.n == 0)):
+            busy = True              # playing, and nothing has reached the waterfall yet
         now = time.monotonic()
         if busy:
             if self._loading_since is None:
@@ -3278,7 +3280,11 @@ class MainWindow(Qt.QWidget):
                 frame = self.SPINNER[int(now * 8) % len(self.SPINNER)]
                 view.set_message(f"{frame}  Loading...")
                 self._loading_shown = True
-        elif self._loading_since is not None:
+        if self._map_job is not None and self._track is not None:
+            # the mini map's strip: a gigabyte is read to draw it
+            frame = self.SPINNER[int(now * 8) % len(self.SPINNER)]
+            view.minimap.set_note(f"{frame} Loading")
+        if not busy and self._loading_since is not None:
             self._loading_since = None
             if self._loading_shown:
                 self._loading_shown = False
@@ -3475,9 +3481,9 @@ class MainWindow(Qt.QWidget):
         self._show_audio_view(False)
         view = self.rf_view
         view.set_level_unit('dBm')
-        # Receiving, the view is the band the radio streams: no limits - nor
-        # here, where the file may lie outside the Sweep tab's 0-6 GHz.
-        view.set_pan_limits(None, None)
+        # No zooming or panning out past what the file holds.
+        low, high = library.extent(track)
+        view.set_pan_limits(low, high)
         view.set_message('')
         self._spec_drawn = self._start_at
         self._follow_clock(view)

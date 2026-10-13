@@ -197,6 +197,15 @@ def gui(folder):
         (view.ref_knob.value(), view.range_knob.value())
     total = w._track.seconds
     assert abs(view.minimap.duration - total) < 1e-6, view.minimap.duration
+    # opened on the whole file, and not to be zoomed out past it
+    lo_f, hi_f = library.extent(w._track)
+    assert abs(view.span_knob.value() - (hi_f - lo_f)) < 1.0, view.span_knob.value()
+    vbx = view.plot.getPlotItem().getViewBox()
+    vbx.setXRange(-80 * (hi_f - lo_f) / view.scale, 80 * (hi_f - lo_f) / view.scale, padding=0)
+    pump(0.3)
+    x0, x1 = vbx.viewRange()[0]
+    assert x0 * view.scale >= lo_f - 1.0 and x1 * view.scale <= hi_f + 1.0, (x0, x1, lo_f, hi_f)
+    view.set_center((lo_f + hi_f) / 2)
     # zoomed into a sweep wider than the view's columns, it is read for the
     # window on show: the waterfall is redrawn on that band's own columns
     w.BAND_COLS = 256                            # this file's 4096 bins are "wide" now
