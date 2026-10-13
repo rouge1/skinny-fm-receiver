@@ -218,6 +218,24 @@ def gui(folder):
     low_hz = view.full[0] + 0.3 * (view.full[1] - view.full[0])
     assert w._spec_band[0] <= low_hz <= w._spec_band[1]
 
+    # the clock waits while the file is read: nothing moves under "Loading"
+    w._seek_to(5.0)
+    pump(0.5)
+    library.render = slow
+    try:
+        w.play_btn.setChecked(True)
+        assert pump(3, lambda: 'Loading' in w.rf_view.message.toPlainText()), 'no spinner'
+        a = w._playhead()
+        pump(0.5)
+        assert w._playhead() == a, ('time ran while loading', a, w._playhead())
+        assert pump(6, lambda: 'Loading' not in w.rf_view.message.toPlainText())
+        assert pump(3, lambda: w._playhead() > a + 0.3), (a, w._playhead())
+    finally:
+        library.render = real_render
+    w.play_btn.setChecked(False)
+    w._seek_to(0.0)
+    pump(0.5)
+
     # playing: no engine, no radio, the playhead on a timer
     w.play_btn.setChecked(True)
     assert pump(5, lambda: w._play is not None), 'no playback'

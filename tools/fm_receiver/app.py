@@ -323,6 +323,7 @@ class Playback:
         #: when Play is pressed or it is sought.
         self.at = 0.0
         self.t0 = time.monotonic()
+        self.held = False                   # the clock waits: the file is being read
 
     @property
     def is_iq(self):
@@ -3267,12 +3268,16 @@ class MainWindow(Qt.QWidget):
         busy = (track is not None and not track.error and self._live is not None
                 and (self._window_job is not None or self._window_timer.isActive()))
         view = self._map_view()
-        p = self._play
-        if (not busy and p is not None and not p.paused and track is not None
-                and not track.error and p.track.path == track.path and track.kind != 'audio'
-                and (view._hist is None or view._hist.n == 0)):
-            busy = True              # playing, and nothing has reached the waterfall yet
         now = time.monotonic()
+        # A spectrum recording has no radio to keep time: its clock waits
+        # while the file is read, so the time on the waterfall and the
+        # playhead stand still, and go on from there once it is drawn.
+        p = self._play
+        if p is not None and p.is_spectrum:
+            if busy and not p.paused and not p.held:
+                p.at, p.held = self._playhead(), True
+            elif p.held and (not busy or p.paused):
+                p.held, p.t0 = False, now
         if busy:
             if self._loading_since is None:
                 self._loading_since = now
@@ -3575,6 +3580,8 @@ class MainWindow(Qt.QWidget):
         if p.is_iq:
             return (p.radio.played() % p.radio.total) / p.radio.rate
         if p.is_spectrum:
+            if p.held:
+                return p.at
             return min(p.at + (time.monotonic() - p.t0), p.track.seconds)
         return p.source.position / AUDIO_RATE
 
