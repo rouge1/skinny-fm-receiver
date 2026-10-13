@@ -73,10 +73,17 @@ user sees it, and is refused where the window would refuse it.
   and `.cdif` exports from another folder, read-only): `mode recordings`, `recordings` (the list, newest
   first, with which lines are `picked`), `recording N [TRACK]` (picks that one line), `play on|off`, `seek SECONDS`,
   `view rf|audio window S` (the seconds the waterfall, and the mini map's
-  box, show). `status`'s `playback` block says what is chosen and playing,
-  where the playhead is, the box on the map and how much waterfall is drawn.
+  box, show), `loop on|off`. `status`'s `playback` block says what is chosen
+  and playing, where the playhead is, the box on the map and how much
+  waterfall is drawn; `loading` is true, and `message` says so, while the
+  file is read (a gigabyte takes seconds: the spinner is on the plot).
   The map and the waterfall draw in the background after a choice or a
-  seek: `wait 1` before reading or taking a screenshot.
+  seek: `wait 1` and look at `loading` before reading or taking a
+  screenshot. A sweep DVR or `.fft` (a spectrum recording) plays with no
+  radio and no sound, on a clock that waits while it loads; it opens on
+  its whole band, and zooming in reads that band at full detail. Not
+  scriptable yet: deleting recordings, picking several lines, and the
+  Folders dialog's recordings folder (use the window).
 - `wait SECONDS` lets the window run between commands: your shell can't
   sleep in the foreground, and RDS or peak hold need seconds.
 

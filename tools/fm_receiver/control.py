@@ -208,6 +208,9 @@ def _playback_state(w):
         'position_s': round(w._shown_at, 2),
         'duration_s': round(track.seconds, 2) if track is not None else None,
         'loop': bool(w.loop_check.isChecked()),
+        #: the file is being read (the spinner is on the plot): wait, then look
+        'loading': bool(w._loading_shown),
+        'message': view.message.toPlainText(),
         'station': w.play_station.text(),
         'text': w.play_text.text(),
     }
@@ -512,6 +515,15 @@ def cmd_play(w, args):
                            "can be played ('recording N')")
     w.play_btn.setChecked(on)
     return {'playing': w.play_btn.isChecked()}
+
+
+@command('loop', 'loop on|off', "The Recordings tab's Loop box: go round at the end. Needs "
+         "'mode recordings'.")
+def cmd_loop(w, args):
+    on = _on_off(_args(args, 1, 1, 'loop on|off')[0], 'loop')
+    _recordings_tab(w)
+    w.loop_check.setChecked(on)
+    return {'loop': w.loop_check.isChecked()}
 
 
 @command('seek', 'seek SECONDS', "Jump to SECONDS into what is chosen, as a drag of the mini "
