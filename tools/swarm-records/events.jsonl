@@ -824,3 +824,38 @@
 {"t": 1791998399277, "type": "task", "phase": "m4", "task": "fix", "model": "haiku", "status": "review"}
 {"t": 1791998761813, "type": "task", "phase": "m4", "task": "fix", "status": "merged", "model": "haiku", "note": "merged 2d23d05"}
 {"t": 1791998761898, "type": "note", "phase": "m4", "who": "orchestrator", "text": "m4: G3 (real files) not run by manager: planner's; TONE_GAP 8 vs contract 3 is pre-existing, flagged by grokw [high], not in scope"}
+{"t": 1791998762046, "type": "phase", "phase": "m4", "status": "done"}
+{"t": 1791998865700, "type": "phase", "phase": "m5", "status": "active"}
+{"t": 1791998893235, "type": "task", "phase": "m5", "task": "perf", "status": "queued", "model": "haiku"}
+{"t": 1791998893279, "type": "task", "phase": "m5", "task": "review-grokw", "status": "queued", "model": "grokw"}
+{"t": 1791998893322, "type": "task", "phase": "m5", "task": "review-musefree", "status": "queued", "model": "musefree"}
+{"t": 1791998896169, "type": "task", "phase": "m5", "task": "perf", "model": "haiku", "status": "working"}
+{"t": 1791998896171, "type": "run_start", "phase": "m5", "task": "perf", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/m5-perf-haiku", "pid": 1677359, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m5-perf-haiku-1791998896169.jsonl", "branch": "m5/perf-haiku"}
+{"t": 1791999160272, "type": "run", "phase": "m5", "task": "perf", "model": "haiku", "kind": "build", "session": "ses_ec48ad759ffelJcWN0ZrYbH3Dc", "wall_s": 264.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.037092, "tokens_in": 34, "tokens_out": 9623, "tokens_reasoning": 20165, "cache_read": 1090141, "model_s": 261.7, "messages": 16, "files_changed": 0}
+{"t": 1791999160272, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m5-perf-haiku-1791998896169.jsonl", "exit": 0, "timed_out": false}
+{"t": 1791999160272, "type": "task", "phase": "m5", "task": "perf", "model": "haiku", "status": "review"}
+{"t": 1791999193331, "type": "task", "phase": "m5", "task": "perf", "model": "haiku", "status": "fixing"}
+{"t": 1791999193333, "type": "run_start", "phase": "m5", "task": "perf", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/m5-perf-haiku", "pid": 1680085, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m5-perf-haiku-1791999193331.jsonl", "branch": "m5/perf-haiku"}
+{"t": 1791999983625, "type": "run", "phase": "m5", "task": "perf", "model": "haiku", "kind": "fix", "session": "ses_ec48ad759ffelJcWN0ZrYbH3Dc", "wall_s": 790.1, "exit": -1, "timed_out": true, "outcome": "timeout", "cost": 0.081861, "tokens_in": 18, "tokens_out": 4190, "tokens_reasoning": 27191, "cache_read": 890986, "model_s": 186.1, "messages": 8, "files_changed": 0}
+{"t": 1791999983625, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m5-perf-haiku-1791999193331.jsonl", "exit": -1, "timed_out": true}
+{"t": 1791999983625, "type": "task", "phase": "m5", "task": "perf", "model": "haiku", "status": "failed", "note": "timed out"}
+{"t": 1792001256650, "type": "task", "phase": "m5", "task": "review-grokw", "model": "grokw", "status": "working"}
+{"t": 1792001259653, "type": "task", "phase": "m5", "task": "review-musefree", "model": "musefree", "status": "working"}
+{"t": 1792001265808, "type": "task", "phase": "m5", "task": "review-grokw", "model": "grokw", "status": "working"}
+{"t": 1792001265827, "type": "run_start", "phase": "m5", "task": "review-grokw", "model": "grokw", "dir": "/data/python/skinny/fm-receiver-wt/rv-rv-grokw", "pid": 1704134, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m5-review-grokw-grokw-1792001265808.jsonl"}
+{"t": 1792001270809, "type": "task", "phase": "m5", "task": "review-musefree", "model": "musefree", "status": "working"}
+{"t": 1792001270811, "type": "run_start", "phase": "m5", "task": "review-musefree", "model": "musefree", "dir": "/data/python/skinny/fm-receiver-wt/rv-rv-musefree", "pid": 1704253, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m5-review-musefree-musefree-1792001270809.jsonl"}
+{"t": 1792001528918, "type": "run", "phase": "m5", "task": "review-musefree", "model": "musefree", "kind": "review", "session": "ses_ec4669b31ffe08OFZboZRRRpz6", "wall_s": 258.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.0, "tokens_in": 306780, "tokens_out": 6338, "tokens_reasoning": 16064, "cache_read": 632494, "model_s": 240.8, "messages": 14, "files_changed": 0}
+{"t": 1792001528918, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m5-review-musefree-musefree-1792001270809.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792001528918, "type": "task", "phase": "m5", "task": "review-musefree", "model": "musefree", "status": "review"}
+{"t": 1792001591868, "type": "run", "phase": "m5", "task": "review-grokw", "model": "grokw", "kind": "review", "session": "01a13b99-5a8e-7153-8e99-eec75e314a32", "wall_s": 326.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.33083088, "tokens_in": 52067, "tokens_out": 30141, "tokens_reasoning": 29168, "cache_read": 403072, "model_s": 0.0, "messages": 17, "files_changed": 0}
+{"t": 1792001591868, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m5-review-grokw-grokw-1792001265808.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792001591868, "type": "task", "phase": "m5", "task": "review-grokw", "model": "grokw", "status": "review"}
+{"t": 1792001605474, "type": "task", "phase": "m5", "task": "perf", "model": "haiku", "status": "fixing"}
+{"t": 1792001605476, "type": "run_start", "phase": "m5", "task": "perf", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/m5-perf-haiku", "pid": 1706991, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m5-perf-haiku-1792001605474.jsonl", "branch": "m5/perf-haiku"}
+{"t": 1792001851610, "type": "run", "phase": "m5", "task": "perf", "model": "haiku", "kind": "fix", "session": "ses_ec48ad759ffelJcWN0ZrYbH3Dc", "wall_s": 246.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.273543, "tokens_in": 22, "tokens_out": 6735, "tokens_reasoning": 26580, "cache_read": 1545184, "model_s": 244.9, "messages": 10, "files_changed": 0}
+{"t": 1792001851610, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m5-perf-haiku-1792001605474.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792001851610, "type": "task", "phase": "m5", "task": "perf", "model": "haiku", "status": "review"}
+{"t": 1792002285353, "type": "task", "phase": "m5", "task": "perf", "status": "merged", "model": "haiku"}
+{"t": 1792002285410, "type": "task", "phase": "m5", "task": "review-grokw", "status": "merged", "model": "grokw"}
+{"t": 1792002285464, "type": "task", "phase": "m5", "task": "review-musefree", "status": "merged", "model": "musefree"}
