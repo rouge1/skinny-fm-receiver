@@ -23,9 +23,9 @@ Run:  QT_QPA_PLATFORM=offscreen PYTHONPATH=tools python tools/tests/test_iq_deco
 (every subprocess has a 120 s limit; a timeout is a failure)
 """
 
+import ast
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -294,15 +294,20 @@ def count_model_lines(path):
 
 
 def control_decodes():
-    """rtl_433 run directly on the scaled file, stdout to a file; the count of its
-    decodes (lines with a model key)."""
+    """rtl_433 run directly on the scaled file, stdout to a file. Returns (exit code or
+    None when it did not finish, whether the stdout file exists, the count of its decodes:
+    lines with a model key)."""
     def make():
         out = os.path.join(fresh('control'), 'rtl433.json')
         cmd = [RTL, '-r', 'cf32:' + SCALED, '-s', str(int(FS)), '-f', str(int(CENTRE)), '-F', 'json']
-        with open(out, 'w') as fh:
-            proc = subprocess.run(cmd, cwd=WORK, stdout=fh, stderr=subprocess.PIPE, text=True,
-                                  timeout=TIMEOUT)
-        return proc.returncode, count_model_lines(out)
+        try:
+            with open(out, 'w') as fh:
+                proc = subprocess.run(cmd, cwd=WORK, stdout=fh, stderr=subprocess.PIPE,
+                                      text=True, timeout=TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return None, os.path.isfile(out), 0, f'{type(exc).__name__}: {exc}'
+        exists = os.path.isfile(out)
+        return proc.returncode, exists, (count_model_lines(out) if exists else 0), ''
     return memo('control', make)
 
 
@@ -318,11 +323,14 @@ def check_scaled():
            f'about {SCALED_GAIN:+.1f} dB)', gain)
 
     def control():
-        code, count = control_decodes()
+        code, exists, count, why = control_decodes()
+        if code != 0 or not exists:
+            return False, (f'the control did not run: rtl_433 exit {code}, stdout file '
+                           f'{"exists" if exists else "missing"} {why}').rstrip()
         return count == 0, (f'control invalid: rtl_433 decoded {count} line(s) with a model '
-                            f'key on the scaled file (exit {code}); the control must decode 0')
-    expect('2 negative control: rtl_433 run directly on the scaled file decodes 0 lines with '
-           'a model key', control)
+                            f'key on the scaled file; the control must decode 0')
+    expect('2 negative control: rtl_433 run directly on the scaled file exits 0 and decodes '
+           '0 lines with a model key', control)
 
 
 def wide_decode():
@@ -358,7 +366,8 @@ def check_refusals():
         with open(path, 'wb') as fh:
             fh.write(np.random.default_rng(19).bytes(8192))
         return refusal(run([path], WORK))
-    expect('5 a Sceptre .sdvr of garbage bytes: exit 1, a message on stderr', junk_sdvr)
+    expect('5 a garbage .sdvr (8 KB of random bytes; a real sweep DVR is covered by '
+           'test_iq_measure.py): exit 1, a message on stderr', junk_sdvr)
 
     def absent():
         empty = fresh('no-rtl433')
@@ -385,11 +394,63 @@ def check_keep():
         tmp = fresh('tmpdir-empty')
         env = clean_env()
         env['TMPDIR'] = tmp
+        fixture = os.path.dirname(FRAME)
+        before = sorted(os.listdir(fixture))
         r = run([FRAME], WORK, env=env)
         left = sorted(os.listdir(tmp))
-        return (not r.timed_out and r.code == 0 and left == [],
-                describe(r) + f'; temp folder holds {left}')
-    expect('7 without --keep: the temp folder is empty afterwards (no cf32 left behind)', no_keep)
+        after = sorted(os.listdir(fixture))
+        new = sorted(set(after) - set(before))
+        ok = not r.timed_out and r.code == 0 and left == [] and before == after
+        return ok, (describe(r) + f'; temp folder holds {left}; new beside the input {new}'
+                    if not ok else '')
+    expect('7 without --keep: the temp folder is empty afterwards and nothing new appears '
+           'beside the input (no cf32 left behind)', no_keep)
+
+
+def _name_of(node):
+    """The name a Name or Attribute node refers to (``x`` or ``m.x`` gives ``x``)."""
+    return node.id if isinstance(node, ast.Name) else node.attr
+
+
+def _is_name(node, name):
+    return isinstance(node, (ast.Name, ast.Attribute)) and _name_of(node) == name
+
+
+def _is_false(node):
+    return isinstance(node, ast.Constant) and node.value is False
+
+
+def pipe_problems(text):
+    """What the tool's code (comments and docstrings are not code, so ast ignores them)
+    pipes or captures: (problems, redirects). A problem is a PIPE in any form, or
+    capture_output set. A redirect is a subprocess call given a stdout that is not PIPE
+    or DEVNULL: the file rtl_433 writes to."""
+    tree = ast.parse(text)
+    problems, redirects = [], 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == 'subprocess':
+            if any(alias.name == 'PIPE' for alias in node.names):
+                problems.append(f'imports PIPE from subprocess (line {node.lineno})')
+        elif isinstance(node, (ast.Name, ast.Attribute)) and _name_of(node) == 'PIPE':
+            problems.append(f'uses PIPE (line {node.lineno})')
+        elif isinstance(node, ast.Call):
+            for kw in node.keywords:
+                if kw.arg == 'capture_output' and not _is_false(kw.value):
+                    problems.append(f'capture_output (line {node.lineno})')
+            if _runs_rtl(node):
+                for kw in node.keywords:
+                    if kw.arg == 'stdout' and not _is_name(kw.value, 'DEVNULL'):
+                        redirects += 1
+    return problems, redirects
+
+
+def _runs_rtl(call):
+    """A subprocess call (run, Popen, call, ...) whose arguments name rtl_433."""
+    if not (isinstance(call.func, ast.Attribute) and call.func.attr in (
+            'run', 'Popen', 'call', 'check_call', 'check_output')):
+        return False
+    return any(isinstance(n, ast.Constant) and isinstance(n.value, str) and 'rtl_433' in n.value
+               for n in ast.walk(call))
 
 
 def check_source():
@@ -398,10 +459,16 @@ def check_source():
             return False, 'tools/iq-decode does not exist'
         with open(TOOL) as fh:
             text = fh.read()
-        hit = re.search(r'stdout\s*=\s*(subprocess\.)?PIPE', text)
-        return hit is None, f'rtl_433 stdout is a pipe: {hit.group(0)!r}' if hit else ''
-    expect("8 source: rtl_433's stdout is not a pipe (no stdout=subprocess.PIPE in the tool)",
-           no_pipe)
+        try:
+            problems, redirects = pipe_problems(text)
+        except SyntaxError as exc:
+            return False, f'tools/iq-decode does not parse: {exc}'
+        if problems:
+            return False, 'rtl_433 output may be piped: ' + '; '.join(problems)
+        return redirects >= 1, ('no subprocess call with a stdout redirect to a file '
+                                '(stdout= not PIPE or DEVNULL)')
+    expect("8 source (ast, comments ignored): rtl_433's stdout is redirected to a file, and "
+           "no PIPE, capture_output or PIPE import is used", no_pipe)
 
     def again():
         r = run([FRAME], WORK)
@@ -421,8 +488,42 @@ def check_speed():
                f"wall {wall:.1f} s, {packets_ok(c)[1]}")))
 
 
+def check_flags():
+    """The contract's other flags, each on the 250 kS/s frame (a cheap run apiece)."""
+    def flag(key, args):
+        return memo(('flag', key), lambda: run(args, WORK))
+
+    def keys_only(c):
+        missing = [k for k in KEYS if k not in c]
+        return not missing, f'missing {missing}; keys {sorted(c)}'
+
+    r19 = flag('r19', [FRAME, '-R', '19'])
+    expect('4 -R 19: exit 0, protocols is the -R list [19] (Nexus-TH is protocol 19 in rtl_433)',
+           lambda: printed(r19, lambda c: (c.get('protocols') == [19],
+                                           f"protocols {c.get('protocols')!r}")))
+    expect('4 -R 19: still decodes Nexus-TH id 181', lambda: printed(r19, nexus_ok))
+    expect('4 --t0 0.0 --t1 0.2: exit 0 and the JSON document has the spec keys',
+           lambda: printed(flag('span', [FRAME, '--t0', '0.0', '--t1', '0.2']), keys_only))
+    expect('4 --out-rate 125000: rate_sps is above 0 and at most 125000', lambda: printed(
+        flag('out-rate', [FRAME, '--out-rate', '125000']), lambda c: (
+            isinstance(c.get('rate_sps'), (int, float)) and 0 < c['rate_sps'] <= 125000,
+            f"rate_sps {c.get('rate_sps')!r}")))
+
+    def bare():
+        folder = fresh('bare-cfile')
+        path = os.path.join(folder, 'bare.cfile')
+        shutil.copy(FRAME, path)
+        r = run([path, '--rate', '250000', '--center', '433920000'], WORK)
+        return printed(r, lambda c: (
+            c.get('center_hz') == 433920000 and packets_ok(c)[0] and nexus_ok(c)[0],
+            f"center_hz {c.get('center_hz')!r}, {packets_ok(c)[1]}, "
+            f"summary {c.get('summary')!r}"))
+    expect('4 bare .cfile (no .sigmf-meta) with --rate 250000 --center 433920000: center_hz '
+           '433920000 and Nexus-TH id 181 decoded', bare)
+
+
 GROUPS = [check_frame, check_scaled, check_wide, check_noise, check_refusals, check_keep,
-          check_source, check_speed]
+          check_source, check_flags, check_speed]
 
 
 def main():
