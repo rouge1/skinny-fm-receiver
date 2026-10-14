@@ -38,10 +38,17 @@ CHUNK = 1 << 16
 BLOCK = 16
 COARSE_NFFT = 1024
 FINE_NFFT = 16384
-#: Padding either side of a block for the frequency-domain band filter.
+#: Padding either side of a block for the frequency-domain band filter: at least this.
 PAD = 4096
-#: Transform length of the band filter's blocks (a power of two): its bins are rate / this.
+#: The filter's ringing lasts about rate / band width samples; this many of them are kept.
+RING_LENGTHS = 3.0
+#: The most padding either side of a block: a narrower band is filtered with this.
+MAX_PAD = 1 << 20
+#: The transform length of the band filter's blocks (a power of two) is at least this,
+#: and at least four times the padding; it is never more than MAX_BLOCK, the most a
+#: read or a transform takes at once.
 FILTER_BLOCK = 1 << 15
+MAX_BLOCK = 1 << 22
 TONE_DB = 15.0
 #: A tone more than this far under the strongest is a window's sidelobe, not a tone.
 TONE_RANGE_DB = 60.0
@@ -481,32 +488,33 @@ def _band_offsets(band, centre_hz, rate):
 
 def _banded(read, n, rate, lo, hi, dec):
     """The band lo..hi (offsets from the centre) of the samples, brick-wall
-    filtered by overlap-save in blocks of FILTER_BLOCK samples, moved to 0 Hz and
-    decimated by ``dec``. Outputs lie on multiples of ``dec``.
+    filtered by overlap-save in blocks (see the constants above), moved to 0 Hz
+    and decimated by ``dec``. Outputs lie on multiples of ``dec``.
 
     A narrow band (the usual case) takes each output as a sum of the band's bins'
-    phasors, so no inverse transform is taken at all; a wide one takes an inverse
-    transform of the block with the band's bins kept, as the whole-chunk filter
-    did, only over the block. The file is read once, in order: the overlap is
-    carried over, not read again."""
+    phasors, so no inverse transform is taken at all; otherwise a block's inverse
+    transform keeps the band's bins. The padding is widened for a narrow band (its
+    ringing is longer) and the block with it, up to MAX_BLOCK. Outputs sit at the
+    multiples of ``dec`` by sample index, whether or not a block holds a whole
+    output step. The file is read once, in order: the overlap is carried over."""
     fc = (lo + hi) / 2
-    pad = dec * -(-PAD // dec)              # a multiple of dec, so the grid is kept
-    step = dec * max(1, (FILTER_BLOCK - 2 * pad) // dec)
-    length = step + 2 * pad
+    pad = int(min(max(PAD, math.ceil(RING_LENGTHS * rate / (hi - lo))), MAX_PAD))
+    length = min(MAX_BLOCK, 1 << (max(FILTER_BLOCK, 4 * pad) - 1).bit_length())
+    room = length - 2 * pad
+    step = dec * (room // dec) if room >= dec else room
     f = np.fft.fftfreq(length, 1 / rate)
     keep = np.flatnonzero((f >= lo) & (f <= hi))
-    grid = pad + dec * np.arange(step // dec)     # the outputs' local samples in a block
-    phasor_cost = keep.size * grid.size
-    phasors = None
-    if phasor_cost <= length * np.log2(length):
-        # Output j is at local sample grid[j], mixed to fc by the phasor in the loop.
-        phasors = np.exp(2j * np.pi * np.outer(grid, f[keep] - fc) / rate) / length
     mask = np.zeros(length, dtype=bool)
     mask[keep] = True
+    aligned = step % dec == 0
+    grid = pad + dec * np.arange(step // dec) if aligned else None
+    phasors = None
+    if aligned and keep.size * grid.size <= length * np.log2(length):
+        # Output j is at local sample grid[j], mixed to fc by the phasor in the loop.
+        phasors = np.exp(2j * np.pi * np.outer(grid, f[keep] - fc) / rate) / length
     buf, first, fed = np.empty(0, np.complex64), 0, 0     # buf holds samples first..fed
     for s in range(0, n, step):
         m = min(step, n - s)
-        count = -(-m // dec)
         a, b = max(0, s - pad), min(n, s + m + pad)
         if fed < b:
             buf = np.concatenate([buf, read(fed, b - fed)])
@@ -516,12 +524,14 @@ def _banded(read, n, rate, lo, hi, dec):
         seg[pre:pre + (b - a)] = buf[a - first:b - first]
         spec = np.fft.fft(seg)
         if phasors is not None:
+            count = -(-m // dec)
             bins = spec[keep] * np.exp(2j * np.pi * ((-fc * (s - pad) / rate) % 1.0))
             # An elementwise sum, not a matrix product: a threaded BLAS costs ms on a call this small.
             y = (phasors[:count] * bins).sum(axis=1)
         else:
-            y = np.fft.ifft(np.where(mask, spec, 0))[grid[:count]]
-            y = y * np.exp(-2j * np.pi * fc * ((s + dec * np.arange(count)) / rate))
+            ts = np.arange(-(-s // dec) * dec, s + m, dec)
+            y = np.fft.ifft(np.where(mask, spec, 0))[ts - (s - pad)]
+            y = y * np.exp(-2j * np.pi * fc * (ts / rate))
         yield y.astype(np.complex64)
         nxt = max(0, s + step - pad)
         if nxt > first:

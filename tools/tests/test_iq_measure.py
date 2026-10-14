@@ -1159,5 +1159,45 @@ def main():
     return 0
 
 
+def check_narrow_band():
+    """A 5 Hz band round a CW in 10 s at 1 MS/s: no read or transform over 2**22
+    samples, and the class is the unbanded one (the band's filter is wide enough)."""
+    path = wide_file('cw10s', 10.0, RATE, snr_db=30.0, seed=64)
+
+    def narrow():
+        api_ = api()
+        real_open = api_.open_iq
+        sizes = []
+
+        def counting_open(p, rate=None, center_hz=None):
+            src = real_open(p, rate=rate, center_hz=center_hz)
+            inner = src.read
+
+            def counted(start, count):
+                sizes.append(int(count))
+                return inner(start, count)
+            src.read = counted
+            return src
+        api_.open_iq = counting_open
+        tone = CENTRE + 50e3
+        try:
+            banded = api_.measure_file(path, rate=RATE, center_hz=CENTRE,
+                                       band=(tone - 2.5, tone + 2.5))
+        finally:
+            api_.open_iq = real_open
+        whole = memo('cw10s-whole', lambda: api_.measure_file(path, rate=RATE, center_hz=CENTRE))
+        biggest = max(sizes, default=0)
+        info(f"5 Hz band, 10 s at 1 MS/s: {len(sizes)} reads, largest {biggest}, "
+             f"class {banded['class']} banded vs {whole['class']} whole")
+        return (biggest <= 2 ** 22 and banded['class'] == whole['class'],
+                f"largest read {biggest} samples (want <= {2 ** 22}), class {banded['class']} "
+                f"banded vs {whole['class']} whole")
+    expect('5 Hz band round a CW (10 s, 1 MS/s): no read over 2**22 samples, class as unbanded',
+           narrow)
+
+
+GROUPS.append(check_narrow_band)
+
+
 if __name__ == '__main__':
     sys.exit(main())
