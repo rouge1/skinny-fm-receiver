@@ -41,6 +41,14 @@ FINE_NFFT = 16384
 #: Padding either side of a chunk for the frequency-domain band filter.
 PAD = 4096
 TONE_DB = 15.0
+#: A tone more than this far under the strongest is a window's sidelobe, not a tone.
+TONE_RANGE_DB = 60.0
+#: The band the envelope and frequency are taken in: 3 x the occupied width, at least this.
+TRACK_WIDTH = 3.0
+TRACK_MIN_HZ = 20e3
+#: The envelope and frequency are tracked at no less than this rate, so a block of
+#: samples lasts no longer than at 1 MS/s and a symbol clock is still resolved.
+TRACK_RATE = 1e6
 MAX_TONES = 8
 TONE_GAP = 8
 LISTED = 32
@@ -224,22 +232,30 @@ class _Welch:
 
 
 class _Scan:
-    """One pass over the samples: the power, the two spectra and the block tracks."""
+    """One pass over the samples: the power and the two spectra."""
 
     def __init__(self, nfft_coarse, nfft_fine):
         self.coarse = _Welch(nfft_coarse, _blackman_harris(nfft_coarse))
         self.fine = _Welch(nfft_fine, np.hanning(nfft_fine))
         self.power = 0.0
         self.count = 0
-        self.env = []
-        self.prod = []
-        self.tail = np.empty(0, dtype=np.complex64)
 
     def feed(self, x):
         self.power += float(np.sum(x.real * x.real + x.imag * x.imag, dtype=np.float64))
         self.count += len(x)
         self.coarse.feed(x)
         self.fine.feed(x)
+
+
+class _Track:
+    """One pass over the samples: the envelope and the phase advance, in blocks."""
+
+    def __init__(self):
+        self.env = []
+        self.prod = []
+        self.tail = np.empty(0, dtype=np.complex64)
+
+    def feed(self, x):
         buf = np.concatenate([self.tail, x]) if self.tail.size else x
         # The last sample is kept: it is the lag partner of the next block's first.
         cut = (len(buf) - 1) // BLOCK * BLOCK
@@ -273,6 +289,8 @@ def _tones(P, floor, bin_hz, origin):
     k = k[(k >= 4) & (k < n - 4)]
     k = k[level[k] > TONE_DB]
     order = k[np.argsort(-level[k], kind='stable')]
+    if order.size:
+        order = order[level[order] >= level[order[0]] - TONE_RANGE_DB]
     # Tones are 8 bins apart, not 3: a tone's 9-bin window reaches into the
     # main lobe of a stronger one, and that skirt is not a tone of its own.
     chosen = []
@@ -482,24 +500,37 @@ def _banded(read, n, rate, lo, hi, dec):
         yield y[::dec].astype(np.complex64)
 
 
+def _decimated(read, n, rate, lo, hi, min_rate=0.0):
+    """The band lo..hi (offsets from the centre) of ``n`` samples, decimated to at
+    least twice its width and to at least ``min_rate``: ``(decimation, chunks)``,
+    as :func:`_banded` gives them."""
+    dec = max(1, int(rate // max(2 * (hi - lo), min_rate)))
+    return dec, _banded(read, n, rate, lo, hi, dec)
+
+
 def _analyse(read, n, rate, center_hz, full_scale_dbm, band):
-    """The card's sections for ``n`` samples from ``read(start, count)``."""
+    """The card's sections for ``n`` samples from ``read(start, count)``.
+
+    Two passes. The first, over the band (or the whole span), gives the level,
+    the spectra, the tones and the occupied centre and width. The second shifts
+    the signal to that centre, band-limits it to max(3 x width, 20 kHz) and
+    decimates it, and only then takes the envelope, the frequency, the bursts and
+    the symbol rate: a tone in a wide band is judged on its own band, not on the
+    noise of the whole span.
+    """
     if band is None:
-        rate_a, base, dec = rate, 0.0, 1
-        half_band = None
+        dec, base, half_band = 1, 0.0, None
         chunks = (read(s, min(CHUNK, n - s)) for s in range(0, n, CHUNK))
     else:
         lo, hi = _band_offsets(band, center_hz, rate)
-        dec = max(1, int(rate // (2 * (hi - lo))))
-        base = (lo + hi) / 2
-        rate_a = rate / dec
-        half_band = (hi - lo) / 2
-        chunks = _banded(read, n, rate, lo, hi, dec)
-    n_a = -(-n // dec)
-    if n_a < 64:
-        raise IQSourceError(f"the band leaves {n_a} samples after decimation: too few to measure.")
-    scan = _Scan(min(COARSE_NFFT, _pow2_floor(n_a)),
-                 min(FINE_NFFT, _pow2_floor(max(n_a // 4, 64))))
+        dec, chunks = _decimated(read, n, rate, lo, hi)
+        base, half_band = (lo + hi) / 2, (hi - lo) / 2
+    rate_1 = rate / dec
+    n_1 = -(-n // dec)
+    if n_1 < 64:
+        raise IQSourceError(f"the band leaves {n_1} samples after decimation: too few to measure.")
+    scan = _Scan(min(COARSE_NFFT, _pow2_floor(n_1)),
+                 min(FINE_NFFT, _pow2_floor(max(n_1 // 4, 64))))
     for x in chunks:
         scan.feed(x)
 
@@ -509,25 +540,39 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band):
     segs = scan.coarse.segments
     inband = None
     if half_band is not None:
-        inband = np.abs((np.arange(len(Pc)) - len(Pc) // 2) * rate_a / len(Pc)) <= half_band
+        inband = np.abs((np.arange(len(Pc)) - len(Pc) // 2) * rate_1 / len(Pc)) <= half_band
     floor = max(_floor(Pc, segs, inband), 1e-300)
     snr = 10 * math.log10(max((total - floor) / floor, 1e-6))
     power_dbfs = _db(total)
-    tones = _tones(Pc, floor, rate_a / len(Pc), origin)
+    tones = _tones(Pc, floor, rate_1 / len(Pc), origin)
 
     # The occupied width is the signal's: the noise floor is taken off first,
     # or the flat noise would use up the 1 % outside the 99 % band.
     Pf = scan.fine.spectrum()
     signal = np.maximum(Pf - floor, 0.0)
     centre, bw99, bw20 = _occupied(signal if signal.sum() > 0 else Pf,
-                                   rate_a / len(Pf), origin)
+                                   rate_1 / len(Pf), origin)
 
-    env = np.concatenate(scan.env).astype(np.float64)
-    prod = np.concatenate(scan.prod)
-    fs_b = rate_a / BLOCK
+    # The second pass: the signal at its occupied centre, within the first pass's band.
+    half_span = rate / 2 if half_band is None else half_band
+    reach = max(TRACK_WIDTH * bw99, TRACK_MIN_HZ) / 2
+    c = centre - center_hz
+    lo_s, hi_s = max(c - reach, base - half_span), min(c + reach, base + half_span)
+    base_s = (lo_s + hi_s) / 2
+    dec_s, chunks = _decimated(read, n, rate, lo_s, hi_s, TRACK_RATE)
+    rate_s = rate / dec_s
+    n_s = -(-n // dec_s)
+    if n_s < 64:
+        raise IQSourceError(f"the band leaves {n_s} samples after decimation: too few to measure.")
+    track = _Track()
+    for x in chunks:
+        track.feed(x)
+    env = np.concatenate(track.env).astype(np.float64)
+    prod = np.concatenate(track.prod)
+    fs_b = rate_s / BLOCK
     span_s = len(env) / fs_b
     # The angle of a block's summed products is the phase step per sample.
-    track16 = np.angle(prod).astype(np.float64) * (rate_a / (2 * np.pi))
+    track16 = np.angle(prod).astype(np.float64) * (rate_s / (2 * np.pi))
 
     # Bursts: the blocks above a tenth of the peak level, with the gaps inside
     # a burst kept in it. The levels are those inside the bursts.
@@ -543,7 +588,7 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band):
 
     k4 = len(env) // 4
     track64 = np.angle(prod[:4 * k4].reshape(-1, 4).sum(axis=1)).astype(np.float64) \
-        * (rate_a / (2 * np.pi))
+        * (rate_s / (2 * np.pi))
     f64 = track64[strong[:4 * k4].reshape(-1, 4).all(axis=1)]
     fstd = float(np.std(f64)) if f64.size else 0.0
 
@@ -570,10 +615,10 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band):
         depth = (p_hi - p_lo) / (p_hi + p_lo) if p_hi + p_lo > 0 else 0.0
 
     if keyed_f:
-        freq_levels = [f_lo + base, f_hi + base]
+        freq_levels = [f_lo + base_s, f_hi + base_s]
         deviation = (f_hi - f_lo) / 2
     else:
-        freq_levels = [float(np.median(f16)) + base] if f16.size else []
+        freq_levels = [float(np.median(f16)) + base_s] if f16.size else []
         deviation = float((np.percentile(f64, 99.5) - np.percentile(f64, 0.5)) / 2) if f64.size else 0.0
 
     tone_n = len(tones)
@@ -592,7 +637,7 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band):
                   "the low level is at least 10 % of the high one.")
     elif keyed_f and cv < 0.1:
         cls = 'fsk'
-        ev = (f"The frequency is keyed at {f_lo + base:.0f} and {f_hi + base:.0f} Hz from the "
+        ev = (f"The frequency is keyed at {f_lo + base_s:.0f} and {f_hi + base_s:.0f} Hz from the "
               f"centre, and the envelope is constant (CV {cv:.3f}).")
     elif cv < 0.1 and fstd >= STEADY_HZ:
         cls = 'fm'
