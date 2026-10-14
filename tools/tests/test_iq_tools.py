@@ -897,10 +897,56 @@ def check_inputs_unchanged():
            lambda: (snapshot(WORK) == WORK_STATE, 'the working directory changed'))
 
 
+def dbm_pair():
+    """A .cdif of a 1 mW tone (raw amplitude 1000, DATA_GAIN 60) and the same samples
+    without the keyword, in a folder of their own (not the recordings folder)."""
+    def build():
+        folder = fresh('dbm')
+        raw = cw_iq(amp=1000.0, seed=41)
+        gain = os.path.join(folder, 'gain.cdif')
+        plain = os.path.join(folder, 'plain.cdif')
+        write_blue(gain, raw, RATE, keywords={'RF_FREQ': CENTRE, 'DATA_GAIN': 60.0})
+        write_blue(plain, raw, RATE, keywords={'RF_FREQ': CENTRE})
+        return gain, plain
+    return memo('dbm-pair', build)
+
+
+def check_picture_dbm():
+    def axis(path, want):
+        def test():
+            src = picture_module()._open(path, None, None)
+            unit = picture_module()._db(np.ones(1), src.full_scale_dbm)[1]
+            return eq(unit, want)
+        return test
+    expect('iq-picture of a .cdif with DATA_GAIN: the level axis is labelled dBm',
+           axis(dbm_pair()[0], 'dBm'))
+    expect('iq-picture of a .cdif without DATA_GAIN: the level axis stays dBFS',
+           axis(dbm_pair()[1], 'dBFS'))
+
+    # The absolute level is not asserted: peak_panel's levels are per bin (power over
+    # sum(window**2)), so an on-bin unit tone reads about +34 dB, not 0 dBm.
+    def keyword_scales():
+        _, gain_db = picture_module().peak_panel(dbm_pair()[0])
+        _, plain_db = picture_module().peak_panel(dbm_pair()[1])
+        drop = float(np.max(plain_db) - np.max(gain_db))
+        return near(drop, 60.0, 0.5)
+    expect('peak_panel: DATA_GAIN 60 lowers the peak 60 dB (+/- 0.5) from the same samples without it',
+           keyword_scales)
+
+    def picture_run():
+        r, out, _ = picture('cdif-gain', [dbm_pair()[0]])
+        if r.timed_out or r.code != 0:
+            return False, describe(r)
+        size, why = png_size(out)
+        return (size is not None and size[0] >= MIN_W and size[1] >= MIN_H, why or str(size))
+    expect('iq-picture of a .cdif with DATA_GAIN: exit 0, a PNG of at least 800 x 500',
+           picture_run)
+
+
 GROUPS = [check_measure_classes, check_measure_card_form, check_measure_options,
           check_measure_inputs, check_measure_refusals, check_card_writes,
           check_picture_pngs, check_picture_refusals, check_picture_writes_only_png,
-          check_peak_panel, check_import_clean, check_inputs_unchanged]
+          check_peak_panel, check_import_clean, check_inputs_unchanged, check_picture_dbm]
 
 
 def main():

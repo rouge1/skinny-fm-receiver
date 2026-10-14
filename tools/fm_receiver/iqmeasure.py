@@ -127,7 +127,19 @@ def _open_sdvr(path, rate, center_hz):
                     layout['samples'], layout['full_scale_dbm'], reader.read)
 
 
+def _data_gain(blue):
+    """The file's DATA_GAIN in dB, or None when it has none (or it is not a number)."""
+    try:
+        gain = float(blue.keywords.get('DATA_GAIN'))
+    except (TypeError, ValueError):
+        return None
+    return gain if math.isfinite(gain) else None
+
+
 def _open_cdif(path, rate, center_hz):
+    """A BLUE file's IQ. With DATA_GAIN the samples are counts, read as BlueReader
+    reads them: each is scaled to volts by 10 ** (-DATA_GAIN / 20), so |x|**2 is
+    mW and the level is in dBm (full scale 0 dBm). Without it they are raw."""
     name = os.path.basename(path)
     try:
         blue = sceptre_blue.read(path)
@@ -140,8 +152,14 @@ def _open_cdif(path, rate, center_hz):
     if rate is None and not blue.rate:
         raise IQSourceError(f"{name} does not say its sample rate: pass rate=.")
     centre = center_hz if center_hz is not None else (blue.center_hz or 0.0)
+    gain = _data_gain(blue)
+    if gain is None:
+        fetch, full_scale_dbm = blue.iq, None
+    else:
+        scale = np.float32(10 ** (-gain / 20.0))
+        fetch, full_scale_dbm = (lambda a, b: blue.iq(a, b) * scale), 0.0
     return IQSource(path, 'cdif', rate if rate is not None else blue.rate, centre,
-                    blue.samples, None, blue.iq)
+                    blue.samples, full_scale_dbm, fetch)
 
 
 def open_iq(path, rate=None, center_hz=None):
