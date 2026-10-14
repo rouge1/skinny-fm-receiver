@@ -1,0 +1,18 @@
+Task: fix three bugs about narrow IQ recordings (a 54.7 kS/s Sceptre BLUE file) in the Recordings tab. Phase u1, task narrow.
+
+Read AGENTS.md first and follow it. Do not list or read anything outside the working directory.
+Read CLAUDE.md, tools/tests/test_narrow_files.py (the acceptance tests: they are the spec; do not edit them), tools/fm_receiver/radios.py (`Radio.max_offset`, `EDGE_MARGIN_HZ`, the IQFile class), tools/fm_receiver/app.py (search `min_span_hz`, `max_offset`, `span_knob`, `set_range`, `channel_filter`, the tuner range and the channel band drawing), tools/fm_receiver/widgets.py (the RF spectrum view's span and channel band).
+Edit only: tools/fm_receiver/radios.py, tools/fm_receiver/app.py, tools/fm_receiver/widgets.py. Do not commit.
+
+Bugs and cause:
+1. Tuner trapped at the left of the chart: for a 54.7 kS/s file `fmctl status` shows tuner_mhz 5944.3 with tuner_range_mhz [0, 6000]. `Radio.max_offset(rate)` is `rate * usable_fraction / 2 - EDGE_MARGIN_HZ` (150 kHz): negative below about 300 kS/s, clamped to 0, so the tuner range has no width. Wanted: r = max(0, R/2 * usable - margin), margin = min(150 kHz, R/8). For R >= 1.2 MS/s nothing changes (FM files and every live radio keep their numbers). For a 54.7 kS/s file r is about 17.8 kHz, so the tuner is placed, dragged and typed anywhere in the file's band and never pinned; `tuner_mhz` is never outside the file's own band, even for a request far outside it.
+2/3. Span cannot change: the RF view is built with `min_span_hz=50e3` and `span_knob.set_range(min(min_span, band), band)` leaves [50 kHz, 54.7 kHz]. Wanted: for a recording of band B Hz the Span range is [max(500 Hz, B/200), B]; 50 kHz stays the minimum for live sweeps and bands over 10 MHz. `view rf span 5` (kHz) on the 54.7 kHz file gives span 0.005 MHz and a 5 kHz window around the tuner; `view rf full` gives the band.
+Also: the drawn channel band and `status.channel_filter_khz` never exceed the file's band: shown at min(filter, band) for a narrow file; the app's saved filter value is left alone.
+
+Rules: colours from `theme.TOKENS`; a Qt paint override is guarded with try/except (CLAUDE.md); any layout change is animated (fade/glide, no sudden jumps); keep the change small. Do not touch tuner or marker behaviour for spectrum tracks (a later task does the marker).
+
+Run: `QT_QPA_PLATFORM=offscreen PYTHONPATH=tools /home/user/miniconda3/envs/gnu/bin/python tools/tests/test_narrow_files.py`: every case outside group f (marker) must pass. Then also run the same way tools/tests/test_recordings.py, test_sceptre_spectra.py, test_sceptre_library.py, test_gui.py, test_control.py, test_control_more.py, test_tuning.py; all must exit 0 (they take a while; run them one after another).
+
+SCREENSHOT (required, GUI work is not provable by tests alone): write a short script OUTSIDE the repo tree you edit (e.g. /tmp is NOT allowed to be read by you? use the working directory file `tools/tests/_u1_shot.py`, and delete it before finishing) that builds the 54,687.5 S/s synthetic BLUE file as test_narrow_files.py does, opens it in the offscreen window (see how test_gui.py or tools/fmctl `screenshot` does it), tunes 100.09 and sets `view rf span 5`, and saves a PNG to `shots/u1-narrow-after.png` in the working directory. Do the same on the unfixed code first (`git stash` is forbidden: instead produce the "before" shot by running your script before you make any edit) as `shots/u1-narrow-before.png`. Report both paths. Do not commit the PNGs (the manager reads them).
+
+Report: root cause confirmation, files changed with a one-line description each, the test results (counts), and the two PNG paths.

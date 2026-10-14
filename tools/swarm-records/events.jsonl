@@ -892,3 +892,135 @@
 {"t": 1792005057227, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m7-fix-grokw-1792003849107.jsonl", "exit": 0, "timed_out": false}
 {"t": 1792005057227, "type": "task", "phase": "m7", "task": "fix", "model": "grokw", "status": "review"}
 {"t": 1792006065511, "type": "task", "phase": "m7", "task": "fix", "status": "merged", "model": "grokw"}
+{"t": 1792006065634, "type": "phase", "phase": "m7", "status": "done"}
+{"t": 1792006118986, "type": "phase", "phase": "m6", "status": "active"}
+{"t": 1792006129180, "type": "task", "phase": "m6", "task": "tests", "status": "queued", "model": "haiku"}
+{"t": 1792006129230, "type": "task", "phase": "m6", "task": "extract", "status": "queued", "model": "haiku"}
+{"t": 1792006129276, "type": "task", "phase": "m6", "task": "iq-decode", "status": "queued", "model": "grokw"}
+{"t": 1792006129322, "type": "task", "phase": "m6", "task": "wiring", "status": "queued", "model": "haiku"}
+{"t": 1792006161411, "type": "task", "phase": "m6", "task": "tests", "model": "haiku", "status": "working"}
+{"t": 1792006161413, "type": "run_start", "phase": "m6", "task": "tests", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/m6-tests-haiku", "pid": 1759371, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-tests-haiku-1792006161411.jsonl", "branch": "m6/tests-haiku"}
+{"t": 1792006176415, "type": "task", "phase": "m6", "task": "extract", "model": "haiku", "status": "working"}
+{"t": 1792006176417, "type": "run_start", "phase": "m6", "task": "extract", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/m6-extract-haiku", "pid": 1759485, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-extract-haiku-1792006176415.jsonl", "branch": "m6/extract-haiku"}
+{"t": 1792006307507, "type": "run", "phase": "m6", "task": "tests", "model": "haiku", "kind": "build", "session": "ses_ec41bfb6cffehdzkGmQsXyeAPJ", "wall_s": 146.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.029007, "tokens_in": 16, "tokens_out": 10434, "tokens_reasoning": 21987, "cache_read": 323650, "model_s": 144.3, "messages": 7, "files_changed": 0}
+{"t": 1792006307507, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-tests-haiku-1792006161411.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792006307507, "type": "task", "phase": "m6", "task": "tests", "model": "haiku", "status": "review"}
+{"t": 1792006368513, "type": "run", "phase": "m6", "task": "extract", "model": "haiku", "kind": "build", "session": "ses_ec41bc0f2ffehc3OnsT1Xlxzbf", "wall_s": 192.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.033645, "tokens_in": 22, "tokens_out": 7983, "tokens_reasoning": 21692, "cache_read": 712326, "model_s": 190.5, "messages": 10, "files_changed": 0}
+{"t": 1792006368513, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-extract-haiku-1792006176415.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792006368513, "type": "task", "phase": "m6", "task": "extract", "model": "haiku", "status": "review"}
+{"t": 1792006428442, "type": "task", "phase": "m6", "task": "rv-tests-grokw", "model": "grokw", "status": "working"}
+{"t": 1792006428461, "type": "run_start", "phase": "m6", "task": "rv-tests-grokw", "model": "grokw", "dir": "/data/python/skinny/fm-receiver-wt/rv-rvt", "pid": 1762112, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-tests-grokw-grokw-1792006428442.jsonl"}
+{"t": 1792006438432, "type": "task", "phase": "m6", "task": "rv-tests-musefree", "model": "musefree", "status": "working"}
+{"t": 1792006438434, "type": "run_start", "phase": "m6", "task": "rv-tests-musefree", "model": "musefree", "dir": "/data/python/skinny/fm-receiver-wt/rv-rvt2", "pid": 1762240, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-tests-musefree-musefree-1792006438433.jsonl"}
+{"t": 1792006448436, "type": "task", "phase": "m6", "task": "rv-extract-grokw", "model": "grokw", "status": "working"}
+{"t": 1792006448458, "type": "run_start", "phase": "m6", "task": "rv-extract-grokw", "model": "grokw", "dir": "/data/python/skinny/fm-receiver-wt/rv-rve", "pid": 1762461, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-extract-grokw-grokw-1792006448436.jsonl"}
+{"t": 1792006458438, "type": "task", "phase": "m6", "task": "rv-extract-musefree", "model": "musefree", "status": "working"}
+{"t": 1792006458440, "type": "run_start", "phase": "m6", "task": "rv-extract-musefree", "model": "musefree", "dir": "/data/python/skinny/fm-receiver-wt/rv-rve2", "pid": 1762616, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-extract-musefree-musefree-1792006458438.jsonl"}
+{"t": 1792006574537, "type": "run", "phase": "m6", "task": "rv-extract-musefree", "model": "musefree", "kind": "review", "session": "ses_ec417735cffeOBDE6f11Rsn8fK", "wall_s": 116.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.0, "tokens_in": 57765, "tokens_out": 4318, "tokens_reasoning": 11818, "cache_read": 459513, "model_s": 115.2, "messages": 10, "files_changed": 0}
+{"t": 1792006574537, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-extract-musefree-musefree-1792006458438.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792006574537, "type": "task", "phase": "m6", "task": "rv-extract-musefree", "model": "musefree", "status": "review"}
+{"t": 1792006596526, "type": "run", "phase": "m6", "task": "rv-tests-musefree", "model": "musefree", "kind": "review", "session": "ses_ec417c167ffe0GEog5tmrrR7sV", "wall_s": 158.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.0, "tokens_in": 24976, "tokens_out": 5251, "tokens_reasoning": 13912, "cache_read": 145062, "model_s": 156.1, "messages": 7, "files_changed": 0}
+{"t": 1792006596526, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-tests-musefree-musefree-1792006438433.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792006596526, "type": "task", "phase": "m6", "task": "rv-tests-musefree", "model": "musefree", "status": "review"}
+{"t": 1792006736366, "type": "phase", "phase": "u1", "status": "active"}
+{"t": 1792006744512, "type": "run", "phase": "m6", "task": "rv-tests-grokw", "model": "grokw", "kind": "review", "session": "01a13be8-1910-7461-a26d-57fafd3a590a", "wall_s": 316.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.2551564, "tokens_in": 43365, "tokens_out": 29182, "tokens_reasoning": 25822, "cache_read": 226816, "model_s": 0.0, "messages": 10, "files_changed": 0}
+{"t": 1792006744512, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-tests-grokw-grokw-1792006428442.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792006744512, "type": "task", "phase": "m6", "task": "rv-tests-grokw", "model": "grokw", "status": "review"}
+{"t": 1792006746203, "type": "task", "phase": "u1", "task": "tests", "status": "queued", "model": "haiku"}
+{"t": 1792006763644, "type": "task", "phase": "u1", "task": "tests", "model": "haiku", "status": "working"}
+{"t": 1792006763646, "type": "run_start", "phase": "u1", "task": "tests", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/u1-tests-haiku", "pid": 1765406, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-tests-haiku-1792006763644.jsonl", "branch": "u1/tests-haiku"}
+{"t": 1792006790515, "type": "run", "phase": "m6", "task": "rv-extract-grokw", "model": "grokw", "kind": "review", "session": "01a13be8-66e4-7fc3-8f7e-a92ad682111c", "wall_s": 342.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.31932664, "tokens_in": 63589, "tokens_out": 30094, "tokens_reasoning": 28140, "cache_read": 323712, "model_s": 0.0, "messages": 10, "files_changed": 0}
+{"t": 1792006790515, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-extract-grokw-grokw-1792006448436.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792006790515, "type": "task", "phase": "m6", "task": "rv-extract-grokw", "model": "grokw", "status": "review"}
+{"t": 1792006825192, "type": "task", "phase": "m6", "task": "tests", "model": "haiku", "status": "fixing"}
+{"t": 1792006825194, "type": "run_start", "phase": "m6", "task": "tests", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/m6-tests-haiku", "pid": 1766233, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-tests-haiku-1792006825192.jsonl", "branch": "m6/tests-haiku"}
+{"t": 1792006835183, "type": "task", "phase": "m6", "task": "extract", "model": "haiku", "status": "fixing"}
+{"t": 1792006835186, "type": "run_start", "phase": "m6", "task": "extract", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/m6-extract-haiku", "pid": 1766358, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-extract-haiku-1792006835184.jsonl", "branch": "m6/extract-haiku"}
+{"t": 1792006909284, "type": "run", "phase": "m6", "task": "tests", "model": "haiku", "kind": "fix", "session": "ses_ec41bfb6cffehdzkGmQsXyeAPJ", "wall_s": 84.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.029448, "tokens_in": 28, "tokens_out": 8741, "tokens_reasoning": 6306, "cache_read": 1055050, "model_s": 82.1, "messages": 13, "files_changed": 0}
+{"t": 1792006909284, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-tests-haiku-1792006825192.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792006909284, "type": "task", "phase": "m6", "task": "tests", "model": "haiku", "status": "review"}
+{"t": 1792006961280, "type": "run", "phase": "m6", "task": "extract", "model": "haiku", "kind": "fix", "session": "ses_ec41bc0f2ffehc3OnsT1Xlxzbf", "wall_s": 126.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.16375, "tokens_in": 18, "tokens_out": 7380, "tokens_reasoning": 12755, "cache_read": 809750, "model_s": 125.6, "messages": 8, "files_changed": 0}
+{"t": 1792006961280, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-extract-haiku-1792006835184.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792006961280, "type": "task", "phase": "m6", "task": "extract", "model": "haiku", "status": "review"}
+{"t": 1792007005593, "type": "task", "phase": "m6", "task": "rv-extract2-grokw", "model": "grokw", "status": "working"}
+{"t": 1792007005600, "type": "run_start", "phase": "m6", "task": "rv-extract2-grokw", "model": "grokw", "dir": "/data/python/skinny/fm-receiver-wt/rv-rve", "pid": 1767718, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-extract2-grokw-grokw-1792007005593.jsonl"}
+{"t": 1792007471647, "type": "run", "phase": "m6", "task": "rv-extract2-grokw", "model": "grokw", "kind": "review", "session": "01a13bf0-e758-7022-957b-9a32cc86ea5e", "wall_s": 466.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.41972184, "tokens_in": 58589, "tokens_out": 45050, "tokens_reasoning": 39136, "cache_read": 459520, "model_s": 0.0, "messages": 15, "files_changed": 0}
+{"t": 1792007471647, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-extract2-grokw-grokw-1792007005593.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792007471647, "type": "task", "phase": "m6", "task": "rv-extract2-grokw", "model": "grokw", "status": "review"}
+{"t": 1792007484525, "type": "task", "phase": "m6", "task": "extract", "model": "haiku", "status": "fixing"}
+{"t": 1792007484527, "type": "run_start", "phase": "m6", "task": "extract", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/m6-extract-haiku", "pid": 1772183, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-extract-haiku-1792007484525.jsonl", "branch": "m6/extract-haiku"}
+{"t": 1792007503805, "type": "run", "phase": "u1", "task": "tests", "model": "haiku", "kind": "build", "session": "ses_ec412cafeffetBdvAbLXuwnyJP", "wall_s": 740.1, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 1.143666, "tokens_in": 114, "tokens_out": 30604, "tokens_reasoning": 104242, "cache_read": 13083393, "model_s": 738.1, "messages": 56, "files_changed": 0}
+{"t": 1792007503805, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-tests-haiku-1792006763644.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792007503805, "type": "task", "phase": "u1", "task": "tests", "model": "haiku", "status": "review"}
+{"t": 1792007606642, "type": "run", "phase": "m6", "task": "extract", "model": "haiku", "kind": "fix", "session": "ses_ec41bc0f2ffehc3OnsT1Xlxzbf", "wall_s": 122.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.169095, "tokens_in": 14, "tokens_out": 4770, "tokens_reasoning": 14404, "cache_read": 691492, "model_s": 120.1, "messages": 6, "files_changed": 0}
+{"t": 1792007606642, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-extract-haiku-1792007484525.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792007606642, "type": "task", "phase": "m6", "task": "extract", "model": "haiku", "status": "review"}
+{"t": 1792007640597, "type": "task", "phase": "m6", "task": "extract", "status": "merged", "model": "haiku"}
+{"t": 1792007640781, "type": "task", "phase": "m6", "task": "iq-decode", "model": "grokw", "status": "working"}
+{"t": 1792007640796, "type": "run_start", "phase": "m6", "task": "iq-decode", "model": "grokw", "dir": "/data/python/skinny/fm-receiver-wt/m6-iq-decode-grokw", "pid": 1773024, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-iq-decode-grokw-1792007640781.jsonl", "branch": "m6/iq-decode-grokw"}
+{"t": 1792007984725, "type": "task", "phase": "u1", "task": "tests", "status": "review", "model": "haiku"}
+{"t": 1792007992531, "type": "task", "phase": "u1", "task": "rvt-grokw", "model": "grokw", "status": "working"}
+{"t": 1792007992552, "type": "run_start", "phase": "u1", "task": "rvt-grokw", "model": "grokw", "dir": "/data/python/skinny/fm-receiver-wt/rv-rvt-grokw", "pid": 1775558, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-rvt-grokw-grokw-1792007992531.jsonl"}
+{"t": 1792008007524, "type": "task", "phase": "u1", "task": "rvt-musefree", "model": "musefree", "status": "working"}
+{"t": 1792008007526, "type": "run_start", "phase": "u1", "task": "rvt-musefree", "model": "musefree", "dir": "/data/python/skinny/fm-receiver-wt/rv-rvt-musefree", "pid": 1775854, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-rvt-musefree-musefree-1792008007524.jsonl"}
+{"t": 1792008048852, "type": "run", "phase": "m6", "task": "iq-decode", "model": "grokw", "kind": "build", "session": "01a13bfa-98f9-7121-9645-8f43d4961e93", "wall_s": 408.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.70175592, "tokens_in": 83224, "tokens_out": 35287, "tokens_reasoning": 21541, "cache_read": 1307648, "model_s": 0.0, "messages": 26, "files_changed": 1}
+{"t": 1792008048853, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-iq-decode-grokw-1792007640781.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792008048853, "type": "task", "phase": "m6", "task": "iq-decode", "model": "grokw", "status": "review"}
+{"t": 1792008086765, "type": "task", "phase": "m6", "task": "rv-decode-musefree", "model": "musefree", "status": "working"}
+{"t": 1792008086767, "type": "run_start", "phase": "m6", "task": "rv-decode-musefree", "model": "musefree", "dir": "/data/python/skinny/fm-receiver-wt/rv-rvd", "pid": 1777946, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-decode-musefree-musefree-1792008086765.jsonl"}
+{"t": 1792008096769, "type": "task", "phase": "m6", "task": "rv-decode-haiku", "model": "haiku", "status": "working"}
+{"t": 1792008096771, "type": "run_start", "phase": "m6", "task": "rv-decode-haiku", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/rv-rvd2", "pid": 1778059, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-decode-haiku-haiku-1792008096769.jsonl"}
+{"t": 1792008101629, "type": "run", "phase": "u1", "task": "rvt-musefree", "model": "musefree", "kind": "review", "session": "ses_ec3ffd008ffelEvr12Rbco41tu", "wall_s": 94.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.0, "tokens_in": 106249, "tokens_out": 2305, "tokens_reasoning": 11209, "cache_read": 615304, "model_s": 92.5, "messages": 9, "files_changed": 0}
+{"t": 1792008101629, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-rvt-musefree-musefree-1792008007524.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792008101629, "type": "task", "phase": "u1", "task": "rvt-musefree", "model": "musefree", "status": "review"}
+{"t": 1792008106769, "type": "task", "phase": "m6", "task": "wiring", "model": "haiku", "status": "working"}
+{"t": 1792008106771, "type": "run_start", "phase": "m6", "task": "wiring", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/m6-wiring-haiku", "pid": 1778221, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-wiring-haiku-1792008106769.jsonl", "branch": "m6/wiring-haiku"}
+{"t": 1792008212620, "type": "run", "phase": "u1", "task": "rvt-grokw", "model": "grokw", "kind": "review", "session": "01a13bff-f6e8-7782-88e4-b97a928579ac", "wall_s": 220.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.54650784, "tokens_in": 61186, "tokens_out": 19398, "tokens_reasoning": 16959, "cache_read": 1129856, "model_s": 0.0, "messages": 27, "files_changed": 0}
+{"t": 1792008212620, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-rvt-grokw-grokw-1792007992531.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792008212620, "type": "task", "phase": "u1", "task": "rvt-grokw", "model": "grokw", "status": "review"}
+{"t": 1792008220871, "type": "run", "phase": "m6", "task": "wiring", "model": "haiku", "kind": "build", "session": "ses_ec3fe4c77ffeub38AidnkdAPS7", "wall_s": 114.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.22535, "tokens_in": 32, "tokens_out": 9378, "tokens_reasoning": 10413, "cache_read": 1786497, "model_s": 112.0, "messages": 15, "files_changed": 0}
+{"t": 1792008220871, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-wiring-haiku-1792008106769.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792008220871, "type": "task", "phase": "m6", "task": "wiring", "model": "haiku", "status": "review"}
+{"t": 1792008229186, "type": "task", "phase": "u1", "task": "tests", "model": "haiku", "status": "fixing"}
+{"t": 1792008229188, "type": "run_start", "phase": "u1", "task": "tests", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/u1-tests-haiku", "pid": 1781568, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-tests-haiku-1792008229187.jsonl", "branch": "u1/tests-haiku"}
+{"t": 1792008248859, "type": "run", "phase": "m6", "task": "rv-decode-musefree", "model": "musefree", "kind": "review", "session": "ses_ec3fe9aa5ffe4WpHp35ZJylFM6", "wall_s": 162.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.0, "tokens_in": 34337, "tokens_out": 5594, "tokens_reasoning": 10021, "cache_read": 300793, "model_s": 160.7, "messages": 10, "files_changed": 0}
+{"t": 1792008248859, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-decode-musefree-musefree-1792008086765.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792008248859, "type": "task", "phase": "m6", "task": "rv-decode-musefree", "model": "musefree", "status": "review"}
+{"t": 1792008250856, "type": "run", "phase": "m6", "task": "rv-decode-haiku", "model": "haiku", "kind": "review", "session": "ses_ec3fe739affeeTg2ieY7RMKB6T", "wall_s": 154.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.030153, "tokens_in": 30, "tokens_out": 9108, "tokens_reasoning": 20477, "cache_read": 632485, "model_s": 151.5, "messages": 13, "files_changed": 0}
+{"t": 1792008250856, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-decode-haiku-haiku-1792008096769.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792008250856, "type": "task", "phase": "m6", "task": "rv-decode-haiku", "model": "haiku", "status": "review"}
+{"t": 1792008276454, "type": "task", "phase": "m6", "task": "iq-decode", "model": "grokw", "status": "fixing"}
+{"t": 1792008276462, "type": "run_start", "phase": "m6", "task": "iq-decode", "model": "grokw", "dir": "/data/python/skinny/fm-receiver-wt/m6-iq-decode-grokw", "pid": 1781926, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-iq-decode-grokw-1792008276454.jsonl", "branch": "m6/iq-decode-grokw"}
+{"t": 1792008438482, "type": "run", "phase": "m6", "task": "iq-decode", "model": "grokw", "kind": "fix", "session": "01a13bfa-98f9-7121-9645-8f43d4961e93", "wall_s": 162.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.3439372, "tokens_in": 22252, "tokens_out": 13617, "tokens_reasoning": 8243, "cache_read": 759168, "model_s": 0.0, "messages": 8, "files_changed": 1}
+{"t": 1792008438482, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-iq-decode-grokw-1792008276454.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792008438482, "type": "task", "phase": "m6", "task": "iq-decode", "model": "grokw", "status": "review"}
+{"t": 1792008445355, "type": "run", "phase": "u1", "task": "tests", "model": "haiku", "kind": "fix", "session": "ses_ec412cafeffetBdvAbLXuwnyJP", "wall_s": 216.1, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.414764, "tokens_in": 12, "tokens_out": 18518, "tokens_reasoning": 27906, "cache_read": 1424089, "model_s": 215.6, "messages": 5, "files_changed": 0}
+{"t": 1792008445355, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-tests-haiku-1792008229187.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792008445355, "type": "task", "phase": "u1", "task": "tests", "model": "haiku", "status": "review"}
+{"t": 1792008449709, "type": "task", "phase": "m6", "task": "rv-decode2-haiku", "model": "haiku", "status": "working"}
+{"t": 1792008449711, "type": "run_start", "phase": "m6", "task": "rv-decode2-haiku", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/rv-rvd", "pid": 1784574, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-decode2-haiku-haiku-1792008449709.jsonl"}
+{"t": 1792008456045, "type": "task", "phase": "u1", "task": "tests", "status": "merged", "model": "haiku"}
+{"t": 1792008456092, "type": "task", "phase": "u1", "task": "narrow", "status": "queued", "model": "grokw"}
+{"t": 1792008459713, "type": "task", "phase": "m6", "task": "rv-wiring-grokw", "model": "grokw", "status": "working"}
+{"t": 1792008459722, "type": "run_start", "phase": "m6", "task": "rv-wiring-grokw", "model": "grokw", "dir": "/data/python/skinny/fm-receiver-wt/rv-rvd2", "pid": 1784786, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-wiring-grokw-grokw-1792008459713.jsonl"}
+{"t": 1792008469587, "type": "task", "phase": "u1", "task": "narrow", "model": "grokw", "status": "working"}
+{"t": 1792008469605, "type": "run_start", "phase": "u1", "task": "narrow", "model": "grokw", "dir": "/data/python/skinny/fm-receiver-wt/u1-narrow-grokw", "pid": 1784993, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-narrow-grokw-1792008469587.jsonl", "branch": "u1/narrow-grokw"}
+{"t": 1792008537800, "type": "run", "phase": "m6", "task": "rv-decode2-haiku", "model": "haiku", "kind": "review", "session": "ses_ec3f910fbffeCYdfnIjwPnsEGq", "wall_s": 88.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.0166, "tokens_in": 24, "tokens_out": 7524, "tokens_reasoning": 8794, "cache_read": 289790, "model_s": 87.7, "messages": 10, "files_changed": 0}
+{"t": 1792008537800, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-decode2-haiku-haiku-1792008449709.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792008537800, "type": "task", "phase": "m6", "task": "rv-decode2-haiku", "model": "haiku", "status": "review"}
+{"t": 1792008543741, "type": "run", "phase": "m6", "task": "rv-wiring-grokw", "model": "grokw", "kind": "review", "session": "01a13c07-1758-77b3-ab2f-a44ff86f7c78", "wall_s": 84.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.12850232, "tokens_in": 38520, "tokens_out": 8117, "tokens_reasoning": 6480, "cache_read": 126464, "model_s": 0.0, "messages": 7, "files_changed": 0}
+{"t": 1792008543741, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-rv-wiring-grokw-grokw-1792008459713.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792008543741, "type": "task", "phase": "m6", "task": "rv-wiring-grokw", "model": "grokw", "status": "review"}
+{"t": 1792008563477, "type": "task", "phase": "m6", "task": "iq-decode", "model": "grokw", "status": "fixing"}
+{"t": 1792008563484, "type": "run_start", "phase": "m6", "task": "iq-decode", "model": "grokw", "dir": "/data/python/skinny/fm-receiver-wt/m6-iq-decode-grokw", "pid": 1786491, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-iq-decode-grokw-1792008563477.jsonl", "branch": "m6/iq-decode-grokw"}
+{"t": 1792008571479, "type": "task", "phase": "m6", "task": "wiring", "model": "haiku", "status": "fixing"}
+{"t": 1792008571481, "type": "run_start", "phase": "m6", "task": "wiring", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/m6-wiring-haiku", "pid": 1786644, "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-wiring-haiku-1792008571479.jsonl", "branch": "m6/wiring-haiku"}
+{"t": 1792008603495, "type": "run", "phase": "m6", "task": "iq-decode", "model": "grokw", "kind": "fix", "session": "01a13bfa-98f9-7121-9645-8f43d4961e93", "wall_s": 40.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.17822392, "tokens_in": 9277, "tokens_out": 4238, "tokens_reasoning": 2320, "cache_read": 436224, "model_s": 0.0, "messages": 4, "files_changed": 1}
+{"t": 1792008603495, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-iq-decode-grokw-1792008563477.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792008603495, "type": "task", "phase": "m6", "task": "iq-decode", "model": "grokw", "status": "review"}
+{"t": 1792008623580, "type": "run", "phase": "m6", "task": "wiring", "model": "haiku", "kind": "fix", "session": "ses_ec3fe4c77ffeub38AidnkdAPS7", "wall_s": 52.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.16331, "tokens_in": 16, "tokens_out": 2771, "tokens_reasoning": 3789, "cache_read": 957511, "model_s": 50.3, "messages": 7, "files_changed": 0}
+{"t": 1792008623580, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/m6-wiring-haiku-1792008571479.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792008623580, "type": "task", "phase": "m6", "task": "wiring", "model": "haiku", "status": "review"}
+{"t": 1792009026346, "type": "task", "phase": "m6", "task": "tests", "status": "merged", "model": "haiku"}
+{"t": 1792009026394, "type": "task", "phase": "m6", "task": "iq-decode", "status": "merged", "model": "grokw"}
+{"t": 1792009026439, "type": "task", "phase": "m6", "task": "wiring", "status": "merged", "model": "haiku"}
