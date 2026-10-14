@@ -167,6 +167,23 @@ def value_at(view, pos):
     return vb.mapSceneToView(view.plot.mapToScene(pos)).x()
 
 
+def settle(view, limit=3.0):
+    """Pump until the plot's width has held still for 0.3 s: the map column slides
+    in when a recording is chosen (240 ms), and a pixel maps to another frequency
+    until it has. Raises if the layout is still moving after ``limit`` seconds."""
+    port = view.plot.viewport()
+    end = time.time() + limit
+    last, since = port.width(), time.time()
+    while time.time() < end:
+        QAPP.processEvents()
+        time.sleep(0.02)
+        if port.width() != last:
+            last, since = port.width(), time.time()
+        elif time.time() - since >= 0.3:
+            return
+    raise AssertionError(f"the plot is still moving after {limit:.0f} s (now {port.width()} px)")
+
+
 def bin_mhz(view):
     return float(np.median(np.diff(view._x)))
 
@@ -639,6 +656,7 @@ def choose(S, kind, play):
         c.ok('play on')
         assert pump(15, lambda: w.rf_view._x is not None), 'the spectrum was not drawn'
         c.ok('play off')
+    settle(w.rf_view)
     S['ready'] = True
 
 
@@ -652,8 +670,10 @@ def check_no_marker(S):
 def check_menu(S):
     need(S)
     view = S['view']
+    settle(view)
     at = point(view, frame_at(view, 0.25))
     move(view.plot.viewport(), at)
+    f_pointer = value_at(view, at)              # before the press: the layout is settled
     press(view.plot.viewport(), at, QtCore.Qt.RightButton, True)
     press(view.plot.viewport(), at, QtCore.Qt.RightButton, False)
     pump(0.2)
@@ -662,7 +682,7 @@ def check_menu(S):
     assert text.startswith('Marker to'), f"the right-click menu reads {text!r}, want 'Marker to <f> MHz'"
     found = re.search(r'(-?\d+\.\d+) ' + re.escape(view.unit), text)
     assert found, f"the menu {text!r} has no frequency"
-    f_menu, f_pointer = float(found.group(1)), value_at(view, at)
+    f_menu = float(found.group(1))
     # The menu shows the pointer's frequency to 3 places: one display step (1 kHz).
     assert abs(f_menu - f_pointer) <= 0.001, (
         f"the menu offers {f_menu} {view.unit} for a pointer on {f_pointer:.4f}")
@@ -681,9 +701,13 @@ def check_menu_places(S):
 def check_click(S):
     need(S)
     view = S['view']
+    settle(view)
     at = point(view, frame_at(view, 0.6))
-    click(view.plot.viewport(), at)
-    want = value_at(view, at)
+    move(view.plot.viewport(), at)
+    want = value_at(view, at)                   # before the press
+    press(view.plot.viewport(), at, QtCore.Qt.LeftButton, True)
+    press(view.plot.viewport(), at, QtCore.Qt.LeftButton, False)
+    pump(0.2)
     got = marker_of(S['c'])
     assert got is not None and abs(got - want) <= tolerance(view), (
         f"a left click on {want:.4f} {view.unit} left the marker at {got}")
@@ -694,9 +718,10 @@ def check_drag(S):
     view, c = S['view'], S['c']
     before = marker_of(c)
     assert before is not None, 'no marker to drag'
+    settle(view)
     start = point(view, before)
     end = point(view, frame_at(view, 0.35))
-    expect = value_at(view, end)
+    expect = value_at(view, end)                # before the drag
     drag(view.plot.viewport(), start, end)
     got = marker_of(c)
     assert got is not None and abs(got - expect) <= tolerance(view), (
@@ -711,6 +736,7 @@ def check_readout(S):
     assert port.width() >= 400, f"the plot is {port.width()} px wide: too narrow to read a bin"
     marker = marker_of(S['c'])
     assert marker is not None, 'no marker to read'
+    settle(view)
     at = point(view, marker)
     move(port, at)
     pump(0.1)
@@ -796,6 +822,7 @@ def check_marker_key_receive(S):
 def iq_menu(S):
     need(S)
     view = S['view']
+    settle(view)
     at = point(view, frame_at(view, 0.3))
     click(view.plot.viewport(), at, QtCore.Qt.RightButton)
     text = view._tune_action.text()

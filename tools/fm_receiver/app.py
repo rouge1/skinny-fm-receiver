@@ -2149,6 +2149,7 @@ class MainWindow(Qt.QWidget):
         was done to it since, so it is not loaded or recentred again."""
         self._save_view()
         self._mode = mode
+        self.rf_view.set_marker_mode(False)
         if not keep_view:
             self.rf_view.load_state(self.cfg[VIEW_KEYS[mode]])
         self.rf_view.set_level_unit(
@@ -2337,6 +2338,7 @@ class MainWindow(Qt.QWidget):
     def _start_sweep(self):
         self._save_view()
         self._mode = 'sweep'
+        self.rf_view.set_marker_mode(False)
         self.rf_view.load_state(self.cfg['view_sweep'])
         plan = self._sweep_plan()
         self.engine.start_sweep(plan, frames=self.frames_spin.value(),
@@ -3003,6 +3005,9 @@ class MainWindow(Qt.QWidget):
         self._refresh_library()
         if self._track is not None and self._prepared != self._track.path:
             self._load_track(self._track)           # the list kept the same one
+        # The chosen track may be the one already loaded, which is not reloaded:
+        # its marker mode is restored here, since leaving cleared it.
+        self.rf_view.set_marker_mode(self._track is not None and self._track.is_spectrum)
 
     def _leave_recordings(self):
         """Back to Sweep or Receive: the radio opens again, tuned where it was."""
@@ -3017,6 +3022,7 @@ class MainWindow(Qt.QWidget):
             view.wf_clock = None
             view.wf_frozen = False
             view.clear()
+        self.rf_view.set_marker_mode(False)
         self._window_timer.stop()
         self._map_job = self._window_job = None
         self._show_audio_view(False)
@@ -3042,6 +3048,7 @@ class MainWindow(Qt.QWidget):
         view.set_center_line(None)
         view.set_tuner_range(None, None)
         view.set_marker(None)
+        view.set_marker_mode(False)
         view.clear_density()
         view.set_message("Choose a recording and press Play")
         self.mpx_view.clear()
@@ -3223,6 +3230,7 @@ class MainWindow(Qt.QWidget):
         slid open beside the waterfall and filled in the background, and
         the stretch the waterfall shows drawn from the file."""
         self._keep_track_view()
+        self.rf_view.set_marker_mode(track is not None and track.is_spectrum)
         usable = track is not None and not track.error
         self._prepared = track.path if track is not None else None
         self._map_job = None
@@ -3569,6 +3577,7 @@ class MainWindow(Qt.QWidget):
         self._show_audio_view(False)
         view = self.rf_view
         view.set_level_unit('dBm')
+        view.set_marker_mode(True)
         # No zooming or panning out past what the file holds.
         low, high = library.extent(track)
         view.set_pan_limits(low, high)
