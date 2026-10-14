@@ -973,10 +973,167 @@ def check_single_tone_wide_and_sidelobes():
            lambda: eq(cw_28()['class'], 'carrier'))
 
 
+# ---- the cost of a measurement (m5) ------------------------------------------
+
+TOOLS = os.path.dirname(HERE)
+WIDE_RATE = 28e6
+BLOCK_SAMPLES = 1 << 22
+
+
+def write_wide_cw(path, seconds, rate, offset=50e3, snr_db=40.0, seed=61):
+    """A CW at ``offset`` in white noise ``snr_db`` down, written a block at a time,
+    so the file is never held whole in memory."""
+    rng = np.random.default_rng(seed)
+    n = int(round(seconds * rate))
+    with open(path, 'wb') as fh:
+        for s in range(0, n, BLOCK_SAMPLES):
+            m = min(BLOCK_SAMPLES, n - s)
+            sig = np.exp(2j * np.pi * offset * (np.arange(s, s + m) / rate))
+            (sig + _power_noise(rng, m, 10 ** (-snr_db / 10))).astype(np.complex64).tofile(fh)
+    return path
+
+
+def wide_file(name, seconds, rate, snr_db=40.0, seed=61):
+    return memo(('wide', name), lambda: write_wide_cw(
+        os.path.join(fresh('cost'), name + '.cfile'), seconds, rate, snr_db=snr_db, seed=seed))
+
+
+def probe_file(path, rate):
+    """``measure_file`` of ``path`` in a fresh interpreter: its wall time, and the growth
+    of the peak resident memory (MB) over a baseline taken after the imports.
+
+    On Linux the peak is VmHWM, reset after the imports: a child process's
+    ``ru_maxrss`` starts at its parent's peak, which a test process that has
+    held big arrays would hide the growth behind. Elsewhere it is ``ru_maxrss``."""
+    code = (
+        "import json, resource, time\n"
+        "import numpy\n"
+        "from fm_receiver import iqmeasure\n"
+        "def peak_kb():\n"
+        "    try:\n"
+        "        with open('/proc/self/status') as fh:\n"
+        "            for line in fh:\n"
+        "                if line.startswith('VmHWM:'):\n"
+        "                    return int(line.split()[1])\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
+        "try:\n"
+        "    open('/proc/self/clear_refs', 'w').write('5')\n"
+        "except OSError:\n"
+        "    pass\n"
+        "base = peak_kb()\n"
+        "start = time.perf_counter()\n"
+        "card = iqmeasure.measure_file(%r, rate=%r, center_hz=%r)\n"
+        "wall = time.perf_counter() - start\n"
+        "grown = peak_kb() - base\n"
+        "print(json.dumps({'class': card['class'], 'wall_s': wall, 'grown_mb': grown / 1024}))\n"
+    ) % (path, rate, CENTRE)
+
+    def run():
+        proc = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
+                              timeout=600, env=dict(os.environ, PYTHONPATH=TOOLS))
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr.strip().splitlines() or ['no output'])[-1])
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+    return memo(('probe', path), run)
+
+
+def info(text):
+    print(f'      {text}')
+
+
+def check_cost_of_measuring():
+    import tracemalloc
+
+    def one_second():
+        r = probe_file(wide_file('cw1s', 1.0, WIDE_RATE), WIDE_RATE)
+        info(f"28 MS/s, 1 s: class {r['class']}, {r['wall_s']:.2f} s, "
+             f"+{r['grown_mb']:.0f} MB peak resident")
+        ok = r['class'] == 'carrier' and r['wall_s'] < 4.0 and r['grown_mb'] < 400
+        return ok, (f"class {r['class']} (want carrier), {r['wall_s']:.2f} s (want under 4), "
+                    f"+{r['grown_mb']:.0f} MB (want under 400)")
+    expect('28 MS/s CW, 1 s: measure_file is a carrier in under 4 s and under 400 MB extra',
+           one_second)
+
+    def reads():
+        path = wide_file('cw03', 0.3, WIDE_RATE)
+        api_ = api()
+        real_open = api_.open_iq
+        requests = []
+
+        def counting_open(p, rate=None, center_hz=None):
+            src = real_open(p, rate=rate, center_hz=center_hz)
+            inner = src.read
+
+            def counted(start, count):
+                requests.append(int(count))
+                return inner(start, count)
+            src.read = counted
+            return src
+        api_.open_iq = counting_open
+        try:
+            n = api_.measure_file(path, rate=WIDE_RATE, center_hz=CENTRE)['source']['samples']
+        finally:
+            api_.open_iq = real_open
+        biggest, total = max(requests, default=0), sum(requests)
+        info(f"28 MS/s, 0.3 s: {len(requests)} reads, largest {biggest}, total {total} "
+             f"for a span of {n} samples")
+        return (biggest <= BLOCK_SAMPLES and total <= 2 * n,
+                f'largest request {biggest} samples (want <= {BLOCK_SAMPLES}), '
+                f'total {total} for a span of {n} (want <= {2 * n})')
+    expect('28 MS/s, 0.3 s: no read asks for more than 2**22 samples, the file is read at most twice',
+           reads)
+
+    def memory():
+        path = wide_file('cw03', 0.3, WIDE_RATE)
+        span_bytes = 8 * (os.path.getsize(path) // 8)
+        tracemalloc.start()
+        try:
+            api().measure_file(path, rate=WIDE_RATE, center_hz=CENTRE)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        bound = 0.25 * span_bytes
+        info(f"28 MS/s, 0.3 s: peak traced {peak / 1e6:.1f} MB, "
+             f"span as complex64 {span_bytes / 1e6:.1f} MB")
+        return peak < bound, (f'peak traced {peak / 1e6:.1f} MB, want under {bound / 1e6:.1f} MB '
+                              f'(0.25 x the span as complex64)')
+    expect('28 MS/s, 0.3 s: peak traced memory under 0.25 x the span (no whole-span array)',
+           memory)
+
+    def agree():
+        arr = iq('cw')
+        path = write_cfile(os.path.join(fresh('agree'), 'cw.cfile'), arr)
+        from_array = card('cw')
+        from_file = memo('agree-file',
+                         lambda: api().measure_file(path, rate=RATE, center_hz=CENTRE))
+        same = from_array['class'] == from_file['class']
+        power_gap = abs(from_array['level']['power_dbfs'] - from_file['level']['power_dbfs'])
+        tone_gap = None
+        if from_array['tones'] and from_file['tones']:
+            tone_gap = abs(from_array['tones'][0]['freq_hz'] - from_file['tones'][0]['freq_hz'])
+        ok = (same and power_gap <= 0.1 and tone_gap is not None
+              and tone_gap <= 2 * RATE / 1024)
+        return ok, (f"class {from_array['class']} vs {from_file['class']}, power gap "
+                    f"{power_gap:.3g} dB (want 0.1), tone gap {tone_gap} Hz (want 2 bins)")
+    expect('measure and measure_file of the same 1 MS/s samples: same class, power and tone',
+           agree)
+
+    def long_file():
+        r = probe_file(wide_file('cw30s', 30.0, RATE, snr_db=30.0, seed=63), RATE)
+        info(f"1 MS/s, 30 s: class {r['class']}, {r['wall_s']:.2f} s, "
+             f"+{r['grown_mb']:.0f} MB peak resident")
+        ok = r['wall_s'] < 5.0 and r['grown_mb'] < 1024
+        return ok, (f"{r['wall_s']:.2f} s (want under 5), +{r['grown_mb']:.0f} MB "
+                    f"(want under 1024)")
+    expect('1 MS/s, 30 s: measure_file in under 5 s and under 1 GB extra', long_file)
+
+
 GROUPS = [check_classes, check_bandwidth, check_tones_and_centre,
           check_symbols_and_bursts, check_level, check_measure_inputs, check_shape,
           check_readers, check_write_card, check_import_clean, check_data_gain,
-          check_single_tone_wide_and_sidelobes]
+          check_single_tone_wide_and_sidelobes, check_cost_of_measuring]
 
 
 def main():
@@ -1000,6 +1157,46 @@ def main():
         return 1
     print('all checks passed')
     return 0
+
+
+def check_narrow_band():
+    """A 5 Hz band round a CW in 10 s at 1 MS/s: no read or transform over 2**22
+    samples, and the class is the unbanded one (the band's filter is wide enough)."""
+    path = wide_file('cw10s', 10.0, RATE, snr_db=30.0, seed=64)
+
+    def narrow():
+        api_ = api()
+        real_open = api_.open_iq
+        sizes = []
+
+        def counting_open(p, rate=None, center_hz=None):
+            src = real_open(p, rate=rate, center_hz=center_hz)
+            inner = src.read
+
+            def counted(start, count):
+                sizes.append(int(count))
+                return inner(start, count)
+            src.read = counted
+            return src
+        api_.open_iq = counting_open
+        tone = CENTRE + 50e3
+        try:
+            banded = api_.measure_file(path, rate=RATE, center_hz=CENTRE,
+                                       band=(tone - 2.5, tone + 2.5))
+        finally:
+            api_.open_iq = real_open
+        whole = memo('cw10s-whole', lambda: api_.measure_file(path, rate=RATE, center_hz=CENTRE))
+        biggest = max(sizes, default=0)
+        info(f"5 Hz band, 10 s at 1 MS/s: {len(sizes)} reads, largest {biggest}, "
+             f"class {banded['class']} banded vs {whole['class']} whole")
+        return (biggest <= 2 ** 22 and banded['class'] == whole['class'],
+                f"largest read {biggest} samples (want <= {2 ** 22}), class {banded['class']} "
+                f"banded vs {whole['class']} whole")
+    expect('5 Hz band round a CW (10 s, 1 MS/s): no read over 2**22 samples, class as unbanded',
+           narrow)
+
+
+GROUPS.append(check_narrow_band)
 
 
 if __name__ == '__main__':
