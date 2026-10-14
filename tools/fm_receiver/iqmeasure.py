@@ -49,6 +49,11 @@ MAX_PAD = 1 << 20
 #: read or a transform takes at once.
 FILTER_BLOCK = 1 << 15
 MAX_BLOCK = 1 << 22
+#: Bins of raised-cosine skirt outside the passband. A hard cut rings for longer
+#: than the overlap, so adjacent blocks meet with a phase step of a fraction of a
+#: degree. One step per block is enough for the 16-sample frequency to grow a
+#: second cluster, and a CW is then classed as FSK.
+SKIRT_BINS = 2
 TONE_DB = 15.0
 #: A tone more than this far under the strongest is a window's sidelobe, not a tone.
 TONE_RANGE_DB = 60.0
@@ -503,9 +508,15 @@ def _banded(read, n, rate, lo, hi, dec):
     room = length - 2 * pad
     step = dec * (room // dec) if room >= dec else room
     f = np.fft.fftfreq(length, 1 / rate)
-    keep = np.flatnonzero((f >= lo) & (f <= hi))
-    mask = np.zeros(length, dtype=bool)
-    mask[keep] = True
+    # A cosine skirt of a few bins, outside the band: the passband stays flat,
+    # and the shorter ringing fits the overlap, so the blocks agree at the splice.
+    dist = np.maximum(lo - f, f - hi)
+    skirt = SKIRT_BINS * rate / length
+    weight = np.zeros(length, np.float64)
+    weight[dist <= 0] = 1.0
+    edge = (dist > 0) & (dist < skirt)
+    weight[edge] = 0.5 * (1.0 + np.cos(np.pi * dist[edge] / skirt))
+    keep = np.flatnonzero(weight > 0)
     aligned = step % dec == 0
     grid = pad + dec * np.arange(step // dec) if aligned else None
     phasors = None
@@ -525,12 +536,12 @@ def _banded(read, n, rate, lo, hi, dec):
         spec = np.fft.fft(seg)
         if phasors is not None:
             count = -(-m // dec)
-            bins = spec[keep] * np.exp(2j * np.pi * ((-fc * (s - pad) / rate) % 1.0))
+            bins = spec[keep] * weight[keep] * np.exp(2j * np.pi * ((-fc * (s - pad) / rate) % 1.0))
             # An elementwise sum, not a matrix product: a threaded BLAS costs ms on a call this small.
             y = (phasors[:count] * bins).sum(axis=1)
         else:
             ts = np.arange(-(-s // dec) * dec, s + m, dec)
-            y = np.fft.ifft(np.where(mask, spec, 0))[ts - (s - pad)]
+            y = np.fft.ifft(spec * weight)[ts - (s - pad)]
             y = y * np.exp(-2j * np.pi * fc * (ts / rate))
         yield y.astype(np.complex64)
         nxt = max(0, s + step - pad)
