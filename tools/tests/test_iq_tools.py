@@ -50,7 +50,8 @@ RATE = 1e6
 CENTRE = 100e6
 TIMEOUT = 120
 MIN_W, MIN_H = 800, 500
-CLASS_OF = {'cw': 'carrier', 'ook': 'ook', 'fsk': 'fsk', 'fm': 'fm', 'am': 'am', 'noise': 'noise'}
+CLASS_OF = {'cw': 'carrier', 'ook': 'ook', 'ask': 'ask', 'fsk': 'fsk', 'fm': 'fm', 'am': 'am',
+            'noise': 'noise', 'two_tone': 'unknown'}
 TOP_KEYS = ('schema', 'source', 'level', 'occupied', 'tones', 'bursts', 'envelope',
             'frequency', 'symbol_rate_baud', 'class', 'evidence')
 SOURCE_KEYS = ('path', 'kind', 'rate_sps', 'center_hz', 't0_s', 't1_s', 'samples')
@@ -225,15 +226,16 @@ def _run_limited_bits(rng, count, longest=3):
     return bits
 
 
-def ook_iq(bursts=12, snr_db=30.0, seed=2):
-    """OOK at 4,000 baud on a carrier 20 kHz up: bursts of 40 ms every 100 ms from 50 ms."""
+def ook_iq(bursts=12, snr_db=30.0, seed=2, low=0.0):
+    """OOK at 4,000 baud on a carrier 20 kHz up: bursts of 40 ms every 100 ms from 50 ms.
+    ``low`` is the level of a 0 bit (0 for OOK; above 10 % of the 1 level for ASK)."""
     rng = np.random.default_rng(seed)
     t = _t(1.3)
     keyed = np.zeros(len(t))
     for k in range(bursts):
         bits = _run_limited_bits(rng, 160)
         start = int(round((0.05 + 0.1 * k) * RATE))
-        keyed[start:start + 160 * 250] = np.repeat(bits, 250)
+        keyed[start:start + 160 * 250] = low + (1 - low) * np.repeat(bits, 250)
     sig = keyed * np.exp(2j * np.pi * 20e3 * t)
     return _with_noise(sig, snr_db, seed + 100, power=1.0)
 
@@ -441,13 +443,17 @@ def build_signals():
     """The shared synthetic recordings, in SIG: one .cfile with its .sigmf-meta per
     signal, a bare .cfile, an IQ .sdvr and a .cdif of a CW tone, a sweep .sdvr, a .fft."""
     os.makedirs(SIG)
-    data = {'cw': cw_iq(amp=0.5), 'ook': ook_iq(), 'fsk': fsk_iq(), 'fm': fm_iq(),
-            'am': am_iq(), 'noise': noise_iq(), 'two_tone': two_tone_iq()}
+    data = {'cw': cw_iq(amp=0.5), 'ook': ook_iq(), 'ask': ook_iq(low=0.5, seed=10),
+            'fsk': fsk_iq(), 'fm': fm_iq(), 'am': am_iq(), 'noise': noise_iq(),
+            'two_tone': two_tone_iq()}
     for name, arr in data.items():
         base = os.path.join(SIG, name)
         write_cfile(base + '.cfile', arr)
         write_sigmf(base, RATE, CENTRE)
     write_cfile(os.path.join(SIG, 'bare.cfile'), data['cw'])
+    write_cfile(os.path.join(SIG, 'short.cfile'), data['cw'][:1000])
+    with open(os.path.join(SIG, 'thing.bin'), 'wb') as fh:
+        fh.write(np.random.default_rng(19).bytes(8192))
     write_sdvr(os.path.join(SIG, 'iq.sdvr'), data['cw'], RATE, CENTRE)
     write_blue(os.path.join(SIG, 'iq.cdif'), data['cw'], RATE, keywords={'RF_FREQ': CENTRE})
     write_sweep_sdvr(os.path.join(SIG, 'sweep.sdvr'))
@@ -578,6 +584,24 @@ def check_measure_options():
 def check_measure_inputs():
     expect('bare .cfile without --rate: exit 1, a message on stderr, nothing on stdout',
            lambda: refusal(measure_run('bare-norate', [os.path.join(SIG, 'bare.cfile')])))
+    bare_path = os.path.join(SIG, 'bare.cfile')
+    expect('bare .cfile with --center alone (no rate): exit 1, a message, nothing on stdout',
+           lambda: refusal(measure_run('bare-center-only', [bare_path, '--center', str(int(CENTRE))])))
+
+    def rate_only():
+        r = measure_run('bare-rate-only', [bare_path, '--rate', str(int(RATE))])
+        return printed(r, lambda c: (
+            c['class'] == 'carrier' and near(c['source']['rate_sps'], RATE, 1e-3)[0],
+            f"class {c['class']}, rate {c['source']['rate_sps']}"))
+    expect('bare .cfile with --rate alone: exit 0, a carrier, the rate read back', rate_only)
+
+    def span_class():
+        span = printed(measure_run('ook-span', [sig('ook'), '--t0', '0', '--t1', '0.04']),
+                       lambda c: eq(c['class'], 'noise'))
+        whole = printed(measure_run('ook', [sig('ook')]), lambda c: eq(c['class'], 'ook'))
+        return (span[0] and whole[0], f'span: {span[1]}; whole file: {whole[1]}')
+    expect('a --t0/--t1 span before the first burst is noise, while the whole OOK file is ook',
+           span_class)
 
     def bare():
         r = measure_run('bare-rate', [os.path.join(SIG, 'bare.cfile'), '--rate', str(int(RATE)),
@@ -625,12 +649,26 @@ def refuse_measure(key, name, extra):
 
 def check_measure_refusals():
     cases = [('a sweep .sdvr', 'sweep', 'sweep.sdvr'), ('a .fft', 'fft', 'spectrum.fft'),
-             ('a missing file', 'missing', 'nothere.cfile')]
+             ('a missing file', 'missing', 'nothere.cfile'),
+             ('a file of 1,000 samples', 'short', 'short.cfile'),
+             ('a file that is not a .cfile, .sdvr or .cdif', 'junk', 'thing.bin'),
+             ('a bare .cfile without --rate', 'bare', 'bare.cfile')]
     for label, key, name in cases:
         expect(f'iq-measure refuses {label}: exit 1, a message, nothing printed',
                refuse_measure(key, name, []))
         expect(f'iq-measure --card refuses {label}: exit 1, nothing written',
-               refuse_measure(key + '-card', name, ['--card']))
+               refuse_measure(key, name, ['--card']))
+
+    def options_refused(key, args):
+        return lambda: refusal(measure_run(key, args))
+    expect('--band with its low edge above its high edge: exit 1, a message, nothing on stdout',
+           options_refused('band-inverted', [sig('two_tone'), '--band', f'{CENTRE + 200e3:.0f}',
+                                             f'{CENTRE + 5e3:.0f}']))
+    expect('--band outside the recording (2 MHz to 3 MHz off centre): exit 1, a message',
+           options_refused('band-outside', [sig('two_tone'), '--band', f'{CENTRE + 2e6:.0f}',
+                                            f'{CENTRE + 3e6:.0f}']))
+    expect('--t0/--t1 span under 1,024 samples: exit 1, a message, nothing on stdout',
+           options_refused('span-short', [sig('cw'), '--t0', '0', '--t1', '0.0005']))
 
 
 # ---- iq-measure: --card ----------------------------------------------------
@@ -683,6 +721,36 @@ def check_card_writes():
     expect('--card never overwrites a JSON file that is not a card: exit 1, file untouched',
            keep_other_json)
 
+    def keep_garbage():
+        folder = fresh('card-garbage')
+        cfile = copy_cw(folder)
+        target = os.path.join(folder, 'cw.card.json')
+        with open(target, 'wb') as fh:
+            fh.write(b'\x00\x01 not json')
+        r = run(MEASURE, [cfile, '--card'], WORK)
+        with open(target, 'rb') as fh:
+            data = fh.read()
+        return (not r.timed_out and r.code == 1 and data == b'\x00\x01 not json',
+                f'exit {r.code}; a file that is not JSON was overwritten or the run did not refuse')
+    expect('--card never overwrites a file that is not JSON: exit 1, file untouched', keep_garbage)
+
+    def replace_card():
+        folder = fresh('card-replace')
+        cfile = copy_cw(folder)
+        target = os.path.join(folder, 'cw.card.json')
+        with open(target, 'w') as fh:
+            json.dump({'schema': 1, 'old': True}, fh)
+        r = run(MEASURE, [cfile, '--card'], WORK)
+        if r.timed_out or r.code != 0:
+            return False, describe(r)
+        printed_card = card_of(r)
+        if printed_card is None:
+            return False, 'stdout is not only one JSON card'
+        with open(target) as fh:
+            written = json.load(fh)
+        return written == printed_card, 'an earlier card of its own was not replaced'
+    expect('--card replaces an earlier card of its own (a file with a schema key)', replace_card)
+
     def no_card_no_write():
         folder = fresh('no-card')
         cfile = copy_cw(folder)
@@ -730,7 +798,7 @@ def check_picture_pngs():
 
 
 def picture_refusal(key, name, extra=()):
-    """Exit 1, a message on stderr, and no PNG written."""
+    """Exit 1, a message on stderr, and the refusal folder unchanged (no PNG, no other file)."""
     def test():
         folder = fresh('refuse-pic-' + key)
         src = os.path.join(SIG, name)
@@ -738,10 +806,11 @@ def picture_refusal(key, name, extra=()):
             shutil.copy(src, folder)
         path = os.path.join(folder, name)
         out = os.path.join(folder, 'pic.png')
+        before = snapshot(folder)
         r = run(PICTURE, [path, out] + list(extra), WORK)
-        wrote = os.path.exists(out)
-        ok = not r.timed_out and r.code == 1 and r.err.strip() != '' and not wrote
-        return ok, describe(r) + ('; a PNG was written' if wrote else '')
+        after = snapshot(folder)
+        ok = not r.timed_out and r.code == 1 and r.err.strip() != '' and before == after
+        return ok, describe(r) + ('' if before == after else '; something was written')
     return test
 
 
@@ -817,8 +886,8 @@ def clean_import(modules, banned):
 def check_import_clean():
     expect('iq-picture imports none of gnuradio, PyQt5, library, radios (clean subprocess)',
            clean_import([('iq_picture_probe', PICTURE)], BANNED))
-    expect('iq-measure imports none of gnuradio, PyQt5, library, radios, scipy, matplotlib',
-           clean_import([('iq_measure_probe', MEASURE)], BANNED + ['scipy', 'matplotlib']))
+    expect('iq-measure imports none of gnuradio, PyQt5, library, radios, dsp, scipy, matplotlib',
+           clean_import([('iq_measure_probe', MEASURE)], BANNED + ['dsp', 'scipy', 'matplotlib']))
 
 
 def check_inputs_unchanged():
