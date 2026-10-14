@@ -2385,6 +2385,9 @@ class SpectrumView(Qt.QWidget):
                               log=True, wheel=1.25,
                               tooltip='How much frequency the view shows, '
                               'centred on the station (or on the view).')
+        #: Set by :meth:`set_extent` for a recording of at most 10 MHz.
+        #: ``view rf span N`` is then N kHz; the dial itself stays in hertz.
+        self.command_span_khz = False
         self.ref_knob = Knob('Ref level', -160, 20, ref_db, lambda v: f"{v:.0f} dB",
                              step=1, wheel=2, tooltip='The level at the top of the scale.\n'
                              'A fits the scale to the trace (auto scale).')
@@ -2591,8 +2594,14 @@ class SpectrumView(Qt.QWidget):
             line.setPen(pg.mkPen(edge))
 
     # -- data
-    def set_extent(self, low_hz, high_hz, center_hz=None, keep_span=True):
-        """The frequencies there is data for: the most the Span dial shows."""
+    def set_extent(self, low_hz, high_hz, center_hz=None, keep_span=True,
+                   recording=False):
+        """The frequencies there is data for: the most the Span dial shows.
+
+        ``recording``: a file's band B uses a span floor of max(500 Hz,
+        B/200), so a recording narrower than the live 50 kHz floor can
+        still be zoomed. A band over 10 MHz, and every live sweep, keeps
+        that 50 kHz floor."""
         if high_hz <= low_hz:
             return
         changed = (abs(low_hz - self.full[0]) > 1 or abs(high_hz - self.full[1]) > 1)
@@ -2609,13 +2618,36 @@ class SpectrumView(Qt.QWidget):
         else:
             span = high_hz - low_hz
         self._wanted_span = None
-        self.span_knob.set_range(min(self.min_span_hz, high_hz - low_hz), high_hz - low_hz)
+        band = high_hz - low_hz
+        self.command_span_khz = bool(recording and band <= 10e6)
+        if self.command_span_khz:
+            floor = max(500.0, band / 200.0)
+        else:
+            floor = self.min_span_hz
+        self.span_knob.set_range(min(floor, band), band)
         if changed:
             self._peak = None
             self._wf = None
             self._hist = None
         self.span_knob.setValue(min(span, high_hz - low_hz), emit=False)
         self._apply_span()
+
+    def command_span_args(self, args):
+        """Rewrite ``view rf span N`` when this band is a narrow recording.
+
+        The command speaks the view's unit (MHz). On that recording the
+        same number is kHz, including a fraction (``2.5`` is 2.5 kHz), so
+        it is passed on as MHz. ``full``, other views, and the dial's own
+        wheel and drag are not touched."""
+        if not self.command_span_khz or len(args) < 3 or args[0].lower() != 'rf':
+            return args
+        args = list(args)
+        i = 1
+        while i + 1 < len(args):
+            if args[i].lower() == 'span' and args[i + 1].lower() != 'full':
+                args[i + 1] = format(float(args[i + 1]) / 1000.0, '.12g')
+            i += 2
+        return args
 
     def set_center(self, hz):
         self.center_hz = float(hz)
