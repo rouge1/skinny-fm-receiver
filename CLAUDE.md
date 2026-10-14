@@ -47,6 +47,10 @@ with no launcher.
   is: level, bandwidth, tones, bursts, class; numpy only, and no decoder),
   behind `tools/iq-measure` (the card as JSON) and `tools/iq-picture` (a PNG
   of the spectrum and waterfall, which needs matplotlib), and `fmctl measure`.
+  `iqmeasure.extract` cuts a span out of any file the app reads (band-limited,
+  decimated, read in chunks), and `tools/iq-decode` scales it and runs rtl_433
+  on it, printing its decodes as JSON (rtl_433 must be on PATH; nothing of ours
+  decodes).
 - Knowledge: `knowledge/capabilities.md` is the living capability list.
   Update it (and its status marks) when a feature is added or verified.
   `knowledge/usage.md` is the user guide. `knowledge/roadmap.md` holds

@@ -247,6 +247,7 @@ to come. The decoders `iq-demod` and `iq-frames` are planned, not built.
 | `fmctl measure [SECONDS] [card]` | 🧪 built, tested on synthetic signals | Runs `tools/iq-measure` on the last capture, in a subprocess with a 60 s limit; replies the card. `card` also writes it. |
 | `fmctl status`: `sweep`, `file`, `level_unit` | 🧪 built, tested on synthetic signals | The Sweep tab's bounds, the IQ file loaded (or none), and the RF level's unit. |
 | `.cdif` DATA_GAIN reading | 🧪 built, tested on synthetic signals | In the Recordings tab (`BlueReader`) a `.cdif` is in dBm when it has `DATA_GAIN`, and relative without it. The card (`iqmeasure`, `iq-measure`, `fmctl measure`) applies it too: with `DATA_GAIN`, a `.cdif`'s `power_dbm` equals its `power_dbfs`; without it, `power_dbm` is null. |
+| `iqmeasure.extract` and `tools/iq-decode`: a span to rtl_433 | 🧪 ✅ built, tested on a synthetic frame and over the air once (VSG60 to BB60D) | Needs rtl_433 installed (`apt install rtl-433`, `brew install rtl_433`). `extract` cuts a span of any file the app reads, band-limited and decimated in chunks. `iq-decode` scales it to rtl_433's detector, runs rtl_433 on a cf32 file and prints the decodes as JSON. Exits 2 without rtl_433. See [usage.md](usage.md#decoding-a-recording-with-rtl_433-iq-decode). |
 
 ## Tests
 
