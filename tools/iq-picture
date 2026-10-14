@@ -128,8 +128,8 @@ def spectra(src, i0, i1, nfft, band):
     """Mean and peak spectra, and a binned waterfall, of samples ``i0:i1``.
 
     Each block is ``nfft`` samples under a Hann window. The mean is the
-    averaged power and the peak is the max power, both per bin in units of
-    per-sample power (a full-scale sample has power 1). The waterfall keeps
+    averaged power and the peak is the max power, both per bin, calibrated
+    so that a tone reads its own power (a full-scale tone is 0 dBFS). The waterfall keeps
     the peak of the blocks and bins that fall in each cell, at most
     ``MAX_ROWS`` by ``MAX_COLS``.
     """
@@ -140,7 +140,8 @@ def spectra(src, i0, i1, nfft, band):
         _fail(f"{os.path.basename(src.path)}: the span holds {n} samples, fewer than one FFT.")
 
     window = np.hanning(nfft).astype(np.float32)
-    norm = float(np.sum(window.astype(np.float64) ** 2))
+    # Tone-calibrated, as sweep.py is: a tone on a bin reads its own power.
+    norm = float(np.sum(window.astype(np.float64))) ** 2
     freq = np.fft.fftshift(np.fft.fftfreq(nfft, 1.0 / src.rate)) + src.center_hz
     if band is None:
         keep = np.arange(nfft)
