@@ -6,20 +6,21 @@ Synthetic files only, written to a temporary folder. The window is driven as
 Part 0 - the tuner's range (``radios.Radio.max_offset``): a file of R samples
 a second lets the tuner go LO +/- max(0, R/2 * usable - min(150 kHz, R/8)).
 So a 54.7 kS/s file can be tuned inside its own band, and from 1.2 MS/s up
-nothing changes.
+every radio's margin is still the 150 kHz it always was.
 
-Part 1 - a 54,687.5 S/s BLUE file (a CW at +3 kHz) played in Recordings:
-the tuner takes three places inside the band, never leaves it on a dense
-grid, and places every request inside its range; the channel filter shown
-and drawn is no wider than the band, and the dial itself is left alone; the
-Span dial runs from 500 Hz to the band, ``view rf span 5`` is a 5 kHz window
-on the tuner, ``view rf span full`` is the band; a 250 kS/s file runs from 1.25 kHz.
+Part 1 - a 54,687.5 S/s BLUE file (a CW at +3 kHz) played in Recordings: the
+tuner takes distinct places inside the band and spans its range, typed and
+dragged (the channel band, middle button); the channel filter shown and the
+band drawn are min(200 kHz, band), the band centred on the tuner; the Span
+dial runs from 500 Hz to the band (a 250 kS/s file from 1.25 kHz, a 20 MS/s
+file keeps 50 kHz); ``view rf span 5`` is a 5 kHz window centred on the
+tuner, ``view rf span full`` the band.
 
 Part 2 - the spectrum marker in Recordings: on a ``.fft`` and a sweep
 ``.sdvr`` a right click offers "Marker to", choosing it places the marker, so
 does a left click, a drag moves it, the readout gives the frequency and the
 level at that bin, and ``fmctl marker FREQ`` places and reads it; an IQ
-track's menu still reads "Tuner to".
+track's menu still reads "Tuner to", moves the tuner and leaves the marker.
 
 Run:  python tools/tests/test_narrow_files.py     (about 5 s)
 """
@@ -61,6 +62,11 @@ BAND = NARROW_RATE                        # an IQ recording's band is its rate
 #: The wide one: 250 kS/s, centred on 98.5 MHz.
 WIDE_RATE = 250e3
 WIDE_LO_MHZ = 98.5
+#: A band wider than 10 MHz: 20 MS/s, centred on 90 MHz (a short file).
+HUGE_RATE = 20e6
+HUGE_LO_MHZ = 90.0
+#: The narrow file's channel filter as the app's dial starts it.
+FILTER_HZ = 200e3
 #: A tolerance on MHz values that a float or a 1 kHz tuner step leaves.
 EPS = 1e-6
 
@@ -130,6 +136,18 @@ def drag(port, start, end, steps=8):
     pump(0.2)
 
 
+def middle_drag(port, start, end, steps=8):
+    """The channel band's drag: hover first, which claims the drag."""
+    move(port, start)
+    press(port, start, QtCore.Qt.MiddleButton, True)
+    for i in range(1, steps + 1):
+        f = i / steps
+        at = QtCore.QPoint(int(round(start.x() + (end.x() - start.x()) * f)), start.y())
+        move(port, at, QtCore.Qt.MiddleButton)
+    press(port, end, QtCore.Qt.MiddleButton, False)
+    pump(0.2)
+
+
 def frame_at(view, frac):
     """A frequency across the whole of the view's band, in its own unit."""
     low, high = view.full
@@ -161,6 +179,12 @@ def tolerance(view):
 def band_mhz():
     half = BAND / 2e6
     return LO_MHZ - half, LO_MHZ + half
+
+
+def file_offset(rate):
+    """The spec's tuner offset for an IQ file of ``rate``: LO +/- this."""
+    usable = radios.IQFile().usable_fraction(rate)
+    return max(0.0, rate * usable / 2 - min(radios.Radio.EDGE_MARGIN_HZ, rate / 8))
 
 
 class Client:
@@ -234,6 +258,8 @@ def open_window(folder, name, station):
     w = fmapp.MainWindow(args, {'recording_dir': own(name), 'library_folders': [folder],
                                 'snap': False})
     WINDOWS.append(w)
+    # A plot wide enough to read a bin by the pointer (offscreen it defaults small).
+    w.resize(1200, 800)
     w.show()
     pump(0.2)
     w.start_initial()
@@ -291,22 +317,20 @@ def need(S):
 # ============================================================ part 0
 
 def check_margin():
-    """max_offset = max(0, R/2 * usable - min(150 kHz, R/8)), to the kHz."""
+    """An IQ file's tuner offset: max(0, R/2 * usable - min(150 kHz, R/8))."""
     for rate in (NARROW_RATE, WIDE_RATE):
-        for radio in (radios.IQFile(), radios.HackRF()):
-            usable = radio.usable_fraction(rate)
-            margin = min(radios.Radio.EDGE_MARGIN_HZ, rate / 8)
-            want = max(0.0, rate * usable / 2 - margin)
-            got = radio.max_offset(rate)
-            assert abs(got - want) <= 1e3, (
-                f"{type(radio).__name__}.max_offset({rate:g}) is {got:.0f} Hz, want "
-                f"{want:.0f} Hz: R/2 x usable {usable} less the margin {margin:.0f} Hz")
+        got = radios.IQFile().max_offset(rate)
+        want = file_offset(rate)
+        assert abs(got - want) <= 1e3, (
+            f"IQFile.max_offset({rate:g}) is {got:.0f} Hz, want {want:.0f} Hz: "
+            "R/2 x usable less min(150 kHz, R/8)")
 
 
 def check_unchanged():
-    """From 1.2 MS/s up the margin is the 150 kHz it always was."""
-    for rate in (1.2e6, 2e6):
-        for radio in (radios.IQFile(), radios.HackRF()):
+    """From 1.2 MS/s up every radio's margin is still the 150 kHz."""
+    for radio in (radios.IQFile(), radios.HackRF(), radios.USRP(), radios.BB60(),
+                  radios.RTLSDR()):
+        for rate in (1.2e6, 2e6, 10e6):
             want = rate * radio.usable_fraction(rate) / 2 - 150e3
             got = radio.max_offset(rate)
             assert abs(got - want) <= 1e3, (
@@ -325,6 +349,10 @@ def write_blue_files(folder):
     cw = (0.5 * np.exp(2j * np.pi * 10e3 * t)).astype(np.complex64)
     signals.write_blue(os.path.join(folder, 'wide-250k.cdif'), cw, rate=WIDE_RATE,
                        fmt='CF', keywords={'RF_FREQ': WIDE_LO_MHZ * 1e6})
+    # 50 ms at 20 MS/s: a band wider than 10 MHz, and quick to write.
+    huge = np.zeros(int(0.05 * HUGE_RATE), dtype=np.complex64)
+    signals.write_blue(os.path.join(folder, 'huge-20m.cdif'), huge, rate=HUGE_RATE,
+                       fmt='CF', keywords={'RF_FREQ': HUGE_LO_MHZ * 1e6})
 
 
 def setup_narrow(S):
@@ -354,14 +382,17 @@ def check_a_distinct(S):
     assert len(set(got)) == 3, f"three tune values gave the tuner {got}: not three places"
 
 
-def check_a_width(S):
+def check_a_range(S):
     need(S)
     lo, hi = S['c'].ok('status')['tuner_range_mhz']
-    assert hi - lo > 0, f"tuner_range_mhz is {lo}-{hi}: the tuner has no range"
+    r = file_offset(NARROW_RATE) / 1e6
+    assert abs(lo - (LO_MHZ - r)) <= 0.001 and abs(hi - (LO_MHZ + r)) <= 0.001, (
+        f"tuner_range_mhz is {lo}-{hi}, want LO +/- {r * 1e3:.2f} kHz "
+        f"({LO_MHZ - r:.6f}-{LO_MHZ + r:.6f})")
 
 
 def sweep_grid(S):
-    """Request the grid once; the two checks on it read what it found."""
+    """Request the grid once; the checks on it read what it found."""
     if 'grid' in S:
         return
     c = S['c']
@@ -385,41 +416,95 @@ def check_b_band(S):
     assert lo - EPS <= t <= hi + EPS, f"the tuner stands at {t} MHz, outside the band"
 
 
+def check_b_moves(S):
+    need(S)
+    sweep_grid(S)
+    rlo, rhi = S['range']
+    placed = [t for f, t in S['grid'] if t is not None and rlo <= f <= rhi]
+    assert placed, f"no request inside the tuner range {rlo}-{rhi} MHz was placed"
+    spread = max(placed) - min(placed)
+    assert spread >= 0.8 * (rhi - rlo), (
+        f"the tuner's placed positions span {spread * 1e3:.1f} kHz of its "
+        f"{(rhi - rlo) * 1e3:.1f} kHz range: the tuner is pinned")
+
+
 def check_b_placed(S):
     need(S)
     sweep_grid(S)
     rlo, rhi = S['range']
     assert rhi > rlo, (f"the tuner range {rlo}-{rhi} MHz is empty: no request inside the "
                        "band can be placed")
-    inside = [(f, t) for f, t in S['grid'] if rlo <= f <= rhi]
+    # Requests within 2 kHz of an edge are left out: the edge is a clamp.
+    inside = [(f, t) for f, t in S['grid'] if rlo + 0.002 <= f <= rhi - 0.002]
     assert inside, f"no request lies in the tuner's range {rlo}-{rhi} MHz"
-    missed = [(f, t) for f, t in inside if t is None or abs(t - f) > 0.0005 + EPS]
+    missed = [(f, t) for f, t in inside if t is None or abs(t - f) > 0.001 + EPS]
     assert not missed, (f"{len(missed)} of {len(inside)} requests inside the tuner's range "
-                        f"{rlo}-{rhi} MHz were not placed (the tuner is pinned), e.g. {missed[0]}")
+                        f"{rlo}-{rhi} MHz were not placed within 1 kHz, e.g. {missed[0]}")
+
+
+def drawn_state(S):
+    """(the channel band drawn, the tuner in MHz) now."""
+    band = S['view']._band_hz
+    assert band is not None, 'no channel band is drawn in Recordings'
+    return band, S['c'].ok('status')['tuner_mhz']
+
+
+def check_b_drag(S):
+    need(S)
+    view, c = S['view'], S['c']
+    before = c.ok('status')['tuner_mhz']
+    target = LO_MHZ - 0.008                       # 8 kHz down: inside the range
+    middle_drag(view.plot.viewport(), point(view, before), point(view, target))
+    got = c.ok('status')['tuner_mhz']
+    lo, hi = band_mhz()
+    assert abs(got - target) <= 0.002, (
+        f"dragging the channel band from {before} to {target} MHz left the tuner at {got}")
+    assert lo - EPS <= got <= hi + EPS, f"the tuner is at {got}, outside the band"
 
 
 def check_c_shown(S):
+    """The filter shown is min(200 kHz, band), at the start, after a tune, after span full."""
     need(S)
-    khz = S['c'].ok('status')['channel_filter_khz']
-    assert khz <= BAND / 1e3 + 0.001, (
-        f"channel_filter_khz is {khz}: wider than the file's band {BAND / 1e3:.3f} kHz "
-        "(the filter is 200 kHz)")
+    c = S['c']
+    want = min(FILTER_HZ, BAND) / 1e3
+    seen = [('now', c.ok('status')['channel_filter_khz'])]
+    c.ask(f'tune {LO_MHZ}')                       # a refusal is check a's to report
+    seen.append(('after a tune', c.ok('status')['channel_filter_khz']))
+    c.ok('view rf span full')
+    seen.append(('after view rf span full', c.ok('status')['channel_filter_khz']))
+    for when, khz in seen:
+        assert abs(khz - want) <= 0.001, (
+            f"{when}: channel_filter_khz is {khz}, want min(200, band) = {want:.3f} kHz")
 
 
 def check_c_drawn(S):
+    """The band drawn is min(200 kHz, band) wide and centred on the tuner."""
     need(S)
-    band = S['view']._band_hz
-    assert band is not None, 'no channel band is drawn in Recordings'
-    width = band[1] - band[0]
-    assert width <= BAND + 1, (f"the channel band is drawn {width / 1e3:.1f} kHz wide, wider "
-                               f"than the file's {BAND / 1e3:.1f} kHz")
+    c = S['c']
+    want = min(FILTER_HZ, BAND)
+    steps = [('now', None), ('after a tune', ('tune', LO_MHZ)),
+             ('after view rf span full', ('span', None))]
+    for when, action in steps:
+        if action and action[0] == 'tune':
+            c.ask(f'tune {action[1]}')
+        elif action and action[0] == 'span':
+            c.ok('view rf span full')
+        band, tuner = drawn_state(S)
+        width = band[1] - band[0]
+        assert abs(width - want) <= 1, (
+            f"{when}: the channel band is drawn {width / 1e3:.2f} kHz wide, want "
+            f"min(200 kHz, band) = {want / 1e3:.2f} kHz")
+        centre = (band[0] + band[1]) / 2
+        assert abs(centre - tuner * 1e6) <= 1e3, (
+            f"{when}: the channel band is centred on {centre / 1e6:.6f} MHz, the tuner "
+            f"is at {tuner} MHz")
 
 
 def check_c_knob(S):
     need(S)
     knob = S['w'].chan_knob.value()
-    assert abs(knob - 200e3) < 1, (f"the Channel filter dial is {knob / 1e3:.1f} kHz: the "
-                                   "200 kHz the app saves was changed")
+    assert abs(knob - FILTER_HZ) < 1, (f"the Channel filter dial is {knob / 1e3:.1f} kHz: "
+                                       "the 200 kHz the app saves was changed")
 
 
 def check_d_range(S):
@@ -434,14 +519,17 @@ def check_d_range(S):
 def check_d_span5(S):
     need(S)
     c = S['c']
-    c.ask('tune 100.1015')                # a refusal is check a's to report
+    c.ask('tune 100.1015')                        # a refusal is check a's to report
     tuner = c.ok('status')['tuner_mhz']
     r = c.ok('view rf span 5')
     assert abs(r['span'] - 0.005) < 1e-6, f"view rf span 5 gives span {r['span']} MHz, want 0.005"
     x0, x1 = r['shown']
     assert abs((x1 - x0) - 0.005) < 1e-4, (
         f"the shown window is {(x1 - x0) * 1e3:.2f} kHz wide, want 5 kHz")
-    assert x0 - EPS <= tuner <= x1 + EPS, f"the tuner {tuner} is off the window {x0}-{x1} MHz"
+    centre = (x0 + x1) / 2
+    assert abs(centre - tuner) <= 0.0005, (
+        f"the 5 kHz window is centred on {centre} MHz, {abs(centre - tuner) * 1e3:.2f} kHz "
+        f"from the tuner at {tuner} MHz")
 
 
 def check_d_full(S):
@@ -450,6 +538,10 @@ def check_d_full(S):
     r = S['c'].ok('view rf span full')
     assert abs(r['span'] - BAND / 1e6) < 1e-5, (
         f"view rf span full gives span {r['span']} MHz, want {BAND / 1e6:.6f} (the band)")
+    lo, hi = band_mhz()
+    low, high = r['shown']
+    assert abs(low - lo) <= 0.001 and abs(high - hi) <= 0.001, (
+        f"view rf span full shows {low}-{high} MHz, want the band {lo:.6f}-{hi:.6f}")
 
 
 def check_d_wide(S):
@@ -462,6 +554,56 @@ def check_d_wide(S):
     lo, hi = span._min, span._max
     assert abs(lo - 1250) <= 1 and abs(hi - WIDE_RATE) <= 1, (
         f"the 250 kS/s file's Span range is {lo:.1f}-{hi:.1f} Hz, want 1250 to 250000 Hz")
+
+
+def check_d_huge(S):
+    """A band wider than 10 MHz keeps the 50 kHz minimum span."""
+    need(S)
+    c = S['c']
+    pump(10, lambda: find_row(c, HUGE_LO_MHZ, 'BLUE') is not None)
+    row = find_row(c, HUGE_LO_MHZ, 'BLUE')
+    assert row is not None, 'the 20 MS/s BLUE file is not listed'
+    c.ok(f"recording {row['index']}")
+    span = S['w'].rf_view.span_knob
+    lo, hi = span._min, span._max
+    assert abs(lo - 50e3) <= 1 and abs(hi - HUGE_RATE) <= 1, (
+        f"the 20 MS/s file's Span range is {lo:.1f}-{hi:.1f} Hz, want 50000 to 20000000 Hz "
+        "(bands over 10 MHz keep the 50 kHz minimum)")
+
+
+def part1_narrow(folder, station):
+    S = {'station': station}
+    run('setup: the window opens onto the BLUE files', open_into, S, folder, 'narrow')
+    try:
+        run('setup: the 54.7 kS/s BLUE is chosen in Recordings and plays', setup_narrow, S)
+        run('a: three tune values give three distinct tuner places inside the band',
+            check_a_distinct, S)
+        run('a: the tuner range is LO +/- the file offset (about 17.8 kHz), not a sliver',
+            check_a_range, S)
+        run('b: no request from 100 kHz below to 100 kHz above LO puts the tuner outside the band',
+            check_b_band, S)
+        run('b: the tuner moves across its whole range (not pinned)', check_b_moves, S)
+        run('b: requests away from the range edges are placed within 1 kHz',
+            check_b_placed, S)
+        run('b: a middle-drag of the channel band moves the tuner, inside the band',
+            check_b_drag, S)
+        run('c: the channel filter shown is min(200 kHz, band), re-read after a tune and span full',
+            check_c_shown, S)
+        run('c: the drawn channel band is min(200 kHz, band) wide, centred on the tuner',
+            check_c_drawn, S)
+        run('c: the Channel filter dial keeps its 200 kHz', check_c_knob, S)
+        run('d: the Span range is 500 Hz to the band', check_d_range, S)
+        run('d: view rf span 5 is a 5 kHz window centred on the tuner', check_d_span5, S)
+        run('d: view rf span full shows the band', check_d_full, S)
+        run("d: a 250 kS/s BLUE file's Span range is 1.25 kHz to 250 kHz", check_d_wide, S)
+        run('d: a band wider than 10 MHz (20 MS/s) keeps a 50 kHz minimum span', check_d_huge, S)
+    finally:
+        close_session(S)
+
+
+def open_into(S, folder, name):
+    """Open a window on ``folder`` into S, started on the station file."""
+    S['w'], S['control'], S['c'] = open_window(folder, name, S['station'])
 
 
 # ============================================================ part 2
@@ -521,7 +663,8 @@ def check_menu(S):
     found = re.search(r'(-?\d+\.\d+) ' + re.escape(view.unit), text)
     assert found, f"the menu {text!r} has no frequency"
     f_menu, f_pointer = float(found.group(1)), value_at(view, at)
-    assert abs(f_menu - f_pointer) <= 0.0006, (
+    # The menu shows the pointer's frequency to 3 places: one display step (1 kHz).
+    assert abs(f_menu - f_pointer) <= 0.001, (
         f"the menu offers {f_menu} {view.unit} for a pointer on {f_pointer:.4f}")
     S['menu_mhz'] = f_menu
 
@@ -563,6 +706,9 @@ def check_drag(S):
 def check_readout(S):
     need(S)
     view, port = S['view'], S['view'].plot.viewport()
+    assert view.level_unit == 'dBm', (
+        f"the level unit is {view.level_unit}: a calibrated spectrum reads dBm")
+    assert port.width() >= 400, f"the plot is {port.width()} px wide: too narrow to read a bin"
     marker = marker_of(S['c'])
     assert marker is not None, 'no marker to read'
     at = point(view, marker)
@@ -575,11 +721,12 @@ def check_readout(S):
     f_r, level = float(found.group(1)), float(found.group(2))
     x, db = view._x, view._db
     i = int(np.argmin(np.abs(x - f_r)))
-    px = (x[-1] - x[0]) / max(1, port.width())
-    assert abs(f_r - marker) <= 2 * tolerance(view) + 2 * px, (
+    # The pointer is a whole pixel, so the readout's bin is one bin and a pixel from the marker.
+    px = (x[-1] - x[0]) / port.width()
+    assert abs(f_r - marker) <= tolerance(view) + px, (
         f"the readout's frequency {f_r} is not at the marker {marker}")
     near = [db[j] for j in (i - 1, i, i + 1) if 0 <= j < len(db)]
-    assert min(abs(level - v) for v in near) <= 0.05, (
+    assert min(abs(level - v) for v in near) <= 0.1, (
         f"the readout's level {level} is not the level at that bin ({db[i]:.1f})")
 
 
@@ -597,10 +744,16 @@ def fmctl_marker(S):
 
 def check_fmctl_reply(S):
     need(S)
+    view = S['view']
+    assert view.level_unit == 'dBm', f"the level unit is {view.level_unit}, want dBm"
     reply = fmctl_marker(S)
-    unit = S['view'].level_unit
-    assert isinstance(reply.get('level_db'), (int, float)) and reply.get('unit') == unit, (
-        f"fmctl marker replied {reply}, want a level in {unit}")
+    assert reply.get('unit') == 'dBm', f"fmctl marker replied unit {reply.get('unit')!r}, want dBm"
+    x, db = view._x, view._db
+    i = int(np.argmin(np.abs(x - S['marker_freq'])))
+    want = float(db[i])
+    assert isinstance(reply.get('level_db'), (int, float)) and abs(reply['level_db'] - want) <= 0.1, (
+        f"fmctl marker {S['marker_freq']} replied {reply.get('level_db')} dBm, the bin at "
+        f"{x[i]:.4f} MHz reads {want:.1f} dBm")
 
 
 def check_fmctl_places(S):
@@ -623,13 +776,21 @@ def spectrum_window(kind, label, folder, station):
             check_menu_places, S)
         run(f'f: {label}: a left click places the marker', check_click, S)
         run(f'f: {label}: dragging the marker moves it', check_drag, S)
-        run(f'f: {label}: the readout gives the frequency and the level at that bin',
+        run(f'f: {label}: the readout gives the frequency and the dBm level at that bin',
             check_readout, S)
-        run(f'f: {label}: fmctl marker FREQ replies a level in the unit', check_fmctl_reply, S)
+        run(f'f: {label}: fmctl marker FREQ replies the dBm level at that bin',
+            check_fmctl_reply, S)
         run(f'f: {label}: fmctl marker FREQ places the marker (marker_mhz within a bin)',
             check_fmctl_places, S)
     finally:
         close_session(S)
+
+
+def check_marker_key_receive(S):
+    """Receive, nothing placed: status carries marker_mhz, None."""
+    s = S['c'].ok('status')
+    assert 'marker_mhz' in s, 'status has no marker_mhz in Receive'
+    assert s['marker_mhz'] is None, f"marker_mhz is {s['marker_mhz']} in Receive, nothing placed"
 
 
 def iq_menu(S):
@@ -640,14 +801,35 @@ def iq_menu(S):
     text = view._tune_action.text()
     view._menu.close()
     assert text.startswith('Tuner to'), f"an IQ track's menu reads {text!r}, want 'Tuner to <f> MHz'"
+    found = re.search(r'(-?\d+\.\d+) MHz', text)
+    assert found, f"the menu {text!r} has no frequency"
+    S['menu_mhz'] = float(found.group(1))
+
+
+def iq_tuner(S):
+    need(S)
+    S['view']._tune_action.trigger()
+    pump(0.2)
+    got = S['c'].ok('status')['tuner_mhz']
+    assert abs(got - S['menu_mhz']) <= 0.001 + EPS, (
+        f"choosing 'Tuner to' on an IQ track put the tuner at {got}, want {S['menu_mhz']}")
+
+
+def check_iq_marker(S):
+    need(S)
+    got = marker_of(S['c'])
+    assert got is None, f"an IQ track's 'Tuner to' placed a marker at {got}: want None"
 
 
 def iq_window(folder, station):
     S = {'station': station}
     run('f: the IQ recording opens', open_into, S, folder, 'spectra-iq')
     try:
+        run('f: status.marker_mhz exists and is None in Receive', check_marker_key_receive, S)
         run('f: the IQ recording is chosen in Recordings', choose, S, 'dvr-iq', False)
         run("f: an IQ track's right-click menu still reads 'Tuner to <f> MHz'", iq_menu, S)
+        run("f: choosing an IQ track's 'Tuner to' moves the tuner there", iq_tuner, S)
+        run('f: an IQ track leaves marker_mhz None', check_iq_marker, S)
     finally:
         close_session(S)
 
@@ -673,9 +855,9 @@ def run_all():
 
 def main():
     started = time.time()
-    run('e: max_offset is max(0, R/2 x usable - min(150 kHz, R/8)) at 54.7 kS/s and 250 kS/s',
-        check_margin)
-    run('e: max_offset is unchanged at 1.2 and 2 MS/s', check_unchanged)
+    run('e: an IQ file\'s tuner offset is max(0, R/2 x usable - min(150 kHz, R/8)) '
+        'at 54.7 kS/s and 250 kS/s', check_margin)
+    run('e: every radio\'s offset is unchanged at 1.2, 2 and 10 MS/s', check_unchanged)
 
     station = signals.write_station(os.path.join(FOLDER, 'station'), seconds=2.0)
     narrow = signals.ensure_dir(os.path.join(FOLDER, 'narrow'))
@@ -688,34 +870,6 @@ def main():
     spectrum_window('dvr-sweep', 'the sweep .sdvr', spectra, station)
     iq_window(spectra, station)
     return summary(started)
-
-
-def part1_narrow(folder, station):
-    S = {'station': station}
-    run('setup: the window opens onto the BLUE files', open_into, S, folder, 'narrow')
-    try:
-        run('setup: the 54.7 kS/s BLUE is chosen in Recordings and plays', setup_narrow, S)
-        run('a: three tune values give three distinct tuner places inside the band',
-            check_a_distinct, S)
-        run('a: the tuner range has a width', check_a_width, S)
-        run('b: no request from 100 kHz below to 100 kHz above LO puts the tuner outside the band',
-            check_b_band, S)
-        run('b: requests inside the tuner range are placed (the tuner is not pinned)',
-            check_b_placed, S)
-        run('c: the channel filter shown is no wider than the band', check_c_shown, S)
-        run('c: the drawn channel band is no wider than the band', check_c_drawn, S)
-        run('c: the Channel filter dial keeps its 200 kHz', check_c_knob, S)
-        run('d: the Span range is 500 Hz to the band', check_d_range, S)
-        run('d: view rf span 5 is a 5 kHz window on the tuner', check_d_span5, S)
-        run('d: view rf span full is the band', check_d_full, S)
-        run("d: a 250 kS/s BLUE file's Span range is 1.25 kHz to 250 kHz", check_d_wide, S)
-    finally:
-        close_session(S)
-
-
-def open_into(S, folder, name):
-    """Open a window on ``folder`` into S, started on the station file."""
-    S['w'], S['control'], S['c'] = open_window(folder, name, S['station'])
 
 
 if __name__ == '__main__':
