@@ -996,7 +996,8 @@ about 45 minutes.
 
 - [x] Control socket in the window, and `fmctl`
 - [x] The first version's commands (*)
-- [ ] The rest of the commands: `rate`, `sweep`, `record` done (with `peakhold`, `peaks`, `capture`, 2026-09-25, for surveys; `view`, 2026-09-26); `radio`, `start`/`stop`, `filter`, `stereo`, `step`, `threshold`, `pause`/`resume`, `stations` to do
+- [x] `radio`, `start`/`stop`, `filter`, `step` (2026-10-14, with `open`, `delete`, `recordings-folder`, `marker` and `measure` from the measurement contract; see [usage.md](usage.md))
+- [ ] The rest of the commands: `stereo`, `threshold`, `pause`/`resume`, `stations` to do (`rate`, `sweep`, `record` done, with `peakhold`, `peaks`, `capture`, 2026-09-25, for surveys; `view`, 2026-09-26)
 - [x] `test_control.py`, in `run_all.py`
 - [x] Off air with the window open: on the BB60D (2026-09-25; no RTL-SDR was plugged in), in capabilities.md
 - [x] `usage.md` (a section on `fmctl`) and `capabilities.md`
@@ -1093,7 +1094,7 @@ Signal Hound's Sceptre keeps what the BB60D received in a ring file
 - [ ] Look at an IQ DVR's tile headers (do they carry a gain and offset too?)
 - [x] Draw the tiles: **in the Recordings tab** (Round 23, phase 3), not the Sweep tab
 - [ ] Show dBm in the app for a DVR (the offset is `full_scale_dbm`)
-- [ ] **A way to classify what is seen, not a decoder per signal** (decided
+- [x] **A way to classify what is seen, not a decoder per signal**: first version built 2026-10-14 (`iqmeasure.py`, `tools/iq-measure`, `tools/iq-picture`, `fmctl measure`; synthetic signals only, not yet a real file; `iq-demod` and `iq-frames` are not built) (decided
   2026-09-30, since the signals to come are OOK, FSK, ASK, NTSC and more, and
   a decoder for each has no end). The workflow's steps 3-4 as measurements
   that give a signal a label: occupied bandwidth and where its energy sits,

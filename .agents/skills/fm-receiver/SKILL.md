@@ -59,6 +59,9 @@ user sees it, and is refused where the window would refuse it.
   `hd 1-8|analog` (HD Radio's program, or analog FM; the
   decoder is always on where nrsc5 is installed, with no off;
   `status`'s `hd` says what plays, what is chosen and the lamp).
+- Radio: `radio KIND` (hackrf, usrp, bb60, rtlsdr or file; `file` needs `open`
+  first), `start`, `stop` (both refused while recording), `filter KHZ` (Receive
+  only, 60-400), `step KHZ` (10, 50, 100 or 200).
 - View: `view rf|mpx|audio span X center X ref DB range DB avg N window S` (any of
   them; none reports). Before a screenshot, zoom onto the signal and set
   ref/range around it: at the default 100 dB range a weak signal is a few
@@ -82,8 +85,13 @@ user sees it, and is refused where the window would refuse it.
   screenshot. A sweep DVR or `.fft` (a spectrum recording) plays with no
   radio and no sound, on a clock that waits while it loads; it opens on
   its whole band, and zooming in reads that band at full detail. Not
-  scriptable yet: deleting recordings, picking several lines, and the
-  Folders dialog's recordings folder (use the window).
+  scriptable yet: picking several lines, and the Folders dialog itself (use
+  the window; `recordings-folder` sets the folder).
+- Files: `open PATH` plays an IQ file (refused while recording); `delete N confirm`
+  deletes the Nth recording, 0 the newest, the app's own only (the word `confirm`
+  is required); `recordings-folder PATH` sets where Record saves; `marker FREQ`
+  reads the level at FREQ (MHz) on the RF trace, read-only; `measure [SECONDS]
+  [card]` replies the card of the last capture (see "Measuring a recording").
 - `wait SECONDS` lets the window run between commands: your shell can't
   sleep in the foreground, and RDS or peak hold need seconds.
 
@@ -95,6 +103,20 @@ Things that bit before:
   `capture` refuses over 4 GB. Recordings go to `<checkout>/recordings/`
   (git-ignored).
 - `tune` far away moves the Center itself; an IQ file's band is fixed.
+
+## Measuring a recording
+
+`tools/iq-measure FILE` prints the card of a recording as JSON: the level
+(in dBm only where the file has a calibration: a `.sdvr`, or a `.cdif` with
+`DATA_GAIN`), the occupied bandwidth, tones, bursts, envelope and frequency,
+and a class (noise, carrier, ook, ask, fsk, fm, am or unknown) with the
+evidence for it. Options: `--t0`, `--t1`, `--band LO HI` (absolute Hz),
+`--rate` and `--center` for a bare `.cfile`, and `--card`, which writes
+`<base>.card.json` beside a `.cfile` only. `tools/iq-picture FILE OUT.png`
+draws the spectrum and waterfall (it needs matplotlib). Neither decodes:
+`iq-demod` and `iq-frames` are not built. Read the card before writing any
+decoder. Checked on synthetic signals so far; the real-file check is the
+planner's.
 
 ## Decoding a recording
 
