@@ -935,9 +935,42 @@ def check_data_gain():
            lambda: eq(text_m()['level']['power_dbm'], None))
 
 
+def wide_cw():
+    """A CW at +50 kHz in white noise 40 dB down, at 28 MS/s over a 28 MHz band.
+    0.15 s: enough for the noise to fill the whole band."""
+    return memo('wide-cw', lambda: _with_noise(
+        np.exp(2j * np.pi * 50e3 * _t(0.15, 28e6)), 40.0, seed=52, power=1.0))
+
+
+def check_single_tone_wide_and_sidelobes():
+    def cw_100db():
+        return memo('cw-100db', lambda: api().measure(
+            cw_iq(snr_db=100.0, seed=51), RATE, center_hz=CENTRE))
+
+    def cw_28():
+        return memo('cw-28', lambda: api().measure(wide_cw(), 28e6, center_hz=CENTRE))
+
+    expect('CW at 100 dB SNR (1 MS/s): class carrier',
+           lambda: eq(cw_100db()['class'], 'carrier'))
+    expect('CW at 100 dB SNR (1 MS/s): exactly one tone (window sidelobes are not tones)',
+           lambda: eq(len(cw_100db()['tones']), 1))
+
+    def spur_70db():
+        return memo('spur-70db', lambda: api().measure(
+            tones_iq([50e3, 300e3], [1.0, 10 ** (-70 / 20)], snr_db=108, seed=54),
+            RATE, center_hz=CENTRE))
+    expect('CW at 108 dB SNR with a spur 70 dB below it (57 dB over the floor): class carrier',
+           lambda: eq(spur_70db()['class'], 'carrier'))
+    expect('CW at 108 dB SNR with a spur 70 dB below it: exactly one tone',
+           lambda: eq(len(spur_70db()['tones']), 1))
+    expect('CW in a 28 MHz band at 28 MS/s, 40 dB SNR: class carrier',
+           lambda: eq(cw_28()['class'], 'carrier'))
+
+
 GROUPS = [check_classes, check_bandwidth, check_tones_and_centre,
           check_symbols_and_bursts, check_level, check_measure_inputs, check_shape,
-          check_readers, check_write_card, check_import_clean, check_data_gain]
+          check_readers, check_write_card, check_import_clean, check_data_gain,
+          check_single_tone_wide_and_sidelobes]
 
 
 def main():
