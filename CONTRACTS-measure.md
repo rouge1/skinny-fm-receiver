@@ -34,7 +34,7 @@ def card_path(path) -> str | None          # '<base>.card.json' beside a .cfile,
 def write_card(path, card) -> str         # writes card_path(path); IQSourceError for .sdvr/.cdif/.fft
 ```
 - `iq` is a complex array; `t0`/`t1` are seconds into the file (default: all, at most the first 30 s);
-  `band=(f_lo_hz, f_hi_hz)` is absolute: analysis is restricted to it (brick-wall in the frequency domain, then
+  `band=(f_lo_hz, f_hi_hz)` is absolute: analysis is restricted to it (band-limited in the frequency domain with a four-bin raised-cosine skirt (m7), then
   decimated to at least twice its width).
 - `write_card` never writes beside a `.sdvr`, `.cdif` or `.fft` (the app does not write there), and never
   overwrites a file that is not a card (`schema` key).
