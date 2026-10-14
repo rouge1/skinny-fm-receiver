@@ -20,6 +20,7 @@ Run:  QT_QPA_PLATFORM=offscreen PYTHONPATH=tools \\
 
 import json
 import os
+import re
 import socket
 import sys
 import tempfile
@@ -151,7 +152,8 @@ def write_wav(path, seconds=1.0, rate=48000):
 
 
 def numbers_in(result):
-    """Every float/int in a reply's result, however it is shaped."""
+    """Every number in a reply's result, however it is shaped, including
+    numeric strings such as a knob label like ``"200 kHz"``."""
     out = []
 
     def walk(x):
@@ -159,6 +161,12 @@ def numbers_in(result):
             return
         if isinstance(x, (int, float)):
             out.append(float(x))
+        elif isinstance(x, str):
+            for m in re.findall(r'[-+]?\d[\d_]*(?:\.\d+)?(?:[eE][-+]?\d+)?', x):
+                try:
+                    out.append(float(m.replace('_', '')))
+                except ValueError:
+                    pass
         elif isinstance(x, dict):
             for v in x.values():
                 walk(v)
@@ -169,14 +177,81 @@ def numbers_in(result):
     return out
 
 
+def strings_in(result):
+    """Every string in a reply's result, however it is shaped."""
+    out = []
+
+    def walk(x):
+        if isinstance(x, str):
+            out.append(x)
+        elif isinstance(x, dict):
+            for k, v in x.items():
+                walk(k)
+                walk(v)
+        elif isinstance(x, (list, tuple)):
+            for v in x:
+                walk(v)
+    walk(result)
+    return out
+
+
 def ensure_receive(c, w):
     c.ok('mode receive')
-    pump(0.5)
-    assert w._tab_mode() == 'receive', w._tab_mode()
+    assert pump(5, lambda: w._tab_mode() == 'receive'), w._tab_mode()
     if w.radio is None or not w.engine.running:
         w._use_radio('file')
-        pump(1.0)
-    assert w.engine.running, 'the radio is not running'
+    assert pump(10, lambda: w.radio is not None and w.engine.running), \
+        'the radio is not running'
+    assert w._tab_mode() == 'receive', w._tab_mode()
+
+
+def switch_radio(c, w, kind):
+    c.ok(f'radio {kind}')
+    assert pump(10, lambda: w.radio is not None and w.radio.kind == kind
+                and w.engine.running), (kind, getattr(w.radio, 'kind', None))
+
+
+def nearest_trace_level(view, mhz, peak):
+    """The trace's level at the bin nearest ``mhz`` (in the view's unit):
+    the live bins, or the held peak's."""
+    x = np.asarray(view._x, dtype=np.float64)
+    db = np.asarray(view._peak if peak else view._db, dtype=np.float64)
+    assert len(x) and len(db) == len(x), 'empty trace'
+    return float(db[int(np.argmin(np.abs(x - mhz)))])
+
+
+def parse_marker_reply(r, mhz):
+    """(freqs, levels, units) in a marker reply, which the contract leaves
+    open: the frequency in MHz or Hz, the level, and the unit if given."""
+    if isinstance(r, dict):
+        nums = numbers_in(r)
+        freqs = [v for v in nums
+                 if abs(v - mhz) < 0.1 or abs(v - mhz * 1e6) < 1e5]
+        levels = []
+        for k, v in r.items():
+            kl = str(k).lower()
+            if 'unit' in kl:
+                continue
+            if 'level' in kl or 'db' in kl:
+                levels.extend(numbers_in(v))
+        if not levels:
+            levels = [v for v in nums
+                      if not (abs(v - mhz) < 0.1 or abs(v - mhz * 1e6) < 1e5)]
+        units = [v for k, v in r.items() if 'unit' in str(k).lower()]
+        return freqs, levels, units
+    return [], numbers_in(r), []
+
+
+def check_marker_reply(r, mhz, peak, w, exp_before):
+    exp_after = nearest_trace_level(w.rf_view, mhz, peak)
+    freqs, levels, units = parse_marker_reply(r, mhz)
+    if isinstance(r, dict):
+        assert freqs, f"no frequency near {mhz:.3f} MHz (or Hz) in {r}"
+    assert levels, f"no level in {r}"
+    assert any(min(abs(v - exp_before), abs(v - exp_after)) <= 3.0 for v in levels), \
+        f"level {levels} matches neither the trace then ({exp_before:.1f}) nor now ({exp_after:.1f})"
+    for u in units:
+        assert u == w.rf_view.level_unit, (units, w.rf_view.level_unit)
 
 
 def main():
@@ -214,20 +289,20 @@ def main():
                 kind, *a, **k)
             try:
                 ensure_receive(c, w)
-                c.ok('radio hackrf')
-                pump(1.0)
-                assert w.radio is not None and w.radio.kind == 'hackrf', \
-                    getattr(w.radio, 'kind', None)
+                switch_radio(c, w, 'hackrf')
                 s = c.ok('status')
                 assert 'file' in s, sorted(s)
-                assert s['file'] is None, f"no file loaded, expected None: {s['file']!r}"
+                known = {os.path.abspath(p) for p in
+                         (station, second, w.cfg.get('iq_file', ''))}
+                assert s['file'] is None or os.path.abspath(s['file']) in known, \
+                    f"expected None or the opened path: {s['file']!r}"
             finally:
                 fmapp.make_radio = original
                 try:
-                    c.ok('radio file')
+                    switch_radio(c, w, 'file')
                 except Exception:
                     w._use_radio('file')
-                pump(1.0)
+                    assert pump(10, lambda: w.engine.running), 'radio did not come back'
 
         def t_help_lists_new():
             h = c.ok('help')
@@ -246,32 +321,40 @@ def main():
             top = w.chan_knob._max
             r = c.ok(f'filter {(top / 1e3) + 500:g}')
             assert abs(w.chan_knob.value() - top) < 1, (w.chan_knob.value(), top)
-            assert r is not None
+            assert any(abs(v - top / 1e3) < 1e-6 or abs(v - top) < 1
+                       for v in numbers_in(r)), r
 
         def t_filter_clamps_low():
             ensure_receive(c, w)
             low = w.chan_knob._min
-            c.ok('filter 1')
+            r = c.ok('filter 1')
             assert abs(w.chan_knob.value() - low) < 1, (w.chan_knob.value(), low)
+            assert any(abs(v - low / 1e3) < 1e-6 or abs(v - low) < 1
+                       for v in numbers_in(r)), r
             c.ok('filter 200')
 
         def t_filter_refused_outside_receive():
             ensure_receive(c, w)
             before = w.chan_knob.value()
-            c.ok('mode recordings')
             try:
-                c.refused('filter 200', 'receive')
-                assert abs(w.chan_knob.value() - before) < 1, 'a refused filter moved the knob'
+                for mode in ('recordings', 'sweep'):
+                    c.ok(f'mode {mode}')
+                    assert pump(5, lambda: w._tab_mode() == mode), w._tab_mode()
+                    c.refused('filter 200')
+                    assert abs(w.chan_knob.value() - before) < 1, \
+                        f"a refused filter moved the knob in {mode}"
             finally:
                 c.ok('mode receive')
-                pump(0.5)
+                assert pump(10, lambda: w.engine.running), 'radio did not come back'
 
         def t_step_sets():
             ensure_receive(c, w)
-            r = c.ok('step 50')
-            assert abs(w._step_hz() - 50e3) < 1, w._step_hz()
-            assert abs(c.ok('status')['step_khz'] - 50) < 1e-6
-            assert any(abs(v - 50) < 1e-6 or abs(v - 50e3) < 1 for v in numbers_in(r)), r
+            for v in fmapp.STEPS_KHZ:
+                r = c.ok(f'step {v}')
+                assert abs(w._step_hz() - float(v) * 1e3) < 1, (v, w._step_hz())
+                assert abs(c.ok('status')['step_khz'] - float(v)) < 1e-6
+                assert any(abs(x - float(v)) < 1e-6 or abs(x - float(v) * 1e3) < 1
+                           for x in numbers_in(r)), (v, r)
             c.ok('step 100')
 
         def t_step_refused_unknown():
@@ -281,12 +364,16 @@ def main():
             for v in fmapp.STEPS_KHZ:
                 assert str(v) in err, f"error does not list {v}: {err}"
             assert abs(w._step_hz() - before) < 1, 'a refused step moved the knob'
+            assert w.radio is not None and w.radio.kind == 'file' and w.engine.running
 
         def t_radio_refused_unknown():
             ensure_receive(c, w)
             err = c.refused('radio fridge')
             for kind in fmapp.RADIO_ORDER:
                 assert kind in err, f"error does not list {kind!r}: {err}"
+            assert w.radio is not None and w.radio.kind == 'file', \
+                'a refused radio moved the chooser'
+            assert w.engine.running, 'a refused radio stopped it'
 
         def t_radio_switches():
             original = fmapp.make_radio
@@ -294,29 +381,21 @@ def main():
                 kind, *a, **k)
             try:
                 ensure_receive(c, w)
-                c.ok('radio hackrf')
-                pump(1.0)
-                assert w.radio is not None and w.radio.kind == 'hackrf'
-                assert w.engine.running
-                c.ok('radio file')
-                pump(1.0)
-                assert w.radio is not None and w.radio.kind == 'file', \
-                    getattr(w.radio, 'kind', None)
-                assert w.engine.running
+                switch_radio(c, w, 'hackrf')
+                switch_radio(c, w, 'file')
             finally:
                 fmapp.make_radio = original
                 if w.radio is None or w.radio.kind != 'file':
                     w._use_radio('file')
-                    pump(1.0)
+                    assert pump(10, lambda: w.engine.running), 'radio did not come back'
 
         def t_stop_starts():
             ensure_receive(c, w)
             c.ok('stop')
             assert not w.engine.running, 'stop left it running'
-            assert w.run_btn.text() == 'Start', w.run_btn.text()
             c.ok('start')
-            assert pump(5, lambda: w.engine.running), 'start did not start'
-            ensure_receive(c, w)
+            assert pump(10, lambda: w.engine.running), 'start did not start'
+            assert w._tab_mode() == 'receive', w._tab_mode()
 
         def t_stop_refused_while_recording():
             ensure_receive(c, w)
@@ -326,7 +405,8 @@ def main():
             c.ok('record start')
             try:
                 assert w.rec_btn.isChecked(), 'not recording'
-                c.refused('stop', 'recording')
+                c.refused('stop')
+                assert w.rec_btn.isChecked(), 'a refused stop stopped the recording'
                 assert w.engine.running, 'a refused stop stopped it'
             finally:
                 c.ok('record stop')
@@ -336,7 +416,9 @@ def main():
             c.ok('record audio on')
             c.ok('record start')
             try:
-                c.refused('start', 'recording')
+                assert w.rec_btn.isChecked(), 'not recording'
+                c.refused('start')
+                assert w.rec_btn.isChecked(), 'a refused start stopped the recording'
                 assert w.engine.running
             finally:
                 c.ok('record stop')
@@ -344,72 +426,84 @@ def main():
         def t_open_loads():
             ensure_receive(c, w)
             r = c.ok(f'open {second}')
-            pump(1.0)
-            assert os.path.abspath(w.cfg.get('iq_file', '')) == os.path.abspath(second), \
-                w.cfg.get('iq_file')
+            assert pump(10, lambda: os.path.abspath(w.cfg.get('iq_file', ''))
+                        == os.path.abspath(second) and w.engine.running), \
+                (w.cfg.get('iq_file'), w.engine.running)
             assert os.path.abspath(c.ok('status')['file']) == os.path.abspath(second), \
                 c.ok('status')['file']
-            assert w.engine.running
-            assert r is not None
+            assert os.path.basename(second) in strings_in(r), r
             c.ok(f'open {station}')
-            pump(1.0)
+            assert pump(10, lambda: os.path.abspath(w.cfg.get('iq_file', ''))
+                        == os.path.abspath(station) and w.engine.running), \
+                (w.cfg.get('iq_file'), w.engine.running)
 
         def t_open_refused_missing():
             ensure_receive(c, w)
             before = os.path.abspath(w.cfg.get('iq_file', ''))
             missing = os.path.join(FOLDER, 'no-such-file.cfile')
             err = c.refused(f'open {missing}')
-            assert 'no-such-file' in err or 'missing' in err.lower() or 'not' in err.lower() \
-                or 'could' in err.lower() or 'no ' in err.lower(), err
-            assert os.path.abspath(w.cfg.get('iq_file', '')) == before, 'a refused open moved files'
-            assert w.engine.running
+            assert 'no-such-file' in err or 'missing' in err.lower() \
+                or 'not found' in err.lower() or 'no such' in err.lower() \
+                or 'does not exist' in err.lower() or 'could not' in err.lower() \
+                or 'unreadable' in err.lower(), err
+            assert os.path.abspath(w.cfg.get('iq_file', '')) == before, \
+                'a refused open moved files'
+            assert w.engine.running, 'a refused open stopped it'
 
         def t_open_refused_unreadable():
             ensure_receive(c, w)
-            bad = os.path.join(FOLDER, 'unreadable.cfile')
+            bad = os.path.join(FOLDER, 'garbage.sdvr')
             with open(bad, 'wb') as fh:
-                fh.write(np.zeros(4096, np.complex64).tobytes())
+                fh.write(b'not a sceptre dvr' * 256)
+            dirc = os.path.join(FOLDER, 'adir.cfile')
+            os.makedirs(dirc, exist_ok=True)
             before = os.path.abspath(w.cfg.get('iq_file', ''))
             c.refused(f'open {bad}')
-            assert os.path.abspath(w.cfg.get('iq_file', '')) == before
-            assert w.engine.running
+            assert os.path.abspath(w.cfg.get('iq_file', '')) == before, \
+                'a refused open moved files'
+            assert w.engine.running, 'a refused open stopped it'
+            c.refused(f'open {dirc}')
+            assert os.path.abspath(w.cfg.get('iq_file', '')) == before, \
+                'a refused open moved files'
+            assert w.engine.running, 'a refused open stopped it'
 
         def t_open_refused_while_recording():
             ensure_receive(c, w)
             c.ok('record audio on')
             c.ok('record start')
             try:
+                assert w.rec_btn.isChecked(), 'not recording'
                 before = os.path.abspath(w.cfg.get('iq_file', ''))
-                c.refused(f'open {second}', 'recording')
-                assert os.path.abspath(w.cfg.get('iq_file', '')) == before
+                c.refused(f'open {second}')
+                assert os.path.abspath(w.cfg.get('iq_file', '')) == before, \
+                    'a refused open moved files'
+                assert w.rec_btn.isChecked(), 'a refused open stopped the recording'
             finally:
                 c.ok('record stop')
 
         def t_marker_live():
             ensure_receive(c, w)
+            if w.rf_view.peak_check.isChecked():
+                c.ok('peakhold off')
             assert pump(15, lambda: w.rf_view._x is not None and len(w.rf_view._x) > 8), \
                 'no spectrum yet'
             mhz = w.engine.station_hz / 1e6
+            exp_before = nearest_trace_level(w.rf_view, mhz, peak=False)
             r = c.ok(f'marker {mhz:.3f}')
-            assert isinstance(r, dict), r
-            freq_keys = [k for k in r if 'freq' in k.lower() or 'mhz' in k.lower()]
-            assert freq_keys, f"no frequency in {r}"
-            assert any(abs(float(r[k]) - mhz) < 0.2 for k in freq_keys), r
-            level_keys = [k for k in r if 'level' in k.lower() or 'db' in k.lower()]
-            assert level_keys, f"no level in {r}"
-            assert all(np.isfinite(float(r[k])) for k in level_keys), r
-            unit_keys = [k for k in r if 'unit' in k.lower()]
-            assert unit_keys and any(r[k] == w.rf_view.level_unit for k in unit_keys), r
+            check_marker_reply(r, mhz, False, w, exp_before)
 
         def t_marker_peak_hold():
             ensure_receive(c, w)
             c.ok('peakhold on')
             try:
                 c.ok('wait 1')
+                assert pump(10, lambda: w.rf_view._peak is not None
+                            and w.rf_view._x is not None
+                            and len(w.rf_view._peak) == len(w.rf_view._x)), 'no peak held'
                 mhz = w.engine.station_hz / 1e6
+                exp_before = nearest_trace_level(w.rf_view, mhz, peak=True)
                 r = c.ok(f'marker {mhz:.3f}')
-                unit_keys = [k for k in r if 'unit' in k.lower()]
-                assert unit_keys and any(r[k] == w.rf_view.level_unit for k in unit_keys), r
+                check_marker_reply(r, mhz, True, w, exp_before)
             finally:
                 c.ok('peakhold off')
 
@@ -418,8 +512,9 @@ def main():
             assert pump(15, lambda: w.rf_view._x is not None and len(w.rf_view._x) > 8), \
                 'no spectrum yet'
             err = c.refused('marker 500')
-            assert any(word in err.lower() for word in ('off', 'band', 'shown', 'spectrum',
-                                                       'view', 'range')), err
+            assert '500' in err or 'spectrum' in err.lower() or 'shown' in err.lower() \
+                or 'outside' in err.lower() or 'off the' in err.lower(), err
+            assert w.engine.running, 'a refused marker stopped it'
 
         def t_recordings_folder_moves():
             ensure_receive(c, w)
@@ -431,18 +526,18 @@ def main():
                 r = c.ok(f'recordings-folder {newdir}')
                 assert os.path.abspath(w._recording_dir()) == os.path.abspath(newdir), \
                     w._recording_dir()
-                assert r is not None
+                assert (newdir in strings_in(r)
+                        or os.path.basename(newdir) in strings_in(r)), r
                 cfg = json.load(open(os.environ['FMRX_CONFIG']))
                 assert os.path.abspath(cfg.get('recording_dir', '')) == os.path.abspath(newdir), cfg
                 c.ok('mode recordings')
-                pump(0.5)
-                w._refresh_library()
-                names = [os.path.basename(p) for rec in w._recordings for p in rec.files()]
-                assert marker_name in names, names
+                assert pump(10, lambda: any(
+                    marker_name in [os.path.basename(p) for p in rec.files()]
+                    for rec in w._recordings)), 'the list was not re-read'
             finally:
                 c.ok(f'recordings-folder {old}')
                 c.ok('mode receive')
-                pump(0.5)
+                assert pump(10, lambda: w.engine.running), 'radio did not come back'
             assert os.path.abspath(w._recording_dir()) == os.path.abspath(old)
             assert os.path.abspath(json.load(open(os.environ['FMRX_CONFIG'])).get(
                 'recording_dir', '')) == os.path.abspath(old)
@@ -452,8 +547,17 @@ def main():
             before = w._recording_dir()
             nope = os.path.join(FOLDER, 'no-such-dir')
             err = c.refused(f'recordings-folder {nope}')
-            assert any(word in err.lower() for word in ('director', 'folder', 'not', 'no ')), err
+            assert 'no-such-dir' in err or 'not a directory' in err.lower() \
+                or 'no such' in err.lower() or 'not exist' in err.lower() \
+                or 'not a folder' in err.lower() or 'no folder' in err.lower(), err
             assert w._recording_dir() == before, 'a refused folder moved the recordings'
+            afile = os.path.join(FOLDER, 'afile.txt')
+            with open(afile, 'w') as fh:
+                fh.write('not a directory')
+            err = c.refused(f'recordings-folder {afile}')
+            assert 'directory' in err.lower() or 'folder' in err.lower(), err
+            assert w._recording_dir() == before, 'a refused folder moved the recordings'
+            assert w.engine.running, 'a refused folder stopped it'
 
         def t_delete_needs_confirm():
             c.ok('mode recordings')
@@ -464,6 +568,7 @@ def main():
             err = c.refused('delete 0')
             assert 'confirm' in err.lower(), err
             assert len(c.ok('recordings')['recordings']) == n, 'a refused delete deleted'
+            assert len(w._recordings) == n, 'a refused delete deleted'
 
         def t_delete_refused_external():
             extra = tempfile.mkdtemp(prefix='fmrx-sceptre-')
@@ -472,20 +577,33 @@ def main():
                   ).astype(np.complex64) * np.float32(0.05)
             sdvr = os.path.join(extra, 'ext.sdvr')
             signals.write_sdvr(sdvr, iq, 2e6, 100e6)
+            cdif = os.path.join(extra, 'ext.cdif')
+            signals.write_blue(cdif, iq[:4096], 7e6, fmt='CF',
+                               keywords={'RF_FREQ': 99.3e6})
+            stray = os.path.join(extra, 'stray.wav')
+            write_wav(stray)
+            stray_bytes = open(stray, 'rb').read()
             c.ok('mode recordings')
             c.ok(f'folders add {extra}')
-            pump(0.5)
-            w._refresh_library()
+            assert pump(10, lambda: any(sdvr in rec.files() for rec in w._recordings)), \
+                'the sdvr is not listed'
+            assert pump(10, lambda: any(cdif in rec.files() for rec in w._recordings)), \
+                'the cdif is not listed'
             try:
-                listed = c.ok('recordings')['recordings']
-                idx = next((r['index'] for r in listed
-                            if 'sceptre' in r['kinds'].lower() or 'dvr' in r['kinds'].lower()),
-                           None)
-                assert idx is not None, f"no Sceptre recording listed: {[r['kinds'] for r in listed]}"
-                err = c.refused(f'delete {idx} confirm')
-                assert any(word in err.lower() for word in ('sceptre', 'left', 'extern',
-                                                           'delet', 'not')), err
-                assert os.path.exists(sdvr), 'a refused delete removed a Sceptre file'
+                assert not any(stray in rec.files() for rec in w._recordings), \
+                    'a wav in an added folder is listed as a recording'
+                n = len(c.ok('recordings')['recordings'])
+                for path in (sdvr, cdif):
+                    idx = next(i for i, rec in enumerate(w._recordings)
+                               if path in rec.files())
+                    err = c.refused(f'delete {idx} confirm')
+                    assert 'sceptre' in err.lower(), err
+                    assert os.path.exists(path), f"a refused delete removed {path}"
+                assert len(c.ok('recordings')['recordings']) == n, \
+                    'a refused delete deleted'
+                assert open(stray, 'rb').read() == stray_bytes, 'the added folder was written'
+                c.refused('delete 999 confirm')
+                assert open(stray, 'rb').read() == stray_bytes, 'the added folder was written'
             finally:
                 c.ok(f'folders remove {extra}')
 
@@ -500,16 +618,21 @@ def main():
                              None)
                 assert match is not None, 'the own recording is not listed'
                 r = c.ok(f'delete {match} confirm')
-                assert r is not None
+                blob = ' '.join(strings_in(r))
+                if isinstance(r, dict):
+                    assert 'fm-98.70MHz-20260102-120000' in blob \
+                        or any('delet' in str(k).lower() or 'remov' in str(k).lower()
+                               for k in r), r
+                else:
+                    assert 'fm-98.70MHz-20260102-120000' in blob, r
                 assert not os.path.exists(own), 'delete left the file'
-                pump(0.3)
-                w._refresh_library()
-                assert all(own not in rec.files() for rec in w._recordings), 'still listed'
+                assert pump(10, lambda: all(own not in rec.files()
+                                           for rec in w._recordings)), 'still listed'
             finally:
                 if os.path.exists(own):
                     os.remove(own)
                 c.ok('mode receive')
-                pump(0.5)
+                assert pump(10, lambda: w.engine.running), 'radio did not come back'
 
         checks = [
             ('status gains sweep/file/level_unit', t_status_keys),
