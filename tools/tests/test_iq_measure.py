@@ -1,0 +1,920 @@
+"""The measurement core (phase m1): ``fm_receiver/iqmeasure.py`` against CONTRACTS-measure.md.
+
+Every signal is built here with numpy, seeded, at 1 MS/s (complex64), with the
+SNR as the noise power against the signal's mean power. What the checks pin:
+
+- the class of each signal, and the first class rule (noise below 6 dB);
+- occupied bandwidth within 15 %: CW under 5 kHz; AM 2 kHz (its carrier and
+  the two sidebands at 1 kHz); FM the 99 % width of its Bessel lines (75 kHz
+  deviation, 1 kHz tone); OOK and FSK the 99 % width of the waveform itself,
+  as random data has no closed form: the narrowest band holding 99 % of the
+  power of a rectangular-window periodogram of the noiseless waveform (a
+  Hann window moves it by under 1 %, so the window does not matter here);
+- tones: the two of a two-tone signal within 2 bins, strongest first, at most
+  8; a bin is taken as rate / 1024, so an implementation with finer bins passes;
+- symbol rate within 5 %; burst duration within 5 %; repeat interval within 2 %
+  and None under three bursts;
+- power_dbm = power_dbfs + full_scale_dbm within 0.1 dB;
+- the card's form: schema 1, its keys, six significant digits, JSON-safe;
+- the readers (a .cfile with and without its .sigmf-meta, .sdvr, .cdif) and the
+  refusals (sweep .sdvr, .fft, a missing, short, unknown or junk file);
+- write_card: beside a .cfile only, never over a file that is not a card;
+- reading and measuring write nothing (a folder snapshot before and after);
+- G5: iqmeasure imports none of gnuradio, PyQt5, scipy, library, radios, dsp
+  in a clean subprocess, even after a measurement.
+
+Run:  QT_QPA_PLATFORM=offscreen PYTHONPATH=tools python tools/tests/test_iq_measure.py
+(about a minute)
+"""
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+import numpy as np
+from scipy import special
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+
+from tests import signals  # noqa: E402
+
+try:
+    from fm_receiver import iqmeasure  # noqa: E402
+    MISSING = None
+except ImportError as exc:       # reported as failing checks, not a crash
+    iqmeasure = None
+    MISSING = exc
+
+RATE = 1e6
+CENTRE = 100e6
+CLASSES = {'noise', 'carrier', 'ook', 'ask', 'fsk', 'fm', 'am', 'unknown'}
+BANNED = ['gnuradio', 'PyQt5', 'scipy', 'library', 'radios', 'dsp']
+FOLDER = None
+RESULTS = []
+MEMO = {}
+
+
+def api():
+    if iqmeasure is None:
+        raise MISSING
+    return iqmeasure
+
+
+def memo(key, make):
+    """Run ``make()`` once; a failure is kept and raised again for each check."""
+    if key not in MEMO:
+        try:
+            MEMO[key] = (True, make())
+        except Exception as exc:
+            MEMO[key] = (False, exc)
+    ok, value = MEMO[key]
+    if not ok:
+        raise value
+    return value
+
+
+def fresh(name):
+    path = os.path.join(FOLDER, name)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def report(name, ok, detail=''):
+    RESULTS.append((name, ok))
+    line = f"  {'ok  ' if ok else 'FAIL'} {name}"
+    if not ok:
+        line += f"  ({detail})"
+    print(line)
+
+
+def expect(name, test):
+    """Run ``test()``, which returns ``(ok, detail)``. An exception is a failure,
+    and the other checks still run."""
+    try:
+        ok, detail = test()
+    except Exception as exc:
+        ok, detail = False, f"{type(exc).__name__}: {exc}"
+    report(name, ok, detail)
+
+
+def eq(got, want):
+    return got == want, f'got {got!r}, want {want!r}'
+
+
+def near(got, want, tol):
+    if got is None:
+        return False, f'got None, want {want:.6g}'
+    return abs(got - want) <= tol, f'got {got:.6g}, want {want:.6g} +/- {tol:.3g}'
+
+
+def rel_near(got, want, frac):
+    return near(got, want, frac * abs(want))
+
+
+def below(got, bound):
+    return got is not None and got < bound, f'got {got}, want under {bound:g}'
+
+
+def refused(call, error):
+    try:
+        call()
+    except error:
+        return True, ''
+    except Exception as exc:
+        return False, f'raised {type(exc).__name__}: {exc}, want {error.__name__}'
+    return False, f'accepted, want {error.__name__}'
+
+
+def tones_found(card, freq, rate=RATE):
+    """Whether a tone of the card is within 2 bins (rate / 1024) of ``freq``."""
+    found = [t['freq_hz'] for t in card['tones']]
+    ok = any(abs(f - freq) <= 2 * rate / 1024 for f in found)
+    return ok, f'want a tone near {freq / 1e6:.4f} MHz, tones at {[round(f) for f in found]}'
+
+
+# ---- synthetic signals -------------------------------------------------------
+
+def _t(seconds, rate=RATE):
+    return np.arange(int(round(seconds * rate))) / rate
+
+
+def _power_noise(rng, n, power):
+    return np.sqrt(power / 2) * (rng.standard_normal(n) + 1j * rng.standard_normal(n))
+
+
+def _with_noise(sig, snr_db, seed, power=None):
+    """``sig`` plus white noise ``snr_db`` below ``power`` (default: its mean power);
+    ``snr_db`` None adds nothing."""
+    if snr_db is None:
+        return sig.astype(np.complex64)
+    p = np.mean(np.abs(sig) ** 2) if power is None else power
+    rng = np.random.default_rng(seed)
+    return (sig + _power_noise(rng, len(sig), p / 10 ** (snr_db / 10))).astype(np.complex64)
+
+
+def cw_iq(seconds=1.0, offset=50e3, amp=1.0, snr_db=30.0, rate=RATE, seed=1):
+    t = _t(seconds, rate)
+    return _with_noise(amp * np.exp(2j * np.pi * offset * t), snr_db, seed)
+
+
+def _run_limited_bits(rng, count, longest=3):
+    """Random bits with no run longer than ``longest``, so gaps inside a burst are short."""
+    bits = np.zeros(count, dtype=np.uint8)
+    for i in range(count):
+        bit = int(rng.integers(0, 2))
+        if i >= longest and np.all(bits[i - longest:i] == bit):
+            bit = 1 - bit
+        bits[i] = bit
+    return bits
+
+
+def ook_iq(bursts=12, snr_db=30.0, seed=2, noisy=True, low=0.0):
+    """OOK at 4,000 baud on a carrier 20 kHz up: bursts of 40 ms (160 symbols of
+    random data) starting every 100 ms from 50 ms, the carrier off between.
+    ``low`` is the level of a 0 bit (0 for OOK; above 10 % of the 1 level for ASK)."""
+    rng = np.random.default_rng(seed)
+    t = _t(1.3)
+    keyed = np.zeros(len(t))
+    for k in range(bursts):
+        bits = _run_limited_bits(rng, 160)
+        start = int(round((0.05 + 0.1 * k) * RATE))
+        keyed[start:start + 160 * 250] = low + (1 - low) * np.repeat(bits, 250)
+    sig = keyed * np.exp(2j * np.pi * 20e3 * t)
+    return _with_noise(sig, snr_db if noisy else None, seed + 100, power=1.0)
+
+
+def fsk_iq(seconds=1.0, snr_db=30.0, seed=3, noisy=True):
+    """FSK at 9,600 baud, 5 kHz either side of the centre, continuous phase."""
+    rng = np.random.default_rng(seed)
+    t = _t(seconds)
+    bits = rng.integers(0, 2, int(np.ceil(seconds * 9600)) + 1)
+    freq = np.where(bits[np.floor(t * 9600).astype(int)] == 1, 5e3, -5e3)
+    sig = np.exp(2j * np.pi * np.cumsum(freq) / RATE)
+    return _with_noise(sig, snr_db if noisy else None, seed + 100)
+
+
+def fm_iq(seconds=1.0, snr_db=30.0, seed=4):
+    """FM, 75 kHz deviation by a 1 kHz tone (index 75), the carrier at the centre."""
+    t = _t(seconds)
+    return _with_noise(np.exp(1j * 75.0 * np.sin(2 * np.pi * 1e3 * t)), snr_db, seed)
+
+
+def am_iq(seconds=1.0, snr_db=30.0, seed=5):
+    """AM, 80 % depth by a 1 kHz tone, the carrier 20 kHz up."""
+    t = _t(seconds)
+    sig = (1 + 0.8 * np.cos(2 * np.pi * 1e3 * t)) * np.exp(2j * np.pi * 20e3 * t)
+    return _with_noise(sig, snr_db, seed)
+
+
+def tones_iq(offsets, amps, seconds=1.0, snr_db=30.0, seed=6):
+    """Tones at ``offsets`` (Hz) with ``amps``, in white noise ``snr_db`` below their power."""
+    t = _t(seconds)
+    sig = np.zeros(len(t), dtype=np.complex128)
+    for f, a in zip(offsets, amps):
+        sig += a * np.exp(2j * np.pi * f * t)
+    return _with_noise(sig, snr_db, seed)
+
+
+def two_tone_iq(seconds=1.0, snr_db=30.0, seed=7):
+    """Two equal tones, +20 kHz and -60 kHz."""
+    return tones_iq([20e3, -60e3], [0.5, 0.5], seconds, snr_db, seed)
+
+
+def noise_iq(seconds=1.0, seed=8):
+    return _power_noise(np.random.default_rng(seed), len(_t(seconds)), 1.0).astype(np.complex64)
+
+
+MAKERS = {
+    'cw': lambda: cw_iq(),
+    'cw_0db': lambda: cw_iq(snr_db=0.0, seed=9),
+    'ook': lambda: ook_iq(),
+    'ook2': lambda: ook_iq(bursts=2),
+    'ook3': lambda: ook_iq(bursts=3),
+    'ook_noisy': lambda: ook_iq(snr_db=0.0, seed=12),
+    'ask': lambda: ook_iq(low=0.5, seed=10),
+    'fsk': lambda: fsk_iq(),
+    'fm': lambda: fm_iq(),
+    'am': lambda: am_iq(),
+    'noise': lambda: noise_iq(),
+    'two_tone': lambda: two_tone_iq(),
+    'tones_levels': lambda: tones_iq([50e3, 150e3, -200e3], [1.0, 0.5, 0.25]),
+    'tones_many': lambda: tones_iq(np.arange(-240e3, 241e3, 60e3), [0.1] * 9),
+    # Amplitude 0.0095 is about 13.5 dB over the median floor of a 1,024-bin
+    # Hann periodogram of this noise (scalloping keeps it under 15 dB).
+    'tone_14db': lambda: tones_iq([50e3, -300e3], [1.0, 0.0095]),
+}
+
+
+def iq(name):
+    return memo(('iq', name), MAKERS[name])
+
+
+def card(name):
+    """The card of a synthetic signal, measured once at the centre."""
+    return memo(('card', name), lambda: api().measure(iq(name), RATE, center_hz=CENTRE))
+
+
+# ---- the references the bandwidth checks compare with ------------------------
+
+def _percentile_width(freq, power):
+    """The 0.5 % to 99.5 % width of a power spectrum (points ``freq``, weights ``power``)."""
+    freq, power = np.asarray(freq, float), np.asarray(power, float)
+    order = np.argsort(freq)
+    cum = np.cumsum(power[order]) / np.sum(power)
+    f = freq[order]
+    return float(f[np.searchsorted(cum, 0.995)] - f[np.searchsorted(cum, 0.005)])
+
+
+def _narrowest_width(freq, power, mass=0.99):
+    """The width of the narrowest band (contiguous points) holding ``mass`` of the power."""
+    order = np.argsort(freq)
+    f = np.asarray(freq, float)[order]
+    p = np.asarray(power, float)[order]
+    c = np.concatenate([[0.0], np.cumsum(p)])
+    j = np.searchsorted(c, c[:-1] + mass * c[-1])      # first end index reaching the mass
+    i = np.flatnonzero(j <= len(p))
+    return float(np.min(f[j[i] - 1] - f[i]))
+
+
+def waveform_reference(x, rate):
+    """The 99 % width of a waveform's own spectrum (rectangular periodogram, no noise)."""
+    spec = np.abs(np.fft.fft(x)) ** 2
+    return _narrowest_width(np.fft.fftfreq(len(x), 1 / rate), spec)
+
+
+def fm_reference(beta=75.0):
+    """The 99 % width of FM's Bessel lines: power J_n(beta)^2 at n kHz."""
+    n = np.arange(-200, 201)
+    return _percentile_width(n * 1e3, special.jv(n, beta) ** 2)
+
+
+def am_reference(depth=0.8):
+    """AM by a 1 kHz tone: the carrier, and sidebands of power (depth/2)^2 at +-1 kHz."""
+    return _percentile_width([-1e3, 0.0, 1e3], [(depth / 2) ** 2, 1.0, (depth / 2) ** 2])
+
+
+# ---- the card's form ---------------------------------------------------------
+
+TOP_KEYS = ('schema', 'source', 'level', 'occupied', 'tones', 'bursts', 'envelope',
+            'frequency', 'symbol_rate_baud', 'class', 'evidence')
+SECTION_KEYS = {
+    'source': ('path', 'kind', 'rate_sps', 'center_hz', 't0_s', 't1_s', 'samples'),
+    'level': ('power_dbfs', 'power_dbm', 'noise_floor_dbfs', 'snr_db'),
+    'occupied': ('bandwidth_hz', 'bandwidth_20db_hz', 'centre_hz'),
+    'bursts': ('count', 'durations_s', 'median_duration_s', 'gaps_s',
+               'repeat_interval_s', 'duty'),
+    'envelope': ('levels', 'depth', 'keyed'),
+    'frequency': ('levels_hz', 'deviation_hz', 'keyed'),
+}
+
+
+def _floats(value):
+    if isinstance(value, bool):
+        return
+    if isinstance(value, float):
+        yield value
+    elif isinstance(value, dict):
+        for v in value.values():
+            yield from _floats(v)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            yield from _floats(v)
+
+
+def shape_problems(card_):
+    """What is wrong with a card's form, as sentences (an empty list when right)."""
+    if not isinstance(card_, dict):
+        return ['the card is not a dict']
+    bad = [f'missing {k}' for k in TOP_KEYS if k not in card_]
+    for sec, keys in SECTION_KEYS.items():
+        part = card_.get(sec)
+        if not isinstance(part, dict):
+            bad.append(f'{sec} is not a dict')
+            continue
+        bad += [f'missing {sec}.{k}' for k in keys if k not in part]
+    if card_.get('schema') != 1:
+        bad.append('schema is not 1')
+    if card_.get('class') not in CLASSES:
+        bad.append(f"class {card_.get('class')!r} is not one of the eight")
+    ev = card_.get('evidence')
+    if not (isinstance(ev, list) and ev and all(
+            isinstance(e, str) and e.strip() and len(e) <= 200 for e in ev)):
+        bad.append('evidence is not a non-empty list of short sentences')
+    try:
+        json.dumps(card_, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        bad.append(f'not JSON-safe: {exc}')
+    for x in _floats(card_):
+        if not (x == 0 or float(f'{x:.6g}') == x):
+            bad.append(f'{x!r} is not rounded to 6 significant digits')
+            break
+    tones = card_.get('tones')
+    if not isinstance(tones, list) or len(tones) > 8:
+        bad.append('tones is not a list of at most 8')
+    else:
+        levels = [t['level_db'] for t in tones]
+        if levels != sorted(levels, reverse=True):
+            bad.append('tones are not strongest first')
+        if any(lv <= 15 for lv in levels):
+            bad.append('a tone is not more than 15 dB above the floor')
+    bursts = card_.get('bursts', {})
+    if isinstance(bursts, dict):
+        count = bursts.get('count')
+        if count is not None and count < 3 and bursts.get('repeat_interval_s') is not None:
+            bad.append('repeat_interval_s is set under 3 bursts')
+        if count is not None and count >= 3 and bursts.get('repeat_interval_s') is None:
+            bad.append('repeat_interval_s is None with 3 or more bursts')
+        if len(bursts.get('durations_s') or []) > 32 or len(bursts.get('gaps_s') or []) > 32:
+            bad.append('more than 32 durations or gaps listed')
+        duty = bursts.get('duty')
+        if duty is not None and not 0 <= duty <= 1:
+            bad.append('duty is not in 0..1')
+    env = card_.get('envelope', {})
+    if isinstance(env, dict):
+        if not (isinstance(env.get('levels'), list) and 1 <= len(env['levels']) <= 2
+                and env['levels'] == sorted(env['levels'])):
+            bad.append('envelope.levels is not 1 or 2 levels, low first')
+        if env.get('depth') is not None and not 0 <= env['depth'] <= 1:
+            bad.append('envelope.depth is not in 0..1')
+        if not isinstance(env.get('keyed'), bool):
+            bad.append('envelope.keyed is not a bool')
+    freq = card_.get('frequency', {})
+    if isinstance(freq, dict):
+        if not (isinstance(freq.get('levels_hz'), list) and 1 <= len(freq['levels_hz']) <= 2
+                and freq['levels_hz'] == sorted(freq['levels_hz'])):
+            bad.append('frequency.levels_hz is not 1 or 2 levels, low first')
+        if not isinstance(freq.get('keyed'), bool):
+            bad.append('frequency.keyed is not a bool')
+    rate = card_.get('symbol_rate_baud')
+    if rate is not None and not isinstance(rate, (int, float)):
+        bad.append('symbol_rate_baud is not a number or None')
+    return bad
+
+
+# ---- files for the reader and write checks -----------------------------------
+
+def snapshot(folder):
+    """Every file of ``folder``: its digest, size and modification time."""
+    state = {}
+    for name in sorted(os.listdir(folder)):
+        path = os.path.join(folder, name)
+        st = os.stat(path)
+        with open(path, 'rb') as fh:
+            digest = hashlib.sha256(fh.read()).hexdigest()
+        state[name] = (digest, st.st_size, st.st_mtime_ns)
+    return state
+
+
+def write_cfile(path, data):
+    np.asarray(data, dtype=np.complex64).tofile(path)
+    return path
+
+
+def write_sigmf(base, rate, centre):
+    with open(base + '.sigmf-meta', 'w') as fh:
+        json.dump({'global': {'core:datatype': 'cf32_le', 'core:sample_rate': rate},
+                   'captures': [{'core:sample_start': 0, 'core:frequency': centre}],
+                   'annotations': []}, fh)
+
+
+def write_noise_seconds(path, seconds, seed):
+    """A file of ``seconds`` whole seconds of noise, written a second at a time."""
+    rng = np.random.default_rng(seed)
+    with open(path, 'wb') as fh:
+        for _ in range(int(seconds)):
+            _power_noise(rng, int(RATE), 1e-2).astype(np.complex64).tofile(fh)
+    return path
+
+
+def reader_files():
+    """The files the reader and write checks use, written once into ``readers/``."""
+    def build():
+        folder = fresh('readers')
+        f = {}
+        base = os.path.join(folder, 'sig')
+        f['sigmf'] = write_cfile(base + '.cfile', cw_iq(seconds=0.5, rate=2e6, amp=0.5, seed=11))
+        write_sigmf(base, 2e6, 98.4e6)
+        f['sigmf_meta'] = base + '.sigmf-meta'
+        f['bare'] = write_cfile(os.path.join(folder, 'bare.cfile'),
+                                cw_iq(seconds=0.5, amp=0.5, seed=12))
+        short = cw_iq(seconds=0.002, amp=0.5, seed=13)
+        f['short'] = write_cfile(os.path.join(folder, 'short.cfile'), short[:1023])
+        f['ok1024'] = write_cfile(os.path.join(folder, 'ok1024.cfile'), short[:1024])
+        f['long15'] = write_cfile(os.path.join(folder, 'long15.cfile'),
+                                  cw_iq(seconds=1.5, amp=0.5, seed=16))
+        f['long31'] = write_noise_seconds(os.path.join(folder, 'long31.cfile'), 31, 21)
+        f['sdvr'] = os.path.join(folder, 'iq.sdvr')
+        f['sdvr_data'] = signals.write_sdvr(f['sdvr'], cw_iq(seconds=0.5, amp=0.5, seed=14),
+                                            RATE, CENTRE)
+        f['cdif'] = os.path.join(folder, 'iq.cdif')
+        f['cdif_data'] = cw_iq(seconds=0.5, amp=0.5, seed=15)
+        signals.write_blue(f['cdif'], f['cdif_data'], RATE, keywords={'RF_FREQ': CENTRE})
+        f['sweep'] = os.path.join(folder, 'sweep.sdvr')
+        signals.write_sweep_sdvr(f['sweep'], tiles=8, bins=4096)
+        f['fft'] = os.path.join(folder, 'spectrum.fft')
+        spectrum = np.abs(np.random.default_rng(17).standard_normal(64 * 8)).astype(np.float32)
+        signals.write_blue(f['fft'], spectrum, RATE, fmt='SF', subsize=64)
+        f['junk_sdvr'] = os.path.join(folder, 'junk.sdvr')
+        with open(f['junk_sdvr'], 'wb') as fh:
+            fh.write(np.random.default_rng(18).bytes(8192))
+        f['junk_bin'] = os.path.join(folder, 'thing.bin')
+        with open(f['junk_bin'], 'wb') as fh:
+            fh.write(np.random.default_rng(19).bytes(8192))
+        f['missing'] = os.path.join(folder, 'nothere.cfile')
+        return f
+    return memo('files', build)
+
+
+def source(key, path, **kw):
+    """``open_iq`` of a reader file, opened once."""
+    return memo(('source', key), lambda: api().open_iq(path, **kw))
+
+
+def measured(key, path, **kw):
+    """``measure_file`` of a reader file, measured once."""
+    return memo(('measure', key), lambda: api().measure_file(path, **kw))
+
+
+# ---- the checks --------------------------------------------------------------
+
+def check_classes():
+    for name, want in [('cw', 'carrier'), ('ook', 'ook'), ('fsk', 'fsk'), ('fm', 'fm'),
+                       ('am', 'am'), ('noise', 'noise'), ('two_tone', 'unknown'),
+                       ('cw_0db', 'noise'), ('ask', 'ask'), ('ook_noisy', 'noise')]:
+        expect(f'{name}: class is {want}',
+               lambda n=name, w=want: eq(card(n)['class'], w))
+
+
+def check_bandwidth():
+    expect('CW: occupied bandwidth under 5 kHz',
+           lambda: below(card('cw')['occupied']['bandwidth_hz'], 5e3))
+    expect('AM: occupied bandwidth within 15 % of 2 kHz',
+           lambda: rel_near(card('am')['occupied']['bandwidth_hz'],
+                            memo('ref-am', am_reference), 0.15))
+    expect('FM: occupied bandwidth within 15 % of the Bessel-line 99 % width',
+           lambda: rel_near(card('fm')['occupied']['bandwidth_hz'],
+                            memo('ref-fm', fm_reference), 0.15))
+    expect('OOK: occupied bandwidth within 15 % of the waveform 99 % width',
+           lambda: rel_near(card('ook')['occupied']['bandwidth_hz'],
+                            memo('ref-ook', lambda: waveform_reference(
+                                ook_iq(noisy=False), RATE)), 0.15))
+    expect('FSK: occupied bandwidth within 15 % of the waveform 99 % width',
+           lambda: rel_near(card('fsk')['occupied']['bandwidth_hz'],
+                            memo('ref-fsk', lambda: waveform_reference(
+                                fsk_iq(noisy=False), RATE)), 0.15))
+
+
+def check_tones_and_centre():
+    expect('CW: strongest tone at +50 kHz (within 2 bins)',
+           lambda: tones_found(card('cw'), CENTRE + 50e3))
+    expect('CW: power centre within 2 kHz of +50 kHz (absolute)',
+           lambda: near(card('cw')['occupied']['centre_hz'], CENTRE + 50e3, 2e3))
+    expect('two-tone: the +20 kHz tone is found (within 2 bins)',
+           lambda: tones_found(card('two_tone'), CENTRE + 20e3))
+    expect('two-tone: the -60 kHz tone is found (within 2 bins)',
+           lambda: tones_found(card('two_tone'), CENTRE - 60e3))
+
+    def ordered():
+        tones = card('tones_levels')['tones']
+        want = [CENTRE + 50e3, CENTRE + 150e3, CENTRE - 200e3]
+        if len(tones) < 3:
+            return False, f'{len(tones)} tones, want 3'
+        for t, w in zip(tones, want):
+            if abs(t['freq_hz'] - w) > 2 * RATE / 1024:
+                return False, f"tones {[round(t['freq_hz']) for t in tones]}, want {want}"
+        return True, ''
+    expect('three tones, 1.0 / 0.5 / 0.25: listed strongest first', ordered)
+
+    expect('nine tones: at most 8 listed',
+           lambda: (1 <= len(card('tones_many')['tones']) <= 8,
+                    f"{len(card('tones_many')['tones'])} tones listed"))
+
+    def band_card():
+        return memo('band', lambda: api().measure(
+            iq('two_tone'), RATE, center_hz=CENTRE, band=(CENTRE + 5e3, CENTRE + 200e3)))
+
+    def band_restricted():
+        ok_in, why_in = tones_found(band_card(), CENTRE + 20e3)
+        ok_out = not tones_found(band_card(), CENTRE - 60e3)[0]
+        return ok_in and ok_out, why_in + ('' if ok_out else '; the -60 kHz tone is in the band')
+    expect('band (+5 kHz to +200 kHz): only the +20 kHz tone is analysed', band_restricted)
+    expect('band (+5 kHz to +200 kHz): the surviving tone is narrow (under 5 kHz)',
+           lambda: below(band_card()['occupied']['bandwidth_hz'], 5e3))
+
+    def weak_absent():
+        c = card('tone_14db')
+        listed, _ = tones_found(c, CENTRE - 300e3)
+        return (not listed and tones_found(c, CENTRE + 50e3)[0],
+                'the tone 14 dB over the floor is listed, or the strong tone is missing')
+    expect('a tone about 14 dB above the floor (with a strong tone) is not listed', weak_absent)
+
+
+def check_symbols_and_bursts():
+    expect('OOK: symbol rate 4,000 baud within 5 %',
+           lambda: rel_near(card('ook')['symbol_rate_baud'], 4000.0, 0.05))
+    expect('FSK: symbol rate 9,600 baud within 5 %',
+           lambda: rel_near(card('fsk')['symbol_rate_baud'], 9600.0, 0.05))
+    expect('OOK: burst median duration 40 ms within 5 %',
+           lambda: rel_near(card('ook')['bursts']['median_duration_s'], 0.040, 0.05))
+    expect('OOK: repeat interval 100 ms within 2 %',
+           lambda: rel_near(card('ook')['bursts']['repeat_interval_s'], 0.100, 0.02))
+    expect('OOK, 3 bursts: repeat interval 100 ms within 2 %',
+           lambda: rel_near(card('ook3')['bursts']['repeat_interval_s'], 0.100, 0.02))
+    expect('OOK, 2 bursts: repeat interval is None',
+           lambda: eq(card('ook2')['bursts']['repeat_interval_s'], None))
+    expect('OOK: 12 bursts counted',
+           lambda: eq(card('ook')['bursts']['count'], 12))
+    expect('OOK: gap between bursts 60 ms within 5 %',
+           lambda: rel_near(float(np.median(card('ook')['bursts']['gaps_s'])), 0.060, 0.05))
+    for name in ['cw', 'fm', 'am', 'noise']:
+        expect(f'{name}: no symbol rate (symbol_rate_baud is None)',
+               lambda n=name: eq(card(n)['symbol_rate_baud'], None))
+
+
+def check_level():
+    def relation():
+        c = memo('fs', lambda: api().measure(iq('cw'), RATE, center_hz=CENTRE,
+                                             full_scale_dbm=-10.0))['level']
+        return near(c['power_dbm'], c['power_dbfs'] - 10.0, 0.1)
+    expect('power_dbm = power_dbfs + full_scale_dbm (-10 dBm) within 0.1 dB', relation)
+    expect('power_dbm is None without a full-scale level',
+           lambda: eq(card('cw')['level']['power_dbm'], None))
+
+
+def check_measure_inputs():
+    def src():
+        return card('cw')['source']
+
+    expect('array input: source rate and centre read back',
+           lambda: (eq(src()['rate_sps'], RATE)[0] and eq(src()['center_hz'], CENTRE)[0],
+                    f"rate {src()['rate_sps']}, centre {src()['center_hz']}"))
+    expect('array input: t0 0 and t1 1 s for one second of samples',
+           lambda: (near(src()['t0_s'], 0.0, 1e-6)[0] and near(src()['t1_s'], 1.0, 1e-6)[0],
+                    f"t0 {src()['t0_s']}, t1 {src()['t1_s']}"))
+
+    def t0_argument():
+        c = memo('t0', lambda: api().measure(iq('cw'), RATE, center_hz=CENTRE, t0=2.0))
+        return near(c['source']['t0_s'], 2.0, 1e-6)
+    expect('t0 argument: source t0_s is the given time', t0_argument)
+
+    expect('complex128 input: a CW is still a carrier',
+           lambda: eq(api().measure(iq('cw').astype(np.complex128), RATE,
+                                    center_hz=CENTRE)['class'], 'carrier'))
+
+
+def check_shape():
+    for name in ['cw', 'cw_0db', 'ook', 'ook2', 'ook3', 'ook_noisy', 'ask', 'fsk', 'fm',
+                 'am', 'noise', 'two_tone', 'tones_levels', 'tones_many', 'tone_14db']:
+        expect(f'{name}: card has the spec form',
+               lambda n=name: (not shape_problems(card(n)),
+                               '; '.join(shape_problems(card(n))[:3])))
+
+
+def check_readers():
+    f = reader_files
+    err = lambda: api().IQSourceError       # noqa: E731
+
+    sig = lambda: source('sigmf', f()['sigmf'])     # noqa: E731
+    expect('.cfile with .sigmf-meta: kind, rate and centre read back',
+           lambda: (eq(sig().kind, 'cfile')[0] and eq(sig().rate, 2e6)[0]
+                    and eq(sig().center_hz, 98.4e6)[0],
+                    f'kind {sig().kind}, rate {sig().rate}, centre {sig().center_hz}'))
+    expect('.cfile with .sigmf-meta: samples and seconds of the file',
+           lambda: (eq(sig().samples, 1000000)[0] and near(sig().seconds, 0.5, 1e-9)[0],
+                    f'samples {sig().samples}, seconds {sig().seconds}'))
+    expect('.cfile with .sigmf-meta: no full-scale level',
+           lambda: eq(sig().full_scale_dbm, None))
+    expect('.cfile: read() gives the file exactly, as complex64',
+           lambda: (np.array_equal(sig().read(0, sig().samples),
+                                   np.fromfile(f()['sigmf'], dtype=np.complex64))
+                    and sig().read(0, 1).dtype == np.complex64,
+                    'samples differ from the file'))
+    expect('read() is clipped to the file',
+           lambda: (eq(len(sig().read(sig().samples - 10, 100)), 10)[0]
+                    and eq(len(sig().read(sig().samples, 5)), 0)[0],
+                    'a read past the end did not clip'))
+
+    expect('bare .cfile without rate= is refused',
+           lambda: refused(lambda: api().open_iq(f()['bare']), err()))
+    bare = lambda: source('bare', f()['bare'], rate=RATE)       # noqa: E731
+    expect('bare .cfile with rate= is accepted',
+           lambda: (eq(bare().kind, 'cfile')[0] and eq(bare().samples, 500000)[0],
+                    f'kind {bare().kind}, samples {bare().samples}'))
+    expect('bare .cfile with rate= reports that rate',
+           lambda: near(bare().rate, RATE, 1e-3))
+    expect('bare .cfile with rate= and center_hz= takes the centre',
+           lambda: eq(api().open_iq(f()['bare'], rate=RATE, center_hz=CENTRE).center_hz,
+                      CENTRE))
+
+    dvr = lambda: source('sdvr', f()['sdvr'])                  # noqa: E731
+    expect('IQ .sdvr: kind, rate and centre',
+           lambda: (eq(dvr().kind, 'sdvr')[0] and near(dvr().rate, RATE, 1e-3)[0]
+                    and eq(dvr().center_hz, CENTRE)[0],
+                    f'kind {dvr().kind}, rate {dvr().rate}, centre {dvr().center_hz}'))
+    expect('IQ .sdvr: samples and the full-scale level (-10 dBm)',
+           lambda: (eq(dvr().samples, len(f()['sdvr_data']))[0]
+                    and near(dvr().full_scale_dbm, -10.0, 0.1)[0],
+                    f'samples {dvr().samples}, full scale {dvr().full_scale_dbm}'))
+    expect('IQ .sdvr: read() gives the samples written',
+           lambda: (np.allclose(dvr().read(0, dvr().samples), f()['sdvr_data'], atol=1e-6),
+                    'samples differ'))
+    expect('IQ .sdvr: path is the file opened',
+           lambda: eq(os.path.abspath(dvr().path), os.path.abspath(f()['sdvr'])))
+    expect('IQ .sdvr: seconds are samples over rate',
+           lambda: near(dvr().seconds, dvr().samples / dvr().rate, 1e-6))
+
+    cdif = lambda: source('cdif', f()['cdif'])                  # noqa: E731
+    expect('.cdif: kind and rate',
+           lambda: (eq(cdif().kind, 'cdif')[0] and near(cdif().rate, RATE, 0.5)[0],
+                    f'kind {cdif().kind}, rate {cdif().rate}'))
+    expect('.cdif: centre is RF_FREQ, 100 MHz',
+           lambda: eq(cdif().center_hz, CENTRE))
+    expect('.cdif: path is the file opened',
+           lambda: eq(os.path.abspath(cdif().path), os.path.abspath(f()['cdif'])))
+    expect('.cdif: seconds are samples over rate',
+           lambda: near(cdif().seconds, cdif().samples / cdif().rate, 1e-6))
+    expect('.cdif: samples and read() give the data written',
+           lambda: (eq(cdif().samples, len(f()['cdif_data']))[0]
+                    and np.allclose(cdif().read(0, cdif().samples), f()['cdif_data'],
+                                    atol=1e-6), 'samples differ'))
+
+    expect('a file of 1,024 samples is accepted',
+           lambda: eq(api().open_iq(f()['ok1024'], rate=RATE).samples, 1024))
+    expect('a file of 1,023 samples is refused',
+           lambda: refused(lambda: api().open_iq(f()['short'], rate=RATE), err()))
+    for name, key in [('a sweep .sdvr', 'sweep'), ('a .fft', 'fft'),
+                      ('a .sdvr that is not a DVR', 'junk_sdvr'),
+                      ('a file of unknown type', 'junk_bin'),
+                      ('a missing file', 'missing')]:
+        expect(f'{name} is refused',
+               lambda k=key: refused(lambda: api().open_iq(f()[k]), err()))
+
+    sigmf_m = lambda: measured('sigmf', f()['sigmf'])           # noqa: E731
+    expect('measure_file .cfile with .sigmf-meta: a carrier, no dBm',
+           lambda: (sigmf_m()['source']['kind'] == 'cfile' and sigmf_m()['class'] == 'carrier'
+                    and sigmf_m()['level']['power_dbm'] is None,
+                    f"kind {sigmf_m()['source']['kind']}, class {sigmf_m()['class']}"))
+    expect('measure_file .cfile at 2 MS/s: tone at +50 kHz from 98.4 MHz',
+           lambda: tones_found(sigmf_m(), 98.4e6 + 50e3, rate=2e6))
+
+    dvr_m = lambda: measured('sdvr', f()['sdvr'])               # noqa: E731
+    expect('measure_file .sdvr: a carrier, power in dBm from the DVR',
+           lambda: (dvr_m()['source']['kind'] == 'sdvr' and dvr_m()['class'] == 'carrier'
+                    and eq(dvr_m()['source']['center_hz'], CENTRE)[0]
+                    and near(dvr_m()['level']['power_dbm'] - dvr_m()['level']['power_dbfs'],
+                             -10.0, 0.1)[0],
+                    f"kind {dvr_m()['source']['kind']}, class {dvr_m()['class']}, "
+                    f"dBm {dvr_m()['level']['power_dbm']}"))
+    expect('measure_file .sdvr: tone at +50 kHz from the DVR centre',
+           lambda: tones_found(dvr_m(), dvr_m()['source']['center_hz'] + 50e3))
+
+    cdif_m = lambda: measured('cdif', f()['cdif'])              # noqa: E731
+    expect('measure_file .cdif: a carrier',
+           lambda: (cdif_m()['source']['kind'] == 'cdif' and cdif_m()['class'] == 'carrier',
+                    f"kind {cdif_m()['source']['kind']}, class {cdif_m()['class']}"))
+    expect('measure_file .cdif: tone at +50 kHz from 100 MHz',
+           lambda: tones_found(cdif_m(), CENTRE + 50e3))
+    expect('measure_file .cdif: no dBm (no calibration)',
+           lambda: eq(cdif_m()['level']['power_dbm'], None))
+
+    expect('measure_file of a bare .cfile without rate= is refused',
+           lambda: refused(lambda: api().measure_file(f()['bare']), err()))
+    for name, key, kw in [('a sweep .sdvr', 'sweep', {}), ('a .fft', 'fft', {}),
+                          ('a file under 1,024 samples', 'short', {'rate': RATE}),
+                          ('a missing file', 'missing', {})]:
+        expect(f'measure_file refuses {name}',
+               lambda k=key, a=kw: refused(lambda: api().measure_file(f()[k], **a), err()))
+    bare_m = lambda: measured('bare', f()['bare'], rate=RATE, center_hz=CENTRE)  # noqa: E731
+    expect('measure_file of a bare .cfile with rate= and centre: tone at CENTRE + 50 kHz',
+           lambda: tones_found(bare_m(), CENTRE + 50e3))
+
+    long15 = lambda: measured('long15', f()['long15'], rate=RATE)      # noqa: E731
+    expect('measure_file: default span is the whole file (1.5 s)',
+           lambda: (near(long15()['source']['t0_s'], 0.0, 1e-6)[0]
+                    and near(long15()['source']['t1_s'], 1.5, 1e-6)[0],
+                    f"t0 {long15()['source']['t0_s']}, t1 {long15()['source']['t1_s']}"))
+    span = lambda: measured('span', f()['long15'], t0=0.25, t1=0.75, rate=RATE)  # noqa: E731
+    expect('measure_file: t0 and t1 are seconds into the file',
+           lambda: (near(span()['source']['t0_s'], 0.25, 1e-6)[0]
+                    and near(span()['source']['t1_s'], 0.75, 1e-6)[0],
+                    f"t0 {span()['source']['t0_s']}, t1 {span()['source']['t1_s']}"))
+    long31 = lambda: measured('long31', f()['long31'], rate=RATE)      # noqa: E731
+    expect('measure_file: the default span is at most 30 s of a 31 s file',
+           lambda: (near(long31()['source']['t0_s'], 0.0, 1e-6)[0]
+                    and near(long31()['source']['t1_s'], 30.0, 1e-6)[0],
+                    f"t1 {long31()['source']['t1_s']}"))
+
+
+def check_write_card():
+    def card_paths():
+        base = os.path.join(FOLDER, 'x')
+        return (api().card_path(base + '.cfile') == base + '.card.json',
+                api().card_path(base + '.sdvr') is None,
+                api().card_path(base + '.cdif') is None,
+                api().card_path(base + '.fft') is None)
+    names = ['a .cfile', 'a .sdvr', 'a .cdif', 'a .fft']
+    expect("card_path: '<base>.card.json' beside a .cfile",
+           lambda: (card_paths()[0], 'card_path of a .cfile is not <base>.card.json'))
+    for i, label in enumerate(names[1:], 1):
+        expect(f'card_path: None for {label}',
+               lambda k=i, l=label: (card_paths()[k], f'card_path of {l} is not None'))
+    expect('card_path: None for a .bin',
+           lambda: (api().card_path(os.path.join(FOLDER, 'x.bin')) is None,
+                    'card_path of a .bin is not None'))
+
+    def read_back():
+        folder = fresh('card-beside')
+        cfile = write_cfile(os.path.join(folder, 'cw.cfile'), cw_iq(seconds=0.5, seed=31))
+        written = api().write_card(cfile, card('cw'))
+        with open(api().card_path(cfile)) as fh:
+            loaded = json.load(fh)
+        same = json.loads(json.dumps(card('cw'), allow_nan=False))
+        return (os.path.abspath(written) == os.path.abspath(api().card_path(cfile))
+                and loaded == same and loaded.get('schema') == 1,
+                'the file read back is not the card')
+    expect('write_card beside a .cfile: the file read back equals the card', read_back)
+
+    for label, key in [('a .sdvr', 'sdvr'), ('a .cdif', 'cdif'), ('a .fft', 'fft')]:
+        def refuse(k=key, what=label):
+            folder = fresh('refuse-' + k)
+            src = reader_files()[k]
+            shutil.copy(src, folder)
+            path = os.path.join(folder, os.path.basename(src))
+            before = snapshot(folder)
+            ok, why = refused(lambda: api().write_card(path, card('cw')), api().IQSourceError)
+            after = snapshot(folder)
+            return ok and before == after, why or f'{what}: something was written beside it'
+        expect(f'write_card refuses {label}, and writes nothing beside it', refuse)
+
+    def keep_other_json():
+        folder = fresh('keep-json')
+        cfile = write_cfile(os.path.join(folder, 'k.cfile'), cw_iq(seconds=0.5, seed=32))
+        card_file = api().card_path(cfile)
+        with open(card_file, 'w') as fh:
+            fh.write('{"other": 1}')
+        try:
+            api().write_card(cfile, card('cw'))
+        except Exception:
+            pass
+        with open(card_file) as fh:
+            return fh.read() == '{"other": 1}', 'a file that is not a card was overwritten'
+    expect('write_card never overwrites a JSON file that is not a card', keep_other_json)
+
+    def keep_garbage():
+        folder = fresh('keep-garbage')
+        cfile = write_cfile(os.path.join(folder, 'g.cfile'), cw_iq(seconds=0.5, seed=33))
+        card_file = api().card_path(cfile)
+        with open(card_file, 'wb') as fh:
+            fh.write(b'\x00\x01 not json')
+        try:
+            api().write_card(cfile, card('cw'))
+        except Exception:
+            pass
+        with open(card_file, 'rb') as fh:
+            return fh.read() == b'\x00\x01 not json', 'a file that is not JSON was overwritten'
+    expect('write_card never overwrites a file that is not JSON', keep_garbage)
+
+    def replace_card():
+        folder = fresh('replace-card')
+        cfile = write_cfile(os.path.join(folder, 'r.cfile'), cw_iq(seconds=0.5, seed=34))
+        api().write_card(cfile, card('cw'))
+        api().write_card(cfile, card('fsk'))
+        with open(api().card_path(cfile)) as fh:
+            loaded = json.load(fh)
+        return (loaded == json.loads(json.dumps(card('fsk'), allow_nan=False)),
+                'the second card did not replace the first')
+    expect('write_card replaces an earlier card of its own', replace_card)
+
+    def junk_extension():
+        folder = fresh('junk-ext')
+        path = os.path.join(folder, 'thing.bin')
+        with open(path, 'wb') as fh:
+            fh.write(b'\x01' * 4096)
+        write = api().write_card
+        before = snapshot(folder)
+        try:
+            write(path, card('cw'))
+        except Exception:
+            pass
+        return snapshot(folder) == before, 'something was written beside a .bin'
+    expect('write_card writes nothing beside a file that is not a .cfile', junk_extension)
+
+    def reading_writes_nothing():
+        folder = fresh('read-only')
+        f = reader_files()
+        for path in [f['sdvr'], f['cdif'], f['sigmf'], f['sigmf_meta']]:
+            shutil.copy(path, folder)
+        before = snapshot(folder)
+        for path in [os.path.join(folder, n) for n in ('iq.sdvr', 'iq.cdif', 'sig.cfile')]:
+            src = api().open_iq(path)
+            src.read(0, min(src.samples, 1000))
+            api().measure_file(path)
+        return snapshot(folder) == before, 'reading or measuring wrote into the folder'
+    expect('reading and measuring write nothing beside the file', reading_writes_nothing)
+
+
+def check_import_clean():
+    probe = (
+        "import json, os, shutil, sys, tempfile\n"
+        "import numpy as np\n"
+        "sys.path.insert(0, %r)\n"
+        "from fm_receiver import iqmeasure\n"
+        "rng = np.random.default_rng(0)\n"
+        "iq = (rng.standard_normal(8192) + 1j * rng.standard_normal(8192)).astype(np.complex64)\n"
+        "iqmeasure.measure(iq, 1e6, center_hz=1e8)\n"
+        "folder = tempfile.mkdtemp()\n"
+        "path = os.path.join(folder, 'probe.cfile')\n"
+        "iq.tofile(path)\n"
+        "iqmeasure.open_iq(path, rate=1e6).read(0, 1024)\n"
+        "iqmeasure.measure_file(path, rate=1e6)\n"
+        "shutil.rmtree(folder)\n"
+        "print(json.dumps(sorted(sys.modules)))\n"
+    ) % os.path.dirname(HERE)
+
+    def clean():
+        proc = subprocess.run([sys.executable, '-c', probe], capture_output=True,
+                              text=True, timeout=120)
+        if proc.returncode != 0:
+            tail = (proc.stderr.strip().splitlines() or ['no output'])[-1]
+            return False, f'the subprocess failed: {tail}'
+        mods = json.loads(proc.stdout.strip().splitlines()[-1])
+        hits = sorted({m for m in mods if any(part in BANNED for part in m.split('.'))})
+        return not hits, f'loaded {hits}'
+    expect('iqmeasure imports none of gnuradio, PyQt5, scipy, library, radios, dsp', clean)
+
+
+GROUPS = [check_classes, check_bandwidth, check_tones_and_centre,
+          check_symbols_and_bursts, check_level, check_measure_inputs, check_shape,
+          check_readers, check_write_card, check_import_clean]
+
+
+def main():
+    global FOLDER
+    parent = '/tmp/opencode' if os.path.isdir('/tmp/opencode') else None
+    FOLDER = tempfile.mkdtemp(prefix='iqmeasure-test-', dir=parent)
+    try:
+        for group in GROUPS:
+            try:
+                group()
+            except Exception as exc:
+                report(f'{group.__name__} ran', False, f'{type(exc).__name__}: {exc}')
+    finally:
+        shutil.rmtree(FOLDER, ignore_errors=True)
+    failed = [name for name, ok in RESULTS if not ok]
+    print(f"{len(RESULTS) - len(failed)} of {len(RESULTS)} checks passed")
+    if failed:
+        print('failed:')
+        for name in failed:
+            print(f'  {name}')
+        return 1
+    print('all checks passed')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
