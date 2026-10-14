@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""iq-measure: what a recording of IQ is, as a card of numbers and a class.
+
+    tools/iq-measure FILE
+    tools/iq-measure FILE --t0 S --t1 S
+    tools/iq-measure FILE --band LO HI
+    tools/iq-measure FILE --rate R --center HZ
+    tools/iq-measure FILE --card
+
+Prints the card as JSON. ``--card`` also writes ``<base>.card.json`` beside a
+``.cfile``. ``--band`` is absolute Hz. On a file it cannot measure, the
+message goes to stderr and nothing is printed. Numpy only; the file is only
+read, except the card when ``--card`` is given.
+"""
+
+import argparse
+import json
+import math
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fm_receiver import iqmeasure  # noqa: E402
+
+
+def _refuse(message):
+    """A bad option: the message on stderr, nothing on stdout, exit 1."""
+    sys.stderr.write(f"iq-measure: {message}\n")
+    return 1
+
+
+def _check_options(args):
+    """Reject spans and rates that would raise outside IQSourceError."""
+    for name, value in (('--t0', args.t0), ('--t1', args.t1)):
+        if value is not None and not math.isfinite(value):
+            return _refuse(f"{name} must be a finite number of seconds.")
+    if args.t0 is not None and args.t1 is not None and args.t0 >= args.t1:
+        return _refuse(f"--t0 ({args.t0:g} s) is not before --t1 ({args.t1:g} s).")
+    if args.rate is not None and (not math.isfinite(args.rate) or args.rate <= 0):
+        return _refuse("--rate must be a finite sample rate above 0.")
+    return None
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('file', help="the recording (.cfile, .sdvr or .cdif)")
+    ap.add_argument('--t0', type=float, metavar='S', help="start of the span, seconds")
+    ap.add_argument('--t1', type=float, metavar='S', help="end of the span, seconds")
+    ap.add_argument('--band', nargs=2, type=float, metavar=('LO', 'HI'),
+                    help="Hz to analyse, absolute (default: the whole band)")
+    ap.add_argument('--rate', type=float, metavar='R',
+                    help="samples/s, for a .cfile with no .sigmf-meta")
+    ap.add_argument('--center', type=float, metavar='HZ',
+                    help="centre frequency in Hz, for a bare .cfile")
+    ap.add_argument('--card', action='store_true',
+                    help="also write <base>.card.json beside a .cfile")
+    args = ap.parse_args(argv)
+    refused = _check_options(args)
+    if refused:
+        return refused
+    try:
+        card = iqmeasure.measure_file(
+            args.file, t0=args.t0, t1=args.t1,
+            band=tuple(args.band) if args.band else None,
+            rate=args.rate, center_hz=args.center)
+        if args.card:
+            iqmeasure.write_card(args.file, card)
+    except iqmeasure.IQSourceError as exc:
+        return _refuse(exc)
+    except OSError as exc:
+        return _refuse(exc)
+    try:
+        json.dump(card, sys.stdout, indent=2, allow_nan=False)
+        sys.stdout.write('\n')
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # The reader went away. Point stdout at /dev/null so the interpreter's
+        # final flush does not print "Exception ignored".
+        try:
+            sys.stdout.close()
+        except BrokenPipeError:
+            pass
+        try:
+            sys.stdout = open(os.devnull, 'w')
+        except OSError:
+            pass
+        return 0
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
