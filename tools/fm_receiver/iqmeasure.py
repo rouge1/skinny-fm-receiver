@@ -232,13 +232,16 @@ class _Scan:
         self.tail = buf[cut:]
 
 
-def _floor(P, segments):
+def _floor(P, segments, inband=None):
     """The noise floor per bin of a spectrum averaged over ``segments``: the
     25th percentile, which the signal's own spectrum lifts less than the median,
-    divided by that percentile of the averaged chi-square (Wilson-Hilferty)."""
+    divided by that percentile of the averaged chi-square (Wilson-Hilferty).
+    ``inband`` (a mask) limits it to the bins the band covers: outside them a
+    decimated spectrum is empty, not noise."""
+    vals = P if inband is None or not inband.any() else P[inband]
     k = 1.0 / (9 * segments)
     z = -0.6745
-    return float(np.percentile(P, 25)) / (1 - k + z * math.sqrt(k)) ** 3
+    return float(np.percentile(vals, 25)) / (1 - k + z * math.sqrt(k)) ** 3
 
 
 def _tones(P, floor, bin_hz, origin):
@@ -275,6 +278,8 @@ def _occupied(P, bin_hz, origin):
     """(centre, 99 % width, width 20 dB down) of the fine spectrum ``P``."""
     n = len(P)
     total = float(P.sum())
+    if not total > 0:
+        return origin, 0.0, 0.0
     centre = origin + bin_hz * float(np.sum((np.arange(n) - n // 2) * P) / total)
     cum = np.concatenate([[0.0], np.cumsum(P)])
     j = np.searchsorted(cum, cum[:-1] + 0.99 * total, side='left')
@@ -429,10 +434,10 @@ def _band_offsets(band, centre_hz, rate):
     """``band`` (absolute Hz) as offsets from the centre, clipped to the recording."""
     f_lo, f_hi = float(band[0]) - centre_hz, float(band[1]) - centre_hz
     if not f_lo < f_hi:
-        raise ValueError("band=(f_lo, f_hi) needs f_lo < f_hi.")
+        raise IQSourceError("band=(f_lo, f_hi) needs f_lo < f_hi.")
     lo, hi = max(f_lo, -rate / 2), min(f_hi, rate / 2)
     if not hi > lo:
-        raise ValueError(f"the band {band[0]:.6g} to {band[1]:.6g} Hz is outside the recording.")
+        raise IQSourceError(f"the band {band[0]:.6g} to {band[1]:.6g} Hz is outside the recording.")
     return lo, hi
 
 
@@ -441,7 +446,7 @@ def _banded(read, n, rate, lo, hi, dec):
     filtered in the frequency domain (overlap-save, a chunk at a time), moved to
     0 Hz and decimated by ``dec``. Chunks start on multiples of ``dec``."""
     fc = (lo + hi) / 2
-    step = (CHUNK // dec) * dec
+    step = dec * max(1, CHUNK // dec)     # a positive multiple of dec, whatever dec is
     keep_for = {}
     for s in range(0, n, step):
         m = min(step, n - s)
@@ -463,16 +468,18 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band):
     """The card's sections for ``n`` samples from ``read(start, count)``."""
     if band is None:
         rate_a, base, dec = rate, 0.0, 1
+        half_band = None
         chunks = (read(s, min(CHUNK, n - s)) for s in range(0, n, CHUNK))
     else:
         lo, hi = _band_offsets(band, center_hz, rate)
         dec = max(1, int(rate // (2 * (hi - lo))))
         base = (lo + hi) / 2
         rate_a = rate / dec
+        half_band = (hi - lo) / 2
         chunks = _banded(read, n, rate, lo, hi, dec)
     n_a = -(-n // dec)
     if n_a < 64:
-        raise ValueError("too few samples to measure.")
+        raise IQSourceError(f"the band leaves {n_a} samples after decimation: too few to measure.")
     scan = _Scan(min(COARSE_NFFT, _pow2_floor(n_a)),
                  min(FINE_NFFT, _pow2_floor(max(n_a // 4, 64))))
     for x in chunks:
@@ -482,7 +489,10 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band):
     total = scan.power / scan.count
     Pc = scan.coarse.spectrum()
     segs = scan.coarse.segments
-    floor = max(_floor(Pc, segs), 1e-300)
+    inband = None
+    if half_band is not None:
+        inband = np.abs((np.arange(len(Pc)) - len(Pc) // 2) * rate_a / len(Pc)) <= half_band
+    floor = max(_floor(Pc, segs, inband), 1e-300)
     snr = 10 * math.log10(max((total - floor) / floor, 1e-6))
     power_dbfs = _db(total)
     tones = _tones(Pc, floor, rate_a / len(Pc), origin)
