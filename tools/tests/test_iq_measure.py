@@ -1285,5 +1285,161 @@ def check_low_snr_wide_cw():
 GROUPS.append(check_low_snr_wide_cw)
 
 
+# ---- the span extracted for a decoder (m6) ----------------------------------
+
+def _tone_file(name, rate, seconds, tones, sigmf=True):
+    """A .cfile at ``rate`` of ``tones`` (offset Hz, amplitude) from CENTRE, with its
+    .sigmf-meta giving the rate and CENTRE unless ``sigmf`` is False."""
+    base = os.path.join(fresh('extract'), name)
+    t = _t(seconds, rate)
+    sig = np.zeros(len(t), dtype=np.complex128)
+    for f, a in tones:
+        sig += a * np.exp(2j * np.pi * f * t)
+    write_cfile(base + '.cfile', sig)
+    if sigmf:
+        write_sigmf(base, rate, CENTRE)
+    return base + '.cfile'
+
+
+def _peak_and_rest(iq, rate):
+    """The frequency of the strongest line of ``iq`` (Hz) and how many dB the strongest
+    line more than 1 kHz away is under it."""
+    x = np.asarray(iq, dtype=np.complex128) * np.hanning(len(iq))
+    p = np.abs(np.fft.fft(x)) ** 2
+    f = np.fft.fftfreq(len(x), 1 / rate)
+    k = int(np.argmax(p))
+    far = np.abs(f - f[k]) > 1e3
+    return float(f[k]), float(10 * np.log10(p[k] / max(float(p[far].max()), 1e-300)))
+
+
+def check_extract():
+    def pair():
+        return memo('extract-pair', lambda: api().extract(
+            _tone_file('pair', 2e6, 0.2, [(200e3, 1.0), (-600e3, 1.0)]),
+            band=(CENTRE + 150e3, CENTRE + 250e3), max_rate=250000))
+
+    expect('extract band 100.15 to 100.25 MHz: centre is 100.2 MHz (within 1 Hz)',
+           lambda: near(pair().center_hz, CENTRE + 200e3, 1.0))
+    expect('extract band 100.15 to 100.25 MHz, max_rate 250 kS/s: rate between 2x the band and 250 kS/s',
+           lambda: (200e3 <= pair().rate <= 250000, f'rate {pair().rate}'))
+
+    def pair_tones():
+        f, below = _peak_and_rest(pair().iq, pair().rate)
+        return (abs(f) <= 200 and below >= 40,
+                f'strongest at {f:.1f} Hz, the rest {below:.1f} dB under it (want 0 Hz, 40 dB)')
+    expect('extract band 100.15 to 100.25 MHz: +200 kHz tone at 0 Hz, -600 kHz tone 40 dB down',
+           pair_tones)
+
+    def whole():
+        return memo('extract-whole', lambda: api().extract(
+            _tone_file('whole', 2e6, 0.2, [(100e3, 1.0), (400e3, 1.0)])))
+
+    expect('extract with no band at 2 MS/s, max_rate 1 MS/s: centre is the file centre',
+           lambda: eq(whole().center_hz, CENTRE))
+    expect('extract with no band at 2 MS/s, max_rate 1 MS/s: rate at most 1 MS/s and spans 500 kHz',
+           lambda: (5e5 <= whole().rate <= 1e6, f'rate {whole().rate}'))
+
+    def whole_tones():
+        f, below = _peak_and_rest(whole().iq, whole().rate)
+        return (abs(f - 100e3) <= 200 and below >= 40,
+                f'strongest at {f:.1f} Hz, the rest {below:.1f} dB under it (want 100 kHz, 40 dB)')
+    expect('extract with no band: +100 kHz tone at +100 kHz, +400 kHz tone 40 dB down',
+           whole_tones)
+
+    def slow():
+        def make():
+            data = _power_noise(np.random.default_rng(72), 50000, 1.0).astype(np.complex64)
+            base = os.path.join(fresh('extract'), 'slow')
+            write_cfile(base + '.cfile', data)
+            write_sigmf(base, 250000, CENTRE)
+            return data, api().extract(base + '.cfile', max_rate=1e6)
+        return memo('extract-slow', make)
+
+    expect('extract of a 250 kS/s file with max_rate 1 MS/s: rate is 250000',
+           lambda: eq(slow()[1].rate, 250000.0))
+    expect('extract of a 250 kS/s file with max_rate 1 MS/s: length is the file\'s samples',
+           lambda: eq(len(slow()[1].iq), len(slow()[0])))
+    expect('extract of a 250 kS/s file with max_rate 1 MS/s: samples are the file\'s',
+           lambda: (np.allclose(slow()[1].iq, slow()[0]) and slow()[1].iq.dtype == np.complex64,
+                    'samples differ from the file'))
+
+    def span():
+        return memo('extract-span', lambda: api().extract(
+            _tone_file('span', 2e6, 0.2, [(100e3, 1.0)]), t0=0.05, t1=0.1))
+
+    expect('extract t0=0.05 t1=0.1: t0 and t1 returned as given (within 1 sample)',
+           lambda: (near(span().t0, 0.05, 1 / 2e6)[0] and near(span().t1, 0.1, 1 / 2e6)[0],
+                    f't0 {span().t0}, t1 {span().t1}'))
+    expect('extract t0=0.05 t1=0.1: length is (t1 - t0) x the output rate (within 1 %)',
+           lambda: rel_near(len(span().iq), (span().t1 - span().t0) * span().rate, 0.01))
+
+    def counted_reads():
+        path = _tone_file('reads', 2e6, 0.5, [(200e3, 1.0)])
+        n = os.path.getsize(path) // 8
+        api_ = api()
+        real_open = api_.open_iq
+        sizes = []
+
+        def counting_open(p, rate=None, center_hz=None):
+            src = real_open(p, rate=rate, center_hz=center_hz)
+            inner = src.read
+
+            def counted(start, count):
+                sizes.append(int(count))
+                return inner(start, count)
+            src.read = counted
+            return src
+        api_.open_iq = counting_open
+        try:
+            api_.extract(path, band=(CENTRE + 195e3, CENTRE + 205e3))
+        finally:
+            api_.open_iq = real_open
+        biggest, total = max(sizes, default=0), sum(sizes)
+        info(f"2 MS/s, 0.5 s, 10 kHz band: {len(sizes)} reads, largest {biggest}, total {total}")
+        return (0 < len(sizes) and biggest <= 2 ** 22 and total <= 1.1 * n,
+                f'largest read {biggest} (want <= {2 ** 22}), total {total} for a span of {n} '
+                f'(want <= {1.1 * n:.0f})')
+    expect('extract 2 MS/s, 0.5 s, narrow band: no read over 2**22 samples, total at most 1.1 x span',
+           counted_reads)
+
+    def too_big():
+        api_ = api()
+        real_open = api_.open_iq
+        calls = []
+
+        def fetch(a, b):
+            calls.append((a, b))
+            raise RuntimeError('read before the size check')
+
+        def huge_open(p, rate=None, center_hz=None):
+            return api_.IQSource(p, 'cfile', 1e6, CENTRE, 3 * 10 ** 8, None, fetch)
+        api_.open_iq = huge_open
+        try:
+            ok, why = refused(lambda: api_.extract(os.path.join(FOLDER, 'huge.cfile')),
+                              api_.IQSourceError)
+        finally:
+            api_.open_iq = real_open
+        return ok and not calls, why or 'it read before refusing'
+    expect('extract of more than 50 million output samples: IQSourceError before any read',
+           too_big)
+
+    def bare():
+        folder = fresh('extract-bare')
+        path = write_cfile(os.path.join(folder, 'bare.cfile'),
+                           cw_iq(seconds=0.2, offset=100e3, amp=0.5, snr_db=30.0, rate=2e6,
+                                 seed=74))
+        return api().extract(path, rate=2e6, center_hz=CENTRE)
+
+    expect('extract of a bare .cfile with rate= and center_hz=: centre and rate read back',
+           lambda: (eq(bare().center_hz, CENTRE)[0] and bare().rate <= 1e6,
+                    f'centre {bare().center_hz}, rate {bare().rate}'))
+    expect('extract of a bare .cfile with rate= and center_hz=: +100 kHz tone at +100 kHz',
+           lambda: (abs(_peak_and_rest(bare().iq, bare().rate)[0] - 100e3) <= 200,
+                    f'strongest at {_peak_and_rest(bare().iq, bare().rate)[0]:.1f} Hz'))
+
+
+GROUPS.append(check_extract)
+
+
 if __name__ == '__main__':
     sys.exit(main())
