@@ -631,7 +631,8 @@ def _view_state(view):
 
 @command('view', VIEW_USAGE, "A spectrum view's dials: rf (the RF spectrum and its "
          "waterfall), mpx (the multiplex), audio (a recording playing). Span and center "
-         "in the view's unit (MHz for rf, kHz for the others), full for the whole band; "
+         "in the view's unit (rf: centre in MHz; span in MHz on Sweep and Receive but kHz in "
+         "Recordings; mpx and audio: kHz), full for the whole band; "
          "ref and range set the level scale (display only, the waterfall's colours "
          "too); avg is Average, which smooths the trace peaks reads; window is how many "
          "seconds the waterfall shows (2-300), as the wheel over its time scale sets it "
