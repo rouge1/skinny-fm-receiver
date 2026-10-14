@@ -15,11 +15,30 @@ read, except the card when ``--card`` is given.
 
 import argparse
 import json
+import math
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fm_receiver import iqmeasure  # noqa: E402
+
+
+def _refuse(message):
+    """A bad option: the message on stderr, nothing on stdout, exit 1."""
+    sys.stderr.write(f"iq-measure: {message}\n")
+    return 1
+
+
+def _check_options(args):
+    """Reject spans and rates that would raise outside IQSourceError."""
+    for name, value in (('--t0', args.t0), ('--t1', args.t1)):
+        if value is not None and not math.isfinite(value):
+            return _refuse(f"{name} must be a finite number of seconds.")
+    if args.t0 is not None and args.t1 is not None and args.t0 >= args.t1:
+        return _refuse(f"--t0 ({args.t0:g} s) is not before --t1 ({args.t1:g} s).")
+    if args.rate is not None and (not math.isfinite(args.rate) or args.rate <= 0):
+        return _refuse("--rate must be a finite sample rate above 0.")
+    return None
 
 
 def main(argv=None):
@@ -37,6 +56,9 @@ def main(argv=None):
     ap.add_argument('--card', action='store_true',
                     help="also write <base>.card.json beside a .cfile")
     args = ap.parse_args(argv)
+    refused = _check_options(args)
+    if refused:
+        return refused
     try:
         card = iqmeasure.measure_file(
             args.file, t0=args.t0, t1=args.t1,
@@ -45,10 +67,25 @@ def main(argv=None):
         if args.card:
             iqmeasure.write_card(args.file, card)
     except iqmeasure.IQSourceError as exc:
-        sys.stderr.write(f"iq-measure: {exc}\n")
-        return 1
-    json.dump(card, sys.stdout, indent=2, allow_nan=False)
-    sys.stdout.write('\n')
+        return _refuse(exc)
+    except OSError as exc:
+        return _refuse(exc)
+    try:
+        json.dump(card, sys.stdout, indent=2, allow_nan=False)
+        sys.stdout.write('\n')
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # The reader went away. Point stdout at /dev/null so the interpreter's
+        # final flush does not print "Exception ignored".
+        try:
+            sys.stdout.close()
+        except BrokenPipeError:
+            pass
+        try:
+            sys.stdout = open(os.devnull, 'w')
+        except OSError:
+            pass
+        return 0
     return 0
 
 
