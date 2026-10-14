@@ -7,9 +7,9 @@ SNR as the noise power against the signal's mean power. What the checks pin:
 - occupied bandwidth within 15 %: CW under 5 kHz; AM 2 kHz (its carrier and
   the two sidebands at 1 kHz); FM the 99 % width of its Bessel lines (75 kHz
   deviation, 1 kHz tone); OOK and FSK the 99 % width of the waveform itself,
-  as random data has no closed form. The 99 % width is the 0.5 % to 99.5 %
-  points of the cumulative power, and the reference is a Hann periodogram of
-  the noiseless waveform;
+  as random data has no closed form: the narrowest band holding 99 % of the
+  power of a rectangular-window periodogram of the noiseless waveform (a
+  Hann window moves it by under 1 %, so the window does not matter here);
 - tones: the two of a two-tone signal within 2 bins, strongest first, at most
   8; a bin is taken as rate / 1024, so an implementation with finer bins passes;
 - symbol rate within 5 %; burst duration within 5 %; repeat interval within 2 %
@@ -173,16 +173,17 @@ def _run_limited_bits(rng, count, longest=3):
     return bits
 
 
-def ook_iq(bursts=12, snr_db=30.0, seed=2, noisy=True):
+def ook_iq(bursts=12, snr_db=30.0, seed=2, noisy=True, low=0.0):
     """OOK at 4,000 baud on a carrier 20 kHz up: bursts of 40 ms (160 symbols of
-    random data) starting every 100 ms from 50 ms, the carrier off between."""
+    random data) starting every 100 ms from 50 ms, the carrier off between.
+    ``low`` is the level of a 0 bit (0 for OOK; above 10 % of the 1 level for ASK)."""
     rng = np.random.default_rng(seed)
     t = _t(1.3)
     keyed = np.zeros(len(t))
     for k in range(bursts):
         bits = _run_limited_bits(rng, 160)
         start = int(round((0.05 + 0.1 * k) * RATE))
-        keyed[start:start + 160 * 250] = np.repeat(bits, 250)
+        keyed[start:start + 160 * 250] = low + (1 - low) * np.repeat(bits, 250)
     sig = keyed * np.exp(2j * np.pi * 20e3 * t)
     return _with_noise(sig, snr_db if noisy else None, seed + 100, power=1.0)
 
@@ -211,6 +212,7 @@ def am_iq(seconds=1.0, snr_db=30.0, seed=5):
 
 
 def tones_iq(offsets, amps, seconds=1.0, snr_db=30.0, seed=6):
+    """Tones at ``offsets`` (Hz) with ``amps``, in white noise ``snr_db`` below their power."""
     t = _t(seconds)
     sig = np.zeros(len(t), dtype=np.complex128)
     for f, a in zip(offsets, amps):
@@ -233,6 +235,8 @@ MAKERS = {
     'ook': lambda: ook_iq(),
     'ook2': lambda: ook_iq(bursts=2),
     'ook3': lambda: ook_iq(bursts=3),
+    'ook_noisy': lambda: ook_iq(snr_db=0.0, seed=12),
+    'ask': lambda: ook_iq(low=0.5, seed=10),
     'fsk': lambda: fsk_iq(),
     'fm': lambda: fm_iq(),
     'am': lambda: am_iq(),
@@ -240,6 +244,9 @@ MAKERS = {
     'two_tone': lambda: two_tone_iq(),
     'tones_levels': lambda: tones_iq([50e3, 150e3, -200e3], [1.0, 0.5, 0.25]),
     'tones_many': lambda: tones_iq(np.arange(-240e3, 241e3, 60e3), [0.1] * 9),
+    # Amplitude 0.0095 is about 13.5 dB over the median floor of a 1,024-bin
+    # Hann periodogram of this noise (scalloping keeps it under 15 dB).
+    'tone_14db': lambda: tones_iq([50e3, -300e3], [1.0, 0.0095]),
 }
 
 
@@ -263,10 +270,21 @@ def _percentile_width(freq, power):
     return float(f[np.searchsorted(cum, 0.995)] - f[np.searchsorted(cum, 0.005)])
 
 
+def _narrowest_width(freq, power, mass=0.99):
+    """The width of the narrowest band (contiguous points) holding ``mass`` of the power."""
+    order = np.argsort(freq)
+    f = np.asarray(freq, float)[order]
+    p = np.asarray(power, float)[order]
+    c = np.concatenate([[0.0], np.cumsum(p)])
+    j = np.searchsorted(c, c[:-1] + mass * c[-1])      # first end index reaching the mass
+    i = np.flatnonzero(j <= len(p))
+    return float(np.min(f[j[i] - 1] - f[i]))
+
+
 def waveform_reference(x, rate):
-    """The 99 % width of a waveform's own spectrum (Hann periodogram, no noise)."""
-    spec = np.abs(np.fft.fft(x * np.hanning(len(x)))) ** 2
-    return _percentile_width(np.fft.fftfreq(len(x), 1 / rate), spec)
+    """The 99 % width of a waveform's own spectrum (rectangular periodogram, no noise)."""
+    spec = np.abs(np.fft.fft(x)) ** 2
+    return _narrowest_width(np.fft.fftfreq(len(x), 1 / rate), spec)
 
 
 def fm_reference(beta=75.0):
@@ -324,8 +342,9 @@ def shape_problems(card_):
     if card_.get('class') not in CLASSES:
         bad.append(f"class {card_.get('class')!r} is not one of the eight")
     ev = card_.get('evidence')
-    if not (isinstance(ev, list) and all(isinstance(e, str) for e in ev)):
-        bad.append('evidence is not a list of strings')
+    if not (isinstance(ev, list) and ev and all(
+            isinstance(e, str) and e.strip() and len(e) <= 200 for e in ev)):
+        bad.append('evidence is not a non-empty list of short sentences')
     try:
         json.dumps(card_, allow_nan=False)
     except (TypeError, ValueError) as exc:
@@ -343,9 +362,6 @@ def shape_problems(card_):
             bad.append('tones are not strongest first')
         if any(lv <= 15 for lv in levels):
             bad.append('a tone is not more than 15 dB above the floor')
-        freqs = sorted(t['freq_hz'] for t in tones)
-        if any(b - a < 3 * RATE / 2 ** 20 for a, b in zip(freqs, freqs[1:])):
-            bad.append('two tones are not 3 bins apart')
     bursts = card_.get('bursts', {})
     if isinstance(bursts, dict):
         count = bursts.get('count')
@@ -469,7 +485,7 @@ def measured(key, path, **kw):
 def check_classes():
     for name, want in [('cw', 'carrier'), ('ook', 'ook'), ('fsk', 'fsk'), ('fm', 'fm'),
                        ('am', 'am'), ('noise', 'noise'), ('two_tone', 'unknown'),
-                       ('cw_0db', 'noise')]:
+                       ('cw_0db', 'noise'), ('ask', 'ask'), ('ook_noisy', 'noise')]:
         expect(f'{name}: class is {want}',
                lambda n=name, w=want: eq(card(n)['class'], w))
 
@@ -518,13 +534,24 @@ def check_tones_and_centre():
            lambda: (1 <= len(card('tones_many')['tones']) <= 8,
                     f"{len(card('tones_many')['tones'])} tones listed"))
 
-    def band_restricted():
-        band_card = memo('band', lambda: api().measure(
+    def band_card():
+        return memo('band', lambda: api().measure(
             iq('two_tone'), RATE, center_hz=CENTRE, band=(CENTRE + 5e3, CENTRE + 200e3)))
-        ok_in, why_in = tones_found(band_card, CENTRE + 20e3)
-        ok_out = not tones_found(band_card, CENTRE - 60e3)[0]
+
+    def band_restricted():
+        ok_in, why_in = tones_found(band_card(), CENTRE + 20e3)
+        ok_out = not tones_found(band_card(), CENTRE - 60e3)[0]
         return ok_in and ok_out, why_in + ('' if ok_out else '; the -60 kHz tone is in the band')
     expect('band (+5 kHz to +200 kHz): only the +20 kHz tone is analysed', band_restricted)
+    expect('band (+5 kHz to +200 kHz): the surviving tone is narrow (under 5 kHz)',
+           lambda: below(band_card()['occupied']['bandwidth_hz'], 5e3))
+
+    def weak_absent():
+        c = card('tone_14db')
+        listed, _ = tones_found(c, CENTRE - 300e3)
+        return (not listed and tones_found(c, CENTRE + 50e3)[0],
+                'the tone 14 dB over the floor is listed, or the strong tone is missing')
+    expect('a tone about 14 dB above the floor (with a strong tone) is not listed', weak_absent)
 
 
 def check_symbols_and_bursts():
@@ -540,6 +567,13 @@ def check_symbols_and_bursts():
            lambda: rel_near(card('ook3')['bursts']['repeat_interval_s'], 0.100, 0.02))
     expect('OOK, 2 bursts: repeat interval is None',
            lambda: eq(card('ook2')['bursts']['repeat_interval_s'], None))
+    expect('OOK: 12 bursts counted',
+           lambda: eq(card('ook')['bursts']['count'], 12))
+    expect('OOK: gap between bursts 60 ms within 5 %',
+           lambda: rel_near(float(np.median(card('ook')['bursts']['gaps_s'])), 0.060, 0.05))
+    for name in ['cw', 'fm', 'am', 'noise']:
+        expect(f'{name}: no symbol rate (symbol_rate_baud is None)',
+               lambda n=name: eq(card(n)['symbol_rate_baud'], None))
 
 
 def check_level():
@@ -574,8 +608,8 @@ def check_measure_inputs():
 
 
 def check_shape():
-    for name in ['cw', 'cw_0db', 'ook', 'ook2', 'ook3', 'fsk', 'fm', 'am', 'noise',
-                 'two_tone', 'tones_levels', 'tones_many']:
+    for name in ['cw', 'cw_0db', 'ook', 'ook2', 'ook3', 'ook_noisy', 'ask', 'fsk', 'fm',
+                 'am', 'noise', 'two_tone', 'tones_levels', 'tones_many', 'tone_14db']:
         expect(f'{name}: card has the spec form',
                lambda n=name: (not shape_problems(card(n)),
                                '; '.join(shape_problems(card(n))[:3])))
@@ -611,6 +645,8 @@ def check_readers():
     expect('bare .cfile with rate= is accepted',
            lambda: (eq(bare().kind, 'cfile')[0] and eq(bare().samples, 500000)[0],
                     f'kind {bare().kind}, samples {bare().samples}'))
+    expect('bare .cfile with rate= reports that rate',
+           lambda: near(bare().rate, RATE, 1e-3))
     expect('bare .cfile with rate= and center_hz= takes the centre',
            lambda: eq(api().open_iq(f()['bare'], rate=RATE, center_hz=CENTRE).center_hz,
                       CENTRE))
@@ -627,11 +663,21 @@ def check_readers():
     expect('IQ .sdvr: read() gives the samples written',
            lambda: (np.allclose(dvr().read(0, dvr().samples), f()['sdvr_data'], atol=1e-6),
                     'samples differ'))
+    expect('IQ .sdvr: path is the file opened',
+           lambda: eq(os.path.abspath(dvr().path), os.path.abspath(f()['sdvr'])))
+    expect('IQ .sdvr: seconds are samples over rate',
+           lambda: near(dvr().seconds, dvr().samples / dvr().rate, 1e-6))
 
     cdif = lambda: source('cdif', f()['cdif'])                  # noqa: E731
     expect('.cdif: kind and rate',
            lambda: (eq(cdif().kind, 'cdif')[0] and near(cdif().rate, RATE, 0.5)[0],
                     f'kind {cdif().kind}, rate {cdif().rate}'))
+    expect('.cdif: centre is RF_FREQ, 100 MHz',
+           lambda: eq(cdif().center_hz, CENTRE))
+    expect('.cdif: path is the file opened',
+           lambda: eq(os.path.abspath(cdif().path), os.path.abspath(f()['cdif'])))
+    expect('.cdif: seconds are samples over rate',
+           lambda: near(cdif().seconds, cdif().samples / cdif().rate, 1e-6))
     expect('.cdif: samples and read() give the data written',
            lambda: (eq(cdif().samples, len(f()['cdif_data']))[0]
                     and np.allclose(cdif().read(0, cdif().samples), f()['cdif_data'],
@@ -671,11 +717,18 @@ def check_readers():
     expect('measure_file .cdif: a carrier',
            lambda: (cdif_m()['source']['kind'] == 'cdif' and cdif_m()['class'] == 'carrier',
                     f"kind {cdif_m()['source']['kind']}, class {cdif_m()['class']}"))
-    expect('measure_file .cdif: tone at +50 kHz from the file centre',
-           lambda: tones_found(cdif_m(), cdif_m()['source']['center_hz'] + 50e3))
+    expect('measure_file .cdif: tone at +50 kHz from 100 MHz',
+           lambda: tones_found(cdif_m(), CENTRE + 50e3))
+    expect('measure_file .cdif: no dBm (no calibration)',
+           lambda: eq(cdif_m()['level']['power_dbm'], None))
 
     expect('measure_file of a bare .cfile without rate= is refused',
            lambda: refused(lambda: api().measure_file(f()['bare']), err()))
+    for name, key, kw in [('a sweep .sdvr', 'sweep', {}), ('a .fft', 'fft', {}),
+                          ('a file under 1,024 samples', 'short', {'rate': RATE}),
+                          ('a missing file', 'missing', {})]:
+        expect(f'measure_file refuses {name}',
+               lambda k=key, a=kw: refused(lambda: api().measure_file(f()[k], **a), err()))
     bare_m = lambda: measured('bare', f()['bare'], rate=RATE, center_hz=CENTRE)  # noqa: E731
     expect('measure_file of a bare .cfile with rate= and centre: tone at CENTRE + 50 kHz',
            lambda: tones_found(bare_m(), CENTRE + 50e3))
@@ -710,6 +763,9 @@ def check_write_card():
     for i, label in enumerate(names[1:], 1):
         expect(f'card_path: None for {label}',
                lambda k=i, l=label: (card_paths()[k], f'card_path of {l} is not None'))
+    expect('card_path: None for a .bin',
+           lambda: (api().card_path(os.path.join(FOLDER, 'x.bin')) is None,
+                    'card_path of a .bin is not None'))
 
     def read_back():
         folder = fresh('card-beside')
@@ -795,26 +851,28 @@ def check_write_card():
             shutil.copy(path, folder)
         before = snapshot(folder)
         for path in [os.path.join(folder, n) for n in ('iq.sdvr', 'iq.cdif', 'sig.cfile')]:
-            src = api().open_iq(path, rate=RATE) if path.endswith('.cfile') \
-                else api().open_iq(path)
+            src = api().open_iq(path)
             src.read(0, min(src.samples, 1000))
-            if path.endswith('.cfile'):
-                api().measure_file(path, rate=RATE)
-            else:
-                api().measure_file(path)
+            api().measure_file(path)
         return snapshot(folder) == before, 'reading or measuring wrote into the folder'
     expect('reading and measuring write nothing beside the file', reading_writes_nothing)
 
 
 def check_import_clean():
     probe = (
-        "import json, sys\n"
+        "import json, os, shutil, sys, tempfile\n"
         "import numpy as np\n"
         "sys.path.insert(0, %r)\n"
         "from fm_receiver import iqmeasure\n"
         "rng = np.random.default_rng(0)\n"
         "iq = (rng.standard_normal(8192) + 1j * rng.standard_normal(8192)).astype(np.complex64)\n"
         "iqmeasure.measure(iq, 1e6, center_hz=1e8)\n"
+        "folder = tempfile.mkdtemp()\n"
+        "path = os.path.join(folder, 'probe.cfile')\n"
+        "iq.tofile(path)\n"
+        "iqmeasure.open_iq(path, rate=1e6).read(0, 1024)\n"
+        "iqmeasure.measure_file(path, rate=1e6)\n"
+        "shutil.rmtree(folder)\n"
         "print(json.dumps(sorted(sys.modules)))\n"
     ) % os.path.dirname(HERE)
 
@@ -825,7 +883,7 @@ def check_import_clean():
             tail = (proc.stderr.strip().splitlines() or ['no output'])[-1]
             return False, f'the subprocess failed: {tail}'
         mods = json.loads(proc.stdout.strip().splitlines()[-1])
-        hits = sorted({m for m in mods if m.split('.')[0] in BANNED})
+        hits = sorted({m for m in mods if any(part in BANNED for part in m.split('.'))})
         return not hits, f'loaded {hits}'
     expect('iqmeasure imports none of gnuradio, PyQt5, scipy, library, radios, dsp', clean)
 
