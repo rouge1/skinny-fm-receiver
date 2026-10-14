@@ -473,6 +473,8 @@ def cmd_folders(w, args):
     if words:
         if len(words) != 2 or words[0] not in ('add', 'remove'):
             raise CommandError("folders: add PATH or remove PATH")
+        if not str(words[1]).strip():
+            raise CommandError("folders: give a path")
         path = os.path.abspath(os.path.expanduser(words[1]))
         if words[0] == 'add':
             if not os.path.isdir(path):
@@ -852,6 +854,8 @@ def cmd_scan(w, args):
          "clamped to its range.")
 def cmd_filter(w, args):
     khz = _number(_args(args, 1, 1, 'filter KHZ')[0], 'filter')
+    if not math.isfinite(khz):
+        raise CommandError(f"filter: expected a number, got {args[0]!r}")
     if w._tab_mode() != 'receive':
         raise CommandError("the channel filter is Receive's: "
                            "switch with 'mode receive' first")
@@ -880,6 +884,12 @@ def cmd_radio(w, args):
     index = combo.findData(kind)
     if index < 0:
         raise CommandError(f"radio: one of {', '.join(RADIO_ORDER)}")
+    if w._tab_mode() == 'recordings':
+        raise CommandError("radio: the Recordings tab has the radio closed "
+                           "('mode receive' or 'mode sweep' first)")
+    # No file yet: choosing File opens a dialog and the socket would wait on it.
+    if kind == 'file' and not w.cfg.get('iq_file'):
+        raise CommandError("radio: no IQ file yet; use 'open PATH'")
     combo.setCurrentIndex(index)
     combo.activated.emit(index)                 # as a pick from the list does
     radio = w.radio
@@ -897,10 +907,16 @@ def _recording_now(w):
 def cmd_start(w, args):
     _args(args, 0, 0, 'start')
     _recording_now(w)
+    if not w.run_btn.isEnabled():
+        raise CommandError("start: the Run button is disabled"
+                           + (" (the Recordings tab; 'mode receive' first)"
+                              if w._tab_mode() == 'recordings' else ""))
     # One button does both: a click while it is running would stop it.
     if w.radio is None:
         w.run_btn.click()
-    return {'running': bool(w.engine.running)}
+    if not w.engine.running:
+        raise CommandError(_plain(w.status.text()) or "could not start")
+    return {'running': True}
 
 
 @command('stop', 'stop', "The Run button: stop streaming and let the radio go. "
@@ -919,6 +935,9 @@ def cmd_open(w, args):
     from .radios import RadioError, read_iq_metadata
     path = _args(args, 1, 1, 'open PATH')[0]
     _recording_now(w)
+    if w._tab_mode() == 'recordings':
+        raise CommandError("open: the Recordings tab has the radio closed "
+                           "('mode receive' first)")
     path = os.path.abspath(os.path.expanduser(path))
     if not os.path.isfile(path):
         raise CommandError(f"open: {os.path.basename(path)} is missing or unreadable")
@@ -928,9 +947,11 @@ def cmd_open(w, args):
         raise CommandError(f"open: {exc}") from None
     if not os.path.isfile(meta.get('data') or ''):
         raise CommandError(f"open: the data file {meta.get('data')} is missing")
+    previous = w.cfg.get('iq_file', '')
     w.cfg['iq_file'] = path
     w._use_radio('file')
     if w.radio is None or w.radio.kind != 'file':
+        w.cfg['iq_file'] = previous
         raise CommandError(_plain(w.status.text()) or f"could not open {path}")
     return {'file': path, 'name': os.path.basename(path)}
 
@@ -940,6 +961,7 @@ def cmd_open(w, args):
          "The word confirm is required. A Sceptre file is left alone.")
 def cmd_delete(w, args):
     from .library import delete as delete_recording
+    _recording_now(w)
     words = _args(args, 1, 2, 'delete N confirm')
     if len(words) != 2 or words[1].lower() != 'confirm':
         raise CommandError("delete: say 'delete N confirm'; nothing was deleted")
@@ -949,11 +971,17 @@ def cmd_delete(w, args):
                            else "delete: there are none")
     rec = w._recordings[int(n)]
     name = os.path.basename(rec.key)
-    # Sceptre's own check: it returns the refusal and removes nothing.
-    if rec.external:
-        raise CommandError("delete: " + "; ".join(delete_recording(rec)))
-    # Stops playback of this one first, then removes its files and lists again.
-    w._delete_recordings([rec])
+    # Let go of the file first: a playing track would keep it open.
+    if w._play is not None and w._play.recording.key == rec.key:
+        w._stop_playback(show=False)
+    # library.delete reports what it would not remove (a Sceptre file, a
+    # file the disk kept). The window's own delete drops that list.
+    failed = delete_recording(rec)
+    if failed:
+        raise CommandError("delete: " + "; ".join(failed))
+    if w._rec_sel is not None and w._rec_sel.key == rec.key:
+        w._rec_sel = None
+    w._refresh_library()
     return {'deleted': name}
 
 
@@ -962,6 +990,8 @@ def cmd_delete(w, args):
          "read again.")
 def cmd_recordings_folder(w, args):
     path = _args(args, 1, 1, 'recordings-folder PATH')[0]
+    if not str(path).strip():
+        raise CommandError("recordings-folder: give a directory")
     path = os.path.abspath(os.path.expanduser(path))
     if not os.path.isdir(path):
         raise CommandError(f"recordings-folder: {path} is not a directory")
