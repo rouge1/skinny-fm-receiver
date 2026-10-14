@@ -21,3 +21,9 @@ There are too many modulations and protocols to write a decoder for each; see
 the roadmap, Round 22. The RF bench toolkit (`/data/python/SDR`) can make
 signals of known parameters to check the measurements on: ISM sensor frames
 (OOK, PPM, PWM, Manchester), NTSC, RDS and FM video.
+
+Tools for these: `tools/iq-picture` draws the waterfall picture (step 3), and
+`tools/iq-measure` gives the card of level, bandwidth, tones, bursts and class
+(step 4). `fmctl measure` runs the second on the last capture. They say what a
+signal is and do not decode it: `iq-demod` and `iq-frames` are not built. See
+[usage.md](usage.md#measuring-a-recording-iq-measure-and-iq-picture).

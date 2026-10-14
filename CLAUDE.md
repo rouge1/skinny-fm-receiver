@@ -43,7 +43,10 @@ with no launcher.
   Sceptre's BLUE recordings (`.cdif`, `.fft`),
   `control.py` the control socket the running window listens on,
   which `tools/fmctl` talks to (with the window open, use it rather than
-  opening the radio).
+  opening the radio), `iqmeasure.py` the card of a recording (what a signal
+  is: level, bandwidth, tones, bursts, class; numpy only, and no decoder),
+  behind `tools/iq-measure` (the card as JSON) and `tools/iq-picture` (a PNG
+  of the spectrum and waterfall, which needs matplotlib), and `fmctl measure`.
 - Knowledge: `knowledge/capabilities.md` is the living capability list.
   Update it (and its status marks) when a feature is added or verified.
   `knowledge/usage.md` is the user guide. `knowledge/roadmap.md` holds
