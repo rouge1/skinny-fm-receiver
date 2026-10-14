@@ -1063,6 +1063,61 @@ beside a `.cfile` and nowhere else: never beside a `.sdvr`, `.cdif` or `.fft`,
 which the app does not write beside. It never overwrites a file that is not a
 card (one without a `schema` key). It does replace an earlier card.
 
+## Decoding a recording with rtl_433: iq-decode
+
+`tools/iq-decode FILE` hands a signal to rtl_433, the decoder that already
+knows the common sensor protocols. It cuts the span out of any file the app
+reads (a `.cfile`, a Sceptre DVR's IQ `.sdvr`, a `.cdif`), scales it, runs
+rtl_433 on it and prints what rtl_433 decoded as one JSON document. It decodes
+nothing itself. A capture's level sits far below rtl_433's pulse detector, so
+the span is scaled until its 99.9th percentile of |x| is 0.5. The gain is
+reported in `gain_db`: a weak capture needs tens of dB.
+
+It needs rtl_433 on the PATH. Install it with `apt install rtl-433` on Debian
+or Ubuntu, or `brew install rtl_433` on a Mac. conda has no rtl_433.
+
+```sh
+tools/iq-decode FILE                                        # the whole span, rtl_433's own protocols
+tools/iq-decode FILE --t0 2 --t1 5 --band 433.8e6 434.1e6   # seconds 2 to 5, only this absolute band
+tools/iq-decode FILE --rate 2e6 --center 433.92e6           # a bare .cfile, with no .sigmf-meta
+tools/iq-decode FILE -R 19                                  # only rtl_433 protocol 19 (repeatable)
+tools/iq-decode FILE --keep /tmp/slice.cf32                 # keep the scaled cf32 that rtl_433 read
+```
+
+The span defaults to the whole file in time (`--t0` and `--t1` cut it). The
+band defaults to the whole file when the file's rate is at most 1 MS/s; above
+that it is ±250 kHz about the file's centre, so give `--band` for a wider or
+narrower one. The band is not narrowed to fit the output rate: a signal
+beyond half of `--out-rate` folds back, so keep the band within it.
+
+`--out-rate` is a ceiling on the rate rtl_433 is given: 250000 by default,
+rtl_433's pulse detector's rate. A faster span is decimated down to it, by
+block averaging; a slower one is passed as it is. `--timeout` (120 s) is how
+long rtl_433 may run. With no `-R`, rtl_433 uses its default protocol set; if
+nothing decodes and you know the protocol's number, try `-R N`.
+
+Synthetic example: a Nexus-TH frame (id 181, 19.0 C) written as a `.cfile` with
+its `.sigmf-meta` at 250 kS/s, centred on 433.92 MHz, gives this `summary`:
+
+```json
+"summary": [{"model": "Nexus-TH", "id": 181, "count": 1}]
+```
+
+The output is one JSON document:
+
+- `file`, `center_hz`, `rate_sps` (the rate given to rtl_433)
+- `gain_db`: the gain applied to the span, or `null` when the span is silent
+- `rtl_433`: rtl_433's version line
+- `protocols`: `"default"`, or the `-R` numbers in the order given
+- `packets`: how many decoded objects have a `model`
+- `decodes`: the first 50 JSON objects rtl_433 printed, as it printed them
+- `summary`: each `model` and `id` (when it has one) with its `count`
+
+Exit codes: 0 when the tool ran, whatever the decode count (0 is an answer);
+1 for a bad option, a file it cannot read or cut, or rtl_433 running past
+`--timeout`, with the reason on stderr and nothing on stdout; 2 when rtl_433
+is not installed, with the install hint on stderr.
+
 ## Settings
 
 Settings are saved to `~/.config/fm-receiver/config.json` when the window

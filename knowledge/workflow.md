@@ -12,6 +12,7 @@
 7)Recover the message/data
   Decode to text, then confirm it by agreement across repeats, by the packet's
   own CRC or BCH check, and other programs like rtl_433 decoder.
+  tools/iq-decode FILE does this step (needs rtl_433).
 
 Steps 3 and 4 are the ones to make repeatable: measure the same things of
 every signal (occupied bandwidth, the envelope's levels and timing, the

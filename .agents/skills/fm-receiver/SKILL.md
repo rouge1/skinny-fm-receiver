@@ -115,8 +115,11 @@ evidence for it. Options: `--t0`, `--t1`, `--band LO HI` (absolute Hz),
 `<base>.card.json` beside a `.cfile` only. `tools/iq-picture FILE OUT.png`
 draws the spectrum and waterfall (it needs matplotlib). Neither decodes:
 `iq-demod` and `iq-frames` are not built. Read the card before writing any
-decoder. Checked on synthetic signals so far; the real-file check is the
-planner's.
+decoder. Built and tested on synthetic signals; not yet run on a real file (see
+capabilities.md).
+
+`tools/iq-decode FILE [--t0 S --t1 S] [--band LO HI] [-R N ...]` scales a span and runs rtl_433 on it, printing its decodes as JSON (needs rtl_433 installed: exit 2 without it; see usage.md, "Decoding a recording with rtl_433"). Built, tested on a synthetic frame and over the air once (VSG60 to BB60D).
+`iqmeasure.extract(path, t0, t1, band, max_rate, rate, center_hz)` returns that span as an `IQSlice` (iq, rate, center_hz, t0, t1), band-limited and decimated, read in chunks; `tools/iq-decode` feeds it to rtl_433.
 
 ## Decoding a recording
 

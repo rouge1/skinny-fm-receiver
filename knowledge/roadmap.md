@@ -1102,6 +1102,14 @@ Signal Hound's Sceptre keeps what the BB60D received in a ring file
   levels (FSK, FM), tones, symbol rate, burst length and repeat interval, and
   the level in dBm now that a DVR has one. What comes out is a description, and
   a decoder is written only when a class is worth decoding
+- [x] **Step 7 as a tool: `tools/iq-decode`** (phase m6, built 2026-10-14).
+  `iqmeasure.extract` cuts the span out of any file the app reads, and
+  `iq-decode` scales it to rtl_433's pulse detector, runs rtl_433 on it (a
+  subprocess, needs rtl_433 installed) and prints the decodes as JSON. Tested
+  on a synthetic Nexus-TH frame (`test_iq_decode.py`) and over the air once
+  (VSG60 to BB60D). Open: an over-the-air capture decoded with `-R 19` but not
+  with rtl_433's default set, and a synthetic file decoded either way; not
+  reproduced, and the tool's docstring says what was tried.
 - [ ] Known signals to test the classifier on: the RF bench toolkit
   (`/data/python/SDR`, decided useful 2026-09-30). Its pure functions make
   signals whose parameters are known exactly, with no radio: `apps/ism_frame.py`
