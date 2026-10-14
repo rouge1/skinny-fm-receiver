@@ -12,7 +12,8 @@ files), ``marker`` (the level on the RF trace, refused off the shown
 band), ``recordings-folder`` (the app's folder, via update_config),
 ``delete`` (the Nth recording with ``confirm``, the app's own only),
 and the new ``status`` keys (``sweep``, ``file``, ``level_unit``).
-The ``measure`` command is phase m2 and is NOT tested here.
+``measure`` (phase m2) is checked last: refused with no capture, the card of
+a capture, the seconds and ``card`` options, bad seconds, a missing file.
 
 Run:  QT_QPA_PLATFORM=offscreen PYTHONPATH=tools \\
       /home/user/miniconda3/envs/gnu/bin/python tools/tests/test_control_more.py
@@ -802,6 +803,61 @@ def main():
                 c.ok('mode receive')
                 assert pump(10, lambda: w.engine.running), 'radio did not come back'
 
+        measured = {}
+        measure_classes = ('noise', 'carrier', 'ook', 'ask', 'fsk', 'fm', 'am', 'unknown')
+
+        def t_measure_refused_without_capture():
+            ensure_receive(c, w)
+            assert not getattr(w, '_last_capture', None), 'a capture was made before this check'
+            err = c.refused('measure', 'capture')
+            assert 'no capture' in err.lower(), err
+
+        def t_measure_reads_capture():
+            ensure_receive(c, w)
+            cap = c.ask('capture 2 iq-band', timeout=30)
+            assert cap['ok'], cap
+            cfile = next(f['path'] for f in cap['result']['files']
+                         if f['path'].endswith('.cfile'))
+            assert os.path.isfile(cfile), cfile
+            measured['cfile'] = cfile
+            r = c.ask('measure', timeout=90)
+            assert r['ok'], r
+            card = r['result']
+            assert card['schema'] == 1 and card['class'] in measure_classes, card
+            assert 'card_file' not in card, card
+            assert 'source' in card and 'path' in card['source'], card
+
+        def t_measure_seconds_span():
+            r = c.ask('measure 1', timeout=90)
+            assert r['ok'], r
+            src = r['result']['source']
+            assert abs(src['t1_s'] - 1.0) < 0.05 and src['t0_s'] == 0.0, src
+            assert r['result']['schema'] == 1 and r['result']['class'] in measure_classes, r
+
+        def t_measure_card_writes_file():
+            r = c.ask('measure card', timeout=90)
+            assert r['ok'], r
+            cfile = measured['cfile']
+            card_p = os.path.splitext(cfile)[0] + '.card.json'
+            assert r['result']['card_file'] == card_p, r['result']
+            assert os.path.isfile(card_p), card_p
+            with open(card_p) as fh:
+                written = json.load(fh)
+            reply_card = {k: v for k, v in r['result'].items() if k != 'card_file'}
+            assert written == reply_card, 'the card file is not the reply'
+
+        def t_measure_refused_bad_seconds():
+            for bad in ('0', '-2', 'x', 'nan', 'inf'):
+                err = c.refused(f'measure {bad}', 'SECONDS')
+                assert 'SECONDS' in err, err
+            c.refused('measure 2 3', 'usage')
+
+        def t_measure_refused_missing_file():
+            os.remove(measured['cfile'])
+            err = c.refused('measure', 'missing')
+            assert os.path.basename(measured['cfile']) in err, err
+            assert not os.path.exists(measured['cfile'])
+
         checks = [
             ('status gains sweep/file/level_unit', t_status_keys),
             ('status file None without a file', t_status_file_none),
@@ -839,6 +895,12 @@ def main():
             ('the radio opens again on each switch back', t_radio_reopens_on_mode),
             ('a file sweep from Recordings opens the file once',
              t_file_sweep_from_recordings_opens_once),
+            ('measure refused with no capture yet', t_measure_refused_without_capture),
+            ('measure gives the card of the last capture', t_measure_reads_capture),
+            ('measure SECONDS measures that span', t_measure_seconds_span),
+            ('measure card writes the card beside the .cfile', t_measure_card_writes_file),
+            ('measure refused for bad SECONDS', t_measure_refused_bad_seconds),
+            ('measure refused for a missing capture file', t_measure_refused_missing_file),
         ]
         for name, fn in checks:
             check(name, fn)
