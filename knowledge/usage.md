@@ -775,7 +775,7 @@ from 0. Only the rows and bins on screen are read from the file, not all of it.
 **Narrow IQ files.** An IQ file a few tens of kS/s wide, such as a Sceptre BLUE
 file at 54.7 kS/s, is tuned inside its own band. The tuner moves there by typing,
 clicking or dragging, but not to the very edges: on a 54.7 kS/s file it reaches
-±17 kHz from the centre, and the ↔ line on the tuner shows the limits. The
+±17 kHz from the centre, and no further. The
 channel band on the spectrum is drawn no wider than the file's band. The
 **Span** knob runs from about the band / 200 (at least 500 Hz) up to the whole
 band, so you can zoom to a few kHz. A wide file, such as 20 MS/s, keeps its

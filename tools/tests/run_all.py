@@ -1,4 +1,4 @@
-"""Run the tests: the fifteen that need no radio, with ``--hw`` the BB60D
+"""Run the tests: the twenty that need no radio, with ``--hw`` the BB60D
 check as well, with ``--hackrf`` the HackRF check (other sessions may
 use the HackRF too: make sure it is yours before running it), and with
 ``--rtl`` the RTL-SDR check (this app closed, so no rtl_tcp is running).
