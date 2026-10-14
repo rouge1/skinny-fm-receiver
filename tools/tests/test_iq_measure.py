@@ -888,9 +888,56 @@ def check_import_clean():
     expect('iqmeasure imports none of gnuradio, PyQt5, scipy, library, radios, dsp', clean)
 
 
+def dbm_files():
+    """A .cdif of a 1 mW tone (raw amplitude 1000, DATA_GAIN 60) in noise 30 dB down,
+    the same samples without the keyword, and with a DATA_GAIN that is not a number."""
+    def build():
+        folder = fresh('dbm')
+        raw = cw_iq(seconds=0.5, amp=1000.0, snr_db=30.0, seed=41)
+        f = {'raw': raw,
+             'gain': os.path.join(folder, 'gain.cdif'),
+             'plain': os.path.join(folder, 'plain.cdif'),
+             'text': os.path.join(folder, 'text.cdif')}
+        signals.write_blue(f['gain'], raw, RATE, keywords={'RF_FREQ': CENTRE, 'DATA_GAIN': 60.0})
+        signals.write_blue(f['plain'], raw, RATE, keywords={'RF_FREQ': CENTRE})
+        signals.write_blue(f['text'], raw, RATE, keywords={'RF_FREQ': CENTRE, 'DATA_GAIN': 'high'})
+        return f
+    return memo('dbm-files', build)
+
+
+def check_data_gain():
+    f = dbm_files
+    gain_m = lambda: measured('dbm-gain', f()['gain'])                  # noqa: E731
+    gain_src = lambda: source('dbm-gain', f()['gain'])                  # noqa: E731
+    expect('.cdif with DATA_GAIN 60: a 1 mW tone measures 0 dBm within 0.1 dB',
+           lambda: near(gain_m()['level']['power_dbm'], 0.0, 0.1))
+    expect('.cdif with DATA_GAIN 60: power_dbfs equals power_dbm',
+           lambda: eq(gain_m()['level']['power_dbfs'], gain_m()['level']['power_dbm']))
+    expect('.cdif with DATA_GAIN 60: full_scale_dbm is 0.0',
+           lambda: eq(gain_src().full_scale_dbm, 0.0))
+    expect('.cdif with DATA_GAIN 60: read() gives the counts scaled by 10 ** (-60 / 20)',
+           lambda: (np.allclose(gain_src().read(0, 1000), f()['raw'][:1000] * 1e-3,
+                                rtol=1e-5, atol=1e-9), 'samples differ'))
+    expect('.cdif with DATA_GAIN 60: the tone is still found at +50 kHz',
+           lambda: tones_found(gain_m(), CENTRE + 50e3))
+
+    plain_m = lambda: measured('dbm-plain', f()['plain'])               # noqa: E731
+    plain_src = lambda: source('dbm-plain', f()['plain'])               # noqa: E731
+    expect('.cdif without DATA_GAIN: power_dbm is None',
+           lambda: eq(plain_m()['level']['power_dbm'], None))
+    expect('.cdif without DATA_GAIN: full_scale_dbm is None and read() gives the raw samples',
+           lambda: (eq(plain_src().full_scale_dbm, None)[0]
+                    and np.allclose(plain_src().read(0, 1000), f()['raw'][:1000], rtol=1e-6),
+                    'raw samples were scaled or the full scale is set'))
+
+    text_m = lambda: measured('dbm-text', f()['text'])                  # noqa: E731
+    expect('.cdif with a DATA_GAIN that is not a number: power_dbm is None',
+           lambda: eq(text_m()['level']['power_dbm'], None))
+
+
 GROUPS = [check_classes, check_bandwidth, check_tones_and_centre,
           check_symbols_and_bursts, check_level, check_measure_inputs, check_shape,
-          check_readers, check_write_card, check_import_clean]
+          check_readers, check_write_card, check_import_clean, check_data_gain]
 
 
 def main():
