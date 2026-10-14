@@ -47,7 +47,7 @@ level:   power_dbfs, power_dbm (None without full_scale_dbm), noise_floor_dbfs, 
 occupied: bandwidth_hz (99 % of the power), bandwidth_20db_hz (width at 20 dB below the peak),
           centre_hz (absolute, the power centroid)
 tones:   [{freq_hz (absolute), level_db (above the floor)}], strongest first, at most 8, each > 15 dB above
-         the floor, at least 3 bins apart, and within 60 dB of the strongest (a window's sidelobes are not tones)
+         the floor, at least 8 bins apart (two peaks closer than that are one tone), and within 60 dB of the strongest (a window's sidelobes are not tones)
 bursts:  count, durations_s (first 32), median_duration_s, gaps_s (first 32), repeat_interval_s (median start
          to start; None under 3 bursts), duty (0..1)
 envelope: levels (1 or 2 amplitude levels, low first), depth (0..1), keyed (bool)
@@ -99,3 +99,8 @@ Each reply is JSON like the existing commands; errors are the existing error sha
 - `tools/iq-picture FILE OUT.png [--t0 S --t1 S] [--band LO HI] [--rate R --center HZ] [--nfft N]`: a spectrum
   panel (mean and peak) over a waterfall of the span, matplotlib `Agg`, dBm when the file has a calibration,
   else dBFS; the title names file, centre, rate and span. Imports no gnuradio, Qt, `library` or `radios`.
+
+## Cost of a measurement (m5)
+`measure_file` reads the span in chunks and band-limits by mixing and decimating chunk by chunk: it never holds
+more than a few million complex samples at once, whatever the file's rate or length. A real 28 MS/s, 8.6 s
+IQ DVR (240 million samples) measures in under 25 s and under 600 MB of extra memory.
