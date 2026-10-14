@@ -772,6 +772,24 @@ and seeking (clicking or dragging the mini map) works paused or playing. At the
 end it stops with the playhead on the end; with **Loop** on, it starts again
 from 0. Only the rows and bins on screen are read from the file, not all of it.
 
+**Narrow IQ files.** An IQ file a few tens of kS/s wide, such as a Sceptre BLUE
+file at 54.7 kS/s, is tuned inside its own band. The tuner moves there by typing,
+clicking or dragging, but not to the very edges: on a 54.7 kS/s file it reaches
+±17 kHz from the centre, and the ↔ line on the tuner shows the limits. The
+channel band on the spectrum is drawn no wider than the file's band. The
+**Span** knob runs from about the band / 200 (at least 500 Hz) up to the whole
+band, so you can zoom to a few kHz. A wide file, such as 20 MS/s, keeps its
+50 kHz minimum.
+
+**The spectrum marker.** On a spectrum recording (a `.fft` or a sweep `.sdvr`),
+right-click the spectrum or the waterfall for **Marker to** and the frequency,
+and the marker goes there. A left click places it too, and a drag moves it. The
+readout gives the frequency and the level at that point, in dBm when the file is
+calibrated. On an IQ track the same menu reads **Tuner to**: it moves the tuner
+and leaves the marker where it is.
+`fmctl marker FREQ` places the marker the same way and replies with the level;
+`fmctl status` has `marker_mhz`.
+
 ## Playing other IQ files
 
 The Recordings tab plays this app's recordings, and Sceptre's `.sdvr` and
@@ -902,7 +920,7 @@ tools/fmctl help                          # every command
 
 | Command | Does |
 |---|---|
-| `status` | Radio, tab, the RDS or HD Radio tab on show, Tuner and its range, Center, IQ bandwidth, gain and AGC, volume and mute, channel filter, step, clipped %, recording; in Receive the signal (dBFS in the channel, SNR), stereo pilot, RDS (PI, call sign and whether it is confirmed, PS, name, RadioText, PTY, % blocks good, the TP and TA flags, TMC, the station clock, RT+ title and artist, data applications, and how many groups of each type came) and HD Radio (on, program, what is heard, sync, station, programs, BER, now playing, the status line); in Recordings, `playback`: the recording and file chosen, playing, position and duration, loop, the station and text, whether the map is open and drawn and its box (top, span, band), and the waterfall's drawn rows and newest time |
+| `status` | Radio, tab, the RDS or HD Radio tab on show, Tuner and its range, Center, IQ bandwidth, gain and AGC, volume and mute, channel filter, step, clipped %, recording; in Receive the signal (dBFS in the channel, SNR), stereo pilot, RDS (PI, call sign and whether it is confirmed, PS, name, RadioText, PTY, % blocks good, the TP and TA flags, TMC, the station clock, RT+ title and artist, data applications, and how many groups of each type came) and HD Radio (on, program, what is heard, sync, station, programs, BER, now playing, the status line); in Recordings, `playback`: the recording and file chosen, playing, position and duration, loop, the station and text, whether the map is open and drawn and its box (top, span, band), and the waterfall's drawn rows and newest time; and `marker_mhz`, where the spectrum marker is |
 | `tune MHZ` | The Tuner. Outside the band around the Center, the Center moves first, as **Center on tuner** does (not for an IQ file, whose band is fixed) |
 | `center MHZ` | The Radio box's Center (Receive tab only) |
 | `gain PERCENT` | The RF gain slider |
@@ -930,7 +948,7 @@ tools/fmctl help                          # every command
 | `open PATH` | Loads an IQ file, as the Open IQ dialog does, and plays it. Refused while recording, for a missing or unreadable file, and in the Recordings tab. Replies `file` and `name` |
 | `delete N confirm` | Deletes the Nth recording of the list (0 is the newest), as the list's Delete does. The word `confirm` is required; without it nothing is deleted. Only the app's own recordings: a Sceptre file is left alone. Refused while recording |
 | `recordings-folder PATH` | Sets the app's recordings folder (where Record saves, and what the list reads), saved in the settings, and reads the list again. Refused if PATH is not a directory. Replies `recordings_folder` and `recordings` (the count) |
-| `marker FREQ` | Read-only. The level at FREQ (MHz) on the RF trace, in the view's unit: the held trace while Peak hold is on, otherwise the live one. Refused for a frequency off the shown band. Replies `freq_mhz`, `level_db`, `unit` and `trace` |
+| `marker FREQ` | On a spectrum recording (Recordings tab), places the spectrum marker there, as a click does, and replies. Elsewhere read-only: the level at FREQ (MHz) on the RF trace, in the view's unit: the held trace while Peak hold is on, otherwise the live one. Refused for a frequency off the shown band. Replies `freq_mhz`, `level_db`, `unit` and `trace` |
 | `measure [SECONDS] [card]` | Measures the last capture (the file the last `capture` replied with) with `tools/iq-measure`, and replies the card (see [Measuring a recording](#measuring-a-recording-iq-measure-and-iq-picture)). `SECONDS` measures only the first that long. `card` also writes `<base>.card.json` beside a `.cfile`. Runs for at most 60 s, and the window keeps running meanwhile. Refused when there is no capture yet
 | `record audio` / `iq-channel` / `iq-band` `on` / `off`, `record start` / `stop` | The Record box. `stop` replies with the files saved, the `.sigmf-meta` beside each IQ file included |
 | `capture SECONDS [iq-band` / `iq-channel` / `audio]` | Records only that (IQ of the whole band by default) for SECONDS and replies with the files; the Record box's ticks are put back after. Refused over 4 GB: at 40 MS/s the whole band is 320 MB/s, so 12 s at most |
