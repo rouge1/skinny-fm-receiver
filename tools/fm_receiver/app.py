@@ -375,23 +375,48 @@ def _same_plan(new, running):
 
 
 def _report_shown_filter():
-    """status.channel_filter_khz is the width on the chart, not the saved dial
-    when a recording is narrower than the filter. control.py reads the dial;
-    this answers with the width the chart uses."""
+    """status and filter report the width on the chart. control.py reads the
+    dial; a narrow IQ recording draws min(dial, band). Also ``view rf span N``
+    is N kHz on that recording (the command otherwise takes MHz)."""
     from . import control
     if getattr(control.COMMANDS.get('status'), '_shown_filter', False):
         return
-    orig = control.COMMANDS['status']
+    orig_status = control.COMMANDS['status']
 
     def status(w, args):
-        out = orig(w, args)
-        shown = getattr(w, '_shown_channel_hz', None)
-        if shown is not None:
-            out['channel_filter_khz'] = round(shown() / 1e3, 3)
+        out = orig_status(w, args)
+        try:
+            out['channel_filter_khz'] = round(w._shown_channel_hz() / 1e3, 3)
+        except Exception:
+            pass
         return out
 
     status._shown_filter = True
     control.COMMANDS['status'] = status
+
+    orig_filter = control.COMMANDS['filter']
+
+    def filter_cmd(w, args):
+        out = orig_filter(w, args)
+        try:
+            if isinstance(out, dict):
+                out['channel_filter_khz'] = round(w._shown_channel_hz() / 1e3, 3)
+        except Exception:
+            pass
+        return out
+
+    control.COMMANDS['filter'] = filter_cmd
+
+    orig_view = control.COMMANDS['view']
+
+    def view(w, args):
+        try:
+            args = w.rf_view.command_span_args(args)
+        except Exception:
+            pass
+        return orig_view(w, args)
+
+    control.COMMANDS['view'] = view
 
 
 class MainWindow(Qt.QWidget):
@@ -403,11 +428,25 @@ class MainWindow(Qt.QWidget):
     MAP_COLS = 128
     WINDOW_SETTLE_MS = 40
 
+    def _recording_span_floor(self, track=None):
+        """A recording whose span floor is max(500 Hz, band/200): IQ or a
+        spectrum file, not a WAV and not a live radio. Pass ``track`` while
+        it is only chosen; with none, only a recording that is playing."""
+        if track is None:
+            if self._mode != 'playback':
+                return False
+            track = self._track
+        if track is None:
+            return False
+        return bool(track.is_iq or track.is_spectrum)
+
     def _shown_channel_hz(self):
-        """The channel width drawn and reported. A recording cannot show a
-        filter wider than its own band; the saved dial (``chan_knob``) stays."""
+        """The channel width drawn, demodulated and reported. An IQ file
+        cannot use a filter wider than its own band; a WAV and the saved
+        dial are left alone."""
         hz = self.chan_knob.value()
-        if self._mode == 'playback':
+        track = self._track
+        if self._mode == 'playback' and track is not None and track.is_iq:
             low, high = self.rf_view.full
             band = high - low
             if band > 1.0:
@@ -2120,7 +2159,7 @@ class MainWindow(Qt.QWidget):
         self.rf_view.set_pan_limits(None, None)
         self.engine.start_receive(
             station_hz, rate, center_hz=center_hz,
-            channel_bw=self.chan_knob.value(),
+            channel_bw=self._shown_channel_hz(),
             region=self.region_combo.currentData(),
             stereo=self.stereo_check.isChecked(),
             volume=self.volume_knob.value() / 100.0,
@@ -2144,7 +2183,7 @@ class MainWindow(Qt.QWidget):
         e = self.engine
         self.rf_view.set_extent(e.lo_hz - e.rate / 2, e.lo_hz + e.rate / 2,
                                 center_hz=e.station_hz if recentre else None,
-                                recording=self._mode == 'playback')
+                                recording=self._recording_span_floor())
         self.rf_view.set_marker(e.station_hz)
         self._draw_channel(e.station_hz)
         self.rf_view.set_center_line(e.lo_hz)
@@ -2739,10 +2778,11 @@ class MainWindow(Qt.QWidget):
                     self._set_status(f"Could not set gain: {exc}", 'warn')
 
     def _chan_bw_changed(self, hz):
+        shown = self._shown_channel_hz()
         if self._mode == 'sweep':
             self._show_sweep_band()
         elif self.engine.rx is not None:
-            self.engine.rx.set_channel_bw(hz)
+            self.engine.rx.set_channel_bw(shown)
             self._draw_channel(self.engine.station_hz)
 
     def _region_changed(self, _index):
@@ -3222,7 +3262,7 @@ class MainWindow(Qt.QWidget):
         else:
             view.load_state(self.cfg[VIEW_KEYS['playback']])
             view.set_extent(low, high, center_hz=track.station_hz or track.center_hz,
-                            recording=not track.is_spectrum)
+                            recording=self._recording_span_floor(track))
         view.set_level_unit('dBm' if (track.kind == 'cdif' or track.is_spectrum)
                             else 'dBFS')
         view.set_pan_limits(None, None)

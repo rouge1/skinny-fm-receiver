@@ -2385,20 +2385,9 @@ class SpectrumView(Qt.QWidget):
                               log=True, wheel=1.25,
                               tooltip='How much frequency the view shows, '
                               'centred on the station (or on the view).')
-        # `view rf span 5` is 5 in the view's unit, MHz. On a recording
-        # narrower than that, those same digits are kHz: 5 is a 5 kHz window.
-        _span_set = self.span_knob.setValue
-
-        def _set_span(v, emit=True):
-            v = float(v)
-            hi, lo = self.span_knob._max, self.span_knob._min
-            if emit and v > hi >= lo and v >= 1e6 and abs(v / 1e6 - round(v / 1e6)) < 1e-3:
-                as_khz = v / 1e3
-                if lo - 1 <= as_khz <= hi + 1:
-                    v = as_khz
-            return _span_set(v, emit=emit)
-
-        self.span_knob.setValue = _set_span
+        #: Set by :meth:`set_extent` for a recording of at most 10 MHz.
+        #: ``view rf span N`` is then N kHz; the dial itself stays in hertz.
+        self.command_span_khz = False
         self.ref_knob = Knob('Ref level', -160, 20, ref_db, lambda v: f"{v:.0f} dB",
                              step=1, wheel=2, tooltip='The level at the top of the scale.\n'
                              'A fits the scale to the trace (auto scale).')
@@ -2630,7 +2619,8 @@ class SpectrumView(Qt.QWidget):
             span = high_hz - low_hz
         self._wanted_span = None
         band = high_hz - low_hz
-        if recording and band <= 10e6:
+        self.command_span_khz = bool(recording and band <= 10e6)
+        if self.command_span_khz:
             floor = max(500.0, band / 200.0)
         else:
             floor = self.min_span_hz
@@ -2641,6 +2631,23 @@ class SpectrumView(Qt.QWidget):
             self._hist = None
         self.span_knob.setValue(min(span, high_hz - low_hz), emit=False)
         self._apply_span()
+
+    def command_span_args(self, args):
+        """Rewrite ``view rf span N`` when this band is a narrow recording.
+
+        The command speaks the view's unit (MHz). On that recording the
+        same number is kHz, including a fraction (``2.5`` is 2.5 kHz), so
+        it is passed on as MHz. ``full``, other views, and the dial's own
+        wheel and drag are not touched."""
+        if not self.command_span_khz or len(args) < 3 or args[0].lower() != 'rf':
+            return args
+        args = list(args)
+        i = 1
+        while i + 1 < len(args):
+            if args[i].lower() == 'span' and args[i + 1].lower() != 'full':
+                args[i + 1] = format(float(args[i + 1]) / 1000.0, '.12g')
+            i += 2
+        return args
 
     def set_center(self, hz):
         self.center_hz = float(hz)

@@ -794,10 +794,12 @@ class IQFile(Radio):
         self.default_receive_rate = rate
         self.rate = rate
         self.center_hz = self.meta['center_hz']
-        # The whole file. A fixed 120 kHz inset (room for one FM channel)
-        # is wider than a narrow recording, and the range comes out
-        # backwards, which pins the tuner outside the file.
-        half = rate / 2
+        # Room for one FM channel (120 kHz), but never more than an eighth
+        # of a narrow file: a fixed 120 kHz inset is wider than the file
+        # and the range comes out backwards. From 960 kS/s up the eighth
+        # is at least 120 kHz, so the inset is the one it always was.
+        inset = min(120e3, rate / 8.0)
+        half = rate / 2 - inset
         self.freq_range_hz = (self.center_hz - half, self.center_hz + half)
         layout = self.meta.get('layout')
         if layout:
