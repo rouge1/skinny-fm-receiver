@@ -34,7 +34,7 @@ import time
 import numpy as np  # type: ignore
 from PyQt5 import Qt, QtCore, QtNetwork  # type: ignore
 
-from .config import control_path
+from .config import control_path, update_config
 from .rds_core import clock_text
 
 #: A command line longer than this is refused, and the client dropped.
@@ -132,7 +132,8 @@ def _agc_offered(w):
 
 
 @command('status', 'status', "What the window shows: radio, tab, frequencies, gain, "
-         "audio, stereo, RDS, HD Radio, signal, clipping, recording.")
+         "audio, stereo, RDS, HD Radio, signal, clipping, recording, the sweep "
+         "band, the IQ file (or none) and the RF level's unit.")
 def cmd_status(w, args):
     e = w.engine
     radio = w.radio
@@ -167,6 +168,13 @@ def cmd_status(w, args):
                             if w._clip_smooth is not None else None),
         'recording': w.rec_btn.isChecked(),
         'recording_text': w.rec_label.text() or None,
+        'sweep': {'start_mhz': _mhz(w.sweep_start.value()),
+                  'stop_mhz': _mhz(w.sweep_stop.value())},
+        # The file the radio is playing, or none for a hardware radio.
+        'file': (os.path.abspath(w.cfg['iq_file'])
+                 if w.radio is not None and getattr(w.radio, 'kind', None) == 'file'
+                 and w.cfg.get('iq_file') else None),
+        'level_unit': w.rf_view.level_unit,
     }
     rx = e.rx
     if rx is not None and w._mode in ('receive', 'playback'):
@@ -377,6 +385,10 @@ def cmd_mode(w, args):
     if mode not in TAB_MODES:
         raise CommandError(f"mode: one of {', '.join(TAB_MODES)}")
     w.tabs.setCurrentIndex(TAB_MODES.index(mode))
+    # Leaving Recordings reopens the radio, and a file (it cannot sweep)
+    # is put back on Receive inside that. The tab asked for still shows.
+    if w._tab_mode() != mode:
+        w.tabs.setCurrentIndex(TAB_MODES.index(mode))
     return {'tab': w._tab_mode(), 'mode': w._mode}
 
 
@@ -461,6 +473,8 @@ def cmd_folders(w, args):
     if words:
         if len(words) != 2 or words[0] not in ('add', 'remove'):
             raise CommandError("folders: add PATH or remove PATH")
+        if not str(words[1]).strip():
+            raise CommandError("folders: give a path")
         path = os.path.abspath(os.path.expanduser(words[1]))
         if words[0] == 'add':
             if not os.path.isdir(path):
@@ -834,6 +848,179 @@ def cmd_scan(w, args):
         return next_channel()
 
     return next_channel()
+
+
+@command('filter', 'filter KHZ', "The channel filter knob (Receive), in kHz, "
+         "clamped to its range.")
+def cmd_filter(w, args):
+    khz = _number(_args(args, 1, 1, 'filter KHZ')[0], 'filter')
+    if not math.isfinite(khz):
+        raise CommandError(f"filter: expected a number, got {args[0]!r}")
+    if w._tab_mode() != 'receive':
+        raise CommandError("the channel filter is Receive's: "
+                           "switch with 'mode receive' first")
+    w.chan_knob.setValue(khz * 1e3)
+    return {'channel_filter_khz': round(w.chan_knob.value() / 1e3, 3)}
+
+
+@command('step', 'step KHZ', "The Tuner's Step knob: one of its values.")
+def cmd_step(w, args):
+    from .app import STEPS_KHZ
+    khz = _number(_args(args, 1, 1, 'step KHZ')[0], 'step')
+    match = next((v for v in STEPS_KHZ if abs(v - khz) < 1e-6), None)
+    if match is None:
+        raise CommandError(f"step: one of {', '.join(str(v) for v in STEPS_KHZ)}")
+    w.step_knob.setValue(STEPS_KHZ.index(match))
+    return {'step_khz': w._step_hz() / 1e3}
+
+
+@command('radio', 'radio KIND', "The radio chooser, as a pick from its list.")
+def cmd_radio(w, args):
+    from .app import RADIO_ORDER
+    kind = _args(args, 1, 1, 'radio KIND')[0].lower()
+    if kind not in RADIO_ORDER:
+        raise CommandError(f"radio: one of {', '.join(RADIO_ORDER)}")
+    combo = w.radio_combo
+    index = combo.findData(kind)
+    if index < 0:
+        raise CommandError(f"radio: one of {', '.join(RADIO_ORDER)}")
+    if w._tab_mode() == 'recordings':
+        raise CommandError("radio: the Recordings tab has the radio closed "
+                           "('mode receive' or 'mode sweep' first)")
+    # No file yet: choosing File opens a dialog and the socket would wait on it.
+    if kind == 'file' and not w.cfg.get('iq_file'):
+        raise CommandError("radio: no IQ file yet; use 'open PATH'")
+    combo.setCurrentIndex(index)
+    combo.activated.emit(index)                 # as a pick from the list does
+    radio = w.radio
+    if radio is None:
+        raise CommandError(_plain(w.status.text()) or f"could not open {kind}")
+    return {'radio': radio.kind, 'running': bool(w.engine.running)}
+
+
+def _recording_now(w):
+    if w.rec_btn.isChecked():
+        raise CommandError("recording ('record stop' first)")
+
+
+@command('start', 'start', "The Run button: start streaming. Refused while recording.")
+def cmd_start(w, args):
+    _args(args, 0, 0, 'start')
+    _recording_now(w)
+    if not w.run_btn.isEnabled():
+        raise CommandError("start: the Run button is disabled"
+                           + (" (the Recordings tab; 'mode receive' first)"
+                              if w._tab_mode() == 'recordings' else ""))
+    # One button does both: a click while it is running would stop it.
+    if w.radio is None:
+        w.run_btn.click()
+    if not w.engine.running:
+        raise CommandError(_plain(w.status.text()) or "could not start")
+    return {'running': True}
+
+
+@command('stop', 'stop', "The Run button: stop streaming and let the radio go. "
+         "Refused while recording.")
+def cmd_stop(w, args):
+    _args(args, 0, 0, 'stop')
+    _recording_now(w)
+    if w.radio is not None:
+        w.run_btn.click()
+    return {'running': bool(w.engine.running)}
+
+
+@command('open', 'open PATH', "Load an IQ file, as the Open IQ dialog does. "
+         "Refused while recording, and for a missing or unreadable file.")
+def cmd_open(w, args):
+    from .radios import RadioError, read_iq_metadata
+    path = _args(args, 1, 1, 'open PATH')[0]
+    _recording_now(w)
+    if w._tab_mode() == 'recordings':
+        raise CommandError("open: the Recordings tab has the radio closed "
+                           "('mode receive' first)")
+    path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isfile(path):
+        raise CommandError(f"open: {os.path.basename(path)} is missing or unreadable")
+    try:
+        meta = read_iq_metadata(path)
+    except RadioError as exc:
+        raise CommandError(f"open: {exc}") from None
+    if not os.path.isfile(meta.get('data') or ''):
+        raise CommandError(f"open: the data file {meta.get('data')} is missing")
+    previous = w.cfg.get('iq_file', '')
+    w.cfg['iq_file'] = path
+    w._use_radio('file')
+    if w.radio is None or w.radio.kind != 'file':
+        w.cfg['iq_file'] = previous
+        raise CommandError(_plain(w.status.text()) or f"could not open {path}")
+    return {'file': path, 'name': os.path.basename(path)}
+
+
+@command('delete', 'delete N confirm', "Delete the Nth recording of the list "
+         "(0 is the newest), the app's own only, as the list's Delete does. "
+         "The word confirm is required. A Sceptre file is left alone.")
+def cmd_delete(w, args):
+    from .library import delete as delete_recording
+    _recording_now(w)
+    words = _args(args, 1, 2, 'delete N confirm')
+    if len(words) != 2 or words[1].lower() != 'confirm':
+        raise CommandError("delete: say 'delete N confirm'; nothing was deleted")
+    n = _number(words[0], 'delete')
+    if not math.isfinite(n) or n != int(n) or not 0 <= n < len(w._recordings):
+        raise CommandError(f"delete: 0 to {len(w._recordings) - 1}" if w._recordings
+                           else "delete: there are none")
+    rec = w._recordings[int(n)]
+    name = os.path.basename(rec.key)
+    # Let go of the file first: a playing track would keep it open.
+    if w._play is not None and w._play.recording.key == rec.key:
+        w._stop_playback(show=False)
+    # library.delete reports what it would not remove (a Sceptre file, a
+    # file the disk kept). The window's own delete drops that list.
+    failed = delete_recording(rec)
+    if failed:
+        raise CommandError("delete: " + "; ".join(failed))
+    if w._rec_sel is not None and w._rec_sel.key == rec.key:
+        w._rec_sel = None
+    w._refresh_library()
+    return {'deleted': name}
+
+
+@command('recordings-folder', 'recordings-folder PATH', "The app's recordings "
+         "folder: where Record saves, and what the list reads. The list is "
+         "read again.")
+def cmd_recordings_folder(w, args):
+    path = _args(args, 1, 1, 'recordings-folder PATH')[0]
+    if not str(path).strip():
+        raise CommandError("recordings-folder: give a directory")
+    path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isdir(path):
+        raise CommandError(f"recordings-folder: {path} is not a directory")
+    update_config({'recording_dir': path})
+    w.cfg['recording_dir'] = path
+    w._update_folder_tip()
+    w._refresh_library()
+    return {'recordings_folder': w._recording_dir(), 'recordings': len(w._recordings)}
+
+
+@command('marker', 'marker FREQ', "The level at FREQ (MHz) on the RF trace: "
+         "the held trace while Peak hold is on, otherwise the live one, "
+         "in that view's unit.")
+def cmd_marker(w, args):
+    mhz = _number(_args(args, 1, 1, 'marker FREQ')[0], 'marker')
+    view = w.rf_view
+    if view._x is None or view._db is None or len(view._x) < 2:
+        raise CommandError("nothing on the spectrum yet ('wait' a moment)")
+    x = np.asarray(view._x, dtype=np.float64)
+    held = (view.peak_check.isChecked() and view._peak is not None
+            and len(view._peak) == len(x))
+    db = np.asarray(view._peak if held else view._db, dtype=np.float64)
+    low, high = float(x[0]), float(x[-1])
+    if not low <= mhz <= high:
+        raise CommandError(f"marker: {mhz:g} MHz is off the shown band, "
+                           f"{low:.3f}-{high:.3f} MHz")
+    level = float(db[int(np.argmin(np.abs(x - mhz)))])
+    return {'freq_mhz': round(mhz, 6), 'level_db': round(level, 1),
+            'unit': view.level_unit, 'trace': 'peak hold' if held else 'live'}
 
 
 @command('rate', 'rate MSPS', "The Radio box's IQ bandwidth (Receive).")
