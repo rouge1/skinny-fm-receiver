@@ -385,6 +385,10 @@ def cmd_mode(w, args):
     if mode not in TAB_MODES:
         raise CommandError(f"mode: one of {', '.join(TAB_MODES)}")
     w.tabs.setCurrentIndex(TAB_MODES.index(mode))
+    # Leaving Recordings reopens the radio, and a file (it cannot sweep)
+    # is put back on Receive inside that. The tab asked for still shows.
+    if w._tab_mode() != mode:
+        w.tabs.setCurrentIndex(TAB_MODES.index(mode))
     return {'tab': w._tab_mode(), 'mode': w._mode}
 
 
@@ -928,7 +932,7 @@ def cmd_open(w, args):
     w._use_radio('file')
     if w.radio is None or w.radio.kind != 'file':
         raise CommandError(_plain(w.status.text()) or f"could not open {path}")
-    return {'file': path}
+    return {'file': path, 'name': os.path.basename(path)}
 
 
 @command('delete', 'delete N confirm', "Delete the Nth recording of the list "
