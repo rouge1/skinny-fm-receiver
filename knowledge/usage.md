@@ -1077,16 +1077,23 @@ It needs rtl_433 on the PATH. Install it with `apt install rtl-433` on Debian
 or Ubuntu, or `brew install rtl_433` on a Mac. conda has no rtl_433.
 
 ```sh
-tools/iq-decode FILE                                        # the whole file, rtl_433's own protocols
+tools/iq-decode FILE                                        # the whole span, rtl_433's own protocols
 tools/iq-decode FILE --t0 2 --t1 5 --band 433.8e6 434.1e6   # seconds 2 to 5, only this absolute band
 tools/iq-decode FILE --rate 2e6 --center 433.92e6           # a bare .cfile, with no .sigmf-meta
 tools/iq-decode FILE -R 19                                  # only rtl_433 protocol 19 (repeatable)
 tools/iq-decode FILE --keep /tmp/slice.cf32                 # keep the scaled cf32 that rtl_433 read
 ```
 
-The other options: `--out-rate` (250000 by default: rtl_433's pulse detector
-expects that rate, so a faster span is decimated to it), `--timeout` (120 s
-for rtl_433 to run). With no `-R`, rtl_433 uses its default protocol set; if
+The span defaults to the whole file in time (`--t0` and `--t1` cut it). The
+band defaults to the whole file when the file's rate is at most 1 MS/s; above
+that it is ±250 kHz about the file's centre, so give `--band` for a wider or
+narrower one. The band is not narrowed to fit the output rate: a signal
+beyond half of `--out-rate` folds back, so keep the band within it.
+
+`--out-rate` is a ceiling on the rate rtl_433 is given: 250000 by default,
+rtl_433's pulse detector's rate. A faster span is decimated down to it, by
+block averaging; a slower one is passed as it is. `--timeout` (120 s) is how
+long rtl_433 may run. With no `-R`, rtl_433 uses its default protocol set; if
 nothing decodes and you know the protocol's number, try `-R N`.
 
 Synthetic example: a Nexus-TH frame (id 181, 19.0 C) written as a `.cfile` with
