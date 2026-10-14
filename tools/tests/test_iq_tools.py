@@ -923,6 +923,16 @@ def check_picture_dbm():
     expect('iq-picture of a .cdif without DATA_GAIN: the level axis stays dBFS',
            axis(dbm_pair()[1], 'dBFS'))
 
+    # The absolute level is not asserted: peak_panel's levels are per bin (power over
+    # sum(window**2)), so an on-bin unit tone reads about +34 dB, not 0 dBm.
+    def keyword_scales():
+        _, gain_db = picture_module().peak_panel(dbm_pair()[0])
+        _, plain_db = picture_module().peak_panel(dbm_pair()[1])
+        drop = float(np.max(plain_db) - np.max(gain_db))
+        return near(drop, 60.0, 0.5)
+    expect('peak_panel: DATA_GAIN 60 lowers the peak 60 dB (+/- 0.5) from the same samples without it',
+           keyword_scales)
+
     def picture_run():
         r, out, _ = picture('cdif-gain', [dbm_pair()[0]])
         if r.timed_out or r.code != 0:
