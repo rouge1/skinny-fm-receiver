@@ -28,7 +28,10 @@ import json
 import math
 import os
 import shlex
+import signal
+import subprocess
 import sys
+import tempfile
 import time
 
 import numpy as np  # type: ignore
@@ -1133,10 +1136,111 @@ def cmd_capture(w, args):
             reply = _record_reply(w)
             reply.update(kind=kind, seconds=seconds, rate_msps=rate / 1e6,
                          center_mhz=_mhz(lo), station_mhz=_mhz(station))
+            # What `measure` works on: the file this capture replied with. A
+            # capture that saved none keeps the last good one.
+            saved = _capture_file(reply)
+            if saved is not None:
+                w._last_capture = saved
             return reply
         finally:
             put_back()
     return Later(seconds, finish)
+
+
+def _capture_file(reply):
+    """The recording a capture replied with: its first file that is not a
+    description beside it (the .sigmf-meta or .json of a .cfile)."""
+    paths = [f['path'] for f in reply['files'] if not f['path'].endswith(('.sigmf-meta', '.json'))]
+    return paths[0] if paths else None
+
+
+#: The longest a ``measure`` may run; a longer one is killed.
+MEASURE_LIMIT_S = 60.0
+#: How often a ``measure`` looks whether its tool has finished.
+MEASURE_POLL_S = 0.1
+#: How long a killed ``measure`` tool gets to be reaped before the window stops waiting.
+MEASURE_REAP_S = 0.5
+MEASURE_USAGE = 'measure [SECONDS] [card]'
+#: The measuring tool, beside this package's folder: tools/iq-measure.
+MEASURE_TOOL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            'iq-measure')
+
+
+@command('measure', MEASURE_USAGE, "Measure the last capture (the file it replied with) "
+         "with tools/iq-measure, and reply the card: what the signal is, as numbers and "
+         f"a class. SECONDS measures only the first that long; card also writes "
+         f"<base>.card.json beside a .cfile. At most {MEASURE_LIMIT_S:.0f} s; the window "
+         "runs meanwhile.")
+def cmd_measure(w, args):
+    from .iqmeasure import card_path
+    words = _args(args, 0, 2, MEASURE_USAGE)
+    cards = [x for x in words if x.lower() == 'card']
+    spans = [x for x in words if x.lower() != 'card']
+    if len(cards) > 1 or len(spans) > 1:
+        raise CommandError(f"usage: {MEASURE_USAGE}")
+    seconds = None
+    if spans:
+        seconds = _number(spans[0], 'measure SECONDS')
+        if not math.isfinite(seconds) or seconds <= 0:
+            raise CommandError(f"measure: SECONDS is a positive number, got {spans[0]!r}")
+    path = getattr(w, '_last_capture', None)
+    if not path:
+        raise CommandError("measure: no capture yet ('capture SECONDS' first)")
+    if not os.path.isfile(path):
+        raise CommandError(f"measure: the capture's file {os.path.basename(path)} is missing")
+    argv = [sys.executable, MEASURE_TOOL, path]
+    if seconds is not None:
+        argv += ['--t0', '0', '--t1', str(seconds)]
+    if cards:
+        argv.append('--card')
+    # The output goes to files, not pipes: nothing waits on a pipe the window
+    # cannot drain, and a killed tool is never read from.
+    out_file, err_file = tempfile.TemporaryFile(), tempfile.TemporaryFile()
+    # Its own session, so a kill takes the tool's children with it.
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=out_file,
+                            stderr=err_file, start_new_session=True)
+    began = time.monotonic()
+
+    def stop():
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                proc.kill()
+            try:
+                proc.wait(timeout=MEASURE_REAP_S)
+            except subprocess.TimeoutExpired:
+                pass
+        out_file.close()
+        err_file.close()
+
+    def read(f):
+        try:
+            f.seek(0)
+            return f.read().decode('utf-8', 'replace')
+        finally:
+            f.close()
+
+    # Polled in steps, as ``wait`` is: the window keeps running meanwhile.
+    def check():
+        if proc.poll() is None:
+            if time.monotonic() - began > MEASURE_LIMIT_S:
+                stop()
+                raise CommandError(f"measure: still running after {MEASURE_LIMIT_S:.0f} s; "
+                                   "stopped")
+            return Later(MEASURE_POLL_S, check, abort=stop)
+        out, err = read(out_file), read(err_file)
+        if proc.returncode != 0:
+            raise CommandError(f"measure: {err.strip() or f'exit {proc.returncode}'}")
+        try:
+            result = json.loads(out)
+        except ValueError as exc:
+            raise CommandError(f"measure: the tool printed no card ({exc})") from None
+        written = card_path(path) if cards else None
+        if written and os.path.isfile(written):
+            result['card_file'] = written
+        return result
+    return Later(MEASURE_POLL_S, check, abort=stop)
 
 
 def parse(line):

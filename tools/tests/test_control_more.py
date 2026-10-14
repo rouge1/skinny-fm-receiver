@@ -12,7 +12,8 @@ files), ``marker`` (the level on the RF trace, refused off the shown
 band), ``recordings-folder`` (the app's folder, via update_config),
 ``delete`` (the Nth recording with ``confirm``, the app's own only),
 and the new ``status`` keys (``sweep``, ``file``, ``level_unit``).
-The ``measure`` command is phase m2 and is NOT tested here.
+``measure`` (phase m2) is checked last: refused with no capture, the card of
+a capture, the seconds and ``card`` options, bad seconds, a missing file.
 
 Run:  QT_QPA_PLATFORM=offscreen PYTHONPATH=tools \\
       /home/user/miniconda3/envs/gnu/bin/python tools/tests/test_control_more.py
@@ -802,6 +803,149 @@ def main():
                 c.ok('mode receive')
                 assert pump(10, lambda: w.engine.running), 'radio did not come back'
 
+        measured = {}
+        measure_classes = ('noise', 'carrier', 'ook', 'ask', 'fsk', 'fm', 'am', 'unknown')
+
+        def t_measure_refused_without_capture():
+            ensure_receive(c, w)
+            assert not getattr(w, '_last_capture', None), 'a capture was made before this check'
+            err = c.refused('measure', 'capture')
+            assert 'no capture' in err.lower(), err
+
+        def t_measure_reads_capture():
+            ensure_receive(c, w)
+            cap = c.ask('capture 2 iq-band', timeout=30)
+            assert cap['ok'], cap
+            cfile = next(f['path'] for f in cap['result']['files']
+                         if f['path'].endswith('.cfile'))
+            assert os.path.isfile(cfile), cfile
+            measured['cfile'] = cfile
+            r = c.ask('measure', timeout=90)
+            assert r['ok'], r
+            card = r['result']
+            assert card['schema'] == 1 and card['class'] in measure_classes, card
+            assert 'card_file' not in card, card
+            assert 'source' in card and 'path' in card['source'], card
+            assert os.path.abspath(card['source']['path']) == os.path.abspath(cfile), \
+                (card['source'], cfile)
+
+        def t_measure_seconds_span():
+            r = c.ask('measure 1', timeout=90)
+            assert r['ok'], r
+            src = r['result']['source']
+            assert abs(src['t1_s'] - 1.0) < 0.05 and src['t0_s'] == 0.0, src
+            assert r['result']['schema'] == 1 and r['result']['class'] in measure_classes, r
+
+        def t_measure_card_writes_file():
+            r = c.ask('measure card', timeout=90)
+            assert r['ok'], r
+            cfile = measured['cfile']
+            card_p = os.path.splitext(cfile)[0] + '.card.json'
+            assert r['result']['card_file'] == card_p, r['result']
+            assert os.path.isfile(card_p), card_p
+            with open(card_p) as fh:
+                written = json.load(fh)
+            reply_card = {k: v for k, v in r['result'].items() if k != 'card_file'}
+            assert written == reply_card, 'the card file is not the reply'
+
+        def t_measure_refused_bad_seconds():
+            for bad in ('0', '-2', 'x', 'nan', 'inf'):
+                err = c.refused(f'measure {bad}', 'SECONDS')
+                assert 'SECONDS' in err, err
+            c.refused('measure 2 3', 'usage')
+
+        def t_measure_refused_missing_file():
+            os.remove(measured['cfile'])
+            err = c.refused('measure', 'missing')
+            assert os.path.basename(measured['cfile']) in err, err
+            assert not os.path.exists(measured['cfile'])
+
+        def t_measure_last_capture_wins():
+            ensure_receive(c, w)
+            first = measured['cfile']
+            c.ok('wait 1.1')                  # a new capture name, a second on
+            cap = c.ask('capture 1 iq-band', timeout=30)
+            assert cap['ok'], cap
+            second = next(f['path'] for f in cap['result']['files']
+                          if f['path'].endswith('.cfile'))
+            assert os.path.abspath(second) != os.path.abspath(first), (first, second)
+            r = c.ask('measure 1', timeout=90)
+            assert r['ok'], r
+            assert os.path.abspath(r['result']['source']['path']) == os.path.abspath(second), \
+                (r['result']['source'], second)
+            measured['cfile'] = second
+
+        def t_measure_failed_capture_keeps_last():
+            from fm_receiver import control as ctl
+            prev = measured['cfile']
+            original = ctl._record_reply
+            ctl._record_reply = lambda win: {'recording': False, 'files': []}
+            try:
+                cap = c.ask('capture 1 iq-band', timeout=30)
+                assert cap['ok'] and cap['result']['files'] == [], cap
+            finally:
+                ctl._record_reply = original
+            r = c.ask('measure 1', timeout=90)
+            assert r['ok'], r
+            assert os.path.abspath(r['result']['source']['path']) == os.path.abspath(prev), \
+                (r['result']['source'], prev)
+
+        def t_measure_card_with_seconds():
+            r = c.ask('measure card 0.5', timeout=90)
+            assert r['ok'], r
+            card_p = os.path.splitext(measured['cfile'])[0] + '.card.json'
+            assert r['result']['card_file'] == card_p, r['result']
+            assert abs(r['result']['source']['t1_s'] - 0.5) < 0.05, r['result']['source']
+            with open(card_p) as fh:
+                written = json.load(fh)
+            assert written == {k: v for k, v in r['result'].items() if k != 'card_file'}
+
+        def t_measure_numbers_refused_or_clipped():
+            for line in ('measure 0', 'measure -1', 'measure 1e-9x', 'measure nan',
+                         'measure inf', 'measure card 2 card', 'measure 2 card 3'):
+                r = c.ask(line)
+                assert r['ok'] is False and isinstance(r['error'], str) and r['error'], (line, r)
+            r = c.ask('measure 1e9', timeout=90)
+            assert r['ok'], r
+            src = r['result']['source']
+            assert 0 < src['t1_s'] < 1e9 and src['samples'] > 0, src
+
+        def t_measure_bad_tool_output_refused():
+            from fm_receiver import control as ctl
+            original = ctl.MEASURE_TOOL
+            junk = os.path.join(FOLDER, 'junk-tool.py')
+            with open(junk, 'w') as fh:
+                fh.write("print('not a card')\n")
+            ctl.MEASURE_TOOL = junk
+            try:
+                r = c.ask('measure', timeout=30)
+                assert r['ok'] is False and isinstance(r['error'], str), r
+                assert 'card' in r['error'] and 'measure' in r['error'], r
+                with open(junk, 'w') as fh:
+                    fh.write("import sys; sys.stderr.write('boom from the tool\\n'); sys.exit(3)\n")
+                r = c.ask('measure', timeout=30)
+                assert r['ok'] is False and 'boom from the tool' in r['error'], r
+            finally:
+                ctl.MEASURE_TOOL = original
+
+        def t_measure_timeout_kills_and_window_lives():
+            from fm_receiver import control as ctl
+            original_tool, original_limit = ctl.MEASURE_TOOL, ctl.MEASURE_LIMIT_S
+            sleeper = os.path.join(FOLDER, 'sleep-tool.py')
+            with open(sleeper, 'w') as fh:
+                fh.write("import time\ntime.sleep(60)\n")
+            ctl.MEASURE_TOOL, ctl.MEASURE_LIMIT_S = sleeper, 1.0
+            try:
+                began = time.time()
+                r = c.ask('measure', timeout=20)
+                elapsed = time.time() - began
+                assert r['ok'] is False and isinstance(r['error'], str), r
+                assert 'stopped' in r['error'], r
+                assert elapsed < 10, f"the timeout took {elapsed:.1f} s"
+                assert c.ok('status')['running'], 'the window did not answer after the kill'
+            finally:
+                ctl.MEASURE_TOOL, ctl.MEASURE_LIMIT_S = original_tool, original_limit
+
         checks = [
             ('status gains sweep/file/level_unit', t_status_keys),
             ('status file None without a file', t_status_file_none),
@@ -839,6 +983,20 @@ def main():
             ('the radio opens again on each switch back', t_radio_reopens_on_mode),
             ('a file sweep from Recordings opens the file once',
              t_file_sweep_from_recordings_opens_once),
+            ('measure refused with no capture yet', t_measure_refused_without_capture),
+            ('measure gives the card of the last capture', t_measure_reads_capture),
+            ('measure SECONDS measures that span', t_measure_seconds_span),
+            ('measure card writes the card beside the .cfile', t_measure_card_writes_file),
+            ('measure refused for bad SECONDS', t_measure_refused_bad_seconds),
+            ('measure: the last capture wins', t_measure_last_capture_wins),
+            ('measure: a failed capture keeps the last good one',
+             t_measure_failed_capture_keeps_last),
+            ('measure card with SECONDS writes the card', t_measure_card_with_seconds),
+            ('measure: 0, negatives, nan, inf, repeats refused; 1e9 clipped',
+             t_measure_numbers_refused_or_clipped),
+            ('measure: bad tool output and exit refused', t_measure_bad_tool_output_refused),
+            ('measure: a tool over its limit is killed', t_measure_timeout_kills_and_window_lives),
+            ('measure refused for a missing capture file', t_measure_refused_missing_file),
         ]
         for name, fn in checks:
             check(name, fn)
