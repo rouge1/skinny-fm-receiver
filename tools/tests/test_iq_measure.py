@@ -1199,5 +1199,91 @@ def check_narrow_band():
 GROUPS.append(check_narrow_band)
 
 
+def _cw_card(rate, seconds, snr_db, seed, offset=100003.3):
+    """A CW at ``offset`` written in blocks, SNR over the whole recorded band."""
+    path = write_wide_cw(os.path.join(fresh('lowsnr'), f'cw-{rate:.0f}-{snr_db:.0f}.cfile'),
+                         seconds, rate, offset=offset, snr_db=snr_db, seed=seed)
+    return api().measure_file(path, rate=rate, center_hz=CENTRE)
+
+
+def _carrier_ok(card, dev_bound=100.0):
+    freq = card['frequency']
+    one = len(card['tones']) == 1 and len(freq['levels_hz']) == 1
+    ok = (card['class'] == 'carrier' and freq['keyed'] is False
+          and freq['deviation_hz'] < dev_bound and one)
+    detail = (f"class {card['class']}, keyed {freq['keyed']}, "
+              f"dev {freq['deviation_hz']} (want < {dev_bound}), "
+              f"levels {freq['levels_hz']}, tones {len(card['tones'])}")
+    return ok, detail
+
+
+def check_low_snr_wide_cw():
+    """A CW at low SNR in a wide band stays a carrier.
+
+    50 ms, not 3 s: past about 55 ms the edge cluster is only ~2 % of the
+    frequency blocks and loses the split, so the misclassification hides.
+    50 ms still classes the 28 MS/s tone as FSK. A tone at +64750 Hz keeps a
+    single level out to 1 s, but the splice widens deviation to about 143 Hz
+    (22 Hz when the overlap pad is 16384). At 1 MS/s the half-range of a
+    steady tone is 109 to 113 Hz on this code and on the pre-m5 filter
+    (644289d, same three seeds), so that bound is 130 Hz.
+    """
+    import time
+    seconds = 0.05
+
+    def wide(rate, snr, seed, bound=100.0):
+        start = time.perf_counter()
+        card = _cw_card(rate, seconds, snr, seed)
+        wall = time.perf_counter() - start
+        ok, detail = _carrier_ok(card, bound)
+        info(f"{rate / 1e6:.0f} MS/s, {snr:.0f} dB, {seconds} s: {wall:.2f} s, {detail}")
+        return ok, f'{wall:.2f} s, {detail}'
+
+    expect('CW +100003.3 Hz, 28 MS/s, 19 dB over 28 MHz: carrier, one tone, deviation < 100',
+           lambda: wide(28e6, 19.0, 1))
+    expect('CW +100003.3 Hz, 10 MS/s, 19 dB over the band: carrier, one tone, deviation < 100',
+           lambda: wide(10e6, 19.0, 72))
+    expect('CW +100003.3 Hz, 1 MS/s, 19 dB over the band: carrier, one tone, deviation < 130',
+           lambda: wide(1e6, 19.0, 73, 130.0))
+    expect('CW +100003.3 Hz, 28 MS/s, 40 dB over 28 MHz: carrier, one tone, deviation < 100',
+           lambda: wide(28e6, 40.0, 1))
+
+    def wide_at(rate, span, snr, seed, offset, bound=100.0):
+        start = time.perf_counter()
+        card = _cw_card(rate, span, snr, seed, offset=offset)
+        wall = time.perf_counter() - start
+        ok, detail = _carrier_ok(card, bound)
+        info(f"{rate / 1e6:.0f} MS/s, {snr:.0f} dB, {span} s, offset {offset}: "
+             f"{wall:.2f} s, {detail}")
+        return ok, f'{wall:.2f} s, {detail}'
+
+    expect('CW +64750 Hz, 28 MS/s, 1 s, 19 dB: carrier, one tone, deviation < 100',
+           lambda: wide_at(28e6, 1.0, 19.0, 1, 64750.0))
+
+    def blocks():
+        path = write_wide_cw(os.path.join(fresh('lowsnr'), 'cw-blocks.cfile'),
+                             seconds, 28e6, offset=100003.3, snr_db=19.0, seed=1)
+        nominal = api().FILTER_BLOCK
+        levels = []
+        start = time.perf_counter()
+        try:
+            for factor in (0.5, 1.0, 2.0):
+                api().FILTER_BLOCK = int(nominal * factor)
+                card = api().measure_file(path, rate=28e6, center_hz=CENTRE)
+                levels.append(card['frequency']['levels_hz'])
+        finally:
+            api().FILTER_BLOCK = nominal
+        wall = time.perf_counter() - start
+        singles = [lv[0] for lv in levels if len(lv) == 1]
+        ok = len(singles) == 3 and max(singles) - min(singles) <= 20.0
+        info(f"FILTER_BLOCK x1/2, x1, x2: {wall:.2f} s, levels {levels}")
+        return ok, f'{wall:.2f} s, levels {levels}'
+    expect('CW at 19 dB, 28 MS/s: frequency level within 20 Hz at half and double FILTER_BLOCK',
+           blocks)
+
+
+GROUPS.append(check_low_snr_wide_cw)
+
+
 if __name__ == '__main__':
     sys.exit(main())

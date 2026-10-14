@@ -49,6 +49,18 @@ MAX_PAD = 1 << 20
 #: read or a transform takes at once.
 FILTER_BLOCK = 1 << 15
 MAX_BLOCK = 1 << 22
+#: Bins of raised-cosine skirt outside the passband. Measured, not assumed:
+#: on the hard-cut filter a CW leaves one 16-sample frequency block per 877
+#: outputs (1140 Hz) off the others. At +100 kHz and 19 dB that offset is
+#: about 83 Hz and, from half a second up, still one level (deviation 27 Hz).
+#: At +64750 Hz the same splice widens a 1 s record's deviation to 143 Hz.
+#: PAD=16384 instead of 4096 brings that 143 Hz back to 22 Hz, and the same
+#: pad on c8ae476 also clears the 50 ms +100 kHz misclassification. The mixer
+#: term ``(-fc * (s - pad) / rate) % 1`` at s=2.4e8 is 2e-8 deg off in
+#: float64, so it is not the splice. Four skirt bins bring the +64750 Hz
+#: deviation to 63 Hz. Six or eight bins key a clean +50 kHz tone
+#: (envelope or a second frequency level), so the skirt stays at four.
+SKIRT_BINS = 4
 TONE_DB = 15.0
 #: A tone more than this far under the strongest is a window's sidelobe, not a tone.
 TONE_RANGE_DB = 60.0
@@ -503,9 +515,15 @@ def _banded(read, n, rate, lo, hi, dec):
     room = length - 2 * pad
     step = dec * (room // dec) if room >= dec else room
     f = np.fft.fftfreq(length, 1 / rate)
-    keep = np.flatnonzero((f >= lo) & (f <= hi))
-    mask = np.zeros(length, dtype=bool)
-    mask[keep] = True
+    # A cosine skirt of a few bins, outside the band: the passband stays flat,
+    # and the shorter ringing fits the overlap, so the blocks agree at the splice.
+    dist = np.maximum(lo - f, f - hi)
+    skirt = SKIRT_BINS * rate / length
+    weight = np.zeros(length, np.float64)
+    weight[dist <= 0] = 1.0
+    edge = (dist > 0) & (dist < skirt)
+    weight[edge] = 0.5 * (1.0 + np.cos(np.pi * dist[edge] / skirt))
+    keep = np.flatnonzero(weight > 0)
     aligned = step % dec == 0
     grid = pad + dec * np.arange(step // dec) if aligned else None
     phasors = None
@@ -525,12 +543,12 @@ def _banded(read, n, rate, lo, hi, dec):
         spec = np.fft.fft(seg)
         if phasors is not None:
             count = -(-m // dec)
-            bins = spec[keep] * np.exp(2j * np.pi * ((-fc * (s - pad) / rate) % 1.0))
+            bins = spec[keep] * weight[keep] * np.exp(2j * np.pi * ((-fc * (s - pad) / rate) % 1.0))
             # An elementwise sum, not a matrix product: a threaded BLAS costs ms on a call this small.
             y = (phasors[:count] * bins).sum(axis=1)
         else:
             ts = np.arange(-(-s // dec) * dec, s + m, dec)
-            y = np.fft.ifft(np.where(mask, spec, 0))[ts - (s - pad)]
+            y = np.fft.ifft(spec * weight)[ts - (s - pad)]
             y = y * np.exp(-2j * np.pi * fc * (ts / rate))
         yield y.astype(np.complex64)
         nxt = max(0, s + step - pad)
