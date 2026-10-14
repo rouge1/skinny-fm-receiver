@@ -22,6 +22,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -193,6 +194,18 @@ def strings_in(result):
                 walk(v)
     walk(result)
     return out
+
+
+FMCTL = os.path.join(os.path.dirname(HERE), 'fmctl')
+
+
+def fmctl_in(cwd, *argv, timeout=15.0):
+    """``fmctl`` as a separate process, run from ``cwd``: its own folder."""
+    proc = subprocess.Popen([sys.executable, FMCTL, *argv], cwd=cwd,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert pump(timeout, lambda: proc.poll() is not None), 'fmctl hung'
+    out, err = proc.communicate()
+    return proc.returncode, out, err
 
 
 def ensure_receive(c, w):
@@ -634,6 +647,161 @@ def main():
                 c.ok('mode receive')
                 assert pump(10, lambda: w.engine.running), 'radio did not come back'
 
+        def t_fmctl_open_relative():
+            ensure_receive(c, w)
+            rel = os.path.join(FOLDER, 'rel')
+            os.makedirs(rel, exist_ok=True)
+            relfile = signals.write_station(os.path.join(rel, 'rel-station'), seconds=6.0)
+            # fmctl runs in FOLDER, the window has its own folder: the path is
+            # made absolute by fmctl, so the window opens what fmctl was given.
+            code, out, err = fmctl_in(FOLDER, 'open', 'rel/rel-station.cfile')
+            assert code == 0, (code, out, err)
+            assert pump(10, lambda: os.path.abspath(w.cfg.get('iq_file', ''))
+                        == os.path.abspath(relfile) and w.engine.running), w.cfg.get('iq_file')
+            assert os.path.abspath(json.loads(out)['result']['file']) == os.path.abspath(relfile), out
+            assert os.path.abspath(c.ok('status')['file']) == os.path.abspath(relfile)
+            c.ok(f'open {station}')
+            assert pump(10, lambda: w.engine.running), 'radio did not come back'
+
+        def t_fmctl_open_spaced():
+            ensure_receive(c, w)
+            spaced = os.path.join(FOLDER, 'a b')
+            os.makedirs(spaced, exist_ok=True)
+            base = signals.write_station(os.path.join(spaced, 'my station'), seconds=6.0)
+            # One argument with a space (as a shell passes a quoted path), and
+            # the script form, where the path is quoted inside the command line.
+            for argv in (('open', 'a b/my station.cfile'), ('open "a b/my station.cfile"',)):
+                code, out, err = fmctl_in(FOLDER, *argv)
+                assert code == 0, (argv, code, out, err)
+                assert pump(10, lambda: os.path.abspath(w.cfg.get('iq_file', ''))
+                            == os.path.abspath(base) and w.engine.running), (argv, w.cfg.get('iq_file'))
+                assert os.path.abspath(json.loads(out)['result']['file']) == os.path.abspath(base), \
+                    (argv, out)
+            c.ok(f'open {station}')
+            assert pump(10, lambda: w.engine.running), 'radio did not come back'
+
+        def t_fmctl_folders_relative():
+            extra = os.path.join(FOLDER, 'extra-rel')
+            os.makedirs(extra, exist_ok=True)
+            code, out, err = fmctl_in(FOLDER, 'folders', 'add', 'extra-rel')
+            assert code == 0, (code, out, err)
+            try:
+                assert os.path.abspath(extra) in json.loads(out)['result']['folders'], out
+            finally:
+                code, out, err = fmctl_in(FOLDER, 'folders', 'remove', 'extra-rel')
+                assert code == 0 and os.path.abspath(extra) not in \
+                    json.loads(out)['result']['folders'], (code, out, err)
+
+        def t_fmctl_recordings_folder_relative():
+            old = w._recording_dir()
+            newdir = os.path.join(FOLDER, 'rec-rel')
+            os.makedirs(newdir, exist_ok=True)
+            try:
+                code, out, err = fmctl_in(FOLDER, 'recordings-folder', 'rec-rel')
+                assert code == 0, (code, out, err)
+                assert os.path.abspath(w._recording_dir()) == os.path.abspath(newdir), \
+                    w._recording_dir()
+            finally:
+                c.ok(f'recordings-folder {old}')
+            assert os.path.abspath(w._recording_dir()) == os.path.abspath(old)
+
+        def t_delete_returns_removed():
+            own = os.path.join(w._recording_dir(), 'fm-97.30MHz-20260104-120000-audio.wav')
+            write_wav(own)
+            c.ok('mode recordings')
+            pump(0.3)
+            w._refresh_library()
+            try:
+                rec = next((r for r in w._recordings if own in r.files()), None)
+                assert rec is not None, 'the own recording is not listed'
+                gone = w._delete_recordings([rec])
+                assert gone == [rec.key], gone
+                assert not os.path.exists(own), 'the delete left the file'
+                assert w._delete_recordings([]) == [], 'nothing to delete reported something'
+            finally:
+                if os.path.exists(own):
+                    os.remove(own)
+                c.ok('mode receive')
+                assert pump(10, lambda: w.engine.running), 'radio did not come back'
+
+        def t_delete_returns_nothing_for_sceptre():
+            extra = tempfile.mkdtemp(prefix='fmrx-sceptre-ret-')
+            rng = np.random.default_rng(12)
+            iq = (rng.standard_normal(1 << 16) + 1j * rng.standard_normal(1 << 16)
+                  ).astype(np.complex64) * np.float32(0.05)
+            sdvr = os.path.join(extra, 'ret.sdvr')
+            signals.write_sdvr(sdvr, iq, 2e6, 100e6)
+            c.ok('mode recordings')
+            c.ok(f'folders add {extra}')
+            try:
+                assert pump(10, lambda: any(sdvr in rec.files() for rec in w._recordings)), \
+                    'the sdvr is not listed'
+                rec = next(r for r in w._recordings if sdvr in r.files())
+                assert w._delete_recordings([rec]) == [], 'a Sceptre file was reported deleted'
+                assert os.path.exists(sdvr), 'a Sceptre file was deleted'
+            finally:
+                c.ok(f'folders remove {extra}')
+                c.ok('mode receive')
+                assert pump(10, lambda: w.engine.running), 'radio did not come back'
+
+        def count_opens(w):
+            """Count the radio's opens: every ``engine.use_radio`` the window makes."""
+            opened = []
+            real = w.engine.use_radio
+
+            def counted(radio):
+                opened.append(radio.kind)
+                return real(radio)
+            w.engine.use_radio = counted
+            return opened, lambda: w.engine.__dict__.pop('use_radio', None)
+
+        def t_radio_reopens_on_mode():
+            original = fmapp.make_radio
+            fmapp.make_radio = lambda kind, *a, **k: SimRadio() if kind == 'hackrf' else original(
+                kind, *a, **k)
+            opened, stop = count_opens(w)
+            try:
+                ensure_receive(c, w)
+                switch_radio(c, w, 'hackrf')
+                # Leaving Recordings opens the radio again; Sweep and Receive
+                # share the open radio, so moving between them opens nothing.
+                for mode, tab, opens in (('recordings', 'recordings', 0), ('receive', 'receive', 1),
+                                         ('recordings', 'recordings', 0), ('sweep', 'sweep', 1),
+                                         ('receive', 'receive', 0)):
+                    before = len(opened)
+                    r = c.ok(f'mode {mode}')
+                    assert r['tab'] == tab, (mode, r)
+                    if mode == 'recordings':
+                        assert pump(5, lambda: w.radio is None), 'the radio did not close'
+                    else:
+                        assert pump(10, lambda: w.radio is not None and w.engine.running), \
+                            (mode, 'the radio did not open again')
+                    assert len(opened) == before + opens, (mode, before, opened)
+                    assert all(kind == 'hackrf' for kind in opened), opened
+            finally:
+                stop()
+                fmapp.make_radio = original
+                if w.radio is None or w.radio.kind != 'file':
+                    w._use_radio('file')
+                    assert pump(10, lambda: w.engine.running), 'radio did not come back'
+
+        def t_file_sweep_from_recordings_opens_once():
+            ensure_receive(c, w)
+            opened, stop = count_opens(w)
+            try:
+                c.ok('mode recordings')
+                assert pump(5, lambda: w.radio is None), 'the radio did not close'
+                before = len(opened)
+                r = c.ok('mode sweep')
+                assert r['tab'] == 'sweep', r                  # the tab asked for shows
+                assert pump(10, lambda: w.engine.running and w.radio is not None), \
+                    'the file did not open'
+                assert len(opened) == before + 1, ('file opened twice', before, opened)
+            finally:
+                stop()
+                c.ok('mode receive')
+                assert pump(10, lambda: w.engine.running), 'radio did not come back'
+
         checks = [
             ('status gains sweep/file/level_unit', t_status_keys),
             ('status file None without a file', t_status_file_none),
@@ -661,6 +829,16 @@ def main():
             ('delete refused without confirm', t_delete_needs_confirm),
             ('delete refused for a Sceptre file', t_delete_refused_external),
             ('delete removes the app’s own recording', t_delete_removes_own),
+            ('fmctl open of a relative path from another folder', t_fmctl_open_relative),
+            ('fmctl open of a path with a space from another folder', t_fmctl_open_spaced),
+            ('fmctl folders add/remove of a relative path', t_fmctl_folders_relative),
+            ('fmctl recordings-folder of a relative path', t_fmctl_recordings_folder_relative),
+            ('_delete_recordings returns what it removed', t_delete_returns_removed),
+            ('_delete_recordings returns nothing for a Sceptre file',
+             t_delete_returns_nothing_for_sceptre),
+            ('the radio opens again on each switch back', t_radio_reopens_on_mode),
+            ('a file sweep from Recordings opens the file once',
+             t_file_sweep_from_recordings_opens_once),
         ]
         for name, fn in checks:
             check(name, fn)
