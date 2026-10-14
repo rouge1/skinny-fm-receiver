@@ -262,7 +262,6 @@ class Knob(Qt.QWidget):
         self.text.setMinimumWidth(62)
         if compact:
             # Beside its words, not under them: for a box short of height.
-            self.dial.setFixedSize(36, 36)
             box = Qt.QHBoxLayout(self)
             box.setContentsMargins(2, 0, 2, 0)
             box.setSpacing(6)
