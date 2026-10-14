@@ -1024,3 +1024,90 @@
 {"t": 1792009026346, "type": "task", "phase": "m6", "task": "tests", "status": "merged", "model": "haiku"}
 {"t": 1792009026394, "type": "task", "phase": "m6", "task": "iq-decode", "status": "merged", "model": "grokw"}
 {"t": 1792009026439, "type": "task", "phase": "m6", "task": "wiring", "status": "merged", "model": "haiku"}
+{"t": 1792009026577, "type": "phase", "phase": "m6", "status": "done"}
+{"t": 1792009231700, "type": "run", "phase": "u1", "task": "narrow", "model": "grokw", "kind": "build", "session": "01a13c07-3e18-7db3-a8c5-88e144073e2a", "wall_s": 762.1, "exit": 1, "timed_out": false, "outcome": "error", "cost": 2.0242512, "tokens_in": 123432, "tokens_out": 35924, "tokens_reasoning": 25599, "cache_read": 5028864, "model_s": 0.0, "messages": 60, "files_changed": 4}
+{"t": 1792009231700, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-narrow-grokw-1792008469587.jsonl", "exit": 1, "timed_out": false}
+{"t": 1792009231700, "type": "task", "phase": "u1", "task": "narrow", "model": "grokw", "status": "failed"}
+{"t": 1792009257623, "type": "task", "phase": "u1", "task": "narrow", "model": "grokw", "status": "fixing"}
+{"t": 1792009257630, "type": "run_start", "phase": "u1", "task": "narrow", "model": "grokw", "dir": "/data/python/skinny/fm-receiver-wt/u1-narrow-grokw", "pid": 1800496, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-narrow-grokw-1792009257623.jsonl", "branch": "u1/narrow-grokw"}
+{"t": 1792009733684, "type": "run", "phase": "u1", "task": "narrow", "model": "grokw", "kind": "fix", "session": "01a13c07-3e18-7db3-a8c5-88e144073e2a", "wall_s": 476.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 1.09213168, "tokens_in": 26204, "tokens_out": 11542, "tokens_reasoning": 7758, "cache_read": 2968832, "model_s": 0.0, "messages": 22, "files_changed": 3}
+{"t": 1792009733684, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-narrow-grokw-1792009257623.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792009733684, "type": "task", "phase": "u1", "task": "narrow", "model": "grokw", "status": "review"}
+{"t": 1792009965870, "type": "task", "phase": "u1", "task": "narrow", "status": "review", "model": "grokw"}
+{"t": 1792009966075, "type": "task", "phase": "u1", "task": "rvn-haiku", "model": "haiku", "status": "working"}
+{"t": 1792009966076, "type": "run_start", "phase": "u1", "task": "rvn-haiku", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/rv-rvn-haiku", "pid": 1809155, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-rvn-haiku-haiku-1792009966075.jsonl"}
+{"t": 1792009981075, "type": "task", "phase": "u1", "task": "rvn-musefree", "model": "musefree", "status": "working"}
+{"t": 1792009981076, "type": "run_start", "phase": "u1", "task": "rvn-musefree", "model": "musefree", "dir": "/data/python/skinny/fm-receiver-wt/rv-rvn-musefree", "pid": 1809254, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-rvn-musefree-musefree-1792009981075.jsonl"}
+{"t": 1792010056156, "type": "run", "phase": "u1", "task": "rvn-haiku", "model": "haiku", "kind": "review", "session": "ses_ec3e1ed8fffevXmecFvPmRU63T", "wall_s": 90.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.015109, "tokens_in": 26, "tokens_out": 2677, "tokens_reasoning": 11274, "cache_read": 332076, "model_s": 89.0, "messages": 12, "files_changed": 0}
+{"t": 1792010056156, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-rvn-haiku-haiku-1792009966075.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792010056156, "type": "task", "phase": "u1", "task": "rvn-haiku", "model": "haiku", "status": "review"}
+{"t": 1792010073175, "type": "run", "phase": "u1", "task": "rvn-musefree", "model": "musefree", "kind": "review", "session": "ses_ec3e1b310ffeFb3xT8sfP3O575", "wall_s": 92.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.0, "tokens_in": 56254, "tokens_out": 3748, "tokens_reasoning": 8597, "cache_read": 451261, "model_s": 90.0, "messages": 14, "files_changed": 0}
+{"t": 1792010073175, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-rvn-musefree-musefree-1792009981075.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792010073175, "type": "task", "phase": "u1", "task": "rvn-musefree", "model": "musefree", "status": "review"}
+{"t": 1792010104013, "type": "task", "phase": "u1", "task": "narrow", "model": "grokw", "status": "fixing"}
+{"t": 1792010104020, "type": "run_start", "phase": "u1", "task": "narrow", "model": "grokw", "dir": "/data/python/skinny/fm-receiver-wt/u1-narrow-grokw", "pid": 1810696, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-narrow-grokw-1792010104013.jsonl", "branch": "u1/narrow-grokw"}
+{"t": 1792010358050, "type": "run", "phase": "u1", "task": "narrow", "model": "grokw", "kind": "fix", "session": null, "wall_s": 254.0, "exit": 143, "timed_out": false, "outcome": "error", "cost": null, "tokens_in": 0, "tokens_out": 0, "tokens_reasoning": 0, "cache_read": 0, "model_s": 0.0, "messages": 0, "files_changed": 3, "cost_unknown": true}
+{"t": 1792010358050, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-narrow-grokw-1792010104013.jsonl", "exit": 143, "timed_out": false}
+{"t": 1792010358051, "type": "task", "phase": "u1", "task": "narrow", "model": "grokw", "status": "failed"}
+{"t": 1792010579224, "type": "task", "phase": "u1", "task": "narrow", "model": "grokw", "status": "fixing"}
+{"t": 1792010579231, "type": "run_start", "phase": "u1", "task": "narrow", "model": "grokw", "dir": "/data/python/skinny/fm-receiver-wt/u1-narrow-grokw", "pid": 1818325, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-narrow-grokw-1792010579224.jsonl", "branch": "u1/narrow-grokw"}
+{"t": 1792010695248, "type": "run", "phase": "u1", "task": "narrow", "model": "grokw", "kind": "fix", "session": null, "wall_s": 116.0, "exit": 143, "timed_out": false, "outcome": "error", "cost": null, "tokens_in": 0, "tokens_out": 0, "tokens_reasoning": 0, "cache_read": 0, "model_s": 0.0, "messages": 0, "files_changed": 0, "cost_unknown": true}
+{"t": 1792010695248, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-narrow-grokw-1792010579224.jsonl", "exit": 143, "timed_out": false}
+{"t": 1792010695248, "type": "task", "phase": "u1", "task": "narrow", "model": "grokw", "status": "failed"}
+{"t": 1792010716209, "type": "task", "phase": "u1", "task": "narrow", "status": "merged", "model": "grokw"}
+{"t": 1792010716253, "type": "task", "phase": "u1", "task": "marker", "status": "queued", "model": "haiku"}
+{"t": 1792010716410, "type": "task", "phase": "u1", "task": "marker", "model": "haiku", "status": "working"}
+{"t": 1792010716412, "type": "run_start", "phase": "u1", "task": "marker", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/u1-marker-haiku", "pid": 1819370, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-marker-haiku-1792010716410.jsonl", "branch": "u1/marker-haiku"}
+{"t": 1792011292552, "type": "run", "phase": "u1", "task": "marker", "model": "haiku", "kind": "build", "session": "ses_ec3d67a50ffevymvz6QqbtL8Yz", "wall_s": 576.1, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.392634, "tokens_in": 1341, "tokens_out": 21139, "tokens_reasoning": 48360, "cache_read": 4538644, "model_s": 574.8, "messages": 43, "files_changed": 0}
+{"t": 1792011292552, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-marker-haiku-1792010716410.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792011292552, "type": "task", "phase": "u1", "task": "marker", "model": "haiku", "status": "review"}
+{"t": 1792011543807, "type": "task", "phase": "u1", "task": "marker", "model": "haiku", "status": "fixing"}
+{"t": 1792011543809, "type": "run_start", "phase": "u1", "task": "marker", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/u1-marker-haiku", "pid": 1834945, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-marker-haiku-1792011543807.jsonl", "branch": "u1/marker-haiku"}
+{"t": 1792011613914, "type": "run", "phase": "u1", "task": "marker", "model": "haiku", "kind": "fix", "session": "ses_ec3d67a50ffevymvz6QqbtL8Yz", "wall_s": 70.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.028374, "tokens_in": 6, "tokens_out": 1021, "tokens_reasoning": 2657, "cache_read": 332724, "model_s": 69.3, "messages": 2, "files_changed": 0}
+{"t": 1792011613914, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-marker-haiku-1792011543807.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792011613914, "type": "task", "phase": "u1", "task": "marker", "model": "haiku", "status": "review"}
+{"t": 1792011849804, "type": "task", "phase": "u1", "task": "marker", "model": "haiku", "status": "fixing"}
+{"t": 1792011849806, "type": "run_start", "phase": "u1", "task": "marker", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/u1-marker-haiku", "pid": 1842163, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-marker-haiku-1792011849804.jsonl", "branch": "u1/marker-haiku"}
+{"t": 1792011887905, "type": "run", "phase": "u1", "task": "marker", "model": "haiku", "kind": "fix", "session": "ses_ec3d67a50ffevymvz6QqbtL8Yz", "wall_s": 38.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.043506, "tokens_in": 8, "tokens_out": 2347, "tokens_reasoning": 2703, "cache_read": 518403, "model_s": 36.3, "messages": 3, "files_changed": 0}
+{"t": 1792011887905, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-marker-haiku-1792011849804.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792011887906, "type": "task", "phase": "u1", "task": "marker", "model": "haiku", "status": "review"}
+{"t": 1792011896832, "type": "task", "phase": "u1", "task": "tests", "model": "haiku", "status": "fixing"}
+{"t": 1792011896834, "type": "run_start", "phase": "u1", "task": "tests", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/u1-marker-haiku", "pid": 1842462, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-tests-haiku-1792011896832.jsonl", "branch": "u1/marker-haiku"}
+{"t": 1792012020965, "type": "run", "phase": "u1", "task": "tests", "model": "haiku", "kind": "fix", "session": "ses_ec412cafeffetBdvAbLXuwnyJP", "wall_s": 124.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.50997, "tokens_in": 30, "tokens_out": 5238, "tokens_reasoning": 3747, "cache_read": 4958422, "model_s": 122.9, "messages": 14, "files_changed": 0}
+{"t": 1792012020965, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-tests-haiku-1792011896832.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792012020965, "type": "task", "phase": "u1", "task": "tests", "model": "haiku", "status": "review"}
+{"t": 1792012086579, "type": "task", "phase": "u1", "task": "marker", "status": "review", "model": "haiku"}
+{"t": 1792012086777, "type": "task", "phase": "u1", "task": "rvm-grokw", "model": "grokw", "status": "working"}
+{"t": 1792012086795, "type": "run_start", "phase": "u1", "task": "rvm-grokw", "model": "grokw", "dir": "/data/python/skinny/fm-receiver-wt/rv-rvm-grokw", "pid": 1846545, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-rvm-grokw-grokw-1792012086777.jsonl"}
+{"t": 1792012101784, "type": "task", "phase": "u1", "task": "rvm-musefree", "model": "musefree", "status": "working"}
+{"t": 1792012101786, "type": "run_start", "phase": "u1", "task": "rvm-musefree", "model": "musefree", "dir": "/data/python/skinny/fm-receiver-wt/rv-rvm-musefree", "pid": 1846748, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-rvm-musefree-musefree-1792012101784.jsonl"}
+{"t": 1792012199888, "type": "run", "phase": "u1", "task": "rvm-musefree", "model": "musefree", "kind": "review", "session": "ses_ec3c15708ffe316IpuFKg3eXZn", "wall_s": 98.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.0, "tokens_in": 84523, "tokens_out": 3613, "tokens_reasoning": 4217, "cache_read": 678958, "model_s": 97.4, "messages": 15, "files_changed": 0}
+{"t": 1792012199888, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-rvm-musefree-musefree-1792012101784.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792012199888, "type": "task", "phase": "u1", "task": "rvm-musefree", "model": "musefree", "status": "review"}
+{"t": 1792012216831, "type": "run", "phase": "u1", "task": "rvm-grokw", "model": "grokw", "kind": "review", "session": "01a13c3e-6fe0-75a3-8448-5d31f56e84a2", "wall_s": 130.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.34872032, "tokens_in": 59472, "tokens_out": 10468, "tokens_reasoning": 8362, "cache_read": 662144, "model_s": 0.0, "messages": 19, "files_changed": 0}
+{"t": 1792012216831, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-rvm-grokw-grokw-1792012086777.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792012216831, "type": "task", "phase": "u1", "task": "rvm-grokw", "model": "grokw", "status": "review"}
+{"t": 1792012232765, "type": "task", "phase": "u1", "task": "marker", "model": "haiku", "status": "fixing"}
+{"t": 1792012232767, "type": "run_start", "phase": "u1", "task": "marker", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/u1-marker-haiku", "pid": 1848672, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-marker-haiku-1792012232765.jsonl", "branch": "u1/marker-haiku"}
+{"t": 1792012658916, "type": "run", "phase": "u1", "task": "marker", "model": "haiku", "kind": "fix", "session": "ses_ec3d67a50ffevymvz6QqbtL8Yz", "wall_s": 426.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.453687, "tokens_in": 54, "tokens_out": 14518, "tokens_reasoning": 14924, "cache_read": 4961780, "model_s": 425.2, "messages": 26, "files_changed": 0}
+{"t": 1792012658916, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-marker-haiku-1792012232765.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792012658917, "type": "task", "phase": "u1", "task": "marker", "model": "haiku", "status": "review"}
+{"t": 1792012893404, "type": "task", "phase": "u1", "task": "marker", "status": "merged", "model": "haiku"}
+{"t": 1792012893449, "type": "task", "phase": "u1", "task": "wiring", "status": "queued", "model": "haiku"}
+{"t": 1792012902029, "type": "task", "phase": "u1", "task": "wiring", "model": "haiku", "status": "working"}
+{"t": 1792012902031, "type": "run_start", "phase": "u1", "task": "wiring", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/u1-wiring-haiku", "pid": 1864672, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-wiring-haiku-1792012902029.jsonl", "branch": "u1/wiring-haiku"}
+{"t": 1792013008131, "type": "run", "phase": "u1", "task": "wiring", "model": "haiku", "kind": "build", "session": "ses_ec3b52108ffet71Eg4tcVgUuEf", "wall_s": 106.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.082974, "tokens_in": 34, "tokens_out": 4985, "tokens_reasoning": 11526, "cache_read": 1342538, "model_s": 104.6, "messages": 16, "files_changed": 0}
+{"t": 1792013008131, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-wiring-haiku-1792012902029.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792013008131, "type": "task", "phase": "u1", "task": "wiring", "model": "haiku", "status": "review"}
+{"t": 1792013015920, "type": "task", "phase": "u1", "task": "wiring", "status": "review", "model": "haiku"}
+{"t": 1792013016042, "type": "task", "phase": "u1", "task": "rvw-grokw", "model": "grokw", "status": "working"}
+{"t": 1792013016062, "type": "run_start", "phase": "u1", "task": "rvw-grokw", "model": "grokw", "dir": "/data/python/skinny/fm-receiver-wt/rv-rvw-grokw", "pid": 1865601, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-rvw-grokw-grokw-1792013016042.jsonl"}
+{"t": 1792013118098, "type": "run", "phase": "u1", "task": "rvw-grokw", "model": "grokw", "kind": "review", "session": "01a13c4c-9dcc-7963-83fd-ea11a2b3b2ab", "wall_s": 102.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.59553584, "tokens_in": 88672, "tokens_out": 8994, "tokens_reasoning": 6478, "cache_read": 1288960, "model_s": 0.0, "messages": 22, "files_changed": 0}
+{"t": 1792013118098, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-rvw-grokw-grokw-1792013016042.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792013118098, "type": "task", "phase": "u1", "task": "rvw-grokw", "model": "grokw", "status": "review"}
+{"t": 1792013124169, "type": "task", "phase": "u1", "task": "wiring", "model": "haiku", "status": "fixing"}
+{"t": 1792013124171, "type": "run_start", "phase": "u1", "task": "wiring", "model": "haiku", "dir": "/data/python/skinny/fm-receiver-wt/u1-wiring-haiku", "pid": 1866350, "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-wiring-haiku-1792013124169.jsonl", "branch": "u1/wiring-haiku"}
+{"t": 1792013150260, "type": "run", "phase": "u1", "task": "wiring", "model": "haiku", "kind": "fix", "session": "ses_ec3b52108ffet71Eg4tcVgUuEf", "wall_s": 26.0, "exit": 0, "timed_out": false, "outcome": "ok", "cost": 0.036813, "tokens_in": 10, "tokens_out": 1661, "tokens_reasoning": 1915, "cache_read": 447404, "model_s": 24.2, "messages": 4, "files_changed": 0}
+{"t": 1792013150260, "type": "run_end", "log": "/data/python/skinny/fm-receiver-ops/data/logs/u1-wiring-haiku-1792013124169.jsonl", "exit": 0, "timed_out": false}
+{"t": 1792013150260, "type": "task", "phase": "u1", "task": "wiring", "model": "haiku", "status": "review"}
+{"t": 1792013154371, "type": "task", "phase": "u1", "task": "wiring", "status": "merged", "model": "haiku"}
