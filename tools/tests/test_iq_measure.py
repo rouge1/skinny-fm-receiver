@@ -1285,5 +1285,304 @@ def check_low_snr_wide_cw():
 GROUPS.append(check_low_snr_wide_cw)
 
 
+# ---- the span extracted for a decoder (m6) ----------------------------------
+
+def _tone_file(name, rate, seconds, tones, sigmf=True):
+    """A .cfile at ``rate`` of ``tones`` (offset Hz, amplitude) from CENTRE, with its
+    .sigmf-meta giving the rate and CENTRE unless ``sigmf`` is False."""
+    base = os.path.join(fresh('extract'), name)
+    t = _t(seconds, rate)
+    sig = np.zeros(len(t), dtype=np.complex128)
+    for f, a in tones:
+        sig += a * np.exp(2j * np.pi * f * t)
+    write_cfile(base + '.cfile', sig)
+    if sigmf:
+        write_sigmf(base, rate, CENTRE)
+    return base + '.cfile'
+
+
+def _peak_and_rest(iq, rate):
+    """The frequency of the strongest line of ``iq`` (Hz) and how many dB the strongest
+    line more than 1 kHz away is under it."""
+    x = np.asarray(iq, dtype=np.complex128) * np.hanning(len(iq))
+    p = np.abs(np.fft.fft(x)) ** 2
+    f = np.fft.fftfreq(len(x), 1 / rate)
+    k = int(np.argmax(p))
+    far = np.abs(f - f[k]) > 1e3
+    return float(f[k]), float(10 * np.log10(p[k] / max(float(p[far].max()), 1e-300)))
+
+
+def check_extract():
+    def pair():
+        return memo('extract-pair', lambda: api().extract(
+            _tone_file('pair', 2e6, 0.2, [(200e3, 1.0), (-600e3, 1.0)]),
+            band=(CENTRE + 150e3, CENTRE + 250e3), max_rate=250000))
+
+    expect('extract band 100.15 to 100.25 MHz: centre is 100.2 MHz (within 1 Hz)',
+           lambda: near(pair().center_hz, CENTRE + 200e3, 1.0))
+    expect('extract band 100.15 to 100.25 MHz, max_rate 250 kS/s: rate between 2x the band and 250 kS/s',
+           lambda: (200e3 <= pair().rate <= 250000, f'rate {pair().rate}'))
+
+    def pair_tones():
+        f, below = _peak_and_rest(pair().iq, pair().rate)
+        return (abs(f) <= 200 and below >= 40,
+                f'strongest at {f:.1f} Hz, the rest {below:.1f} dB under it (want 0 Hz, 40 dB)')
+    expect('extract band 100.15 to 100.25 MHz: +200 kHz tone at 0 Hz, -600 kHz tone 40 dB down',
+           pair_tones)
+
+    def whole():
+        return memo('extract-whole', lambda: api().extract(
+            _tone_file('whole', 2e6, 0.2, [(100e3, 1.0), (400e3, 1.0)])))
+
+    expect('extract with no band at 2 MS/s, max_rate 1 MS/s: centre is the file centre',
+           lambda: eq(whole().center_hz, CENTRE))
+    expect('extract with no band at 2 MS/s, max_rate 1 MS/s: rate at most 1 MS/s and spans 500 kHz',
+           lambda: (5e5 <= whole().rate <= 1e6, f'rate {whole().rate}'))
+
+    def whole_tones():
+        f, below = _peak_and_rest(whole().iq, whole().rate)
+        return (abs(f - 100e3) <= 200 and below >= 40,
+                f'strongest at {f:.1f} Hz, the rest {below:.1f} dB under it (want 100 kHz, 40 dB)')
+    expect('extract with no band: +100 kHz tone at +100 kHz, +400 kHz tone 40 dB down',
+           whole_tones)
+
+    def slow():
+        def make():
+            data = _power_noise(np.random.default_rng(72), 50000, 1.0).astype(np.complex64)
+            base = os.path.join(fresh('extract'), 'slow')
+            write_cfile(base + '.cfile', data)
+            write_sigmf(base, 250000, CENTRE)
+            return data, api().extract(base + '.cfile', max_rate=1e6)
+        return memo('extract-slow', make)
+
+    expect('extract of a 250 kS/s file with max_rate 1 MS/s: rate is 250000',
+           lambda: eq(slow()[1].rate, 250000.0))
+    expect('extract of a 250 kS/s file with max_rate 1 MS/s: length is the file\'s samples',
+           lambda: eq(len(slow()[1].iq), len(slow()[0])))
+    expect('extract of a 250 kS/s file with max_rate 1 MS/s: samples are the file\'s',
+           lambda: (np.allclose(slow()[1].iq, slow()[0]) and slow()[1].iq.dtype == np.complex64,
+                    'samples differ from the file'))
+
+    def span():
+        return memo('extract-span', lambda: api().extract(
+            _tone_file('span', 2e6, 0.2, [(100e3, 1.0)]), t0=0.05, t1=0.1))
+
+    expect('extract t0=0.05 t1=0.1: t0 and t1 returned as given (within 1 sample)',
+           lambda: (near(span().t0, 0.05, 1 / 2e6)[0] and near(span().t1, 0.1, 1 / 2e6)[0],
+                    f't0 {span().t0}, t1 {span().t1}'))
+    expect('extract t0=0.05 t1=0.1: length is (t1 - t0) x the output rate (within 1 %)',
+           lambda: rel_near(len(span().iq), (span().t1 - span().t0) * span().rate, 0.01))
+
+    def counted_reads():
+        path = _tone_file('reads', 2e6, 0.5, [(200e3, 1.0)])
+        n = os.path.getsize(path) // 8
+        api_ = api()
+        real_open = api_.open_iq
+        sizes = []
+
+        def counting_open(p, rate=None, center_hz=None):
+            src = real_open(p, rate=rate, center_hz=center_hz)
+            inner = src.read
+
+            def counted(start, count):
+                sizes.append(int(count))
+                return inner(start, count)
+            src.read = counted
+            return src
+        api_.open_iq = counting_open
+        try:
+            api_.extract(path, band=(CENTRE + 195e3, CENTRE + 205e3))
+        finally:
+            api_.open_iq = real_open
+        biggest, total = max(sizes, default=0), sum(sizes)
+        info(f"2 MS/s, 0.5 s, 10 kHz band: {len(sizes)} reads, largest {biggest}, total {total}")
+        return (0 < len(sizes) and biggest <= 2 ** 22 and total <= 1.1 * n,
+                f'largest read {biggest} (want <= {2 ** 22}), total {total} for a span of {n} '
+                f'(want <= {1.1 * n:.0f})')
+    expect('extract 2 MS/s, 0.5 s, narrow band: no read over 2**22 samples, total at most 1.1 x span',
+           counted_reads)
+
+    def too_big():
+        api_ = api()
+        real_open = api_.open_iq
+        calls = []
+
+        def fetch(a, b):
+            calls.append((a, b))
+            raise RuntimeError('read before the size check')
+
+        def huge_open(p, rate=None, center_hz=None):
+            return api_.IQSource(p, 'cfile', 1e6, CENTRE, 3 * 10 ** 8, None, fetch)
+        api_.open_iq = huge_open
+        try:
+            ok, why = refused(lambda: api_.extract(os.path.join(FOLDER, 'huge.cfile')),
+                              api_.IQSourceError)
+        finally:
+            api_.open_iq = real_open
+        return ok and not calls, why or 'it read before refusing'
+    expect('extract of more than 50 million output samples: IQSourceError before any read',
+           too_big)
+
+    def bare():
+        folder = fresh('extract-bare')
+        path = write_cfile(os.path.join(folder, 'bare.cfile'),
+                           cw_iq(seconds=0.2, offset=100e3, amp=0.5, snr_db=30.0, rate=2e6,
+                                 seed=74))
+        return api().extract(path, rate=2e6, center_hz=CENTRE)
+
+    expect('extract of a bare .cfile with rate= and center_hz=: centre and rate read back',
+           lambda: (eq(bare().center_hz, CENTRE)[0] and bare().rate <= 1e6,
+                    f'centre {bare().center_hz}, rate {bare().rate}'))
+    expect('extract of a bare .cfile with rate= and center_hz=: +100 kHz tone at +100 kHz',
+           lambda: (abs(_peak_and_rest(bare().iq, bare().rate)[0] - 100e3) <= 200,
+                    f'strongest at {_peak_and_rest(bare().iq, bare().rate)[0]:.1f} Hz'))
+
+
+GROUPS.append(check_extract)
+
+
+# ---- extract's output rate, the output cap and max_rate (m6 fix round) ------
+
+def _stub_source(seconds, fetch_calls, rate=2e6):
+    """An IQSource of ``seconds`` of zeros: its fetch returns zeros, chunk by chunk, and
+    counts the requests in ``fetch_calls``."""
+    def fetch(a, b):
+        fetch_calls.append(b - a)
+        return np.zeros(b - a, dtype=np.complex64)
+    return api().IQSource('stub.cfile', 'cfile', rate, CENTRE, int(round(seconds * rate)),
+                          None, fetch)
+
+
+def _with_source(src, call):
+    """``call()`` with ``open_iq`` answering ``src`` for every path."""
+    api_ = api()
+    real_open = api_.open_iq
+    api_.open_iq = lambda p, rate=None, center_hz=None: src
+    try:
+        return call()
+    finally:
+        api_.open_iq = real_open
+
+
+def check_extract_rates():
+    def odd_defaults():
+        return memo('extract-2.4-defaults', lambda: api().extract(
+            _tone_file('odd24', 2.4e6, 0.2, [(100e3, 1.0), (400e3, 1.0)])))
+
+    expect('extract 2.4 MS/s, defaults: rate at most 1 MS/s (no integer decimation fits 2 x 500 kHz)',
+           lambda: (odd_defaults().rate <= 1e6, f'rate {odd_defaults().rate}'))
+    expect('extract 2.4 MS/s, defaults: band narrowed about the file centre, so centre unchanged',
+           lambda: eq(odd_defaults().center_hz, CENTRE))
+
+    def odd_tones():
+        e = odd_defaults()
+        f, below = _peak_and_rest(e.iq, e.rate)
+        return (abs(f - 100e3) <= 200 and below >= 40,
+                f'strongest at {f:.1f} Hz, the rest {below:.1f} dB under it (want 100 kHz, 40 dB)')
+    expect('extract 2.4 MS/s, defaults: +100 kHz tone at +100 kHz, +400 kHz tone 40 dB down',
+           odd_tones)
+
+    def band100():
+        return memo('extract-2.4-100k', lambda: api().extract(
+            _tone_file('band24', 2.4e6, 0.2, [(100e3, 1.0)]),
+            band=(CENTRE + 50e3, CENTRE + 150e3), max_rate=1e6))
+    expect('extract 2.4 MS/s, 100 kHz band, max_rate 1 MS/s: rate in [200 kS/s, 1 MS/s]',
+           lambda: (200e3 <= band100().rate <= 1e6, f'rate {band100().rate}'))
+    expect('extract 2.4 MS/s, 100 kHz band, max_rate 1 MS/s: the largest integer decimation (200 kS/s)',
+           lambda: rel_near(band100().rate, 200e3, 1e-6))
+    expect('extract 2.4 MS/s, 100 kHz band: the tone at the band centre is at 0 Hz',
+           lambda: (abs(_peak_and_rest(band100().iq, band100().rate)[0]) <= 200,
+                    f'strongest at {_peak_and_rest(band100().iq, band100().rate)[0]:.1f} Hz'))
+
+    def long_narrow():
+        def run():
+            calls = []
+            src = _stub_source(60.0, calls)
+            band = (CENTRE + 195e3, CENTRE + 205e3)
+            return _with_source(src, lambda: api().extract('stub.cfile', band=band, max_rate=1e6))
+        return memo('extract-60s-narrow', run)
+    expect('extract 60 s at 2 MS/s, 10 kHz band, max_rate 1 MS/s: no error (output under the cap)',
+           lambda: (long_narrow() is not None, 'raised'))
+    expect('extract 60 s at 2 MS/s, 10 kHz band: about 60 s x 20 kS/s out, rate 20 kS/s',
+           lambda: (eq(long_narrow().rate, 20e3)[0]
+                    and rel_near(len(long_narrow().iq), 60 * 20e3, 0.001)[0],
+                    f'rate {long_narrow().rate}, samples {len(long_narrow().iq)}'))
+
+    def wide_refused():
+        calls = []
+        src = _stub_source(60.0, calls)
+        ok, why = _with_source(src, lambda: refused(
+            lambda: api().extract('stub.cfile', max_rate=1e9), api().IQSourceError))
+        return ok and not calls, why or f'it fetched {len(calls)} chunks before refusing'
+    expect('extract 60 s at 2 MS/s, no band, max_rate 1 GS/s: IQSourceError before any read',
+           wide_refused)
+
+    path = _tone_file('rate-arg', 2e6, 0.2, [(100e3, 1.0)])
+    for bad in (0, -5, float('nan'), float('inf')):
+        expect(f'extract max_rate={bad}: IQSourceError',
+               lambda b=bad: refused(lambda: api().extract(path, max_rate=b), api().IQSourceError))
+
+
+GROUPS.append(check_extract_rates)
+
+
+# ---- the fallback band at rates that no integer decimation fits (m6 fix round 2) ----
+
+def _line_near(iq, rate, f):
+    """(frequency, dB) of the strongest line within 1 kHz of ``f`` (Hann window)."""
+    x = np.asarray(iq, dtype=np.complex128) * np.hanning(len(iq))
+    p = np.abs(np.fft.fft(x)) ** 2
+    freqs = np.fft.fftfreq(len(x), 1 / rate)
+    near = np.flatnonzero(np.abs(freqs - f) <= 1e3)
+    k = near[int(np.argmax(p[near]))]
+    return float(freqs[k]), float(10 * np.log10(p[k]))
+
+
+def _line_over_rest(iq, rate, f):
+    """How many dB the strongest line within 1 kHz of ``f`` is over the strongest
+    line more than 1 kHz away from it (Hann window)."""
+    x = np.asarray(iq, dtype=np.complex128) * np.hanning(len(iq))
+    p = np.abs(np.fft.fft(x)) ** 2
+    freqs = np.fft.fftfreq(len(x), 1 / rate)
+    dist = np.abs(freqs - f)
+    near = np.flatnonzero(dist <= 1e3)
+    rest = dist > 1e3
+    return float(10 * np.log10(p[near].max() / max(float(p[rest].max()), 1e-300)))
+
+
+def check_extract_fallback():
+    def fallback(name, rate, tones):
+        return memo(('extract-fallback', name), lambda: api().extract(
+            _tone_file(name, rate, 0.2, tones)))
+
+    p24 = lambda: fallback('fb24-230', 2.4e6, [(100e3, 1.0), (230e3, 1.0)])     # noqa: E731
+    expect('extract 2.4 MS/s, no band: +230 kHz tone present at +230 kHz (within 200 Hz)',
+           lambda: (abs(_line_near(p24().iq, p24().rate, 230e3)[0] - 230e3) <= 200,
+                    f'strongest near 230 kHz at {_line_near(p24().iq, p24().rate, 230e3)[0]:.1f} Hz'))
+    expect('extract 2.4 MS/s, no band: +230 kHz tone within 6 dB of the +100 kHz tone',
+           lambda: (abs(_line_near(p24().iq, p24().rate, 230e3)[1]
+                        - _line_near(p24().iq, p24().rate, 100e3)[1]) <= 6,
+                    f"+230 kHz {_line_near(p24().iq, p24().rate, 230e3)[1]:.1f} dB, "
+                    f"+100 kHz {_line_near(p24().iq, p24().rate, 100e3)[1]:.1f} dB"))
+
+    p24_450 = lambda: fallback('fb24-450', 2.4e6, [(100e3, 1.0), (450e3, 1.0)])  # noqa: E731
+    expect('extract 2.4 MS/s, no band: +450 kHz tone at least 40 dB down from the +100 kHz tone',
+           lambda: (_line_over_rest(p24_450().iq, p24_450().rate, 100e3) >= 40,
+                    f'the rest is {_line_over_rest(p24_450().iq, p24_450().rate, 100e3):.1f} dB under'))
+
+    p2048 = lambda: fallback('fb2048-200', 2.048e6, [(100e3, 1.0), (200e3, 1.0)])  # noqa: E731
+    expect('extract 2.048 MS/s, no band: +200 kHz tone present at +200 kHz (within 200 Hz)',
+           lambda: (abs(_line_near(p2048().iq, p2048().rate, 200e3)[0] - 200e3) <= 200,
+                    f'strongest near 200 kHz at {_line_near(p2048().iq, p2048().rate, 200e3)[0]:.1f} Hz'))
+    expect('extract 2.048 MS/s, no band: +200 kHz tone within 6 dB of the +100 kHz tone',
+           lambda: (abs(_line_near(p2048().iq, p2048().rate, 200e3)[1]
+                        - _line_near(p2048().iq, p2048().rate, 100e3)[1]) <= 6,
+                    f"+200 kHz {_line_near(p2048().iq, p2048().rate, 200e3)[1]:.1f} dB, "
+                    f"+100 kHz {_line_near(p2048().iq, p2048().rate, 100e3)[1]:.1f} dB"))
+
+
+GROUPS.append(check_extract_fallback)
+
+
 if __name__ == '__main__':
     sys.exit(main())

@@ -23,6 +23,7 @@ block-to-block noise.
 import json
 import math
 import os
+from typing import NamedTuple
 
 import numpy as np
 
@@ -768,6 +769,97 @@ def measure_file(path, t0=None, t1=None, band=None, rate=None, center_hz=None):
     card.update(_analyse(lambda a, c: src.read(i0 + a, c), n, src.rate, src.center_hz,
                          src.full_scale_dbm, band))
     return _clean(_ordered(card))
+
+
+class IQSlice(NamedTuple):
+    """A span of IQ for a decoder: ``rate`` is its sample rate, ``center_hz`` the
+    absolute centre of its band (now at 0 Hz), ``t0`` and ``t1`` the span in seconds."""
+    iq: np.ndarray
+    rate: float
+    center_hz: float
+    t0: float
+    t1: float
+
+
+#: With no band given, a file above max_rate is taken this far either side of its centre.
+EXTRACT_HALF_HZ = 250e3
+#: An extract with more output samples than this is refused before anything is read.
+MAX_OUTPUT = 50_000_000
+
+
+def _decimation(rate, lo, hi, max_rate):
+    """``(dec, lo, hi)``: the decimation of a band lo..hi (offsets, Hz) of a file at
+    ``rate``, and the band it keeps.
+
+    ``dec`` is the largest integer that leaves the rate at least twice the band's
+    width (so a narrow band is decimated far, and its span stays under the output
+    cap). When that rate is above ``max_rate``, ``dec`` is the least integer that
+    brings it to ``max_rate``. When no integer fits both, the band is taken as 0.9 of
+    the output rate about its centre (a complex stream at rate R holds nearly R; the
+    0.9 leaves room for the skirt), clipped to the file: it can be wider than the band
+    asked for, when that is narrower than 0.9 of the output rate."""
+    width = hi - lo
+    wide = math.floor(rate / (2 * width) + 1e-9)
+    fast = max(1, math.ceil(rate / max_rate - 1e-9))
+    if fast <= wide:
+        return wide, lo, hi
+    kept, mid = 0.9 * rate / fast, (lo + hi) / 2
+    return fast, max(mid - kept / 2, -rate / 2), min(mid + kept / 2, rate / 2)
+
+
+def extract(path, t0=None, t1=None, band=None, max_rate=1e6, rate=None, center_hz=None):
+    """The IQ of a span of a recording, for a decoder (see :func:`open_iq`).
+
+    ``t0`` and ``t1`` are seconds into the file (by default the whole of it). ``band``
+    is absolute (f_lo, f_hi) in Hz; with none, the whole file when its rate is at most
+    ``max_rate`` (then passed through unchanged), else +/- 250 kHz about its centre. A
+    band partly outside the file is clipped to it, and ``center_hz`` is then the middle
+    of the clipped band.
+
+    The band is mixed to 0 Hz and band-limited, then decimated (see ``_decimation``):
+    the output rate is at least twice the band's width and at most ``max_rate``, when
+    an integer decimation allows it. If none does, the kept band is 0.9 of the output
+    rate, centred on the band's centre; that can widen a band asked for when it is
+    narrower than 0.9 of the output rate. The kept band is clipped to the file, so
+    ``center_hz`` moves with it when the band sits at the file's edge. ``max_rate``
+    must be a finite number above 0. The span is read in chunks: only the output is
+    held whole."""
+    if not (math.isfinite(max_rate) and max_rate > 0):
+        raise IQSourceError(f"max_rate must be a finite number above 0, not {max_rate!r}.")
+    src = open_iq(path, rate=rate, center_hz=center_hz)
+    start_s = 0.0 if t0 is None else float(t0)
+    stop_s = src.seconds if t1 is None else float(t1)
+    i0 = max(0, int(round(start_s * src.rate)))
+    i1 = min(src.samples, int(round(stop_s * src.rate)))
+    n = i1 - i0
+    if n < MIN_SAMPLES:
+        raise IQSourceError(f"{os.path.basename(str(path))}: the span {start_s:g} to {stop_s:g} s "
+                            f"holds fewer than {MIN_SAMPLES} samples.")
+    if band is None and src.rate <= max_rate:
+        dec, lo, hi = 1, None, None
+    else:
+        if band is None:
+            band = (src.center_hz - EXTRACT_HALF_HZ, src.center_hz + EXTRACT_HALF_HZ)
+        lo, hi = _band_offsets(band, src.center_hz, src.rate)
+        dec, lo, hi = _decimation(src.rate, lo, hi, max_rate)
+    n_out = -(-n // dec)
+    if n_out > MAX_OUTPUT:
+        raise IQSourceError(f"the span would give {n_out} output samples, more than {MAX_OUTPUT}: "
+                            "shorten the span, or narrow the band (a narrower band is decimated "
+                            "further, so fewer samples).")
+    out = np.empty(n_out, dtype=np.complex64)
+    if lo is None:
+        for s in range(0, n, CHUNK):
+            m = min(CHUNK, n - s)
+            out[s:s + m] = src.read(i0 + s, m)
+        base = 0.0
+    else:
+        pos = 0
+        for y in _banded(lambda a, c: src.read(i0 + a, c), n, src.rate, lo, hi, dec):
+            out[pos:pos + len(y)] = y
+            pos += len(y)
+        base = (lo + hi) / 2
+    return IQSlice(out, src.rate / dec, src.center_hz + base, i0 / src.rate, i1 / src.rate)
 
 
 def _ordered(card):
