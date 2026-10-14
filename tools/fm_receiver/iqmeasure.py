@@ -794,15 +794,17 @@ def _decimation(rate, lo, hi, max_rate):
     ``dec`` is the largest integer that leaves the rate at least twice the band's
     width (so a narrow band is decimated far, and its span stays under the output
     cap). When that rate is above ``max_rate``, ``dec`` is the least integer that
-    brings it to ``max_rate``. When no integer then leaves two times the width, the
-    band is narrowed about its centre to half the output rate."""
-    dec = max(1, int(rate / (2 * (hi - lo)) * (1 + 1e-9)))
-    if rate / dec > max_rate:
-        dec = max(1, math.ceil(rate / max_rate - 1e-9))
-    if rate / dec < 2 * (hi - lo) * (1 - 1e-9):
-        mid, width = (lo + hi) / 2, rate / dec / 2
-        lo, hi = max(mid - width / 2, -rate / 2), min(mid + width / 2, rate / 2)
-    return dec, lo, hi
+    brings it to ``max_rate``. When no integer fits both, the band is taken as 0.9 of
+    the output rate about its centre (a complex stream at rate R holds nearly R; the
+    0.9 leaves room for the skirt), clipped to the file: it can be wider than the band
+    asked for, when that is narrower than 0.9 of the output rate."""
+    width = hi - lo
+    wide = math.floor(rate / (2 * width) + 1e-9)
+    fast = max(1, math.ceil(rate / max_rate - 1e-9))
+    if fast <= wide:
+        return wide, lo, hi
+    kept, mid = 0.9 * rate / fast, (lo + hi) / 2
+    return fast, max(mid - kept / 2, -rate / 2), min(mid + kept / 2, rate / 2)
 
 
 def extract(path, t0=None, t1=None, band=None, max_rate=1e6, rate=None, center_hz=None):
@@ -816,9 +818,12 @@ def extract(path, t0=None, t1=None, band=None, max_rate=1e6, rate=None, center_h
 
     The band is mixed to 0 Hz and band-limited, then decimated (see ``_decimation``):
     the output rate is at least twice the band's width and at most ``max_rate``, when
-    an integer decimation allows it. If none does, the band is narrowed about its
-    centre to half the output rate; ``center_hz`` is unchanged. ``max_rate`` must be a
-    finite number above 0. The span is read in chunks: only the output is held whole."""
+    an integer decimation allows it. If none does, the kept band is 0.9 of the output
+    rate, centred on the band's centre; that can widen a band asked for when it is
+    narrower than 0.9 of the output rate. The kept band is clipped to the file, so
+    ``center_hz`` moves with it when the band sits at the file's edge. ``max_rate``
+    must be a finite number above 0. The span is read in chunks: only the output is
+    held whole."""
     if not (math.isfinite(max_rate) and max_rate > 0):
         raise IQSourceError(f"max_rate must be a finite number above 0, not {max_rate!r}.")
     src = open_iq(path, rate=rate, center_hz=center_hz)

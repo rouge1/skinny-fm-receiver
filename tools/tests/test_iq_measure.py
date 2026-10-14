@@ -1526,5 +1526,63 @@ def check_extract_rates():
 GROUPS.append(check_extract_rates)
 
 
+# ---- the fallback band at rates that no integer decimation fits (m6 fix round 2) ----
+
+def _line_near(iq, rate, f):
+    """(frequency, dB) of the strongest line within 1 kHz of ``f`` (Hann window)."""
+    x = np.asarray(iq, dtype=np.complex128) * np.hanning(len(iq))
+    p = np.abs(np.fft.fft(x)) ** 2
+    freqs = np.fft.fftfreq(len(x), 1 / rate)
+    near = np.flatnonzero(np.abs(freqs - f) <= 1e3)
+    k = near[int(np.argmax(p[near]))]
+    return float(freqs[k]), float(10 * np.log10(p[k]))
+
+
+def _line_over_rest(iq, rate, f):
+    """How many dB the strongest line within 1 kHz of ``f`` is over the strongest
+    line more than 1 kHz away from it (Hann window)."""
+    x = np.asarray(iq, dtype=np.complex128) * np.hanning(len(iq))
+    p = np.abs(np.fft.fft(x)) ** 2
+    freqs = np.fft.fftfreq(len(x), 1 / rate)
+    dist = np.abs(freqs - f)
+    near = np.flatnonzero(dist <= 1e3)
+    rest = dist > 1e3
+    return float(10 * np.log10(p[near].max() / max(float(p[rest].max()), 1e-300)))
+
+
+def check_extract_fallback():
+    def fallback(name, rate, tones):
+        return memo(('extract-fallback', name), lambda: api().extract(
+            _tone_file(name, rate, 0.2, tones)))
+
+    p24 = lambda: fallback('fb24-230', 2.4e6, [(100e3, 1.0), (230e3, 1.0)])     # noqa: E731
+    expect('extract 2.4 MS/s, no band: +230 kHz tone present at +230 kHz (within 200 Hz)',
+           lambda: (abs(_line_near(p24().iq, p24().rate, 230e3)[0] - 230e3) <= 200,
+                    f'strongest near 230 kHz at {_line_near(p24().iq, p24().rate, 230e3)[0]:.1f} Hz'))
+    expect('extract 2.4 MS/s, no band: +230 kHz tone within 6 dB of the +100 kHz tone',
+           lambda: (abs(_line_near(p24().iq, p24().rate, 230e3)[1]
+                        - _line_near(p24().iq, p24().rate, 100e3)[1]) <= 6,
+                    f"+230 kHz {_line_near(p24().iq, p24().rate, 230e3)[1]:.1f} dB, "
+                    f"+100 kHz {_line_near(p24().iq, p24().rate, 100e3)[1]:.1f} dB"))
+
+    p24_450 = lambda: fallback('fb24-450', 2.4e6, [(100e3, 1.0), (450e3, 1.0)])  # noqa: E731
+    expect('extract 2.4 MS/s, no band: +450 kHz tone at least 40 dB down from the +100 kHz tone',
+           lambda: (_line_over_rest(p24_450().iq, p24_450().rate, 100e3) >= 40,
+                    f'the rest is {_line_over_rest(p24_450().iq, p24_450().rate, 100e3):.1f} dB under'))
+
+    p2048 = lambda: fallback('fb2048-200', 2.048e6, [(100e3, 1.0), (200e3, 1.0)])  # noqa: E731
+    expect('extract 2.048 MS/s, no band: +200 kHz tone present at +200 kHz (within 200 Hz)',
+           lambda: (abs(_line_near(p2048().iq, p2048().rate, 200e3)[0] - 200e3) <= 200,
+                    f'strongest near 200 kHz at {_line_near(p2048().iq, p2048().rate, 200e3)[0]:.1f} Hz'))
+    expect('extract 2.048 MS/s, no band: +200 kHz tone within 6 dB of the +100 kHz tone',
+           lambda: (abs(_line_near(p2048().iq, p2048().rate, 200e3)[1]
+                        - _line_near(p2048().iq, p2048().rate, 100e3)[1]) <= 6,
+                    f"+200 kHz {_line_near(p2048().iq, p2048().rate, 200e3)[1]:.1f} dB, "
+                    f"+100 kHz {_line_near(p2048().iq, p2048().rate, 100e3)[1]:.1f} dB"))
+
+
+GROUPS.append(check_extract_fallback)
+
+
 if __name__ == '__main__':
     sys.exit(main())
