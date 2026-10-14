@@ -1,4 +1,4 @@
-"""Run the tests: the fifteen that need no radio, with ``--hw`` the BB60D
+"""Run the tests: the twenty that need no radio, with ``--hw`` the BB60D
 check as well, with ``--hackrf`` the HackRF check (other sessions may
 use the HackRF too: make sure it is yours before running it), and with
 ``--rtl`` the RTL-SDR check (this app closed, so no rtl_tcp is running).
@@ -21,7 +21,8 @@ TESTS = ['test_sweep.py', 'test_tuning.py', 'test_receive_chain.py', 'test_gui.p
          'test_iq_measure.py', 'test_iq_tools.py', 'test_iq_decode.py',
          'test_hdradio.py', 'test_sceptre_dvr.py',
          'test_dvr_hd.py', 'test_dvr_iq.py', 'test_sceptre_library.py',
-         'test_spectra.py', 'test_sceptre_spectra.py']
+         'test_spectra.py', 'test_sceptre_spectra.py',
+         'test_narrow_files.py']
 
 
 def main():
