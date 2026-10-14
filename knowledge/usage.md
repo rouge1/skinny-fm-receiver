@@ -931,9 +931,13 @@ tools/fmctl help                          # every command
 | `delete N confirm` | Deletes the Nth recording of the list (0 is the newest), as the list's Delete does. The word `confirm` is required; without it nothing is deleted. Only the app's own recordings: a Sceptre file is left alone. Refused while recording |
 | `recordings-folder PATH` | Sets the app's recordings folder (where Record saves, and what the list reads), saved in the settings, and reads the list again. Refused if PATH is not a directory. Replies `recordings_folder` and `recordings` (the count) |
 | `marker FREQ` | Read-only. The level at FREQ (MHz) on the RF trace, in the view's unit: the held trace while Peak hold is on, otherwise the live one. Refused for a frequency off the shown band. Replies `freq_mhz`, `level_db`, `unit` and `trace` |
-| `measure [SECONDS] [card]` | Measures the last capture (the file the last `capture` replied with) with `tools/iq-measure`, and replies the card (see [Measuring a recording](#measuring-a-recording-iq-measure-and-iq-picture)). `SECONDS` measures only the first that long. `card` also writes `<base>.card.json` beside a `.cfile`. Runs for at most 60 s, and the window keeps running meanwhile. Refused when there is no capture yet |
+| `measure [SECONDS] [card]` | Measures the last capture (the file the last `capture` replied with) with `tools/iq-measure`, and replies the card (see [Measuring a recording](#measuring-a-recording-iq-measure-and-iq-picture)). `SECONDS` measures only the first that long. `card` also writes `<base>.card.json` beside a `.cfile`. Runs for at most 60 s, and the window keeps running meanwhile. Refused when there is no capture yet
+| `record audio` / `iq-channel` / `iq-band` `on` / `off`, `record start` / `stop` | The Record box. `stop` replies with the files saved, the `.sigmf-meta` beside each IQ file included |
+| `capture SECONDS [iq-band` / `iq-channel` / `audio]` | Records only that (IQ of the whole band by default) for SECONDS and replies with the files; the Record box's ticks are put back after. Refused over 4 GB: at 40 MS/s the whole band is 320 MB/s, so 12 s at most |
+| `scan START STOP [step KHZ] [quick S] [listen S] [snr DB]` | Tunes each channel from START to STOP MHz and replies with one row for each: level, SNR, stereo pilot, and `rds` (the same block as `status`) and `hd` (station, programs, now playing, BER) where something was decoded. The step is the Tuner's Step unless given. Each channel is heard for `quick` seconds (2); one with a pilot or an SNR of `snr` dB (6) or more is heard `listen` seconds more (12; 0 for none), long enough for RDS and for HD Radio's name. A channel outside an IQ file's band is a row with the reason. Receive's, refused while recording (retuning would spoil it). The Tuner goes back where it was afterwards, and also if the client leaves, which ends the scan. Up to 30 minutes, worst case |
+| `wait SECONDS` | Replies after that long (up to 120 s) with the window running meanwhile, so a later command sees the result: RDS takes a few seconds |
 
-The commands above, with examples (the names here are made up):
+Examples for the new commands (the names here are made up):
 
 ```sh
 tools/fmctl 'mode receive; filter 200; step 100'   # the channel filter and the Tuner's Step
@@ -948,10 +952,6 @@ tools/fmctl 'capture 5 iq-band; measure 5 card'    # measure the capture, write 
 `status` also has three new keys: `sweep` (`start_mhz` and `stop_mhz`, the Sweep
 tab's bounds), `file` (the IQ file loaded, as an absolute path, or `null` for a
 hardware radio) and `level_unit` (the RF level's unit, `dBFS` or `dBm`).
-| `record audio` / `iq-channel` / `iq-band` `on` / `off`, `record start` / `stop` | The Record box. `stop` replies with the files saved, the `.sigmf-meta` beside each IQ file included |
-| `capture SECONDS [iq-band` / `iq-channel` / `audio]` | Records only that (IQ of the whole band by default) for SECONDS and replies with the files; the Record box's ticks are put back after. Refused over 4 GB: at 40 MS/s the whole band is 320 MB/s, so 12 s at most |
-| `scan START STOP [step KHZ] [quick S] [listen S] [snr DB]` | Tunes each channel from START to STOP MHz and replies with one row for each: level, SNR, stereo pilot, and `rds` (the same block as `status`) and `hd` (station, programs, now playing, BER) where something was decoded. The step is the Tuner's Step unless given. Each channel is heard for `quick` seconds (2); one with a pilot or an SNR of `snr` dB (6) or more is heard `listen` seconds more (12; 0 for none), long enough for RDS and for HD Radio's name. A channel outside an IQ file's band is a row with the reason. Receive's, refused while recording (retuning would spoil it). The Tuner goes back where it was afterwards, and also if the client leaves, which ends the scan. Up to 30 minutes, worst case |
-| `wait SECONDS` | Replies after that long (up to 120 s) with the window running meanwhile, so a later command sees the result: RDS takes a few seconds |
 
 A survey of the FM band, for example: every channel of the US band is read for 2 s, and the ones that look like stations for 12 s more (about 10 minutes on the BB60D, with 33 channels heard for the longer time; the reply, a table of the channels with their RDS and HD Radio, comes at the end, so run it in the background):
 
@@ -1023,7 +1023,11 @@ The picture is a spectrum panel (mean and peak) above a waterfall of the span.
 It takes the same `--t0`, `--t1`, `--band`, `--rate` and `--center` as
 `iq-measure`, and `--nfft N` (the FFT length, 4096 by default; powers of two
 are fastest). The levels are dBm when the file carries a calibration, and dBFS
-otherwise. The title names the file, centre, rate and span. The file is read a
+otherwise. They are per FFT bin: each bin's power over the window's sum of
+squares, as `spectra()` in `tools/iq-picture` computes it. Noise reads the
+per-sample power there, but a steady tone, whose power sits in a bin or two,
+reads higher than the card's `power_dbm`, which is the total over all samples.
+Both are dBm for a calibrated file. The title names the file, centre, rate and span. The file is read a
 chunk at a time. It draws with matplotlib, which `environment.yml` does not
 list, so it needs that installed in the Python you run it with.
 
@@ -1048,11 +1052,11 @@ The card is a JSON object. A value that cannot be measured is `null`. Its keys:
 
 **Levels in dBm.** A `.cfile` has no calibration, so its level is relative and
 `power_dbm` is `null`. A `.sdvr` is in dBm, from the scale its header gives.
-A `.cdif` is in dBm only when the file has the `DATA_GAIN` keyword: its samples
-are scaled by `10**(-DATA_GAIN/20)`, so `dBm = 10 log10 |x|² - DATA_GAIN`.
-Without the keyword its level is relative. The Recordings tab applies
-`DATA_GAIN`, but the card does not yet: for a `.cdif`, `power_dbm` is `null`
-and `power_dbfs` is unscaled. That is open.
+A `.cdif` with the `DATA_GAIN` keyword is in dBm: its samples are scaled by
+`10**(-DATA_GAIN/20)`, so `dBm = 10 log10 |x|² - DATA_GAIN`, and `power_dbm`
+equals `power_dbfs`. Without the keyword its level is relative and `power_dbm`
+is `null`. `iq-picture` and `fmctl measure` read the file through the same
+opener, so they follow these rules too.
 
 **The card file.** `--card` (or `measure ... card`) writes `<base>.card.json`
 beside a `.cfile` and nowhere else: never beside a `.sdvr`, `.cdif` or `.fft`,

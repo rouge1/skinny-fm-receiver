@@ -246,7 +246,7 @@ to come. The decoders `iq-demod` and `iq-frames` are planned, not built.
 | `fmctl open`, `delete`, `recordings-folder`, `marker` | 🧪 built, tested on synthetic signals | `delete N confirm` needs the word `confirm` and leaves Sceptre files alone. `marker` is read-only: the level at a frequency on the RF trace, in its unit. |
 | `fmctl measure [SECONDS] [card]` | 🧪 built, tested on synthetic signals | Runs `tools/iq-measure` on the last capture, in a subprocess with a 60 s limit; replies the card. `card` also writes it. |
 | `fmctl status`: `sweep`, `file`, `level_unit` | 🧪 built, tested on synthetic signals | The Sweep tab's bounds, the IQ file loaded (or none), and the RF level's unit. |
-| `.cdif` DATA_GAIN reading | 🧪 built, tested on synthetic signals | In the Recordings tab (`BlueReader`) a `.cdif` is in dBm when it has `DATA_GAIN`, and relative without it. Open: the card (`iqmeasure`) does not apply `DATA_GAIN` yet, so its `power_dbm` is null for a `.cdif`. |
+| `.cdif` DATA_GAIN reading | 🧪 built, tested on synthetic signals | In the Recordings tab (`BlueReader`) a `.cdif` is in dBm when it has `DATA_GAIN`, and relative without it. The card (`iqmeasure`, `iq-measure`, `fmctl measure`) applies it too: with `DATA_GAIN`, a `.cdif`'s `power_dbm` equals its `power_dbfs`; without it, `power_dbm` is null. |
 
 ## Tests
 
