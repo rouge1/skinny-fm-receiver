@@ -1222,10 +1222,11 @@ def check_low_snr_wide_cw():
 
     50 ms, not 3 s: past about 55 ms the edge cluster is only ~2 % of the
     frequency blocks and loses the split, so the misclassification hides.
-    50 ms still classes the 28 MS/s tone as FSK. At 1 MS/s the track is 20 kHz
-    of a 1 MHz band (19 dB over the whole band is about 36 dB in the track),
-    and the half-range of a steady tone there measures 109 to 113 Hz, so the
-    bound is 130 Hz rather than 100.
+    50 ms still classes the 28 MS/s tone as FSK. A tone at +64750 Hz keeps a
+    single level out to 1 s, but the splice widens deviation to about 143 Hz
+    (22 Hz when the overlap pad is 16384). At 1 MS/s the half-range of a
+    steady tone is 109 to 113 Hz on this code and on the pre-m5 filter
+    (644289d, same three seeds), so that bound is 130 Hz.
     """
     import time
     seconds = 0.05
@@ -1246,6 +1247,18 @@ def check_low_snr_wide_cw():
            lambda: wide(1e6, 19.0, 73, 130.0))
     expect('CW +100003.3 Hz, 28 MS/s, 40 dB over 28 MHz: carrier, one tone, deviation < 100',
            lambda: wide(28e6, 40.0, 1))
+
+    def wide_at(rate, span, snr, seed, offset, bound=100.0):
+        start = time.perf_counter()
+        card = _cw_card(rate, span, snr, seed, offset=offset)
+        wall = time.perf_counter() - start
+        ok, detail = _carrier_ok(card, bound)
+        info(f"{rate / 1e6:.0f} MS/s, {snr:.0f} dB, {span} s, offset {offset}: "
+             f"{wall:.2f} s, {detail}")
+        return ok, f'{wall:.2f} s, {detail}'
+
+    expect('CW +64750 Hz, 28 MS/s, 1 s, 19 dB: carrier, one tone, deviation < 100',
+           lambda: wide_at(28e6, 1.0, 19.0, 1, 64750.0))
 
     def blocks():
         path = write_wide_cw(os.path.join(fresh('lowsnr'), 'cw-blocks.cfile'),

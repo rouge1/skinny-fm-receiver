@@ -49,11 +49,18 @@ MAX_PAD = 1 << 20
 #: read or a transform takes at once.
 FILTER_BLOCK = 1 << 15
 MAX_BLOCK = 1 << 22
-#: Bins of raised-cosine skirt outside the passband. A hard cut rings for longer
-#: than the overlap, so adjacent blocks meet with a phase step of a fraction of a
-#: degree. One step per block is enough for the 16-sample frequency to grow a
-#: second cluster, and a CW is then classed as FSK.
-SKIRT_BINS = 2
+#: Bins of raised-cosine skirt outside the passband. Measured, not assumed:
+#: on the hard-cut filter a CW leaves one 16-sample frequency block per 877
+#: outputs (1140 Hz) off the others. At +100 kHz and 19 dB that offset is
+#: about 83 Hz and, from half a second up, still one level (deviation 27 Hz).
+#: At +64750 Hz the same splice widens a 1 s record's deviation to 143 Hz.
+#: PAD=16384 instead of 4096 brings that 143 Hz back to 22 Hz, and the same
+#: pad on c8ae476 also clears the 50 ms +100 kHz misclassification. The mixer
+#: term ``(-fc * (s - pad) / rate) % 1`` at s=2.4e8 is 2e-8 deg off in
+#: float64, so it is not the splice. Four skirt bins bring the +64750 Hz
+#: deviation to 63 Hz. Six or eight bins key a clean +50 kHz tone
+#: (envelope or a second frequency level), so the skirt stays at four.
+SKIRT_BINS = 4
 TONE_DB = 15.0
 #: A tone more than this far under the strongest is a window's sidelobe, not a tone.
 TONE_RANGE_DB = 60.0
