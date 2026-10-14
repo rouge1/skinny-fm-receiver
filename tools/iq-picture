@@ -15,6 +15,7 @@ panel plots. Importing this file does not draw anything.
 """
 
 import argparse
+import math
 import os
 import sys
 
@@ -29,16 +30,44 @@ MAX_SPAN_S = 30.0
 CHUNK = 1 << 18
 #: Default FFT length. A bin is then rate / 4096.
 DEFAULT_NFFT = 4096
+#: Shorter than this, the Hann window is all zeros and every level is NaN.
+MIN_NFFT = 8
+#: Longer than this, one FFT is gigabytes. 2**20 complex samples is 8 MB.
+MAX_NFFT = 1 << 20
 #: The waterfall is reduced to this before it is drawn.
 MAX_ROWS = 400
 MAX_COLS = 2000
 
 
+def _fail(message):
+    raise iqmeasure.IQSourceError(message)
+
+
+def _finite(name, value):
+    """``value`` as a finite float, or an error that says which argument it was."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        _fail(f"{name} must be a finite number.")
+        raise exc
+    if not math.isfinite(number):
+        _fail(f"{name} must be a finite number.")
+    return number
+
+
 def _nfft_of(n, nfft):
-    """FFT length that fits ``n`` samples: the one asked for, or fewer when the span is shorter."""
+    """FFT length that fits ``n`` samples: the one asked for, or fewer when the span is shorter.
+
+    The length asked for has to be at least 8 and at most 2**20. A shorter span
+    uses fewer bins, but never so few that the Hann window vanishes.
+    """
     nfft = int(DEFAULT_NFFT if nfft is None else nfft)
-    if nfft < 1:
-        raise iqmeasure.IQSourceError("nfft must be at least 1.")
+    if nfft < MIN_NFFT:
+        _fail(f"nfft must be at least {MIN_NFFT}.")
+    if nfft > MAX_NFFT:
+        _fail(f"nfft must be at most {MAX_NFFT}.")
+    if n < MIN_NFFT:
+        _fail(f"the span holds {n} samples, fewer than one FFT of {MIN_NFFT}.")
     return min(nfft, n)
 
 
@@ -46,15 +75,32 @@ def _indexes(src, t0, t1):
     """Sample range of the span: ``t0`` to ``t1`` seconds, clipped to the file.
 
     With ``t1`` omitted the span stops at 30 s, as ``iqmeasure.measure_file`` does.
+    A non-finite edge, or a start that is not before the end, is refused.
     """
-    start_s = 0.0 if t0 is None else float(t0)
-    stop_s = min(src.seconds, start_s + MAX_SPAN_S) if t1 is None else float(t1)
-    i0 = max(0, int(round(start_s * src.rate)))
-    i1 = min(src.samples, int(round(stop_s * src.rate)))
+    start_s = 0.0 if t0 is None else _finite("--t0", t0)
+    if t1 is None:
+        stop_s = min(src.seconds, start_s + MAX_SPAN_S)
+    else:
+        stop_s = _finite("--t1", t1)
+    if t0 is not None and t1 is not None and not start_s < stop_s:
+        _fail(f"the span {start_s:g} to {stop_s:g} s is empty: t0 must be before t1.")
+    try:
+        i0 = max(0, int(round(start_s * src.rate)))
+        i1 = min(src.samples, int(round(stop_s * src.rate)))
+    except (ValueError, OverflowError):
+        _fail(f"{os.path.basename(src.path)}: the span {start_s:g} to {stop_s:g} s is not usable.")
     if i1 - i0 < 1:
-        raise iqmeasure.IQSourceError(
-            f"{os.path.basename(src.path)}: the span {start_s:g} to {stop_s:g} s is empty.")
+        _fail(f"{os.path.basename(src.path)}: the span {start_s:g} to {stop_s:g} s is empty.")
     return i0, i1
+
+
+def _open(path, rate, center_hz):
+    """``open_iq``, after refusing a rate that is not a finite number above zero."""
+    if rate is not None:
+        rate = _finite("--rate", rate)
+        if rate <= 0:
+            _fail("the sample rate must be a finite number above zero.")
+    return iqmeasure.open_iq(path, rate=rate, center_hz=center_hz)
 
 
 def _column_edges(n, limit):
@@ -91,8 +137,7 @@ def spectra(src, i0, i1, nfft, band):
     nfft = _nfft_of(n, nfft)
     n_blocks = n // nfft
     if n_blocks < 1:
-        raise iqmeasure.IQSourceError(
-            f"{os.path.basename(src.path)}: the span holds {n} samples, fewer than one FFT.")
+        _fail(f"{os.path.basename(src.path)}: the span holds {n} samples, fewer than one FFT.")
 
     window = np.hanning(nfft).astype(np.float32)
     norm = float(np.sum(window.astype(np.float64) ** 2))
@@ -100,12 +145,12 @@ def spectra(src, i0, i1, nfft, band):
     if band is None:
         keep = np.arange(nfft)
     else:
-        lo, hi = float(band[0]), float(band[1])
+        lo, hi = _finite("--band LO", band[0]), _finite("--band HI", band[1])
         if lo > hi:
-            lo, hi = hi, lo
+            _fail(f"the band {lo:g} to {hi:g} Hz has its low edge above its high edge.")
         keep = np.flatnonzero((freq >= lo) & (freq <= hi))
         if keep.size == 0:
-            raise iqmeasure.IQSourceError("the band covers no frequency bins.")
+            _fail("the band covers no frequency bins.")
     edges = _column_edges(keep.size, MAX_COLS)
     n_cols = keep.size if edges is None else len(edges) - 1
     n_rows = min(MAX_ROWS, n_blocks)
@@ -114,24 +159,28 @@ def spectra(src, i0, i1, nfft, band):
     peak = np.zeros(nfft, dtype=np.float64)
     waterfall = np.zeros((n_rows, n_cols), dtype=np.float64)
 
-    pending = np.empty(0, dtype=np.complex64)
+    # One working buffer: a small FFT is stacked up to CHUNK samples, a large
+    # one is a single block. Nothing grows with the file, and nothing past nfft.
+    room = CHUNK if nfft <= CHUNK else nfft
+    buf = np.empty(room, dtype=np.complex64)
+    filled = 0
     got = 0
     block = 0
     want = n_blocks * nfft
     while got < want and block < n_blocks:
-        take = min(CHUNK, want - got)
-        chunk = src.read(i0 + got, take)
-        if chunk.size == 0:
+        take = min(room - filled, want - got)
+        piece = src.read(i0 + got, take)
+        if piece.size == 0:
             break
-        got += int(chunk.size)
-        if pending.size:
-            chunk = np.concatenate((pending, chunk))
-        whole = int(chunk.size) // nfft
-        use = min(whole, n_blocks - block)
+        nread = int(piece.size)
+        buf[filled:filled + nread] = piece
+        filled += nread
+        got += nread
+        use = min(filled // nfft, n_blocks - block)
         if use == 0:
-            pending = chunk
             continue
-        frame = np.fft.fft(chunk[:use * nfft].reshape(use, nfft) * window, axis=1)
+        taken = use * nfft
+        frame = np.fft.fft(buf[:taken].reshape(use, nfft) * window, axis=1)
         power = np.fft.fftshift(frame.real.astype(np.float64) ** 2
                                 + frame.imag.astype(np.float64) ** 2, axes=1)
         sum_p += power.sum(axis=0)
@@ -144,7 +193,10 @@ def spectra(src, i0, i1, nfft, band):
         which, reduced = _reduce_rows(shown, rows)
         waterfall[which] = np.maximum(waterfall[which], reduced)
 
-        pending = chunk[use * nfft:]
+        tail = filled - taken
+        if tail:
+            buf[:tail] = buf[taken:filled]
+        filled = tail
         block += use
 
     scale = n_blocks * norm
@@ -179,7 +231,7 @@ def peak_panel(path, t0=None, t1=None, band=None, rate=None, center_hz=None, nff
     only the bins inside it are returned. Raises ``iqmeasure.IQSourceError``
     when the file cannot be read.
     """
-    src = iqmeasure.open_iq(path, rate=rate, center_hz=center_hz)
+    src = _open(path, rate, center_hz)
     i0, i1 = _indexes(src, t0, t1)
     freq, _mean, peak, _wf = spectra(src, i0, i1, nfft, band)
     peak_db, _unit = _db(peak, src.full_scale_dbm)
@@ -188,7 +240,7 @@ def peak_panel(path, t0=None, t1=None, band=None, rate=None, center_hz=None, nff
 
 def render(path, out, t0=None, t1=None, band=None, rate=None, center_hz=None, nfft=None):
     """Write the PNG of ``path`` to ``out``. Nothing is written if reading fails."""
-    src = iqmeasure.open_iq(path, rate=rate, center_hz=center_hz)
+    src = _open(path, rate, center_hz)
     i0, i1 = _indexes(src, t0, t1)
     freq, mean, peak, waterfall = spectra(src, i0, i1, nfft, band)
     mean_db, unit = _db(mean, src.full_scale_dbm)
@@ -220,7 +272,15 @@ def render(path, out, t0=None, t1=None, band=None, rate=None, center_hz=None, nf
     wf.set_xlabel(funit)
     wf.set_ylabel('seconds')
     # The full level range is on the colour bar, and the layout keeps the labels.
-    fig.savefig(out, dpi=110)
+    try:
+        fig.savefig(out, dpi=110)
+    except OSError as exc:
+        plt.close(fig)
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+        _fail(f"could not write {out}: {exc}")
     plt.close(fig)
 
 
@@ -236,12 +296,16 @@ def main(argv=None):
     ap.add_argument('--rate', type=float, metavar='R', help="sample rate, for a bare .cfile")
     ap.add_argument('--center', type=float, dest='center_hz', metavar='HZ',
                     help="centre frequency, Hz")
-    ap.add_argument('--nfft', type=int, metavar='N', help="FFT length (default 4096)")
+    ap.add_argument('--nfft', type=int, metavar='N',
+                    help="FFT length (default 4096; powers of two are fastest)")
     args = ap.parse_args(argv)
     try:
         render(args.file, args.out, t0=args.t0, t1=args.t1, band=args.band,
                rate=args.rate, center_hz=args.center_hz, nfft=args.nfft)
     except iqmeasure.IQSourceError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    except (ValueError, OverflowError) as exc:
         print(exc, file=sys.stderr)
         return 1
     return 0
