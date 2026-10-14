@@ -1,0 +1,292 @@
+#!/usr/bin/env python3
+"""iq-decode: hand a measured span of IQ to rtl_433 and print what it decoded.
+
+    tools/iq-decode FILE [--t0 S --t1 S] [--band LO HI] [--rate R --center HZ]
+    tools/iq-decode FILE [-R N ...] [--out-rate R] [--keep PATH] [--timeout S]
+
+The level of a capture sits far below rtl_433's pulse detector, so the span is
+scaled until the 99.9th percentile of |x| is 0.5 and that gain is reported.
+Stdout is one JSON document. Numpy only; rtl_433 is a subprocess.
+
+Investigation (rtl_433 23.11, 2023-11-28): not reproduced. ``rtl_433 -R help`` lists protocol 19 (Nexus, FreeTec NC-7345, NX-3980, Solight TE82S, TFA 30.3209) with no star, and the stars mark the protocols disabled by default, while ``rtl_433 -G`` only says register_all is deprecated, so 19 is in this build's default set. A Nexus-TH frame built as in the test (36 bits 101101011000000010111110111101000111, 12 rows, 16 us ramps) was scaled the contract's way (99.9th percentile of |x| to 0.5) and passed to ``rtl_433 -r cf32 -s RATE -f 433920000 -F json -M level``, once with ``-R 19`` and once with no ``-R``. Both ways agreed on every variant: amplitude 0.4 and 1.0 with noise sigma 0.003 decoded 1 Nexus-TH id 181 (gain +1.8 dB and -6.1 dB); sigma 0.01 and 0.03 on amplitude 0.4 decoded 1 and 1 (gain +1.4 dB and +0.4 dB); DC offsets 0.05, 0.2 and 0.5 decoded 1, 0 and 0; a 1-row and a 2-row burst decoded 0 and 0, a 3-row burst decoded 1; offsets of 30, 50 and 100 kHz at 250 kS/s decoded 1; 1 MS/s and 2 MS/s (the envelope stretched by integer repeat) decoded 1 at the native rate and 1 again after a block-average decimation to 250 kS/s. The test's own level (noise sigma 0.003 on the 0.4 envelope, then times 0.005, then +30 kHz) decoded 0 unscaled (99.9th percentile 0.00204) and 1 after scaling (gain +47.8 dB) with both protocol choices; amplitudes 0.001, 0.002 and 0.01 with sigma 0.003 added on that already-small envelope decoded 0 either way (gains +32.9, +32.7 and +28.8 dB), as did one row at 50 kHz offset with sigma 0.03. No variant decoded with ``-R 19`` and failed on the default set, so ``-v`` was not run on a one-sided case, and this tool leaves rtl_433 on its default protocol set.
+"""
+
+import argparse
+import json
+import math
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fm_receiver import iqmeasure  # noqa: E402
+
+# rtl_433's OOK pulse detector is built for this rate. A faster extract is decimated down to it.
+DEFAULT_OUT_RATE = 250000.0
+DEFAULT_TIMEOUT = 120.0
+# Block-average this many output samples at a time, so the decimated stream is never a second whole-file array.
+DECIM_CHUNK = 1_048_576
+
+
+def _refuse(message):
+    """A bad option or a file this cannot read: the message on stderr, nothing on stdout, exit 1."""
+    sys.stderr.write(f"iq-decode: {message}\n")
+    return 1
+
+
+def _missing():
+    """rtl_433 is not on PATH. Exit 2, and say how to install it on Debian and on Homebrew."""
+    sys.stderr.write(
+        "iq-decode: rtl_433 is not installed. "
+        "Install it with `apt install rtl-433` or `brew install rtl_433`.\n")
+    return 2
+
+
+def _check_options(args):
+    """Reject spans and rates that would raise outside IQSourceError."""
+    for name, value in (('--t0', args.t0), ('--t1', args.t1), ('--center', args.center)):
+        if value is not None and not math.isfinite(value):
+            return _refuse(f"{name} must be a finite number.")
+    if args.t0 is not None and args.t1 is not None and args.t0 >= args.t1:
+        return _refuse(f"--t0 ({args.t0:g} s) is not before --t1 ({args.t1:g} s).")
+    if args.rate is not None and (not math.isfinite(args.rate) or args.rate <= 0):
+        return _refuse("--rate must be a finite sample rate above 0.")
+    if not math.isfinite(args.out_rate) or args.out_rate <= 0:
+        return _refuse("--out-rate must be a finite sample rate above 0.")
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        return _refuse("--timeout must be a finite number of seconds above 0.")
+    if args.band is not None and args.band[0] >= args.band[1]:
+        return _refuse(f"--band ({args.band[0]:g} to {args.band[1]:g} Hz) needs LO < HI.")
+    return None
+
+
+def _json_num(value):
+    """A JSON number: an integer when ``value`` is one, so a centre in Hz compares equal."""
+    x = float(value)
+    rounded = round(x)
+    if abs(x - rounded) <= 1e-6 * max(1.0, abs(rounded)):
+        return int(rounded)
+    return x
+
+
+def _protocols(codes):
+    """``'default'`` when no ``-R`` was given, else the integers in the order given."""
+    if not codes:
+        return 'default'
+    return [int(n) for n in codes]
+
+
+def _decimation(rate, out_rate):
+    """Integer factor that takes ``rate`` toward ``out_rate``, which is already capped by ``rate``.
+
+    The nearest integer to ``rate / out_rate`` (at least 1). When ``rate`` is not a multiple of
+    the request, the rate that results is ``rate / factor``, not the request."""
+    if rate <= out_rate:
+        return 1
+    return max(1, int(round(rate / out_rate)))
+
+
+def _write_cf32(iq, dec, path):
+    """Write ``iq`` as interleaved complex64, block-averaged by ``dec`` when that is above 1.
+
+    A moving average of ``dec`` samples is the anti-alias filter. It is applied in chunks, and
+    only the chunk's average is allocated, so a 50-million-sample extract is not copied whole."""
+    iq = np.asarray(iq, dtype=np.complex64)
+    with open(path, 'wb') as fh:
+        if dec <= 1:
+            iq.tofile(fh)
+            return iq.shape[0]
+        n = (iq.shape[0] // dec) * dec
+        step = DECIM_CHUNK * dec
+        for i in range(0, n, step):
+            block = iq[i:min(i + step, n)]
+            averaged = block.reshape(-1, dec).mean(axis=1)
+            averaged.astype(np.complex64, copy=False).tofile(fh)
+        return n // dec
+
+
+def _scale(iq):
+    """``(scaled, gain_db)`` so the 99.9th percentile of |x| is 0.5.
+
+    ``gain_db`` is None when that scale is 0 or not finite (a silent or non-finite span): the
+    caller then reports no packets instead of handing rtl_433 a useless file."""
+    peak = float(np.percentile(np.abs(iq), 99.9))
+    scale = 0.5 / peak if peak else math.inf
+    if not math.isfinite(scale) or scale == 0.0:
+        return None, None
+    scaled = np.asarray(iq, dtype=np.complex64)
+    scaled *= np.complex64(scale)
+    return scaled, 20.0 * math.log10(scale)
+
+
+def _parse_stdout(path):
+    """JSON lines rtl_433 wrote. Lines that are not JSON are ignored.
+
+    ``packets`` counts objects that have a ``model``. ``decodes`` keeps the first 50 objects.
+    ``summary`` groups those packets by ``(model, id)``."""
+    decodes = []
+    counts = {}
+    order = []
+    packets = 0
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if len(decodes) < 50:
+                decodes.append(obj)
+            if not isinstance(obj, dict) or 'model' not in obj:
+                continue
+            packets += 1
+            ident = obj['id'] if 'id' in obj else None
+            key = (obj['model'], ident)
+            if key not in counts:
+                counts[key] = 0
+                order.append(key)
+            counts[key] += 1
+    summary = []
+    for model, ident in order:
+        item = {'model': model, 'count': counts[(model, ident)]}
+        if ident is not None:
+            item['id'] = ident
+        # id sits between model and count, as the contract lists it.
+        if 'id' in item:
+            item = {'model': item['model'], 'id': item['id'], 'count': item['count']}
+        summary.append(item)
+    return packets, decodes, summary
+
+
+def _version_line(path):
+    """The ``rtl_433 version ...`` line from rtl_433's stderr, or None when it printed none."""
+    with open(path) as fh:
+        for line in fh:
+            if 'rtl_433 version' in line:
+                return line.strip()
+    return None
+
+
+def _emit(card):
+    json.dump(card, sys.stdout, indent=2, allow_nan=False)
+    sys.stdout.write('\n')
+    sys.stdout.flush()
+
+
+def _empty_card(path, center, rate, protocols):
+    return {
+        'file': path,
+        'center_hz': _json_num(center),
+        'rate_sps': _json_num(rate),
+        'gain_db': None,
+        'rtl_433': None,
+        'protocols': protocols,
+        'packets': 0,
+        'decodes': [],
+        'summary': [],
+    }
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('file', help="the recording (.cfile, .sdvr or .cdif)")
+    ap.add_argument('--t0', type=float, metavar='S', help="start of the span, seconds")
+    ap.add_argument('--t1', type=float, metavar='S', help="end of the span, seconds")
+    ap.add_argument('--band', nargs=2, type=float, metavar=('LO', 'HI'),
+                    help="Hz to decode, absolute")
+    ap.add_argument('--rate', type=float, metavar='R',
+                    help="samples/s, for a .cfile with no .sigmf-meta")
+    ap.add_argument('--center', type=float, metavar='HZ',
+                    help="centre frequency in Hz, for a bare .cfile")
+    ap.add_argument('-R', action='append', type=int, metavar='N',
+                    help="rtl_433 protocol number (repeatable; default: rtl_433's own set)")
+    ap.add_argument('--out-rate', type=float, default=DEFAULT_OUT_RATE, metavar='R',
+                    help="sample rate handed to rtl_433 (default: 250000, capped by the extract)")
+    ap.add_argument('--keep', metavar='PATH',
+                    help="keep the cf32 file at PATH instead of deleting it")
+    ap.add_argument('--timeout', type=float, default=DEFAULT_TIMEOUT, metavar='S',
+                    help="seconds to let rtl_433 run (default: 120)")
+    try:
+        args = ap.parse_args(argv)
+    except SystemExit as exc:
+        code = exc.code
+        if code is None or code == 0:
+            return 0
+        return 1
+    refused = _check_options(args)
+    if refused:
+        return refused
+    # Which, not a subprocess: a missing rtl_433 is exit 2 before any file is read.
+    if shutil.which('rtl_433') is None:
+        return _missing()
+    protocols = _protocols(args.R)
+    try:
+        sl = iqmeasure.extract(
+            args.file, t0=args.t0, t1=args.t1,
+            band=tuple(args.band) if args.band else None,
+            max_rate=1e6, rate=args.rate, center_hz=args.center)
+    except iqmeasure.IQSourceError as exc:
+        return _refuse(exc)
+    except OSError as exc:
+        return _refuse(exc)
+
+    target = min(float(args.out_rate), float(sl.rate))
+    dec = _decimation(float(sl.rate), target)
+    rate_sps = float(sl.rate) / dec
+    scaled, gain_db = _scale(sl.iq)
+    if scaled is None:
+        _emit(_empty_card(args.file, sl.center_hz, rate_sps, protocols))
+        return 0
+
+    # mkdtemp honours TMPDIR. The name stays one alphanumeric token plus a suffix so rtl_433,
+    # which reads format hints out of the whole path, does not see a stray parameter.
+    tmp = tempfile.mkdtemp(prefix='iqdecode-')
+    try:
+        cf32 = args.keep if args.keep else os.path.join(tmp, 'slice.cf32')
+        try:
+            _write_cf32(scaled, dec, cf32)
+        except OSError as exc:
+            return _refuse(exc)
+        out_path = os.path.join(tmp, 'rtl_433.json')
+        err_path = os.path.join(tmp, 'rtl_433.err')
+        extra = []
+        for number in (args.R or []):
+            extra.extend(['-R', str(int(number))])
+        # stdout is a file, not a pipe: a pipe dropped decodes when this was tried.
+        try:
+            with open(out_path, 'w') as out_fh, open(err_path, 'w') as err_fh:
+                subprocess.run(
+                    ['rtl_433', '-r', 'cf32:' + cf32, '-s', str(_json_num(rate_sps)),
+                     '-f', str(_json_num(sl.center_hz)), '-F', 'json', '-M', 'level'] + extra,
+                    stdout=out_fh, stderr=err_fh, timeout=args.timeout)
+        except subprocess.TimeoutExpired:
+            return _refuse(f"rtl_433 timed out after {args.timeout:g} s.")
+        except OSError:
+            return _missing()
+        packets, decodes, summary = _parse_stdout(out_path)
+        card = {
+            'file': args.file,
+            'center_hz': _json_num(sl.center_hz),
+            'rate_sps': _json_num(rate_sps),
+            'gain_db': gain_db,
+            'rtl_433': _version_line(err_path),
+            'protocols': protocols,
+            'packets': packets,
+            'decodes': decodes,
+            'summary': summary,
+        }
+        _emit(card)
+        return 0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
