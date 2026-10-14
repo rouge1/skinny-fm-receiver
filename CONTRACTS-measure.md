@@ -47,7 +47,7 @@ level:   power_dbfs, power_dbm (None without full_scale_dbm), noise_floor_dbfs, 
 occupied: bandwidth_hz (99 % of the power), bandwidth_20db_hz (width at 20 dB below the peak),
           centre_hz (absolute, the power centroid)
 tones:   [{freq_hz (absolute), level_db (above the floor)}], strongest first, at most 8, each > 15 dB above
-         the floor and at least 3 bins apart
+         the floor, at least 3 bins apart, and within 60 dB of the strongest (a window's sidelobes are not tones)
 bursts:  count, durations_s (first 32), median_duration_s, gaps_s (first 32), repeat_interval_s (median start
          to start; None under 3 bursts), duty (0..1)
 envelope: levels (1 or 2 amplitude levels, low first), depth (0..1), keyed (bool)
@@ -56,6 +56,12 @@ symbol_rate_baud: float | None
 class:   'noise' | 'carrier' | 'ook' | 'ask' | 'fsk' | 'fm' | 'am' | 'unknown'
 evidence: [str, ...]        # one short sentence per rule that fired
 ```
+
+### Where the envelope and frequency are measured
+On the signal, not the whole span: the IQ is shifted to the occupied centre and band-limited (FFT-domain)
+to max(3 x `bandwidth_hz`, 20 kHz) before the envelope, the instantaneous frequency, the bursts and the
+symbol rate are taken, then decimated. A single tone in a 28 MHz-wide recording therefore shows its own
+frequency steadiness, not the noise of the whole band.
 
 ### The class rules (deterministic, applied in this order)
 1. `noise`: `snr_db` < 6.
