@@ -1026,7 +1026,8 @@ def cmd_marker(w, args):
     level = float(db[int(np.argmin(np.abs(x - mhz)))])
     if view.marker_mode:
         view.place_marker(mhz * 1e6)
-    return {'freq_mhz': round(mhz, 6), 'level_db': round(level, 1),
+    return {'freq_mhz': round(mhz, 6),
+            'level_db': round(level, 1) if math.isfinite(level) else None,
             'unit': view.level_unit, 'trace': 'peak hold' if held else 'live'}
 
 

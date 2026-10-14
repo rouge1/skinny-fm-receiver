@@ -2894,14 +2894,16 @@ class SpectrumView(Qt.QWidget):
             self.marker.setVisible(False)
             return
         self.marker.setValue(hz / self.scale)
-        self.marker.setVisible(True)
+        self.marker.setVisible(not self.marker_mode)
 
     def set_marker_mode(self, on):
         """A spectrum recording: the click, the menu's "Marker to" and a drag
-        place and move the marker, and the tuner is left alone. Off, the
-        marker is taken away."""
+        place and move the marker, and the tuner's line stays hidden. Off,
+        the marker is taken away."""
         self.marker_mode = bool(on)
-        if not on:
+        if on:
+            self.marker.setVisible(False)
+        else:
             self.clear_marker()
 
     @property
@@ -2916,14 +2918,26 @@ class SpectrumView(Qt.QWidget):
             self.pin.setVisible(True)
             self._pin_fade.to(1.0, self.FADE_FAST_MS)
         self.pin.setValue(hz / self.scale)
-        self._pin_hz = float(hz)
+        self._pin_moved()
 
     def clear_marker(self):
         self._pin_hz = None
         self.pin.setVisible(False)
 
     def _pin_moved(self, *_):
-        self._pin_hz = self.pin.value() * self.scale
+        """The marker's value, kept on the trace: a drag past its ends stops
+        at them, so ``marker_hz`` is always a frequency the data has."""
+        try:
+            if self._x is None or not len(self._x):
+                return
+            value = self.pin.value()
+            kept = float(np.clip(value, self._x[0], self._x[-1]))
+            if kept != value:
+                self.pin.setValue(kept)           # this comes back once, in range
+                return
+            self._pin_hz = kept * self.scale
+        except Exception as exc:                  # never abort the app
+            print(f"spectrum view: {exc}")
 
     def set_band(self, low_hz, high_hz):
         """The channel band, in hertz; None hides it."""
@@ -3394,8 +3408,16 @@ class SpectrumView(Qt.QWidget):
         if hz is None or self._x is None or not len(self._x):
             self._set_readout('')
             return
-        i = int(np.clip(np.searchsorted(self._x, hz / self.scale), 0, len(self._x) - 1))
         value = f"{hz / self.scale:.3f} {self.unit}"
+        # Off the data, or a bin with no level: the frequency alone, never an
+        # edge bin's level or "nan".
+        if not self._x[0] <= hz / self.scale <= self._x[-1]:
+            self._set_readout(value)
+            return
+        i = int(np.clip(np.searchsorted(self._x, hz / self.scale), 0, len(self._x) - 1))
+        if not np.isfinite(self._db[i]):
+            self._set_readout(value)
+            return
         self._set_readout(f"{value}   {self._db[i]:.1f} {self.level_unit}")
 
     def _set_readout(self, text):
