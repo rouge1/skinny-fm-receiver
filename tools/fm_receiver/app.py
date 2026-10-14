@@ -1584,16 +1584,19 @@ class MainWindow(Qt.QWidget):
         self.mute_btn.setToolTip("Mute the speaker (Ctrl+M). Recording carries on.")
         self.mute_btn.toggled.connect(self._mute_toggled)
         self.mute_btn.setChecked(bool(self.cfg['muted']) or self._flag_muted)
-        grid.addWidget(self.mute_btn, 0, 0, 2, 1)
+        grid.addWidget(self.mute_btn, 0, 0)
         self.volume_knob = Knob('Volume', 0, 100, float(self.cfg['volume']),
                                 lambda v: f"{v:.0f}%", step=1, wheel=2,
-                                tooltip='Speaker volume (Ctrl+Up / Ctrl+Down).')
+                                tooltip='Speaker volume (Ctrl+Up / Ctrl+Down).',
+                                compact=True)
         self.volume_knob.valueChanged.connect(self._volume_changed)
-        grid.addWidget(self.volume_knob, 0, 1, 2, 1)
+        grid.addWidget(self.volume_knob, 0, 1)
         self.meter = LevelMeter()
         grid.addWidget(self.meter, 0, 2)
+        # The note takes a line of its own only while it has something to say.
         self.audio_note = _wrapping(Qt.QLabel(""))
-        grid.addWidget(self.audio_note, 1, 2)
+        self.audio_note.setVisible(False)
+        grid.addWidget(self.audio_note, 1, 0, 1, 3)
         grid.setColumnStretch(2, 1)
         return box
 
@@ -2173,6 +2176,7 @@ class MainWindow(Qt.QWidget):
             self.audio_note.setText("Muted at start: press Mute to hear it.")
         else:
             self.audio_note.setText("")
+        self.audio_note.setVisible(bool(self.audio_note.text()))
 
     # ---- sweep
     def _sweep_plan(self):

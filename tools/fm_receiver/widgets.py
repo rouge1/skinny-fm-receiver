@@ -244,7 +244,7 @@ class Knob(Qt.QWidget):
     STEPS = 1000
 
     def __init__(self, caption, minimum, maximum, value, fmt=None, log=False,
-                 step=None, tooltip='', wheel=None, parent=None):
+                 step=None, tooltip='', wheel=None, compact=False, parent=None):
         super().__init__(parent)
         self._min, self._max = float(minimum), float(maximum)
         self._log = bool(log)
@@ -260,12 +260,25 @@ class Knob(Qt.QWidget):
         self.text = Qt.QLabel()
         self.text.setAlignment(QtCore.Qt.AlignHCenter)
         self.text.setMinimumWidth(62)
-        box = Qt.QVBoxLayout(self)
-        box.setContentsMargins(2, 0, 2, 0)
-        box.setSpacing(1)
-        box.addWidget(self.caption)
-        box.addWidget(self.dial, 0, QtCore.Qt.AlignHCenter)
-        box.addWidget(self.text)
+        if compact:
+            # Beside its words, not under them: for a box short of height.
+            self.dial.setFixedSize(36, 36)
+            box = Qt.QHBoxLayout(self)
+            box.setContentsMargins(2, 0, 2, 0)
+            box.setSpacing(6)
+            box.addWidget(self.dial)
+            words = Qt.QVBoxLayout()
+            words.setSpacing(1)
+            words.addWidget(self.caption)
+            words.addWidget(self.text)
+            box.addLayout(words)
+        else:
+            box = Qt.QVBoxLayout(self)
+            box.setContentsMargins(2, 0, 2, 0)
+            box.setSpacing(1)
+            box.addWidget(self.caption)
+            box.addWidget(self.dial, 0, QtCore.Qt.AlignHCenter)
+            box.addWidget(self.text)
         if tooltip:
             self.setToolTip(tooltip + "\nRoll the wheel over it or drag up/down "
                             "(Shift: fine).")
