@@ -150,8 +150,15 @@ class Radio:
         return self.usable
 
     def max_offset(self, rate):
-        """How far from the LO the tuner may go at ``rate``, to the kHz."""
-        edge = rate * self.usable_fraction(rate) / 2 - self.EDGE_MARGIN_HZ
+        """How far from the LO the tuner may go at ``rate``, to the kHz.
+
+        The margin is 150 kHz, or an eighth of the rate when that is
+        smaller. Below about 300 kS/s the fixed 150 kHz is more than half
+        the usable band, the offset comes out negative and the tuner is
+        left with a range of no width. From 1.2 MS/s up the eighth is at
+        least 150 kHz, so every live radio keeps the margin it had."""
+        margin = min(self.EDGE_MARGIN_HZ, float(rate) / 8.0)
+        edge = float(rate) * self.usable_fraction(rate) / 2 - margin
         return max(0.0, math.floor(edge / 1e3) * 1e3)
 
     def tune_plan(self, station_hz, rate, lo_hz=None):
@@ -787,8 +794,11 @@ class IQFile(Radio):
         self.default_receive_rate = rate
         self.rate = rate
         self.center_hz = self.meta['center_hz']
-        self.freq_range_hz = (self.center_hz - rate / 2 + 120e3,
-                              self.center_hz + rate / 2 - 120e3)
+        # The whole file. A fixed 120 kHz inset (room for one FM channel)
+        # is wider than a narrow recording, and the range comes out
+        # backwards, which pins the tuner outside the file.
+        half = rate / 2
+        self.freq_range_hz = (self.center_hz - half, self.center_hz + half)
         layout = self.meta.get('layout')
         if layout:
             self.block = _sdvr_file_source(self.meta['data'], layout, rate,

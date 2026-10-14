@@ -2385,6 +2385,20 @@ class SpectrumView(Qt.QWidget):
                               log=True, wheel=1.25,
                               tooltip='How much frequency the view shows, '
                               'centred on the station (or on the view).')
+        # `view rf span 5` is 5 in the view's unit, MHz. On a recording
+        # narrower than that, those same digits are kHz: 5 is a 5 kHz window.
+        _span_set = self.span_knob.setValue
+
+        def _set_span(v, emit=True):
+            v = float(v)
+            hi, lo = self.span_knob._max, self.span_knob._min
+            if emit and v > hi >= lo and v >= 1e6 and abs(v / 1e6 - round(v / 1e6)) < 1e-3:
+                as_khz = v / 1e3
+                if lo - 1 <= as_khz <= hi + 1:
+                    v = as_khz
+            return _span_set(v, emit=emit)
+
+        self.span_knob.setValue = _set_span
         self.ref_knob = Knob('Ref level', -160, 20, ref_db, lambda v: f"{v:.0f} dB",
                              step=1, wheel=2, tooltip='The level at the top of the scale.\n'
                              'A fits the scale to the trace (auto scale).')
@@ -2591,8 +2605,14 @@ class SpectrumView(Qt.QWidget):
             line.setPen(pg.mkPen(edge))
 
     # -- data
-    def set_extent(self, low_hz, high_hz, center_hz=None, keep_span=True):
-        """The frequencies there is data for: the most the Span dial shows."""
+    def set_extent(self, low_hz, high_hz, center_hz=None, keep_span=True,
+                   recording=False):
+        """The frequencies there is data for: the most the Span dial shows.
+
+        ``recording``: a file's band B uses a span floor of max(500 Hz,
+        B/200), so a recording narrower than the live 50 kHz floor can
+        still be zoomed. A band over 10 MHz, and every live sweep, keeps
+        that 50 kHz floor."""
         if high_hz <= low_hz:
             return
         changed = (abs(low_hz - self.full[0]) > 1 or abs(high_hz - self.full[1]) > 1)
@@ -2609,7 +2629,12 @@ class SpectrumView(Qt.QWidget):
         else:
             span = high_hz - low_hz
         self._wanted_span = None
-        self.span_knob.set_range(min(self.min_span_hz, high_hz - low_hz), high_hz - low_hz)
+        band = high_hz - low_hz
+        if recording and band <= 10e6:
+            floor = max(500.0, band / 200.0)
+        else:
+            floor = self.min_span_hz
+        self.span_knob.set_range(min(floor, band), band)
         if changed:
             self._peak = None
             self._wf = None

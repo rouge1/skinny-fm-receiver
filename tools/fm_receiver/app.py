@@ -374,6 +374,26 @@ def _same_plan(new, running):
     return True
 
 
+def _report_shown_filter():
+    """status.channel_filter_khz is the width on the chart, not the saved dial
+    when a recording is narrower than the filter. control.py reads the dial;
+    this answers with the width the chart uses."""
+    from . import control
+    if getattr(control.COMMANDS.get('status'), '_shown_filter', False):
+        return
+    orig = control.COMMANDS['status']
+
+    def status(w, args):
+        out = orig(w, args)
+        shown = getattr(w, '_shown_channel_hz', None)
+        if shown is not None:
+            out['channel_filter_khz'] = round(shown() / 1e3, 3)
+        return out
+
+    status._shown_filter = True
+    control.COMMANDS['status'] = status
+
+
 class MainWindow(Qt.QWidget):
 
     #: The Recordings tab's mini map is drawn from the whole track at this
@@ -383,8 +403,24 @@ class MainWindow(Qt.QWidget):
     MAP_COLS = 128
     WINDOW_SETTLE_MS = 40
 
+    def _shown_channel_hz(self):
+        """The channel width drawn and reported. A recording cannot show a
+        filter wider than its own band; the saved dial (``chan_knob``) stays."""
+        hz = self.chan_knob.value()
+        if self._mode == 'playback':
+            low, high = self.rf_view.full
+            band = high - low
+            if band > 1.0:
+                hz = min(hz, band)
+        return hz
+
+    def _draw_channel(self, hz):
+        bw = self._shown_channel_hz()
+        self.rf_view.set_band(hz - bw / 2, hz + bw / 2)
+
     def __init__(self, args, config):
         super().__init__()
+        _report_shown_filter()
         self.args = args
         self.cfg = _merged(config)
         if args.theme:
@@ -2107,10 +2143,10 @@ class MainWindow(Qt.QWidget):
         station - not wanted when the pointer is what moved it."""
         e = self.engine
         self.rf_view.set_extent(e.lo_hz - e.rate / 2, e.lo_hz + e.rate / 2,
-                                center_hz=e.station_hz if recentre else None)
+                                center_hz=e.station_hz if recentre else None,
+                                recording=self._mode == 'playback')
         self.rf_view.set_marker(e.station_hz)
-        bw = self.chan_knob.value()
-        self.rf_view.set_band(e.station_hz - bw / 2, e.station_hz + bw / 2)
+        self._draw_channel(e.station_hz)
         self.rf_view.set_center_line(e.lo_hz)
         self.rf_view.set_tuner_range(*e.tuner_range())
         self.rf_view.set_message('')
@@ -2297,9 +2333,7 @@ class MainWindow(Qt.QWidget):
         orange bar says where Listen, the Receive tab and Real time will
         start from, and middle-dragging it moves them. Nothing is retuned
         meanwhile - the radio is sweeping."""
-        bw = self.chan_knob.value()
-        hz = self.tuner.value()
-        self.rf_view.set_band(hz - bw / 2, hz + bw / 2)
+        self._draw_channel(self.tuner.value())
 
     def _restart_sweep(self):
         if self._mode == 'sweep' and self.radio is not None \
@@ -2709,8 +2743,7 @@ class MainWindow(Qt.QWidget):
             self._show_sweep_band()
         elif self.engine.rx is not None:
             self.engine.rx.set_channel_bw(hz)
-            e = self.engine
-            self.rf_view.set_band(e.station_hz - hz / 2, e.station_hz + hz / 2)
+            self._draw_channel(self.engine.station_hz)
 
     def _region_changed(self, _index):
         rx = self.engine.rx
@@ -3188,7 +3221,8 @@ class MainWindow(Qt.QWidget):
             view.set_extent(low, high, center_hz=0.0)
         else:
             view.load_state(self.cfg[VIEW_KEYS['playback']])
-            view.set_extent(low, high, center_hz=track.station_hz or track.center_hz)
+            view.set_extent(low, high, center_hz=track.station_hz or track.center_hz,
+                            recording=not track.is_spectrum)
         view.set_level_unit('dBm' if (track.kind == 'cdif' or track.is_spectrum)
                             else 'dBFS')
         view.set_pan_limits(None, None)
