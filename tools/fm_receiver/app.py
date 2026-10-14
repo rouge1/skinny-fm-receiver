@@ -3904,17 +3904,23 @@ class MainWindow(Qt.QWidget):
         self._delete_recordings([rec])
 
     def _delete_recordings(self, recs):
+        """Delete ``recs``. Returns the keys of the ones whose files all went:
+        a recording that kept a file, or is a Sceptre file, is not in it."""
         keys = {rec.key for rec in recs}
         if self._play is not None and self._play.recording.key in keys:
             self._stop_playback(show=False)
-        failed = []
+        failed, removed = [], []
         for rec in recs:
-            failed += library.delete(rec)
+            fails = library.delete(rec)
+            failed += fails
+            if not fails:
+                removed.append(rec.key)
         if self._rec_sel is not None and self._rec_sel.key in keys:
             self._rec_sel = None                  # the next in the list is chosen
         self._refresh_library()
         if failed:
             self.lib_note.setText(_coloured("Could not delete " + "; ".join(failed), 'bad'))
+        return removed
 
     # ============================================================== timers
     def _tick_fast(self):
