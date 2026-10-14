@@ -1217,6 +1217,25 @@ def _carrier_ok(card, dev_bound=100.0):
     return ok, detail
 
 
+#: Half-range of a steady tone's frequency scatter, as noise alone makes it: the
+#: measurement tracks the tone in at most 1 MHz, so the noise it sees is the
+#: recorded band's, narrowed to 1 MHz above 1 MS/s, and the scatter falls 10x
+#: for every 20 dB of SNR. Fitted on 1, 2 and 10 MS/s, 15 to 40 dB, 4 seeds, 50 ms
+#: (953 Hz at 0 dB; 105-110 Hz at 1 MS/s and 19 dB, 69-79 Hz at 2 MS/s).
+CW_NOISE_HZ_AT_0_DB = 953.0
+#: What does not shrink with SNR (the splice of the band-limit's blocks): 28 Hz at
+#: 28 MS/s and 40 dB. Above 1 MS/s the tone is narrowed to 1 MHz.
+CW_FLOOR_HZ = 35.0
+CW_MARGIN = 1.2
+
+
+def cw_deviation_bound(rate, snr_db):
+    """The deviation (Hz) a steady CW may show: the noise's scatter at the SNR the
+    tracker sees, 20 % over, plus the floor. Instead of a number fitted to a seed."""
+    seen = snr_db + 10 * np.log10(max(rate / 1e6, 1.0))
+    return CW_MARGIN * CW_NOISE_HZ_AT_0_DB * 10 ** (-seen / 20) + CW_FLOOR_HZ
+
+
 def check_low_snr_wide_cw():
     """A CW at low SNR in a wide band stays a carrier.
 
@@ -1226,12 +1245,14 @@ def check_low_snr_wide_cw():
     single level out to 1 s, but the splice widens deviation to about 143 Hz
     (22 Hz when the overlap pad is 16384). At 1 MS/s the half-range of a
     steady tone is 109 to 113 Hz on this code and on the pre-m5 filter
-    (644289d, same three seeds), so that bound is 130 Hz.
+    (644289d, same three seeds): the bound there is derived from the SNR
+    (``cw_deviation_bound``), not fixed at 100 or 130 Hz.
     """
     import time
     seconds = 0.05
 
-    def wide(rate, snr, seed, bound=100.0):
+    def wide(rate, snr, seed, bound=None):
+        bound = cw_deviation_bound(rate, snr) if bound is None else bound
         start = time.perf_counter()
         card = _cw_card(rate, seconds, snr, seed)
         wall = time.perf_counter() - start
@@ -1239,13 +1260,15 @@ def check_low_snr_wide_cw():
         info(f"{rate / 1e6:.0f} MS/s, {snr:.0f} dB, {seconds} s: {wall:.2f} s, {detail}")
         return ok, f'{wall:.2f} s, {detail}'
 
-    expect('CW +100003.3 Hz, 28 MS/s, 19 dB over 28 MHz: carrier, one tone, deviation < 100',
+    expect('CW +100003.3 Hz, 28 MS/s, 19 dB over 28 MHz: carrier, one tone, deviation < noise bound',
            lambda: wide(28e6, 19.0, 1))
-    expect('CW +100003.3 Hz, 10 MS/s, 19 dB over the band: carrier, one tone, deviation < 100',
+    expect('CW +100003.3 Hz, 10 MS/s, 19 dB over the band: carrier, one tone, deviation < noise bound',
            lambda: wide(10e6, 19.0, 72))
-    expect('CW +100003.3 Hz, 1 MS/s, 19 dB over the band: carrier, one tone, deviation < 130',
-           lambda: wide(1e6, 19.0, 73, 130.0))
-    expect('CW +100003.3 Hz, 28 MS/s, 40 dB over 28 MHz: carrier, one tone, deviation < 100',
+    expect('CW +100003.3 Hz, 1 MS/s, 19 dB over the band: carrier, one tone, deviation < noise bound',
+           lambda: wide(1e6, 19.0, 73))
+    expect('CW +100003.3 Hz, 2 MS/s, 25 dB over the band: carrier, one tone, deviation < noise bound',
+           lambda: wide(2e6, 25.0, 74))
+    expect('CW +100003.3 Hz, 28 MS/s, 40 dB over 28 MHz: carrier, one tone, deviation < noise bound',
            lambda: wide(28e6, 40.0, 1))
 
     def wide_at(rate, span, snr, seed, offset, bound=100.0):
