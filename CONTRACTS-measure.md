@@ -104,3 +104,34 @@ Each reply is JSON like the existing commands; errors are the existing error sha
 `measure_file` reads the span in chunks and band-limits by mixing and decimating chunk by chunk: it never holds
 more than a few million complex samples at once, whatever the file's rate or length. A real 28 MS/s, 8.6 s
 IQ DVR (240 million samples) measures in under 25 s and under 600 MB of extra memory.
+
+## Decoding with rtl_433 (phase m6)
+Workflow step 7 hands a measured signal to rtl_433, the referee, without a decoder of ours.
+
+```python
+# iqmeasure.py
+class IQSlice(NamedTuple): iq: np.ndarray; rate: float; center_hz: float; t0: float; t1: float
+def extract(path, t0=None, t1=None, band=None, max_rate=1e6, rate=None, center_hz=None) -> IQSlice
+```
+- `band=(f_lo_hz, f_hi_hz)` absolute; None means the whole file when its rate is at most `max_rate`, else
+  +/- 250 kHz about the file's centre. The result is mixed so the band centre is 0 Hz, band-limited and
+  decimated to a rate between 2x the band and `max_rate` (the file's own rate when it is already low), read in
+  chunks (no whole-span array: the m5 rule), `center_hz` being the band's centre. At most 50 million output
+  samples; more is an `IQSourceError` that says to shorten the span or narrow the band.
+
+`tools/iq-decode FILE [--t0 S --t1 S] [--band LO HI] [--rate R --center HZ] [-R N ...] [--out-rate R]
+[--keep PATH] [--timeout S]`: `extract`, then scale so the 99.9th percentile of |x| is 0.5 (the gain is
+reported: a capture's level is far below rtl_433's detection floor), write a cf32 file in a temp directory
+(deleted unless `--keep`), run `rtl_433 -r cf32:FILE -s RATE -f CENTER -F json -M level [-R N ...]` with
+**stdout redirected to a file** (a pipe lost decodes in testing), and print one JSON document:
+```
+file, center_hz, rate_sps, gain_db, rtl_433 (its version line), protocols ('default' or the -R list),
+packets (int), decodes [first 50 JSON objects rtl_433 printed, as they were],
+summary [{model, id (when present), count}]
+```
+Exit 0 whatever the decode count (0 is an answer); 1 on `IQSourceError`; 2 when `rtl_433` is not installed
+(message names how to install it). `--out-rate` defaults to 250000 (what rtl_433's pulse detector expects)
+and is capped by the extracted rate. Plain Python, numpy only (rtl_433 is a subprocess); runs on Linux and macOS.
+
+Known unknown (to be investigated, not assumed): on one over-the-air capture rtl_433 decoded the Nexus frame
+only with `-R 19`, and found nothing with its default protocol set, while a synthetic file decoded in both.
