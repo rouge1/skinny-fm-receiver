@@ -787,15 +787,40 @@ EXTRACT_HALF_HZ = 250e3
 MAX_OUTPUT = 50_000_000
 
 
+def _decimation(rate, lo, hi, max_rate):
+    """``(dec, lo, hi)``: the decimation of a band lo..hi (offsets, Hz) of a file at
+    ``rate``, and the band it keeps.
+
+    ``dec`` is the largest integer that leaves the rate at least twice the band's
+    width (so a narrow band is decimated far, and its span stays under the output
+    cap). When that rate is above ``max_rate``, ``dec`` is the least integer that
+    brings it to ``max_rate``. When no integer then leaves two times the width, the
+    band is narrowed about its centre to half the output rate."""
+    dec = max(1, int(rate / (2 * (hi - lo)) * (1 + 1e-9)))
+    if rate / dec > max_rate:
+        dec = max(1, math.ceil(rate / max_rate - 1e-9))
+    if rate / dec < 2 * (hi - lo) * (1 - 1e-9):
+        mid, width = (lo + hi) / 2, rate / dec / 2
+        lo, hi = max(mid - width / 2, -rate / 2), min(mid + width / 2, rate / 2)
+    return dec, lo, hi
+
+
 def extract(path, t0=None, t1=None, band=None, max_rate=1e6, rate=None, center_hz=None):
     """The IQ of a span of a recording, for a decoder (see :func:`open_iq`).
 
     ``t0`` and ``t1`` are seconds into the file (by default the whole of it). ``band``
     is absolute (f_lo, f_hi) in Hz; with none, the whole file when its rate is at most
-    ``max_rate``, else +/- 250 kHz about its centre. The band is mixed to 0 Hz,
-    band-limited and decimated to the highest rate at most ``max_rate``. A file
-    already at or under ``max_rate``, with no band, comes back unchanged. The span is
-    read in chunks: only the output is held whole."""
+    ``max_rate`` (then passed through unchanged), else +/- 250 kHz about its centre. A
+    band partly outside the file is clipped to it, and ``center_hz`` is then the middle
+    of the clipped band.
+
+    The band is mixed to 0 Hz and band-limited, then decimated (see ``_decimation``):
+    the output rate is at least twice the band's width and at most ``max_rate``, when
+    an integer decimation allows it. If none does, the band is narrowed about its
+    centre to half the output rate; ``center_hz`` is unchanged. ``max_rate`` must be a
+    finite number above 0. The span is read in chunks: only the output is held whole."""
+    if not (math.isfinite(max_rate) and max_rate > 0):
+        raise IQSourceError(f"max_rate must be a finite number above 0, not {max_rate!r}.")
     src = open_iq(path, rate=rate, center_hz=center_hz)
     start_s = 0.0 if t0 is None else float(t0)
     stop_s = src.seconds if t1 is None else float(t1)
@@ -811,14 +836,12 @@ def extract(path, t0=None, t1=None, band=None, max_rate=1e6, rate=None, center_h
         if band is None:
             band = (src.center_hz - EXTRACT_HALF_HZ, src.center_hz + EXTRACT_HALF_HZ)
         lo, hi = _band_offsets(band, src.center_hz, src.rate)
-        dec = max(1, math.ceil(src.rate / max_rate - 1e-9))
-        if 2 * (hi - lo) > src.rate / dec * (1 + 1e-9):
-            raise IQSourceError(f"the band is {hi - lo:.6g} Hz wide: max_rate must be at least "
-                                f"{2 * (hi - lo):.6g} samples/s to hold it.")
+        dec, lo, hi = _decimation(src.rate, lo, hi, max_rate)
     n_out = -(-n // dec)
     if n_out > MAX_OUTPUT:
         raise IQSourceError(f"the span would give {n_out} output samples, more than {MAX_OUTPUT}: "
-                            "shorten the span or narrow the band.")
+                            "shorten the span, or narrow the band (a narrower band is decimated "
+                            "further, so fewer samples).")
     out = np.empty(n_out, dtype=np.complex64)
     if lo is None:
         for s in range(0, n, CHUNK):

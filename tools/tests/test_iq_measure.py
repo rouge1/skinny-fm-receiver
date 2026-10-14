@@ -1441,5 +1441,90 @@ def check_extract():
 GROUPS.append(check_extract)
 
 
+# ---- extract's output rate, the output cap and max_rate (m6 fix round) ------
+
+def _stub_source(seconds, fetch_calls, rate=2e6):
+    """An IQSource of ``seconds`` of zeros: its fetch returns zeros, chunk by chunk, and
+    counts the requests in ``fetch_calls``."""
+    def fetch(a, b):
+        fetch_calls.append(b - a)
+        return np.zeros(b - a, dtype=np.complex64)
+    return api().IQSource('stub.cfile', 'cfile', rate, CENTRE, int(round(seconds * rate)),
+                          None, fetch)
+
+
+def _with_source(src, call):
+    """``call()`` with ``open_iq`` answering ``src`` for every path."""
+    api_ = api()
+    real_open = api_.open_iq
+    api_.open_iq = lambda p, rate=None, center_hz=None: src
+    try:
+        return call()
+    finally:
+        api_.open_iq = real_open
+
+
+def check_extract_rates():
+    def odd_defaults():
+        return memo('extract-2.4-defaults', lambda: api().extract(
+            _tone_file('odd24', 2.4e6, 0.2, [(100e3, 1.0), (400e3, 1.0)])))
+
+    expect('extract 2.4 MS/s, defaults: rate at most 1 MS/s (no integer decimation fits 2 x 500 kHz)',
+           lambda: (odd_defaults().rate <= 1e6, f'rate {odd_defaults().rate}'))
+    expect('extract 2.4 MS/s, defaults: band narrowed about the file centre, so centre unchanged',
+           lambda: eq(odd_defaults().center_hz, CENTRE))
+
+    def odd_tones():
+        e = odd_defaults()
+        f, below = _peak_and_rest(e.iq, e.rate)
+        return (abs(f - 100e3) <= 200 and below >= 40,
+                f'strongest at {f:.1f} Hz, the rest {below:.1f} dB under it (want 100 kHz, 40 dB)')
+    expect('extract 2.4 MS/s, defaults: +100 kHz tone at +100 kHz, +400 kHz tone 40 dB down',
+           odd_tones)
+
+    def band100():
+        return memo('extract-2.4-100k', lambda: api().extract(
+            _tone_file('band24', 2.4e6, 0.2, [(100e3, 1.0)]),
+            band=(CENTRE + 50e3, CENTRE + 150e3), max_rate=1e6))
+    expect('extract 2.4 MS/s, 100 kHz band, max_rate 1 MS/s: rate in [200 kS/s, 1 MS/s]',
+           lambda: (200e3 <= band100().rate <= 1e6, f'rate {band100().rate}'))
+    expect('extract 2.4 MS/s, 100 kHz band, max_rate 1 MS/s: the largest integer decimation (200 kS/s)',
+           lambda: rel_near(band100().rate, 200e3, 1e-6))
+    expect('extract 2.4 MS/s, 100 kHz band: the tone at the band centre is at 0 Hz',
+           lambda: (abs(_peak_and_rest(band100().iq, band100().rate)[0]) <= 200,
+                    f'strongest at {_peak_and_rest(band100().iq, band100().rate)[0]:.1f} Hz'))
+
+    def long_narrow():
+        def run():
+            calls = []
+            src = _stub_source(60.0, calls)
+            band = (CENTRE + 195e3, CENTRE + 205e3)
+            return _with_source(src, lambda: api().extract('stub.cfile', band=band, max_rate=1e6))
+        return memo('extract-60s-narrow', run)
+    expect('extract 60 s at 2 MS/s, 10 kHz band, max_rate 1 MS/s: no error (output under the cap)',
+           lambda: (long_narrow() is not None, 'raised'))
+    expect('extract 60 s at 2 MS/s, 10 kHz band: about 60 s x 20 kS/s out, rate 20 kS/s',
+           lambda: (eq(long_narrow().rate, 20e3)[0]
+                    and rel_near(len(long_narrow().iq), 60 * 20e3, 0.001)[0],
+                    f'rate {long_narrow().rate}, samples {len(long_narrow().iq)}'))
+
+    def wide_refused():
+        calls = []
+        src = _stub_source(60.0, calls)
+        ok, why = _with_source(src, lambda: refused(
+            lambda: api().extract('stub.cfile', max_rate=1e9), api().IQSourceError))
+        return ok and not calls, why or f'it fetched {len(calls)} chunks before refusing'
+    expect('extract 60 s at 2 MS/s, no band, max_rate 1 GS/s: IQSourceError before any read',
+           wide_refused)
+
+    path = _tone_file('rate-arg', 2e6, 0.2, [(100e3, 1.0)])
+    for bad in (0, -5, float('nan'), float('inf')):
+        expect(f'extract max_rate={bad}: IQSourceError',
+               lambda b=bad: refused(lambda: api().extract(path, max_rate=b), api().IQSourceError))
+
+
+GROUPS.append(check_extract_rates)
+
+
 if __name__ == '__main__':
     sys.exit(main())
