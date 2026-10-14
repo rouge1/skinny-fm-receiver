@@ -1913,10 +1913,11 @@ def waterfall_lut(stops, n=256):
 #: its sage ``good`` and a lemon yellow, side by side on a real FM band.
 MARKERS = {
     # The Center is a reference, not an alert: the quietest ink, dashed.
-    # Orange means one thing - where you are tuned.
-    'slate': {'tuner': 'live', 'center': 'ink_3'},
-    'reading-room': {'tuner': 'live', 'center': 'ink_3'},
-    'walnut': {'tuner': 'live', 'center': 'ink_3'},
+    # Orange means one thing - where you are tuned. A marker you place on a
+    # spectrum recording is the ink, so it is not taken for the tuner.
+    'slate': {'tuner': 'live', 'center': 'ink_3', 'pin': 'ink'},
+    'reading-room': {'tuner': 'live', 'center': 'ink_3', 'pin': 'ink'},
+    'walnut': {'tuner': 'live', 'center': 'ink_3', 'pin': 'ink'},
 }
 
 #: The trace's colour where it is not the theme's ``trace``: Walnut's tan
@@ -2190,7 +2191,10 @@ class SpectrumView(Qt.QWidget):
     :attr:`bandWheel` (notches, fine) and a middle-button drag
     :attr:`bandDragged` (hertz) then :attr:`bandDragFinished`. With
     ``tuner_menu``, a right click offers to put the tuner where the pointer
-    is, and :attr:`tunerRequested` carries it (hertz).
+    is, and :attr:`tunerRequested` carries it (hertz). In marker mode (a
+    spectrum recording, :meth:`set_marker_mode`) the left click and the
+    menu place the marker instead, a drag moves it, and the tuner is left
+    alone.
 
     The level axis is a handle too: under the pointer it lights, the wheel
     over it zooms the amplitude scale about the level under the pointer
@@ -2319,6 +2323,14 @@ class SpectrumView(Qt.QWidget):
         self.marker = pg.InfiniteLine(angle=90, movable=False)
         self.marker.setVisible(False)
         self.plot.addItem(self.marker, ignoreBounds=True)
+        # The marker a person places on a spectrum recording: a click or the
+        # menu puts it, a drag moves it. Not the tuner's line.
+        self.pin = pg.InfiniteLine(angle=90, movable=True)
+        self.pin.setVisible(False)
+        self.plot.addItem(self.pin, ignoreBounds=True)
+        self.pin.sigPositionChanged.connect(self._pin_moved)
+        self._pin_hz = None
+        self.marker_mode = False
         # A real-time density map (the BB60D's), behind the trace.
         self.density_item = pg.ImageItem()
         self._density_args = None
@@ -2419,6 +2431,7 @@ class SpectrumView(Qt.QWidget):
 
         # The lines are on the spectrum only: the waterfall is left clear.
         self._marker_fade = _Fade([self.marker], self)
+        self._pin_fade = _Fade([self.pin], self)
         self._center_fade = _Fade([self.center_line], self)
         self.marker_auto = False
         self._grabbed = False
@@ -2530,6 +2543,7 @@ class SpectrumView(Qt.QWidget):
                                         style=QtCore.Qt.DashLine))
         tuner = pg.mkPen(_marker_colour('tuner'), width=1.5)
         self.marker.setPen(tuner)
+        self.pin.setPen(pg.mkPen(_marker_colour('pin'), width=1.5))
         self._paint_band()
         centre = pg.mkPen(_marker_colour('center'), width=1.5, style=QtCore.Qt.DashLine)
         self.center_line.setPen(centre)
@@ -2686,6 +2700,7 @@ class SpectrumView(Qt.QWidget):
         self._wf = None
         self._hist = None
         self._x = None
+        self.clear_marker()
         if self.wf_plot is not None:
             self.wf_image.clear()
 
@@ -2880,6 +2895,35 @@ class SpectrumView(Qt.QWidget):
             return
         self.marker.setValue(hz / self.scale)
         self.marker.setVisible(True)
+
+    def set_marker_mode(self, on):
+        """A spectrum recording: the click, the menu's "Marker to" and a drag
+        place and move the marker, and the tuner is left alone. Off, the
+        marker is taken away."""
+        self.marker_mode = bool(on)
+        if not on:
+            self.clear_marker()
+
+    @property
+    def marker_hz(self):
+        """The marker a person placed, in hertz; None when there is none."""
+        return self._pin_hz
+
+    def place_marker(self, hz):
+        """Put the marker at ``hz``; it fades in the first time it is placed."""
+        if self._pin_hz is None:
+            self._pin_fade.set(0.0)
+            self.pin.setVisible(True)
+            self._pin_fade.to(1.0, self.FADE_FAST_MS)
+        self.pin.setValue(hz / self.scale)
+        self._pin_hz = float(hz)
+
+    def clear_marker(self):
+        self._pin_hz = None
+        self.pin.setVisible(False)
+
+    def _pin_moved(self, *_):
+        self._pin_hz = self.pin.value() * self.scale
 
     def set_band(self, low_hz, high_hz):
         """The channel band, in hertz; None hides it."""
@@ -3304,10 +3348,14 @@ class SpectrumView(Qt.QWidget):
         hz = self._to_hz(event.scenePos())
         if hz is None:
             return
-        if self.snap_hz:
+        # The marker goes where it is put: Snap is the tuner's raster.
+        if self.snap_hz and not self.marker_mode:
             hz = on_raster(hz, self.snap_hz)
         if event.button() == QtCore.Qt.RightButton:
             self._offer_tuner(hz, event.screenPos())
+            return
+        if self.marker_mode:
+            self.place_marker(hz)
             return
         if event.double():
             self.activated.emit(hz)
@@ -3315,19 +3363,24 @@ class SpectrumView(Qt.QWidget):
             self.clicked.emit(hz)
 
     def _offer_tuner(self, hz, screen_pos):
-        """Right click: offer to put the tuner where the pointer is. The
-        frequency is on the item, so it is plain where it would land - the
-        one Snap would round to, if Snap is on."""
+        """Right click: offer to put the tuner where the pointer is, or the
+        marker in marker mode. The frequency is on the item, so it is plain
+        where it would land - the one Snap would round to, if Snap is on."""
         if self._menu is None:
             return
         self._menu_hz = hz
-        self._tune_action.setText(f"Tuner to {hz / self.scale:.3f} {self.unit}")
+        verb = 'Marker' if self.marker_mode else 'Tuner'
+        self._tune_action.setText(f"{verb} to {hz / self.scale:.3f} {self.unit}")
         self._menu.popup(QtCore.QPoint(int(screen_pos.x()), int(screen_pos.y())))
 
     def _tuner_chosen(self):
         # Nothing to go on if the item is somehow reached without the menu
         # having been offered over the plot.
-        if self._menu_hz is not None:
+        if self._menu_hz is None:
+            return
+        if self.marker_mode:
+            self.place_marker(self._menu_hz)
+        else:
             self.tunerRequested.emit(self._menu_hz)
 
     def _plot_mouse_moved(self, scene_pos):

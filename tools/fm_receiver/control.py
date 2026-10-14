@@ -136,7 +136,7 @@ def _agc_offered(w):
 
 @command('status', 'status', "What the window shows: radio, tab, frequencies, gain, "
          "audio, stereo, RDS, HD Radio, signal, clipping, recording, the sweep "
-         "band, the IQ file (or none) and the RF level's unit.")
+         "band, the IQ file (or none), the RF level's unit and the spectrum marker.")
 def cmd_status(w, args):
     e = w.engine
     radio = w.radio
@@ -151,6 +151,8 @@ def cmd_status(w, args):
         'tuner_range_mhz': [_mhz(hz) for hz in _tuner_range(w)],
         'center_mhz': _mhz(e.lo_hz if w._mode == 'receive' else w.center_entry.value()),
         'station_mhz': _mhz(e.station_hz) if w._mode in ('receive', 'playback') else None,
+        # The marker a person placed on a spectrum recording; None elsewhere.
+        'marker_mhz': _mhz(w.rf_view.marker_hz),
         'rate_msps': round(e.rate / 1e6, 6) if e.rate else None,
         'gain_percent': w.gain_slider.value(),
         'agc': bool(w._agc_available() and w.agc_box.isChecked()),
@@ -1007,7 +1009,7 @@ def cmd_recordings_folder(w, args):
 
 @command('marker', 'marker FREQ', "The level at FREQ (MHz) on the RF trace: "
          "the held trace while Peak hold is on, otherwise the live one, "
-         "in that view's unit.")
+         "in that view's unit. On a spectrum recording it also places the marker there.")
 def cmd_marker(w, args):
     mhz = _number(_args(args, 1, 1, 'marker FREQ')[0], 'marker')
     view = w.rf_view
@@ -1022,6 +1024,8 @@ def cmd_marker(w, args):
         raise CommandError(f"marker: {mhz:g} MHz is off the shown band, "
                            f"{low:.3f}-{high:.3f} MHz")
     level = float(db[int(np.argmin(np.abs(x - mhz)))])
+    if view.marker_mode:
+        view.place_marker(mhz * 1e6)
     return {'freq_mhz': round(mhz, 6), 'level_db': round(level, 1),
             'unit': view.level_unit, 'trace': 'peak hold' if held else 'live'}
 

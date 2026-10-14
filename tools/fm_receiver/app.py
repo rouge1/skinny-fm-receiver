@@ -2149,6 +2149,7 @@ class MainWindow(Qt.QWidget):
         was done to it since, so it is not loaded or recentred again."""
         self._save_view()
         self._mode = mode
+        self.rf_view.set_marker_mode(False)
         if not keep_view:
             self.rf_view.load_state(self.cfg[VIEW_KEYS[mode]])
         self.rf_view.set_level_unit(
@@ -3042,6 +3043,7 @@ class MainWindow(Qt.QWidget):
         view.set_center_line(None)
         view.set_tuner_range(None, None)
         view.set_marker(None)
+        view.set_marker_mode(False)
         view.clear_density()
         view.set_message("Choose a recording and press Play")
         self.mpx_view.clear()
@@ -3250,6 +3252,7 @@ class MainWindow(Qt.QWidget):
             view.set_center_line(None)
             view.set_tuner_range(None, None)
             view.set_marker(None)
+            view.set_marker_mode(track.is_spectrum)
             view.clear_density()
         if track.error:                           # no rate, no band: nothing to draw
             view.set_message(f"Cannot play: {track.error}")
@@ -3569,6 +3572,7 @@ class MainWindow(Qt.QWidget):
         self._show_audio_view(False)
         view = self.rf_view
         view.set_level_unit('dBm')
+        view.set_marker_mode(True)
         # No zooming or panning out past what the file holds.
         low, high = library.extent(track)
         view.set_pan_limits(low, high)
