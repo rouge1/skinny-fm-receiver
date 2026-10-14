@@ -33,13 +33,15 @@ MIN_SAMPLES = 1024
 MAX_SPAN_S = 30.0
 CARD_SUFFIX = '.card.json'
 #: Samples read at a time (a span is never held whole).
-CHUNK = 1 << 18
+CHUNK = 1 << 16
 #: Samples per envelope and frequency block.
 BLOCK = 16
 COARSE_NFFT = 1024
 FINE_NFFT = 16384
-#: Padding either side of a chunk for the frequency-domain band filter.
+#: Padding either side of a block for the frequency-domain band filter.
 PAD = 4096
+#: Transform length of the band filter's blocks (a power of two): its bins are rate / this.
+FILTER_BLOCK = 1 << 15
 TONE_DB = 15.0
 #: A tone more than this far under the strongest is a window's sidelobe, not a tone.
 TONE_RANGE_DB = 60.0
@@ -479,25 +481,51 @@ def _band_offsets(band, centre_hz, rate):
 
 def _banded(read, n, rate, lo, hi, dec):
     """The band lo..hi (offsets from the centre) of the samples, brick-wall
-    filtered in the frequency domain (overlap-save, a chunk at a time), moved to
-    0 Hz and decimated by ``dec``. Chunks start on multiples of ``dec``."""
+    filtered by overlap-save in blocks of FILTER_BLOCK samples, moved to 0 Hz and
+    decimated by ``dec``. Outputs lie on multiples of ``dec``.
+
+    A narrow band (the usual case) takes each output as a sum of the band's bins'
+    phasors, so no inverse transform is taken at all; a wide one takes an inverse
+    transform of the block with the band's bins kept, as the whole-chunk filter
+    did, only over the block. The file is read once, in order: the overlap is
+    carried over, not read again."""
     fc = (lo + hi) / 2
-    step = dec * max(1, CHUNK // dec)     # a positive multiple of dec, whatever dec is
-    keep_for = {}
+    pad = dec * -(-PAD // dec)              # a multiple of dec, so the grid is kept
+    step = dec * max(1, (FILTER_BLOCK - 2 * pad) // dec)
+    length = step + 2 * pad
+    f = np.fft.fftfreq(length, 1 / rate)
+    keep = np.flatnonzero((f >= lo) & (f <= hi))
+    grid = pad + dec * np.arange(step // dec)     # the outputs' local samples in a block
+    phasor_cost = keep.size * grid.size
+    phasors = None
+    if phasor_cost <= length * np.log2(length):
+        # Output j is at local sample grid[j], mixed to fc by the phasor in the loop.
+        phasors = np.exp(2j * np.pi * np.outer(grid, f[keep] - fc) / rate) / length
+    mask = np.zeros(length, dtype=bool)
+    mask[keep] = True
+    buf, first, fed = np.empty(0, np.complex64), 0, 0     # buf holds samples first..fed
     for s in range(0, n, step):
         m = min(step, n - s)
-        a, b = max(0, s - PAD), min(n, s + m + PAD)
-        seg = read(a, b - a)
-        pre, post = a - (s - PAD), (s + m + PAD) - b
-        if pre or post:
-            seg = np.concatenate([np.zeros(pre, np.complex64), seg, np.zeros(post, np.complex64)])
-        length = len(seg)
-        if length not in keep_for:
-            f = np.fft.fftfreq(length, 1 / rate)
-            keep_for[length] = (f >= lo) & (f <= hi)
-        y = np.fft.ifft(np.fft.fft(seg) * keep_for[length])[PAD:PAD + m]
-        y = y * np.exp(-2j * np.pi * fc * (np.arange(s, s + m) / rate))
-        yield y[::dec].astype(np.complex64)
+        count = -(-m // dec)
+        a, b = max(0, s - pad), min(n, s + m + pad)
+        if fed < b:
+            buf = np.concatenate([buf, read(fed, b - fed)])
+            fed = b
+        seg = np.zeros(length, np.complex64)
+        pre = a - (s - pad)
+        seg[pre:pre + (b - a)] = buf[a - first:b - first]
+        spec = np.fft.fft(seg)
+        if phasors is not None:
+            bins = spec[keep] * np.exp(2j * np.pi * ((-fc * (s - pad) / rate) % 1.0))
+            # An elementwise sum, not a matrix product: a threaded BLAS costs ms on a call this small.
+            y = (phasors[:count] * bins).sum(axis=1)
+        else:
+            y = np.fft.ifft(np.where(mask, spec, 0))[grid[:count]]
+            y = y * np.exp(-2j * np.pi * fc * ((s + dec * np.arange(count)) / rate))
+        yield y.astype(np.complex64)
+        nxt = max(0, s + step - pad)
+        if nxt > first:
+            buf, first = buf[nxt - first:], nxt
 
 
 def _decimated(read, n, rate, lo, hi, min_rate=0.0):
