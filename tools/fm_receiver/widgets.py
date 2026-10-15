@@ -1216,8 +1216,8 @@ class PageTabs(Qt.QTabWidget):
         self.setCornerWidget(corner, QtCore.Qt.TopRightCorner)
         ms = self._animate_ms or Card.FOLD_MS
         self.chevron.clicked.connect(lambda opened: self.set_folded(not opened, ms))
-        # A tab clicked while folded opens it (before the page changes).
-        self.tabBarClicked.connect(lambda _: self._folded and self.set_folded(False, ms))
+        # A tab clicked while folded only changes the tab (and its summary):
+        # the chevron opens it.
         self.set_folded(folded)
         return self
 
@@ -1257,9 +1257,11 @@ class PageTabs(Qt.QTabWidget):
         try:
             if self._summary is None:
                 return
-            top = self.tabBar().y() + self.tabBar().height() + 2
-            self._summary.setGeometry(8, top, max(self.width() - 16, 0),
-                                      self._summary.fixed_height())
+            # Over the whole folded pane, with the pane's own background: the
+            # page under it is still there, and must not show through.
+            top = self.tabBar().y() + self.tabBar().height()
+            self._summary.setGeometry(1, top, max(self.width() - 2, 0),
+                                      self._summary.fixed_height() + 5)
             self._summary.raise_()
         except Exception as exc:
             print(f"tabs: {exc}")
@@ -1463,6 +1465,9 @@ class _Summary(Qt.QWidget):
     def paintEvent(self, event):
         try:
             p = Qt.QPainter(self)
+            p.fillRect(self.rect(), Qt.QColor(theme.TOKENS['panel']))
+            p.translate(7, 2)                  # the old 8 px inset, 2 px down
+            width = max(self.width() - 14, 0)
             fm = self.fontMetrics()
             line = fm.lineSpacing()
             bold = Qt.QFont(self.font())
@@ -1475,8 +1480,8 @@ class _Summary(Qt.QWidget):
                     p.setFont(bold)
                     p.setPen(Qt.QColor(theme.TOKENS['ink']))
                     shown = Qt.QFontMetrics(bold).elidedText(text, QtCore.Qt.ElideRight,
-                                                             self.width())
-                    p.drawText(0, y, self.width(), line,
+                                                             width)
+                    p.drawText(0, y, width, line,
                                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, shown)
                     continue
                 p.setFont(self.font())
@@ -1484,8 +1489,8 @@ class _Summary(Qt.QWidget):
                 p.drawText(0, y, indent, line,
                            QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, caption + ':')
                 p.setPen(Qt.QColor(theme.TOKENS['ink_2']))
-                shown = fm.elidedText(text, QtCore.Qt.ElideRight, max(self.width() - indent, 0))
-                p.drawText(indent, y, self.width() - indent, line,
+                shown = fm.elidedText(text, QtCore.Qt.ElideRight, max(width - indent, 0))
+                p.drawText(indent, y, width - indent, line,
                            QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, shown)
             p.end()
         except Exception as exc:                  # never abort the app
@@ -2055,16 +2060,28 @@ class ChannelBand(pg.LinearRegionItem):
             ev.ignore()
             return
         ev.accept()
+        view = self._view
         if ev.isStart():
             low, high = self.getRegion()
-            self._drag = ((low + high) / 2, ev.buttonDownPos().x())
+            self._drag = ((low + high) / 2, ev.buttonDownPos().x(), (high - low) / 2)
+            view._band_held = True
         if self._drag is None:
             return
-        centre, x0 = self._drag
-        self._view.bandDragged.emit((centre + ev.pos().x() - x0) * self._view.scale)
+        centre, x0, half = self._drag
+        hz = (centre + ev.pos().x() - x0) * view.scale
+        if view.snap_hz:                    # show where it will land
+            hz = on_raster(hz, view.snap_hz)
         if ev.isFinish():
+            # The receiver is retuned once, where the band was let go - not
+            # at every spot it passed: a retune is slow.
             self._drag = None
-            self._view.bandDragFinished.emit()
+            view._band_held = False
+            view.bandDragged.emit(hz)
+            view.bandDragFinished.emit()
+            view._place_band()      # back to where the tuner is, if it stayed
+        else:
+            at = hz / view.scale
+            self.setRegion((at - half, at + half))
 
 
 class _RowRing:
@@ -2184,9 +2201,9 @@ class SpectrumView(Qt.QWidget):
     opposite - it fades while the centre is moved (:meth:`center_moving`),
     so the spectrum under it can be seen, and comes back once it settles.
 
-    Frequencies come in hertz and are shown in ``unit`` (MHz or kHz). Left
-    click emits :attr:`clicked`, double click :attr:`activated`, both in
-    hertz. The mouse wheel zooms and dragging pans, along frequency only;
+    Frequencies come in hertz and are shown in ``unit`` (MHz or kHz). A left
+    click, single or double, does nothing to the tuner: the readout under
+    the pointer gives the level and frequency. The mouse wheel zooms and dragging pans, along frequency only;
     the Span dial follows. Over the channel band the wheel emits
     :attr:`bandWheel` (notches, fine) and a middle-button drag
     :attr:`bandDragged` (hertz) then :attr:`bandDragFinished`. With
@@ -2208,9 +2225,7 @@ class SpectrumView(Qt.QWidget):
     maximum, so a short burst is not lost however far out it is zoomed.
     """
 
-    clicked = pyqtSignal(float)
     messageClicked = pyqtSignal(str)          # the words on the plot, pressed
-    activated = pyqtSignal(float)
     averageChanged = pyqtSignal(int)
     bandWheel = pyqtSignal(int, bool)
     bandDragged = pyqtSignal(float)
@@ -2343,6 +2358,7 @@ class SpectrumView(Qt.QWidget):
         self.plot.addItem(self.band, ignoreBounds=True)
         #: Where the band really is, before it is widened to stay grabbable.
         self._band_hz = None
+        self._band_held = False
         # The radio's centre frequency, and the parts of the band the tuner
         # cannot reach, shaded.
         self.center_line = pg.InfiniteLine(angle=90, movable=False)
@@ -2949,6 +2965,8 @@ class SpectrumView(Qt.QWidget):
         :attr:`BAND_MIN_PX`, since it is a handle as well as a picture: a
         200 kHz channel on a 6 GHz sweep is a hundredth of a pixel, and
         nothing the pointer could find."""
+        if self._band_held:         # a band being dragged is the pointer's
+            return
         if self._band_hz is None:
             self.band.setVisible(False)
             return
@@ -3368,13 +3386,10 @@ class SpectrumView(Qt.QWidget):
         if event.button() == QtCore.Qt.RightButton:
             self._offer_tuner(hz, event.screenPos())
             return
+        # A left click, single or double, leaves the tuner alone: it is for
+        # the view (drag pans) and the readout. Middle-drag moves the tuner.
         if self.marker_mode:
             self.place_marker(hz)
-            return
-        if event.double():
-            self.activated.emit(hz)
-        else:
-            self.clicked.emit(hz)
 
     def _offer_tuner(self, hz, screen_pos):
         """Right click: offer to put the tuner where the pointer is, or the

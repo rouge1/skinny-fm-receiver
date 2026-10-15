@@ -430,7 +430,7 @@ def cmd_hd(w, args):
 
 
 @command('station', 'station rds|hd', "The RDS | HD Radio tabs under the Tuner (Receive's): "
-         "the one to show, as a click on its tab does (a folded box opens). Show RDS "
+         "the one to show, as a click on its tab does (a folded box stays folded). Show RDS "
          "while reading RDS, so the user sees what is being read.")
 def cmd_station(w, args):
     word = _args(args, 1, 1, 'station rds|hd')[0].lower()
@@ -441,8 +441,8 @@ def cmd_station(w, args):
                            "switch with 'mode receive' first")
     tabs = w.station_tabs
     index = STATION_TABS.index(word)
-    tabs.tabBarClicked.emit(index)       # what a click sends first: opens a folded box
-    tabs.setCurrentIndex(index)
+    tabs.tabBarClicked.emit(index)       # what a click sends first
+    tabs.setCurrentIndex(index)           # a folded box stays folded: its chevron opens it
     return {'station_tab': STATION_TABS[tabs.currentIndex()]}
 
 

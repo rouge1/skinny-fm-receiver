@@ -1125,25 +1125,20 @@ class MainWindow(Qt.QWidget):
             def text(label):
                 t = _plain_text(label.text()).strip() if label is not None else ''
                 return '' if t in ('-', '') else " ".join(t.split())
+            # The same three lines for either tab: the station, what it says
+            # (RadioText, or HD Radio's message) and how the audio is.
             if self.station_tabs.currentIndex() == 1:
                 hd = self.hd_lbl
-                lines = [('', text(hd.get('station'))),
-                         ('Now playing', text(hd.get('nowplaying'))),
-                         ('Album', text(hd.get('album'))),
-                         ('Genre', text(hd.get('genre'))),
-                         ('Message', text(hd.get('message'))),
-                         ('Programs', text(hd.get('programs'))),
-                         ('Signal', text(hd.get('signal')))]
+                name = text(hd.get('station')) or text(self.lbl.get('station_name')) \
+                    or text(self.lbl.get('ps'))
+                says = text(hd.get('message')) or text(self.lbl.get('radiotext'))
+                lines = [('', name), ('RadioText', says), ('Audio', text(self.stereo_label))]
             else:
                 name = text(self.lbl.get('station_name')) or text(self.lbl.get('ps'))
                 kind = text(self.lbl.get('pty'))
                 lines = [('', " · ".join(x for x in (name, kind) if x)),
-                         ('Now playing', text(self.lbl.get('nowplaying'))),
                          ('RadioText', text(self.lbl.get('radiotext'))),
-                         ('ID (PI)', text(self.lbl.get('pi'))),
-                         ('Audio', text(self.stereo_label)),
-                         ('Signal', text(self.sig_label)),
-                         ('Decode', text(self.lbl.get('quality')))]
+                         ('Audio', text(self.stereo_label))]
             self.station_tabs.set_summary(lines)
         except Exception:
             self._report('station summary')
@@ -1711,9 +1706,7 @@ class MainWindow(Qt.QWidget):
         self.rf_view = SpectrumView("RF spectrum", unit='MHz', waterfall=True,
                                     min_span_hz=50e3, tuner_menu=True,
                                     snap_hz=self._step_hz() if self.cfg['snap'] else None)
-        self.rf_view.clicked.connect(self._rf_clicked)
         self.rf_view.tunerRequested.connect(self._rf_clicked)
-        self.rf_view.activated.connect(self._rf_activated)
         self.rf_view.bandWheel.connect(self._band_wheel)
         self.rf_view.bandDragged.connect(self._band_dragged)
         self.rf_view.bandDragFinished.connect(self._band_drag_finished)
@@ -2573,12 +2566,10 @@ class MainWindow(Qt.QWidget):
             self.play_btn.setChecked(True)
 
     def _rf_clicked(self, hz):
+        # The right-click menu's "Tuner to": the only point-and-click way to
+        # tune. A left click is for the view and the readout, a middle drag
+        # of the band moves the tuner.
         self.tune(hz, recentre=False)       # sweeping, this only moves the marker
-
-    def _rf_activated(self, hz):
-        self.tune(hz, recentre=False)
-        if self._mode == 'sweep':
-            self.tabs.setCurrentIndex(1)
 
     def _band_wheel(self, steps, fine):
         step = BAND_WHEEL_FINE_HZ if fine else BAND_WHEEL_HZ

@@ -1246,7 +1246,7 @@ def folding(w):
     assert status.height() == height and not status._timer.isActive()
     assert 'Playing analog FM' in status.text() and 'short' in status.toolTip()
     # The tabs fold on their chevron to just the tab bar, and a click on a
-    # tab opens them again.
+    # tab only changes the tab; the chevron opens them.
     bar = tabs.tabBar().sizeHint().height()
     keep = tabs._summary.fixed_height() + 6
     # The chevron is level with the tabs, not a few pixels under them.
@@ -1262,16 +1262,20 @@ def folding(w):
     lines = dict(tabs._summary._lines[1:])
     assert tabs._summary._lines[0] == ('', 'TEST FM · Country'), tabs._summary._lines
     assert lines['RadioText'] == 'Hello from the station', lines
-    assert 'Now playing' not in lines              # nothing to say: left out
+    assert set(lines) <= {'RadioText', 'Audio'}, lines   # station, RadioText, Audio
     tabs.setCurrentIndex(1)
     tabs.chevron.click()
     pump(0.5)
+    keep = tabs._summary.fixed_height() + 6      # the lines it has now
     # Folded: the tab bar, and under it a summary of what the page says.
     assert tabs.is_folded() and tabs.height() <= bar + keep + 2, (tabs.height(), bar)
     assert tabs._summary.isVisible() and tabs._summary.y() >= bar, tabs._summary.geometry()
     assert w.cfg['folded']['station'] is True
     tabs.tabBarClicked.emit(0)
     tabs.setCurrentIndex(0)
+    pump(0.5)
+    assert tabs.is_folded() and tabs.currentIndex() == 0    # a tab click leaves it folded
+    tabs.chevron.click()
     pump(0.5)
     assert not tabs.is_folded() and tabs.maximumHeight() == 16777215
     assert tabs._summary.isHidden() or tabs._summary.graphicsEffect() is not None

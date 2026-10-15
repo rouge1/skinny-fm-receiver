@@ -371,7 +371,7 @@ def main():
         assert w.station_tabs.currentIndex() == 1 and c.ok('status')['station_tab'] == 'hd'
         assert c.ok('station rds')['station_tab'] == 'rds' and w.station_tabs.currentIndex() == 0
         w.station_tabs.set_folded(True)
-        assert c.ok('station hd')['station_tab'] == 'hd' and not w.station_tabs.is_folded()
+        assert c.ok('station hd')['station_tab'] == 'hd' and w.station_tabs.is_folded()
         c.ok('station rds')
         c.refused('station mpx', 'rds or hd')
         c.ok('mode sweep')

@@ -226,8 +226,8 @@ Useful options (`./fm-receiver --help` lists them all):
 1. **Sweep the band.** Open the **Sweep (FFT)** tab. It starts on *Full
    range of the radio*: 9 kHz to 6 GHz on a BB60D, about four times a second.
    Choose *FM broadcast 87.5-108* for a closer look at the band.
-2. **Pick a station.** Double-click its peak in the spectrum, or click it and
-   press **Listen**. The app switches to **Receive (IQ)** tuned to it.
+2. **Pick a station.** Right-click its peak and choose **Tuner to**, or
+   middle-drag the orange band onto it, then press **Listen**. The app switches to **Receive (IQ)** tuned to it.
 3. **Listen.** Audio starts at once. Stereo and RDS lock within a few seconds:
    station name, PI and call sign, program type, RadioText, Now Playing and
    the clock.
@@ -258,7 +258,7 @@ waterfall take the whole right-hand side.
 |---|---|
 | **Band** | Presets: **Full range of the radio** (the default, 9 kHz to 6 GHz on a BB60D), FM 87.5-108, Japan 76-95, OIRT 65.8-74, VHF 30-300. **Custom** is selected automatically when you set your own bounds. |
 | **Start** / **Stop** | The sweep's lower and upper bounds, in MHz to the kHz (9 kHz is 0000.009). Hover a digit and roll the wheel, or type a frequency. They stay inside the radio's range and at least 200 kHz apart. The sweep changes as soon as the digits come to rest. |
-| **Tuner** | The same tuner the Receive tab has, here so you can place it while you sweep: it is the marker on the spectrum, it is what **Listen** tunes to, and it is what **Real time** watches around. Hover a digit and roll the wheel, type a frequency, or use the ▲/▼ beside it; a click on the spectrum moves it too, and so does a middle-drag of the orange channel band (see below). |
+| **Tuner** | The same tuner the Receive tab has, here so you can place it while you sweep: it is the marker on the spectrum, it is what **Listen** tunes to, and it is what **Real time** watches around. Hover a digit and roll the wheel, type a frequency, or use the ▲/▼ beside it; so does a middle-drag of the orange channel band (see below), and so does the right-click menu on the spectrum (a left click does not: it is for the view). |
 | **Real time** *(BB60D, only with `--realtime`)* | Hidden unless the app is started with `--realtime`: Receive at 40 MS/s shows as much band (27 MHz), as often (30 times a second), and plays the station as well. A button that stays down. Pressing it drops the sweep to the 27 MHz it can watch, centred on the **Tuner**, and watches that instead of sweeping; letting it out gives back the span that was there. Put the tuner outside the window afterwards and the window moves to it. Widen the bounds past 27 MHz and it sweeps instead, saying so in the line at the foot of the tab. Not on a Mac, whose Signal Hound library has no real time. See *Sweep, real time and IQ* below. |
 | **RBW** *(BB60D, HackRF)* | Resolution bandwidth. **Auto** keeps a sweep near 80,000 points: on a BB60D 300 kHz over the full range and 1 kHz over the FM band; on a HackRF it is the FFT's bin width, 76 kHz over the full range and 2.4 kHz (its finest) over the FM band. Narrower shows more detail and a lower noise floor. If you pick one too fine for the span, it is raised, and the line at the foot of the tab says so. |
 | **Step bandwidth** *(USRP, RTL-SDR)* | The radio's sample rate while sweeping, which sets how much each step sees. Wider means fewer steps. Changing this restarts the radio. |
@@ -340,9 +340,10 @@ gliding to the middle of the box once it has folded
 (the Step and Channel filter knobs fade out as the Tuner box folds, and
 back in as it opens, and its HD Radio rows go). The **RDS / HD Radio**
 tabs have their chevron at the right of the tab bar, level with the tabs:
-folded, the tabs show with two lines under them, the station (its name and
-type, or HD Radio's name) and what it is saying or playing; click a tab to
-open them again. The app remembers which are folded.
+folded, the tabs show three lines under them, on either tab: the station (its
+name and type, or HD Radio's name), its RadioText (or HD Radio's message) and
+the Audio line. A click on a tab only changes the tab; the chevron opens them
+again. The app remembers which are folded.
 
 ```
 ┌ Radio ───────────────────────────────────────┐
@@ -423,12 +424,13 @@ hold it. In Sweep the marker is always shown, since it is your pick.
 The **orange band** on the RF spectrum is the channel filter, centred on the
 tuner. It brightens under the pointer.
 
-- **Middle-button drag on the orange band:** tunes. The band and the tuner
-  follow the pointer, and the audio follows as you drag. The drag stays
-  inside the tuner range, so the radio itself never moves.
+- **Middle-button drag on the orange band:** tunes. Only the band follows the
+  pointer while you drag (it shows the step it will land on); the receiver
+  is retuned once, where you let go, because a retune is slow. The tuner
+  stays inside its range, so the radio itself never moves.
 - **Mouse wheel over the orange band:** makes the channel filter wider or
   narrower, 5 kHz a notch (1 kHz with Shift).
-- **Click the spectrum or the waterfall:** tunes there, within the range.
+- **Left click or double-click the spectrum or the waterfall:** nothing moves the tuner. A left drag pans the view, and the readout under the pointer gives the level and frequency. The tuner moves by a middle-drag of the orange band or the right-click menu.
 - **Right-click the spectrum or the waterfall:** offers **Tuner to 99.100
   MHz** - the frequency under the pointer, already rounded by **Snap to
   step**, so you can see where it would land before anything moves. Choose
@@ -451,7 +453,7 @@ Top to bottom:
 | **Station** | The most consistent PS name, or the RT+ station name. |
 | **Standard** | RBDS with 75 µs de-emphasis for the Americas, or RDS with 50 µs for Europe and elsewhere. |
 | **Stereo** (under Standard) | Turn it off for mono, which is quieter on a weak station. With no pilot, the audio is mono anyway. |
-| **Snap to step** (beside Stereo) | Clicks, right-click picks and middle-drags on the spectrum tune to the nearest multiple of the Step. Off, they tune to where the pointer is, to the kHz. |
+| **Snap to step** (beside Stereo) | Right-click picks and middle-drags on the spectrum tune to the nearest multiple of the Step. Off, they tune to where the pointer is, to the kHz. |
 | **Audio** | *Stereo – pilot locked (standard phase)*, or *Mono – no stereo pilot*. Stereo needs a pilot that stands 10 dB over the noise beside it, so an empty channel, a mono station, or a station tuned slightly off reads *Mono*. *Standard phase* is what broadcasters send; *cosine phase* is what the RF bench toolkit's own transmitter sends. The app detects which by itself. |
 | **Signal** | The power in the channel and how far the station stands above the floor: green above 30 dB, amber above 15 dB, red below that. |
 | **Decode quality** | How many RDS groups have arrived, and how many blocks were good. |
@@ -673,7 +675,7 @@ where it was.
 names the folders to list besides the recordings folder: a Sceptre IQ DVR
 (`.sdvr`, made from its IQ tab) and its BLUE IQ exports (`.cdif`) in them
 each become a line (a sweep DVR and a `.fft` are spectrum lines, below; anything else is passed over),
-and play like a band recording: spectrum, waterfall, click a station to hear
+and play like a band recording: spectrum, waterfall, middle-drag the band onto a station to hear
 it. Nothing is assumed about where Sceptre keeps its files. The app only
 reads them: no description file is written beside one, and **Delete** leaves
 them to Sceptre. Only their headers are read to list them, so a 1 GB ring is
@@ -689,8 +691,8 @@ What you see and hear depends on the file:
 | **WAV** | The sound's spectrum, left and right together (0-16 kHz shown; Span goes to 24), and its waterfall | The WAV as it was recorded | The RadioText and Now Playing logged while it was recorded |
 | **Sceptre spectrum** (a sweep `.sdvr`, a `.fft`) | The spectrum and waterfall of the file's own band, in dBm | None: no radio is opened | None |
 
-- **In a whole-band recording, click another station** in the spectrum or
-  the waterfall to listen to it. The Receive tab's controls (channel filter,
+- **In a whole-band recording, middle-drag the orange band** (or right-click and
+  choose **Tuner to**) onto another station to listen to it. The Receive tab's controls (channel filter,
   stereo, region, the RDS details) work on the recording too.
 - **The mini map** is the narrow picture down the right of the spectrum and the waterfall, as tall as both: the
   whole recording at a glance, **time down it, the start at the top and the
@@ -705,8 +707,8 @@ station is a line down it. **The waterfall falls, as it does live**: the
   to; the box's bottom edge is the playhead.
   - **Click** where you want to look and the box goes there, its middle on
     your pointer. **Drag the box** and it is carried: up and down is time,
-    sideways moves the spectrum's window (it does not tune; click a station
-    to tune). The waterfall follows while you drag, and the sound jumps when
+    sideways moves the spectrum's window (it does not tune; middle-drag the
+    orange band to tune). The waterfall follows while you drag, and the sound jumps when
     you let go.
   - **Resize the box** by its edges (the pointer turns to an arrow): drag its
     **top edge** up for more time in the waterfall and down for less (2 s to
@@ -928,7 +930,7 @@ tools/fmctl help                          # every command
 | `mode sweep` / `receive` / `recordings` | The tabs |
 | `volume PERCENT`, `mute on` / `off` | Audio |
 | `hd 1`-`8` / `analog` | HD Radio: the program to play (lights that HD button), or `analog` for analog FM (none lit). HD Radio is always on: there is no off, in the window or here. `status`'s `hd` has the lamp too. Needs nrsc5 |
-| `station rds` / `hd` | The **RDS \| HD Radio** tabs under the Tuner, as a click on a tab does (a folded box opens). Receive's: refused from the other tabs. Show **RDS** while reading RDS, so the person at the window sees what is being read |
+| `station rds` / `hd` | The **RDS \| HD Radio** tabs under the Tuner, as a click on a tab does (a folded box stays folded). Receive's: refused from the other tabs. Show **RDS** while reading RDS, so the person at the window sees what is being read |
 | `folders [add PATH` / `remove PATH]` | The extra folders the Recordings tab lists Sceptre's `.sdvr` and `.cdif` from, kept in the settings; add or remove one and the list is made again |
 | `recordings` | The Recordings tab's list, newest first: index, station, name, call sign, start, length, files, size, whether it is picked in the window's list, and which is chosen. Needs `mode recordings` |
 | `recording N [TRACK]` | Choose the Nth recording (0 is the newest) as a click on its line does, and with TRACK which of its files plays (`status`'s `playback.tracks` is the order). Its map and waterfall draw in the background: wait a moment |
