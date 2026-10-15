@@ -181,6 +181,37 @@ What the first version got wrong, fixed by the synthetic tests:
 - a discriminator that ran on noise after the burst corrupted the last bit, the
   frame's own check byte; it is now gated by the envelope.
 
+## Mapping the mesh from the route fields (2026-10-15)
+
+The frames carry their own topology, so a map needs no extra radio work: only
+the verified PSDUs. Three field types give links.
+
+| Source | Layout (rtl_433 decoder 383's comments) | Link it gives |
+|---|---|---|
+| Poll (FCTRL 3) | destination then source EUI-64 | sender polled that node |
+| Route advertisement (M16, first byte `0x21`, in broadcasts) | `0x21`, max hop, `0x1000`, 16 zero bytes, egress EUI-64, descriptor (next-hop count, 3 flag bytes, path cost 2, link cost 2), then count x next-hop EUI-64; 36 + 8 x count bytes | advertiser reaches that egress through that next hop, at a raw cost |
+| Source route (M16 with a 4-byte header, in data frames) | protocol id, TTL, route offset (6 bits), address count (6 bits), then count x EUI-64 | the listed addresses are a path; the offset indexes the frame's own receiver |
+
+Two address forms occur: an EUI-64 with `05 xx` after the OUI is a node, and
+an EUI-48 padded with `FF FE` is a router or egress point (the adverts name
+the egress this way). A replies' address field is the polled node's; replies
+carry no source.
+
+Result on five 7.6-10 s captures of the 915 MHz band, 82 distinct verified
+frames (47 polls, 26 acknowledgments or data, 9 broadcasts): 51 nodes and 5
+routers, 77 links. Three nodes poll many others (one polls about 11), every
+advertiser lists routes to two different egress points, and a source route
+listed in one data frame lays the same routers and next hops that the adverts
+name. The 65 frames beyond the first capture came from the demodulated bits of
+the other four captures (their IQ no longer existed), run through the same
+descramble and CRC check.
+
+Limits: the direction of a source route is the listed order, not proven;
+path costs are raw candidates; a link seen once in a few seconds says nothing
+about links not seen; and the map is as complete as the CRC-verified frames,
+which were 65 of 249 bursts in the later captures. The pictures and address
+lists are kept in the git-ignored `recordings/` and not in this repo.
+
 ## Sources
 
 - rtl_433 `src/devices/silver_spring_mesh.c` (decoder 383): header, scrambler,
