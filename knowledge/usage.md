@@ -1005,8 +1005,9 @@ set `FMRX_CONTROL=/path/to.sock` for both the window and `fmctl`.
 These tools say what a signal *is*: its level, its bandwidth, its tones, its
 bursts, its envelope and frequency behaviour, and a class (`noise`,
 `carrier`, `ook`, `ask`, `fsk`, `fm`, `am` or `unknown`) with the evidence
-for it. They do not decode. No decoder is built: `iq-demod` and `iq-frames`
-are planned, not built, and a class is the most a recording gets here. The
+for it. They do not decode: a class is the most a recording gets from these
+two (`iq-demod` and `iq-frames`, below, take a wide capture to bits and
+frames). The
 rules are fixed, so the same recording always gives the same card. The
 files are only read, except a card when you ask for one.
 
@@ -1173,3 +1174,43 @@ conda activate gnu
 python tools/tests/run_all.py          # no radio needed, about a minute and a half
 python tools/tests/run_all.py --hw     # plus the BB60D check, off air
 ```
+
+## Bursts, bits and frames: iq-demod, iq-frames, iq-decode --bursts
+
+For a wide capture of a network that hops (a smart-meter mesh, a sensor net),
+`iq-measure` on the whole file says "noise": each transmission is a few ms in
+a 27 MHz recording. These tools work per burst.
+
+```sh
+tools/iq-demod recordings/BAND.cfile --min-snr 12 --frames-out frames.json > bursts.json
+tools/iq-frames frames.json > frames-report.json          # about 35 s per byte packing
+tools/iq-decode recordings/BAND.cfile --bursts -R 383 --max-bursts 120
+```
+
+- **`iq-demod`** (numpy only): every burst's time, frequency span and SNR; each
+  one is cut out at about 2.5 MS/s and demodulated as FSK. The symbol rate is
+  chosen from `--rates` (default 9.6k to 300k) by the longest alternating
+  preamble; `--min-preamble` (default 32) says how long counts. The timing
+  follows a clock a few hundred ppm off. Output: `rate_baud`, `preamble_bits`,
+  `eye`, `deviation_hz` and `bits` (a 0/1 string; positive frequency is 1, so
+  the polarity is not resolved). A 40 MS/s, 7.6 s file takes about 30 s.
+- **`iq-frames`**: from `--frames-out` (or `--hex` for one frame a line).
+  Aligns on the sync the frames share, says which byte positions are constant
+  or track the frame's length, and searches the scramblers and CRCs of
+  [catalogs.md](catalogs.md) for four packings of the bytes (plain, inverted,
+  LSB first, both). A hit lists the scrambler, the CRC, where each starts, the
+  end rule, how many *distinct* checked regions it fits, the seed of each frame,
+  and `p_chance` / `p_adjusted`. Nothing under 0.001 adjusted is listed, and
+  "nothing found" is an answer (a keyed cipher shows nothing). `--variants`
+  limits the packings; `lfsr_hints` lists windows a short LFSR explains.
+- **`iq-decode --bursts`**: opt in. Each burst is cut, scaled by itself and
+  written one after another with silence between, at the sample rate
+  `rtl_433 -R help` gives for the protocol (`(-s 1600k)`); the default path is
+  unchanged. It does not claim a decoder emits packets: `packets` says what
+  rtl_433 did. On the Silver Spring capture, decoder 383 of rtl_433 master
+  emitted none (see silver-spring.md).
+
+Limits: the burst finder reports a transmission that is wholly inside a much
+stronger one's time and near its frequency as part of it; symbols sent while
+the power is 20 dB down (a slow ramp) are not reliable; a hit means a
+hypothesis fits, not that the system is named.

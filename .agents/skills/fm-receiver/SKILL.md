@@ -15,6 +15,9 @@ workflows, commands and constraints. Read the file that fits before acting:
 - knowledge/gridstream.md: that method carried out on a smart-meter network,
   with what failed and why (DPLL timing, v4/v5 sync, finding a CRC,
   feeding rtl_433)
+- knowledge/silver-spring.md: the same method on a Silver Spring Networks
+  (Itron) FHSS mesh: complemented sync, per-hop 8-bit scrambler, CRC-32,
+  rates 100-300 kBd, and the wrong turns on the way
 - knowledge/rtl-software.md: the SDR tools on this machine and in apt, and
   which could be fed from a recording
 - knowledge/rf-ctf.md: RF CTF challenge types and the tools that decode them
@@ -113,10 +116,20 @@ and a class (noise, carrier, ook, ask, fsk, fm, am or unknown) with the
 evidence for it. Options: `--t0`, `--t1`, `--band LO HI` (absolute Hz),
 `--rate` and `--center` for a bare `.cfile`, and `--card`, which writes
 `<base>.card.json` beside a `.cfile` only. `tools/iq-picture FILE OUT.png`
-draws the spectrum and waterfall (it needs matplotlib). Neither decodes:
-`iq-demod` and `iq-frames` are not built. Read the card before writing any
-decoder. Built and tested on synthetic signals; not yet run on a real file (see
-capabilities.md).
+draws the spectrum and waterfall (it needs matplotlib). Neither decodes. Read
+the card before writing any decoder. Built and tested on synthetic signals; not
+yet run on a real file (see capabilities.md).
+
+Two more tools take it from a card to bits and frames, with no decoder per
+protocol. `tools/iq-demod FILE` finds every burst of a wide capture and
+demodulates each as FSK (symbol rate chosen by the longest preamble, timing
+that follows a clock a few hundred ppm off; `--frames-out` writes the bit
+strings). `tools/iq-frames FRAMES.json` aligns them on their common sync, says
+which byte positions are constant or carry the length, and searches the
+catalog of scramblers and CRCs (`knowledge/catalogs.md`) for one that fits
+several frames, with the seed free per frame and a chance estimate on every
+hit. `iq-decode --bursts` hands each burst to rtl_433 at the decoder's own
+sample rate. Method and wrong turns: knowledge/silver-spring.md.
 
 `tools/iq-decode FILE [--t0 S --t1 S] [--band LO HI] [-R N ...]` scales a span and runs rtl_433 on it, printing its decodes as JSON (needs rtl_433 installed: exit 2 without it; see usage.md, "Decoding a recording with rtl_433"). Built, tested on a synthetic frame and over the air once (VSG60 to BB60D).
 `iqmeasure.extract(path, t0, t1, band, max_rate, rate, center_hz)` returns that span as an `IQSlice` (iq, rate, center_hz, t0, t1), band-limited and decimated, read in chunks; `tools/iq-decode` feeds it to rtl_433.

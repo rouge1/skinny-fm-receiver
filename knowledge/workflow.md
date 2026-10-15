@@ -26,5 +26,13 @@ signals of known parameters to check the measurements on: ISM sensor frames
 Tools for these: `tools/iq-picture` draws the waterfall picture (step 3), and
 `tools/iq-measure` gives the card of level, bandwidth, tones, bursts and class
 (step 4). `fmctl measure` runs the second on the last capture. They say what a
-signal is and do not decode it: `iq-demod` and `iq-frames` are not built. See
+signal is and do not decode it. See
 [usage.md](usage.md#measuring-a-recording-iq-measure-and-iq-picture).
+
+For a wide capture of a hopping network, steps 3 to 7 have tools too:
+`tools/iq-demod` finds each burst and demodulates it (steps 3 to 5), and
+`tools/iq-frames` aligns the frames on their sync and searches the catalog
+([catalogs.md](catalogs.md)) for a scrambler and CRC that fit (steps 6 and 7).
+Neither is a decoder for a protocol; a hit is a hypothesis with a chance
+estimate, and rtl_433 or a public decoder is still the referee. The method
+on a real network, with what went wrong: [silver-spring.md](silver-spring.md).

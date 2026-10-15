@@ -51,6 +51,11 @@ with no launcher.
   decimated, read in chunks), and `tools/iq-decode` scales it and runs rtl_433
   on it, printing its decodes as JSON (rtl_433 must be on PATH; nothing of ours
   decodes).
+  `iqburst.py` finds the bursts of a wide capture and demodulates each as FSK
+  (`tools/iq-demod`); `iqframes.py` aligns the frames and searches the scrambler
+  and CRC catalog `iqcatalog.py` (`tools/iq-frames`; the catalog is
+  `knowledge/catalogs.md`, kept equal by a test); `iq-decode --bursts` feeds
+  each burst to rtl_433 at the decoder's own rate. All numpy only.
 - Knowledge: `knowledge/capabilities.md` is the living capability list.
   Update it (and its status marks) when a feature is added or verified.
   `knowledge/usage.md` is the user guide. `knowledge/roadmap.md` holds

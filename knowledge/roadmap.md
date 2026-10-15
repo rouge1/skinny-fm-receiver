@@ -1094,7 +1094,7 @@ Signal Hound's Sceptre keeps what the BB60D received in a ring file
 - [ ] Look at an IQ DVR's tile headers (do they carry a gain and offset too?)
 - [x] Draw the tiles: **in the Recordings tab** (Round 23, phase 3), not the Sweep tab
 - [ ] Show dBm in the app for a DVR (the offset is `full_scale_dbm`)
-- [x] **A way to classify what is seen, not a decoder per signal**: first version built 2026-10-14 (`iqmeasure.py`, `tools/iq-measure`, `tools/iq-picture`, `fmctl measure`; synthetic signals only, not yet a real file; `iq-demod` and `iq-frames` are not built) (decided
+- [x] **A way to classify what is seen, not a decoder per signal**: first version built 2026-10-14 (`iqmeasure.py`, `tools/iq-measure`, `tools/iq-picture`, `fmctl measure`; synthetic signals only, not yet a real file; `iq-demod` and `iq-frames` built 2026-10-15, below) (decided
   2026-09-30, since the signals to come are OOK, FSK, ASK, NTSC and more, and
   a decoder for each has no end). The workflow's steps 3-4 as measurements
   that give a signal a label: occupied bandwidth and where its energy sits,
@@ -1202,3 +1202,14 @@ own recordings (IQ band, IQ channel, WAV)**
 - [x] No engine: the playhead runs on a timer, the waterfall and trace come
   from the file (`Sweeps.read(dbm=True)`, in dBm), Loop applies, the radio
   stays closed
+- [x] **Bursts, bits and a scrambler + CRC search, still no decoder per protocol**
+  (built 2026-10-15, after the Silver Spring mesh): `iqburst.py`, `iqframes.py`,
+  `iqcatalog.py`, `tools/iq-demod`, `tools/iq-frames`, `iq-decode --bursts`,
+  `knowledge/catalogs.md`, `knowledge/silver-spring.md`. Synthetic tests (36
+  checks) and one real capture: the scrambler and CRC found with the true seed
+  logic, and 30 of the 32 hand-verified bursts found. Open: rtl_433 master's
+  decoder 383 emitted no packets from the burst file (cause not established);
+  `iq-frames` takes about 35 s per packing and could be faster; the catalog has
+  two scramblers (add BLE, Wi-SUN and others each with a checked vector); a
+  burst that is 20 dB down in a slow power ramp loses its last bits.
+
