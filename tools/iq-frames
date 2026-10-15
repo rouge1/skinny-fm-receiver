@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""iq-frames: what the frames of one network share, and which scrambler and CRC fit them.
+
+    tools/iq-frames FRAMES.json            # iq-demod's --frames-out, or its stdout
+    tools/iq-frames --hex FILE             # one frame per line, hex
+    tools/iq-frames FRAMES.json --variants plain,inverted
+    tools/iq-frames FRAMES.json --min-hits 4 --no-lfsr
+
+Aligns the frames on their common sync (the bits every frame has just after its
+preamble), then for each polarity and bit order of the bytes reports the constant and
+varying byte positions, any byte that plus a constant is the frame length, and every
+scrambler and CRC of the catalogue (``knowledge/catalogs.md``) that holds on at least
+``--min-hits`` frames with the seed free per frame. Each hit carries ``p_chance`` (the
+binomial tail of its hit count) and ``p_adjusted`` (that times the hypotheses tried); only
+hits under 0.001 are listed. Windows of low linear complexity (a scrambler outside the
+catalogue) are listed too. Nothing is decoded and nothing is guessed: no hit is an answer.
+
+Exit 0 when it ran; 1 for a bad option or unreadable input. Numpy only.
+"""
+
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fm_receiver import iqframes  # noqa: E402
+
+NAMES = {'plain': (False, False), 'inverted': (True, False),
+         'lsb': (False, True), 'inverted-lsb': (True, True)}
+
+
+def _refuse(message):
+    sys.stderr.write(f"iq-frames: {message}\n")
+    return 1
+
+
+def _load(path, hex_mode):
+    with open(path) as fh:
+        if hex_mode:
+            frames = []
+            for line in fh:
+                t = ''.join(line.split())
+                if t:
+                    raw = bytes.fromhex(t)
+                    frames.append(''.join(format(b, '08b') for b in raw))
+            return frames
+        doc = json.load(fh)
+    if isinstance(doc, dict) and 'frames' in doc:
+        return [f['bits'] if isinstance(f, dict) else f for f in doc['frames']]
+    if isinstance(doc, dict) and 'bursts' in doc:
+        return [b['bits'] for b in doc['bursts'] if b.get('bits') and b.get('preamble_bits')]
+    raise ValueError("the file is neither iq-demod output nor a 'frames' list")
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('file')
+    ap.add_argument('--hex', action='store_true', help="the file is one frame per line, in hex (no preamble)")
+    ap.add_argument('--variants', default='plain,inverted,lsb,inverted-lsb', metavar='LIST',
+                    help="byte packings to try: plain, inverted, lsb, inverted-lsb")
+    ap.add_argument('--min-hits', type=int, default=3, metavar='N')
+    ap.add_argument('--tail-slack', type=int, default=4, metavar='N',
+                    help="a CRC field may end up to N bytes before the frame's end (default 4)")
+    ap.add_argument('--no-lfsr', action='store_true', help="skip the linear-complexity scan")
+    try:
+        args = ap.parse_args(argv)
+    except SystemExit as exc:
+        return 0 if exc.code in (None, 0) else 1
+    try:
+        variants = tuple(NAMES[v.strip()] for v in args.variants.split(',') if v.strip())
+    except KeyError as exc:
+        return _refuse(f"unknown variant {exc}; use {', '.join(NAMES)}")
+    if not variants or args.min_hits < 2:
+        return _refuse("need at least one variant and --min-hits 2 or more.")
+    try:
+        bit_frames = _load(args.file, args.hex)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        return _refuse(exc)
+    if len(bit_frames) < args.min_hits:
+        return _refuse(f"{len(bit_frames)} frames; --min-hits is {args.min_hits}.")
+    if args.hex:
+        # hex frames carry no preamble: align on their own first bit
+        starts, sync = [0] * len(bit_frames), ''
+        result = dict(n_frames=len(bit_frames), sync_bits=sync, variants=[])
+        for invert, lsb in variants:
+            frames = iqframes.frames_as_bytes(bit_frames, starts, invert, lsb)
+            st = iqframes.structure(frames)
+            found = iqframes.search(frames, min_hits=args.min_hits, length_fields=st['length_fields'],
+                                    tail_slack=args.tail_slack)
+            result['variants'].append(dict(invert=invert, lsb_first=lsb, structure=st, search=found))
+        result['lfsr_hints'] = [] if args.no_lfsr else iqframes.lfsr_hints(bit_frames, starts)
+    else:
+        result = iqframes.analyse(bit_frames, variants=variants, min_hits=args.min_hits,
+                                  tail_slack=args.tail_slack)
+        if args.no_lfsr:
+            result['lfsr_hints'] = []
+    json.dump(result, sys.stdout, indent=1, default=int, allow_nan=False)
+    sys.stdout.write('\n')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

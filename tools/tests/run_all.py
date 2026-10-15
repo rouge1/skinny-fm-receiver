@@ -1,9 +1,9 @@
-"""Run the tests: the twenty that need no radio, with ``--hw`` the BB60D
+"""Run the tests: the twenty-three that need no radio, with ``--hw`` the BB60D
 check as well, with ``--hackrf`` the HackRF check (other sessions may
 use the HackRF too: make sure it is yours before running it), and with
 ``--rtl`` the RTL-SDR check (this app closed, so no rtl_tcp is running).
 
-    python tools/tests/run_all.py          # about three minutes
+    python tools/tests/run_all.py          # about six minutes
     python tools/tests/run_all.py --hw     # plus a BB60D off air
     python tools/tests/run_all.py --hackrf # plus a HackRF off air
     python tools/tests/run_all.py --rtl    # plus an RTL-SDR off air
@@ -19,6 +19,7 @@ TESTS = ['test_sweep.py', 'test_tuning.py', 'test_receive_chain.py', 'test_gui.p
          'test_recordings.py', 'test_rtl_tcp.py', 'test_bb60_lost.py',
          'test_control.py', 'test_control_more.py',
          'test_iq_measure.py', 'test_iq_tools.py', 'test_iq_decode.py',
+         'test_iq_catalog.py', 'test_iq_frames.py', 'test_iq_decode_bursts.py',
          'test_hdradio.py', 'test_sceptre_dvr.py',
          'test_dvr_hd.py', 'test_dvr_iq.py', 'test_sceptre_library.py',
          'test_spectra.py', 'test_sceptre_spectra.py',

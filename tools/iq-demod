@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""iq-demod: the bursts in a recording, and the bits of each (workflow steps 3 to 5).
+
+    tools/iq-demod FILE [--t0 S --t1 S] [--band LO HI] [--rate R --center HZ]
+    tools/iq-demod FILE [--rates 100k,200k,...] [--over-db DB] [--min-snr DB]
+    tools/iq-demod FILE [--max-bursts N] [--min-preamble N] [--no-bits] [--frames-out PATH]
+
+Finds every transmission (a short-time spectrum, cells ``--over-db`` above each bin's
+median), cuts each one out at about 2.5 MS/s, and demodulates it as FSK: the centre, a
+discriminator, the symbol rate chosen from ``--rates`` by the longest alternating
+preamble, and timing that follows a clock a few hundred ppm off. Stdout is one JSON
+document: for each burst its time and frequency span, the rate, the preamble length, the
+eye, the deviation, and ``bits`` (a 0/1 string from the preamble's start to a few bits past
+the burst's end; positive frequency is 1, so the polarity is not resolved). ``--frames-out``
+also writes just the bit strings, for ``iq-frames``. It does not decode a protocol.
+
+Exit 0 when it ran, whatever the burst count; 1 for a bad option or a file it cannot read.
+Numpy only; runs anywhere.
+"""
+
+import argparse
+import json
+import math
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fm_receiver import iqburst, iqmeasure  # noqa: E402
+
+CUT_HALF_WIDTH_HZ = 600e3     # each burst is cut out this far either side of its centre
+CUT_MAX_RATE = 2.5e6
+PAD_BEFORE_S = 1e-3
+PAD_AFTER_S = 2e-3
+
+
+def _refuse(message):
+    sys.stderr.write(f"iq-demod: {message}\n")
+    return 1
+
+
+def _rate_list(text):
+    out = []
+    for part in text.split(','):
+        part = part.strip().lower()
+        if not part:
+            continue
+        mult = 1.0
+        if part.endswith('k'):
+            mult, part = 1e3, part[:-1]
+        elif part.endswith('m'):
+            mult, part = 1e6, part[:-1]
+        out.append(float(part) * mult)
+    if not out or any((not math.isfinite(r)) or r <= 0 for r in out):
+        raise ValueError("--rates needs positive numbers such as 50k,100k")
+    return tuple(out)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('file')
+    ap.add_argument('--t0', type=float, metavar='S')
+    ap.add_argument('--t1', type=float, metavar='S')
+    ap.add_argument('--band', nargs=2, type=float, metavar=('LO', 'HI'),
+                    help="only bursts whose centre is in this absolute Hz band")
+    ap.add_argument('--rate', type=float, metavar='R', help="samples/s, for a bare .cfile")
+    ap.add_argument('--center', type=float, metavar='HZ', help="centre in Hz, for a bare .cfile")
+    ap.add_argument('--rates', default=None, metavar='LIST',
+                    help="symbol rates to try, e.g. 50k,100k,150k (default 9.6k to 300k)")
+    ap.add_argument('--over-db', type=float, default=12.0, metavar='DB',
+                    help="a cell is active this far above its bin's median (default 12)")
+    ap.add_argument('--min-snr', type=float, default=0.0, metavar='DB')
+    ap.add_argument('--min-preamble', type=int, default=32, metavar='N',
+                    help="alternating bits before a burst counts as framed (default 32; "
+                         "shorter runs happen on noise)")
+    ap.add_argument('--max-bursts', type=int, default=None, metavar='N')
+    ap.add_argument('--no-bits', action='store_true', help="leave the bit strings out of the output")
+    ap.add_argument('--frames-out', metavar='PATH', help="write the bit strings of the demodulated bursts here")
+    try:
+        args = ap.parse_args(argv)
+    except SystemExit as exc:
+        return 0 if exc.code in (None, 0) else 1
+    for name, v in (('--t0', args.t0), ('--t1', args.t1)):
+        if v is not None and not math.isfinite(v):
+            return _refuse(f"{name} must be a finite number.")
+    if args.t0 is not None and args.t1 is not None and args.t0 >= args.t1:
+        return _refuse("--t0 is not before --t1.")
+    if args.band is not None and args.band[0] >= args.band[1]:
+        return _refuse("--band needs LO < HI.")
+    try:
+        rates = _rate_list(args.rates) if args.rates else iqburst.DEFAULT_RATES
+    except ValueError as exc:
+        return _refuse(exc)
+    try:
+        src = iqmeasure.open_iq(args.file, rate=args.rate, center_hz=args.center)
+        found = iqburst.find_bursts(src, t0=args.t0, t1=args.t1, over_db=args.over_db)
+    except (iqmeasure.IQSourceError, OSError) as exc:
+        return _refuse(exc)
+    if args.band:
+        found = [b for b in found if args.band[0] <= b['centre_hz'] <= args.band[1]]
+    found = [b for b in found if b['snr_db'] >= args.min_snr]
+    if args.max_bursts is not None:
+        found = found[:args.max_bursts]
+    out, frames = [], []
+    for b in found:
+        item = dict(t0_s=round(b['t0'], 6), t1_s=round(b['t1'], 6), centre_hz=round(b['centre_hz'], 1),
+                    bw_hz=round(b['bw_hz'], 1), snr_db=round(b['snr_db'], 1))
+        try:
+            lo = b['centre_hz'] - CUT_HALF_WIDTH_HZ
+            hi = b['centre_hz'] + CUT_HALF_WIDTH_HZ
+            t0 = max(0.0, b['t0'] - PAD_BEFORE_S)
+            sl = iqmeasure.extract(args.file, t0=t0, t1=b['t1'] + PAD_AFTER_S, band=(lo, hi),
+                                   max_rate=CUT_MAX_RATE, rate=args.rate, center_hz=args.center)
+            r = iqburst.demod_fsk(sl.iq, sl.rate, rates=rates, min_preamble=args.min_preamble)
+        except (iqmeasure.IQSourceError, OSError, ValueError) as exc:
+            item['error'] = str(exc)
+            r = None
+        if r:
+            item.update(rate_baud=r['rate_baud'], preamble_bits=r['preamble_bits'], eye=r['eye'],
+                        deviation_hz=None if r['deviation_hz'] is None else round(r['deviation_hz'], 1),
+                        centre_offset_hz=round(r['centre_offset_hz'], 1), n_bits=len(r['bits']),
+                        candidates=[list(c) for c in r['candidates']])
+            if not args.no_bits:
+                item['bits'] = r['bits']
+            if r['bits'] and r['preamble_bits']:
+                frames.append(r['bits'])
+        out.append(item)
+    doc = dict(file=args.file, center_hz=src.center_hz, rate_sps=src.rate, bursts=out,
+               summary=dict(bursts=len(out), with_preamble=len(frames)))
+    if args.frames_out:
+        try:
+            with open(args.frames_out, 'w') as fh:
+                json.dump(dict(frames=[dict(bits=b) for b in frames]), fh)
+        except OSError as exc:
+            return _refuse(exc)
+    json.dump(doc, sys.stdout, indent=1, allow_nan=False)
+    sys.stdout.write('\n')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

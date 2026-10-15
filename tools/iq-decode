@@ -3,6 +3,14 @@
 
     tools/iq-decode FILE [--t0 S --t1 S] [--band LO HI] [--rate R --center HZ]
     tools/iq-decode FILE [-R N ...] [--out-rate R] [--keep PATH] [--timeout S]
+    tools/iq-decode FILE --bursts [-R N ...] [--max-bursts N]
+
+``--bursts`` is the opt-in path for a wide, bursty recording (a hopping network): every
+transmission is found (``iqburst.find_bursts``), cut out, scaled by itself and written one
+after another with silence between, at the sample rate the chosen decoder asks for (the
+``(-s RATE)`` in ``rtl_433 -R help``), so rtl_433 sees each as its own packet. The default
+path below is unchanged. ``--bursts`` makes no claim that a decoder emits a packet: the
+output's ``packets`` says what rtl_433 did.
 
 ``--out-rate`` (default 250000) is a ceiling, not a second resampler. The span is
 extracted at most that fast; a band wider than the ceiling is narrowed about its
@@ -34,7 +42,7 @@ import tempfile
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fm_receiver import iqmeasure  # noqa: E402
+from fm_receiver import iqburst, iqmeasure  # noqa: E402
 
 # rtl_433's OOK pulse detector is built for this rate. extract will not go faster.
 DEFAULT_OUT_RATE = 250000.0
@@ -70,6 +78,8 @@ def _check_options(args):
         return _refuse("--rate must be a finite sample rate above 0.")
     if not math.isfinite(args.out_rate) or args.out_rate <= 0:
         return _refuse("--out-rate must be a finite sample rate above 0.")
+    if args.max_bursts < 1:
+        return _refuse("--max-bursts must be 1 or more.")
     if not math.isfinite(args.timeout) or args.timeout <= 0:
         return _refuse("--timeout must be a finite number of seconds above 0.")
     if args.band is not None and args.band[0] >= args.band[1]:
@@ -267,6 +277,81 @@ def _stderr_tail(path, n=12):
     return '\n'.join(lines[-n:]) if lines else '(no stderr)'
 
 
+_BURST_PAD_S = 4e-3        # silence either side of a burst in the --bursts file
+_BURST_MARGIN_S = 1e-3     # extra time read either side of a detected burst
+
+
+def _protocol_rate(number, default):
+    """The sample rate ``rtl_433 -R help`` gives protocol ``number`` as ``(-s RATE)``, else ``default``."""
+    import re
+    # to a file, not a pipe, as everywhere in this tool (a pipe lost decodes once)
+    fd, tmp = tempfile.mkstemp(prefix='iqdecode-help-')
+    os.close(fd)
+    try:
+        with open(tmp, 'w') as fh:
+            subprocess.run(['rtl_433', '-R', 'help'], stdout=fh, stderr=fh, timeout=30)
+        with open(tmp) as fh:
+            text = fh.read()
+    except (OSError, subprocess.TimeoutExpired):
+        return default
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    for line in text.splitlines():
+        m = re.match(r'\s*\[(\d+)\]\s*\*?\s*(.*)$', line)
+        if m and int(m.group(1)) == number:
+            r = re.search(r'\(-s\s*(\d+(?:\.\d+)?)\s*([kKmM]?)\)', m.group(2))
+            if r:
+                mult = {'': 1.0, 'k': 1e3, 'm': 1e6}[r.group(2).lower()]
+                return float(r.group(1)) * mult
+    return default
+
+
+def _fft_resample(iq, fs_in, fs_out):
+    """Resample band-limited ``iq`` from ``fs_in`` to ``fs_out`` by cropping or padding its spectrum."""
+    n_in = len(iq)
+    n_out = max(1, int(round(n_in * fs_out / fs_in)))
+    if n_out == n_in:
+        return iq
+    spec = np.fft.fftshift(np.fft.fft(iq))
+    out = np.zeros(n_out, dtype=np.complex128)
+    keep = min(n_in, n_out)
+    a_in = n_in // 2 - keep // 2
+    a_out = n_out // 2 - keep // 2
+    out[a_out:a_out + keep] = spec[a_in:a_in + keep]
+    return (np.fft.ifft(np.fft.ifftshift(out)) * (n_out / n_in)).astype(np.complex64)
+
+
+def _burst_slice(args, target_rate):
+    """The bursts of the span, each scaled by itself and padded, as one array at ``target_rate``.
+
+    Returns ``(iq, centre_hz, n_bursts, mean_gain_db)``; ``iq`` is None when none was found."""
+    src = iqmeasure.open_iq(args.file, rate=args.rate, center_hz=args.center)
+    found = iqburst.find_bursts(src, t0=args.t0, t1=args.t1)
+    if args.band:
+        found = [b for b in found if args.band[0] <= b['centre_hz'] <= args.band[1]]
+    found = found[:args.max_bursts]
+    half = 0.4 * target_rate
+    pad = np.zeros(int(_BURST_PAD_S * target_rate), dtype=np.complex64)
+    parts, gains = [], []
+    for b in found:
+        c = b['centre_hz']
+        sl = iqmeasure.extract(args.file, t0=max(0.0, b['t0'] - _BURST_MARGIN_S), t1=b['t1'] + _BURST_MARGIN_S,
+                               band=(c - half, c + half), max_rate=target_rate, rate=args.rate,
+                               center_hz=args.center)
+        iq = _fft_resample(sl.iq, sl.rate, target_rate)
+        g = _scale(iq)
+        if g is not None:
+            gains.append(g)
+        parts += [pad, iq]
+    if not parts:
+        return None, src.center_hz, 0, None
+    parts.append(pad)
+    return np.concatenate(parts), src.center_hz, len(found), (sum(gains) / len(gains) if gains else None)
+
+
 def _emit(card):
     json.dump(card, sys.stdout, indent=2, allow_nan=False)
     sys.stdout.write('\n')
@@ -290,6 +375,11 @@ def main(argv=None):
     ap.add_argument('--out-rate', type=float, default=DEFAULT_OUT_RATE, metavar='R',
                     help="ceiling on the sample rate (default 250000); a wider band is narrowed "
                          "about its centre")
+    ap.add_argument('--bursts', action='store_true',
+                    help="opt in: find every burst, cut and scale each, write them in turn at the "
+                         "decoder's own sample rate (needs the span to be at most 200 MB read)")
+    ap.add_argument('--max-bursts', type=int, default=200, metavar='N',
+                    help="with --bursts, the first N bursts (default 200)")
     ap.add_argument('--keep', metavar='PATH',
                     help="write the cf32 file to PATH instead of a temporary file")
     ap.add_argument('--timeout', type=float, default=DEFAULT_TIMEOUT, metavar='S',
@@ -311,17 +401,29 @@ def main(argv=None):
     if shutil.which('rtl_433') is None:
         return _missing()
     protocols = _protocols(args.R)
+    n_bursts = None
     try:
-        sl = iqmeasure.extract(
-            args.file, t0=args.t0, t1=args.t1,
-            band=tuple(args.band) if args.band else None,
-            max_rate=args.out_rate, rate=args.rate, center_hz=args.center)
+        if args.bursts:
+            target = DEFAULT_OUT_RATE
+            if args.R:
+                target = _protocol_rate(int(args.R[0]), DEFAULT_OUT_RATE)
+            if args.out_rate != DEFAULT_OUT_RATE:
+                target = args.out_rate
+            iq, centre_hz, n_bursts, gain_db = _burst_slice(args, target)
+            if iq is None:
+                iq = np.zeros(int(0.01 * target), dtype=np.complex64)
+            sl = iqmeasure.IQSlice(iq, target, centre_hz, args.t0 or 0.0, args.t1 or 0.0)
+        else:
+            sl = iqmeasure.extract(
+                args.file, t0=args.t0, t1=args.t1,
+                band=tuple(args.band) if args.band else None,
+                max_rate=args.out_rate, rate=args.rate, center_hz=args.center)
+            gain_db = _scale(sl.iq)
     except iqmeasure.IQSourceError as exc:
         return _refuse(exc)
     except OSError as exc:
         return _refuse(exc)
 
-    gain_db = _scale(sl.iq)
     rate_sps = float(sl.rate)
 
     # mkdtemp honours TMPDIR. The name stays one alphanumeric token plus a suffix so rtl_433,
@@ -369,6 +471,8 @@ def main(argv=None):
             'decodes': decodes,
             'summary': summary,
         }
+        if n_bursts is not None:
+            card['bursts'] = n_bursts
         _emit(card)
         return 0
     finally:

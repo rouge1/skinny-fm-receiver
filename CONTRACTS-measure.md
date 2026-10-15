@@ -135,3 +135,54 @@ and is capped by the extracted rate. Plain Python, numpy only (rtl_433 is a subp
 
 Known unknown (to be investigated, not assumed): on one over-the-air capture rtl_433 decoded the Nexus frame
 only with `-R 19`, and found nothing with its default protocol set, while a synthetic file decoded in both.
+
+## Bursts, bits and frames (amendment, 2026-10-15)
+
+Added after the Silver Spring mesh (`knowledge/silver-spring.md`). The contracts above are unchanged:
+`iqmeasure` is not touched, `iq-decode`'s default path and its pinned tests are not changed, and the
+new path is opt-in. Numpy only (no scipy, gnuradio, Qt, `library`, `radios`); tests use synthetic
+signals and placeholder bytes only.
+
+```python
+# tools/fm_receiver/iqburst.py
+find_bursts(source, t0=None, t1=None, nfft=None, over_db=12.0, min_s=150e-6, min_frames=2,
+            max_bw_hz=5e6, max_run_share=0.5, edge_share=0.04, chunk_frames=4096,
+            merge_gap_hz=300e3) -> [dict(t0, t1, f_lo, f_hi, centre_hz, bw_hz, snr_db)]
+demod_fsk(iq, fs, rates=DEFAULT_RATES, min_preamble=16, margin_bits=16)
+    -> None | dict(rate_baud, preamble_bits, eye, centre_offset_hz, deviation_hz, bits, candidates)
+# tools/fm_receiver/iqframes.py
+align(bit_frames) -> (starts, sync_bits, kept_indices)
+structure(frames) -> dict(positions, length_fields, lengths)
+search(frames, scramblers=None, crcs=None, starts=None, tail_slack=4, length_fields=(),
+       min_hits=3, ...) -> dict(hits, tried, unaccepted, unique_frames)
+lfsr_hints(bit_frames, starts) -> [dict(frame, bit_offset, complexity, window)]
+analyse(bit_frames, variants, min_hits) -> dict
+# tools/fm_receiver/iqcatalog.py
+CRCS (71 entries, widths 8/16/24/32, each reproducing its reveng check value), SCRAMBLERS,
+crc(), crc_update(), crc_final(), keystream(), descramble()
+```
+
+- `demod_fsk`'s bits are as sliced (positive frequency is 1): polarity and byte bit order are not
+  resolved there; `iq-frames` tries both. The rate is the candidate with the longest alternating
+  run (>= `min_preamble`), the eye only breaks a tie. The sample point follows zero crossings, so a
+  clock +-1500 ppm off over 1,000 symbols is bit-exact. Bits sent while the power is more than about
+  20 dB down are not promised.
+- `search` counts a hit by *distinct checked regions* (identical bytes, or the same bytes under the
+  same rule, are one observation), does not try a hypothesis whose chance of a hit per frame
+  exceeds 5 %, reports `p_tail` (binomial) and `p_adjusted` (times the hypotheses tried), and lists
+  only `p_adjusted` under 1e-3. A free per-frame seed over every non-zero state makes the keystream
+  start inseparable from the CRC start, so it is reported once.
+- `knowledge/catalogs.md` carries the catalog as two JSON blocks; `test_iq_catalog.py` fails when
+  they differ from `iqcatalog.py`, or when a CRC misses its check value.
+- `tools/iq-demod FILE [--t0 S --t1 S] [--band LO HI] [--rate R --center HZ] [--rates LIST]
+  [--over-db DB] [--min-snr DB] [--min-preamble N] [--max-bursts N] [--no-bits] [--frames-out PATH]`:
+  one JSON document (`bursts`, each with its span, `rate_baud`, `preamble_bits`, `eye`, `bits`),
+  exit 1 on a bad option or a file that cannot be read.
+- `tools/iq-frames FRAMES.json | --hex FILE [--variants LIST] [--min-hits N] [--tail-slack N]
+  [--no-lfsr]`: one JSON document, exit 1 on a bad option, unreadable input or under `--min-hits`
+  frames.
+- `tools/iq-decode FILE --bursts [-R N ...] [--max-bursts N]`: each burst of the span found,
+  cut to 80 % of the decoder's sample rate in band, scaled by itself (99.9th percentile of |x| to
+  0.5), padded with 4 ms of silence and written in turn at the rate `rtl_433 -R help` gives for
+  protocol N as `(-s RATE)` (else `--out-rate`, default 250000). The output gains `bursts`. The
+  tool makes no claim that a decoder emits a packet.
