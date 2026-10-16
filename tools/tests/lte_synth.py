@@ -182,14 +182,15 @@ def _resample(iq, native, fs):
 
 
 def synth_lte(bw_mhz=10, n_frames=10, pci=123, snr_db=20.0, seed=0, cfo_hz=0.0,
-              fs=None, pss=True):
+              fs=None, pss=True, sss=True):
     """FDD downlink, one port, normal CP.
 
     Returns ``(iq complex64, fs)``. ``fs`` None keeps the native rate of the
     bandwidth class. The mean power is 1 before the noise; complex white noise
     is then added so that signal power over noise power is ``snr_db`` at the
     output rate (a non-finite ``snr_db`` adds none). ``cfo_hz`` rotates the
-    output. ``pss`` False zeroes the primary synchronisation signal.
+    output. ``pss`` False zeroes the primary synchronisation signal. ``sss``
+    False zeroes the secondary synchronisation signal.
     """
     pci = int(pci)
     if not 0 <= pci <= 503:
@@ -218,8 +219,8 @@ def synth_lte(bw_mhz=10, n_frames=10, pci=123, snr_db=20.0, seed=0, cfo_hz=0.0,
     for slot in (0, 10):
         grid[np.ix_(rows + slot * _SYMS_PER_SLOT + 6, center)] = pss_seq if pss else 0
     sss0, sss5 = _sss(nid1, nid2)
-    grid[np.ix_(rows + 5, center)] = sss0
-    grid[np.ix_(rows + 10 * _SYMS_PER_SLOT + 5, center)] = sss5
+    grid[np.ix_(rows + 5, center)] = sss0 if sss else 0
+    grid[np.ix_(rows + 10 * _SYMS_PER_SLOT + 5, center)] = sss5 if sss else 0
 
     for slot in range(_SLOTS_PER_FRAME):
         for symbol in (0, 4):
