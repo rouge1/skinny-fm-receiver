@@ -55,7 +55,9 @@ with no launcher.
   (`tools/iq-demod`); `iqframes.py` aligns the frames and searches the scrambler
   and CRC catalog `iqcatalog.py` (`tools/iq-frames`; the catalog is
   `knowledge/catalogs.md`, kept equal by a test); `iq-decode --bursts` feeds
-  each burst to rtl_433 at the decoder's own rate. All numpy only.
+  each burst to rtl_433 at the decoder's own rate. `iqlte.py` is the LTE
+  structural fingerprint (cyclic-prefix autocorrelation and PSS search; its
+  test helpers are `tools/tests/lte_synth.py` and `lte_negatives.py`). All numpy only.
 - Knowledge: `knowledge/capabilities.md` is the living capability list.
   Update it (and its status marks) when a feature is added or verified.
   `knowledge/usage.md` is the user guide. `knowledge/roadmap.md` holds
