@@ -37,6 +37,8 @@ import time
 import numpy as np  # type: ignore
 from PyQt5 import Qt, QtCore, QtNetwork  # type: ignore
 
+from .app_atsc import ATSC_TAB
+from .atsc_core import channel_center_mhz
 from .config import control_path, update_config
 from .rds_core import clock_text
 
@@ -105,7 +107,7 @@ HELP = {}
 COMMANDS = {}
 
 #: The Receive tab's RDS | HD Radio tabs, in the order the window has them.
-STATION_TABS = ('rds', 'hd')
+STATION_TABS = ('rds', 'hd', 'atsc')
 
 
 def command(name, usage, text):
@@ -192,6 +194,8 @@ def cmd_status(w, args):
                          'pilot_locked': bool(rx.pilot_locked())}
         out['rds'] = _rds_state(rx.rds.snapshot())
         out['hd'] = _hd_state(w)
+    if w._atsc_on:
+        out['atsc'] = w.atsc_status()
     if w._tab_mode() == 'recordings':
         out['playback'] = _playback_state(w)
     return out
@@ -429,13 +433,13 @@ def cmd_hd(w, args):
     return _hd_state(w)
 
 
-@command('station', 'station rds|hd', "The RDS | HD Radio tabs under the Tuner (Receive's): "
+@command('station', 'station rds|hd|atsc', "The RDS | HD Radio | ATSC TV tabs under the Tuner (Receive's): "
          "the one to show, as a click on its tab does (a folded box stays folded). Show RDS "
          "while reading RDS, so the user sees what is being read.")
 def cmd_station(w, args):
-    word = _args(args, 1, 1, 'station rds|hd')[0].lower()
+    word = _args(args, 1, 1, 'station rds|hd|atsc')[0].lower()
     if word not in STATION_TABS:
-        raise CommandError("station: rds or hd")
+        raise CommandError("station: rds, hd or atsc")
     if w._tab_mode() != 'receive':
         raise CommandError("the RDS and HD Radio tabs are Receive's: "
                            "switch with 'mode receive' first")
@@ -444,6 +448,35 @@ def cmd_station(w, args):
     tabs.tabBarClicked.emit(index)       # what a click sends first
     tabs.setCurrentIndex(index)           # a folded box stays folded: its chevron opens it
     return {'station_tab': STATION_TABS[tabs.currentIndex()]}
+
+
+@command('atsc', 'atsc [CHANNEL|program N]', "Television, the ATSC TV tab: with a number, "
+         "receive that RF channel (14-36; 32 is 578-584 MHz) and show the tab; 'program N' "
+         "picks which of its programs plays (the PAT's number, as 'status' lists them); "
+         "with none, the tab's state: lock, pilot, bad packets, MER, the programs with "
+         "their names, now and next. Needs a radio that streams 8 MS/s or more.")
+def cmd_atsc(w, args):
+    if w._tab_mode() != 'receive':
+        raise CommandError("atsc is Receive's: switch with 'mode receive' first")
+    if args and args[0].lower() == 'program':
+        number = _args(args, 2, 2, 'atsc program N')[1]
+        if not number.isdigit():
+            raise CommandError("atsc program: a program number")
+        w.atsc_select_program(int(number))
+        return w.atsc_status()
+    if args:
+        word = _args(args, 1, 1, 'atsc [CHANNEL|program N]')[0]
+        try:
+            number = int(word)
+            channel_center_mhz(number)
+        except ValueError:
+            raise CommandError(f"atsc: {word!r} is not a television channel (2-13, 14-36)")
+        if w.station_tabs.currentIndex() != ATSC_TAB:
+            w.station_tabs.setCurrentIndex(ATSC_TAB)
+        w.atsc_select_channel(number)
+    elif w.station_tabs.currentIndex() != ATSC_TAB:
+        w.station_tabs.setCurrentIndex(ATSC_TAB)
+    return w.atsc_status()
 
 
 def _recordings_tab(w):

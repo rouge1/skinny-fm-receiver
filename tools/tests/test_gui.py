@@ -1191,7 +1191,7 @@ def folding(w):
     # Under the Tuner, RDS and HD Radio are tabs, HD Radio's left on show.
     # A change glides the height and fades the page in.
     tabs = w.station_tabs
-    assert [tabs.tabText(i) for i in range(tabs.count())] == ['RDS', 'HD Radio']
+    assert [tabs.tabText(i) for i in range(tabs.count())] == ['RDS', 'HD Radio', 'ATSC TV']
     tabs.setCurrentIndex(0)
     pump(0.4)
     before = tabs.height()

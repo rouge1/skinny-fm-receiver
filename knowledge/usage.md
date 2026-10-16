@@ -331,6 +331,21 @@ as decoded: **RDS**, and **HD Radio**'s station, programs, now playing,
 pictures and signal. The tab on show is remembered, and changing tab
 glides the height and fades the page in.
 
+**ATSC TV** is a third tab beside them, for US digital television (8VSB; RF
+channels 14-36, 470-608 MHz). Click it and the radio retunes to the channel it
+shows (pick another in its **Channel** list, or `fmctl atsc 32`) at the lowest
+IQ rate that holds 6 MHz: 10 MS/s on a BB60D or HackRF; an RTL-SDR cannot (the
+picture says so). Where the FM multiplex was, under the RF spectrum, **the
+picture comes up**: the multiplex fades into it and the split glides open.
+Click RDS or HD Radio and it all goes back, the FM station you had returning.
+The tab names the station (`16.1 STATION HD`), says whether it is locked and how
+many packets are bad (that, not MER, says whether the picture is whole), has a
+button per program, and shows what is on now and next, the picture's format and
+the sound's. The sound plays through the Volume and Mute above it. It needs
+`ffmpeg` on PATH to turn the stream into a picture. A recording of a television
+channel (an IQ file of 8 MS/s or more) plays the same way with the tab chosen
+first: `./fm-receiver --file REC.cfile` with the tab already on show.
+
 The Radio and Tuner boxes have a **chevron** at the right of the title: click it, or the
 title, to fold the box away and again to open it; it slides shut or open,
 and the chevron turns. A folded **Radio** box

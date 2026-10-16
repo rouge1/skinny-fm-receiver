@@ -373,7 +373,7 @@ def main():
         w.station_tabs.set_folded(True)
         assert c.ok('station hd')['station_tab'] == 'hd' and w.station_tabs.is_folded()
         c.ok('station rds')
-        c.refused('station mpx', 'rds or hd')
+        c.refused('station mpx', 'rds, hd or atsc')
         c.ok('mode sweep')
         c.refused('station hd', "Receive's")
         assert w.station_tabs.currentIndex() == 0, 'a refused station moved the tab'

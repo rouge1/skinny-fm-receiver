@@ -1213,3 +1213,22 @@ own recordings (IQ band, IQ channel, WAV)**
   two scramblers (add BLE, Wi-SUN and others each with a checked vector); a
   burst that is 20 dB down in a slow power ramp loses its last bits.
 
+## Round 24: ATSC television in the Receive tab (requested 2026-10-16)
+
+The user found a signal at 577-584 MHz (US RF 32, 8VSB, decoded offline with
+the bench toolkit's receiver), then asked for a tab like RDS and HD Radio,
+with the metadata and a choice of channel, which animates the multiplex away
+so the video shows.
+
+- [x] The ATSC TV tab: channel list, station, signal, programs, now and next,
+  picture and sound format (`app_atsc.py`).
+- [x] The picture and sound: ffmpeg on the recovered stream (`atsc.py`).
+- [x] PSIP: names and numbers (TVCT), now and next (MGT, EIT-0/1) (`atsc_core.py`).
+- [x] The animation: multiplex fades into the picture, the splitter glides.
+- [x] `fmctl`: `station atsc`, `atsc`, `status`'s `atsc` block.
+- [x] `test_atsc.py`.
+- [ ] Seen live on the BB60D in the user's window (needs a restart of the window).
+- [ ] A scan of RF 14-36 for stations (pilot prominence), as FM has.
+- [ ] Record a program's transport stream (`.ts`) or its picture.
+- [ ] EIT titles sent Huffman-compressed; closed captions.
+

@@ -96,6 +96,8 @@ AUDIO_INTERP, AUDIO_DECIM = 24, 125
 HD_MIN_MID_RATE = 420e3
 #: Items in each buffer between HD Radio's audio and the mix (~40 ms).
 HD_AUDIO_BUFFER = 2048
+#: FM receiver: the IQ rate a 6 MHz television channel needs (see atsc.py).
+ATSC_MIN_RATE = 8e6
 #: The 38 kHz phase each convention needs, relative to twice the PLL's.
 PHASE_STANDARD = math.pi / 2          # pilot and subcarrier both sines
 PHASE_COSINE = 0.0                    # both cosines (the toolkit's transmitter)
@@ -487,9 +489,9 @@ class ReceiveChain:
     RF_GUARD = 65536
     MPX_GUARD = 24576
 
-    def __init__(self, tb, source, rate, offset_hz, *, channel_bw=200e3,
+    def __init__(self, tb, source, rate, offset_hz, *, center_hz=None, channel_bw=200e3,
                  region='RBDS', stereo=True, volume=0.5, muted=False,
-                 audio_sink=None, rf_fft=None, hd=None):
+                 audio_sink=None, rf_fft=None, hd=None, atsc=None):
         self.tb = tb
         self.rate = float(rate)
         self.region = region
@@ -619,6 +621,20 @@ class ReceiveChain:
             tb.connect(self.right, self.an_gain_r, (self.mix_r, 0))
             out_l, out_r = self.mix_l, self.mix_r
         self.hd_heard = 'analog'
+
+        # FM receiver: a television channel's sound, instead of the FM
+        # demodulator's noise. The analog stays in the graph, silenced: it
+        # runs on the radio's clock, which paces the sound card.
+        self.atsc = atsc if (atsc is not None and self.rate >= ATSC_MIN_RATE) else None
+        if self.atsc is not None:
+            self.atsc_src = self.atsc.attach(tb, source, self.rate, center_hz)
+            self.atsc_src.set_max_output_buffer(HD_AUDIO_BUFFER)
+            self.atsc_mute = [blocks.multiply_const_ff(0.0) for _ in range(2)]
+            self.atsc_mix = [blocks.add_ff(1) for _ in range(2)]
+            for k, side in enumerate((out_l, out_r)):
+                tb.connect(side, self.atsc_mute[k], (self.atsc_mix[k], 0))
+                tb.connect((self.atsc_src, k), (self.atsc_mix[k], 1))
+            out_l, out_r = self.atsc_mix
 
         self.tap = audio_tap()
         tb.connect(out_l, (self.tap, 0))

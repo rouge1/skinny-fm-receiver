@@ -57,8 +57,10 @@ user sees it, and is refused where the window would refuse it.
   channels with a pilot or SNR over `snr` are heard `listen` s more. A band
   takes minutes: run it in the background and read the reply from the file.
 - Move: `tune`, `center`, `gain`, `agc`, `rate`, `mode`, `sweep START STOP`,
-  `volume`, `mute`, `station rds|hd` (the RDS | HD Radio tab on show: put
+  `volume`, `mute`, `station rds|hd|atsc` (the RDS | HD Radio | ATSC TV tab on show: put
   RDS up while reading RDS, so the user sees what you read),
+  `atsc [CHANNEL|program N]` (US television, RF 14-36: the tab, its picture and
+  `status`'s `atsc` block with the programs, names, now and next),
   `hd 1-8|analog` (HD Radio's program, or analog FM; the
   decoder is always on where nrsc5 is installed, with no off;
   `status`'s `hd` says what plays, what is chosen and the lamp).

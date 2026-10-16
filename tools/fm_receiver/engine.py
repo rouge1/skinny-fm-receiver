@@ -31,6 +31,7 @@ import time
 from gnuradio import audio, gr  # type: ignore
 
 from .dsp import AUDIO_RATE, ReceiveChain, WavChain, data_clock
+from .atsc import AtscRadio
 from .hdradio import HdRadio
 from .sweep import sweep_sink
 
@@ -64,6 +65,9 @@ class Engine(gr.top_block):
         # HD Radio's decoder (the nrsc5 program), kept across rebuilds; the
         # receive chain feeds it and plays its audio.
         self.hd = HdRadio()
+        # FM receiver: a television channel's decoder, likewise kept across
+        # rebuilds; the receive chain uses it only when asked (``atsc=True``).
+        self.atsc = AtscRadio()
 
     # ---------------------------------------------------------- radio
     def use_radio(self, radio):
@@ -79,6 +83,7 @@ class Engine(gr.top_block):
 
     def close(self):
         self.hd.close()
+        self.atsc.close()
         self.halt()
         self._clear()
         if self.radio is not None:
@@ -112,6 +117,7 @@ class Engine(gr.top_block):
         """Take the stopped chain out. It stays referenced (see the module
         notes), but lets go of the radio, so closing the radio frees it."""
         self.disconnect_all()
+        self.atsc.detach()
         if self.sweeper is not None:
             self.sweeper.detach()
         for chain in (self.rx, self.sweeper, self.player):
@@ -238,7 +244,7 @@ class Engine(gr.top_block):
         return self._audio_sink
 
     # ---------------------------------------------------------- receive
-    def start_receive(self, station_hz, rate, center_hz=None, **settings):
+    def start_receive(self, station_hz, rate, center_hz=None, atsc=False, **settings):
         """Build the receive chain for ``station_hz`` at IQ rate ``rate``
         and start. The LO stays at ``center_hz`` if the station fits in the
         band around it, else it is placed for the station. ``settings`` go
@@ -252,8 +258,12 @@ class Engine(gr.top_block):
         self.lo_hz, self.offset_hz = radio.tune_plan(station_hz, self.rate, center_hz)
         radio.set_center(self.lo_hz)
         self.station_hz = self.lo_hz + self.offset_hz
+        # FM receiver: television has no HD Radio, and no use for its decoder.
         self.rx = ReceiveChain(self, radio.block, self.rate, self.offset_hz,
-                               audio_sink=self._audio(), hd=self.hd, **settings)
+                               center_hz=self.lo_hz, audio_sink=self._audio(),
+                               hd=None if atsc else self.hd,
+                               atsc=self.atsc if atsc else None, **settings)
+
         self.hd.retuned()
         self.connect(radio.block, self._clock)
         self.mode = 'receive'

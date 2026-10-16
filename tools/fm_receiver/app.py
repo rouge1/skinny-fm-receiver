@@ -38,6 +38,8 @@ from .config import default_recording_dir, load_config, update_config
 from . import bb60_source, bb60_sweep
 from .bb60_sweep import RBW_LADDER, RT_MAX_SPAN_HZ
 from .dsp import AUDIO_RATE, CHANNEL_MAX_BW, MPX_RATE, wav_source
+from .app_atsc import ATSC_TAB, AtscWindow
+from .atsc import MIN_RATE as ATSC_MIN_RATE
 from .engine import Engine
 from .hdradio import (LOST_SHARE as HD_LOST_SHARE, PROGRAMS as HD_PROGRAMS,
                       PROGRAMS_SHOWN as HD_PROGRAMS_SHOWN)
@@ -419,7 +421,7 @@ def _report_shown_filter():
     control.COMMANDS['view'] = view
 
 
-class MainWindow(Qt.QWidget):
+class MainWindow(AtscWindow, Qt.QWidget):
 
     #: The Recordings tab's mini map is drawn from the whole track at this
     #: many rows (time) by columns (frequency); and the waterfall's stretch
@@ -511,6 +513,9 @@ class MainWindow(Qt.QWidget):
         self._agc_over_at = 0.0
         self._rx_sig = None
         self._starting = False
+        self._atsc_init()
+        self._atsc_animate = False
+        self._atsc_on = self.cfg.get('station_tab') == ATSC_TAB
         # Recording: its description (RDS and all), for the Recordings tab.
         self._rec_info = None
         #: The files the last recording saved (control.py replies with them).
@@ -524,6 +529,7 @@ class MainWindow(Qt.QWidget):
         self._loading_since = None         # when a stretch began drawing from the file
         self._loading_shown = False
         self._spectrum_fit = False
+        self._fit_next = 0          # an IQ recording just chosen: frames to wait before it autoscales
         self._spec_band = None             # (low, high) Hz drawn of a wide spectrum track
         self._track = None
         self._play = None
@@ -1107,7 +1113,9 @@ class MainWindow(Qt.QWidget):
         self.station_tabs = PageTabs(animate_ms=220)
         self.station_tabs.addTab(self._build_rds_page(), "RDS")
         self.station_tabs.addTab(self._build_hd_page(), "HD Radio")
-        self.station_tabs.setCurrentIndex(1 if self.cfg.get('station_tab') == 1 else 0)
+        self.station_tabs.addTab(self._build_atsc_page(), "ATSC TV")
+        self.station_tabs.setCurrentIndex(
+            self.cfg.get('station_tab') if self.cfg.get('station_tab') in (1, ATSC_TAB) else 0)
         # Folds on a chevron, as the boxes above do; remembered with theirs.
         self.station_tabs.foldable(folded=bool(self.cfg['folded'].get('station')),
                                    summary=True)
@@ -1115,6 +1123,7 @@ class MainWindow(Qt.QWidget):
             lambda folded: self.cfg['folded'].__setitem__('station', folded))
         self.station_tabs.folded.connect(lambda _folded: self._summarise_station())
         self.station_tabs.currentChanged.connect(lambda _i: self._summarise_station())
+        self.station_tabs.currentChanged.connect(self._atsc_tab_changed)
         return self.station_tabs
 
     def _summarise_station(self):
@@ -1127,7 +1136,11 @@ class MainWindow(Qt.QWidget):
                 return '' if t in ('-', '') else " ".join(t.split())
             # The same three lines for either tab: the station, what it says
             # (RadioText, or HD Radio's message) and how the audio is.
-            if self.station_tabs.currentIndex() == 1:
+            if self.station_tabs.currentIndex() == ATSC_TAB:
+                a = self.atsc_lbl
+                lines = [('', text(a.get('station'))), ('On now', text(a.get('now'))),
+                         ('Signal', text(a.get('signal')))]
+            elif self.station_tabs.currentIndex() == 1:
                 hd = self.hd_lbl
                 name = text(hd.get('station')) or text(self.lbl.get('station_name')) \
                     or text(self.lbl.get('ps'))
@@ -1745,6 +1758,11 @@ class MainWindow(Qt.QWidget):
         self.mpx_view.averageChanged.connect(self._mpx_average_changed)
         self.rx_page = self.mpx_view
         self.bottom.addTab(self.mpx_view, "Multiplex")
+        # FM receiver: the television picture, in the multiplex's place while
+        # the ATSC tab is on show (app_atsc.py).
+        self.bottom.addTab(self._build_video_view(), "Television")
+        self.bottom.setTabBarAutoHide(False)
+        self.bottom.tabBar().hide()
         self.right_split.addWidget(self.bottom)
         self.right_split.setStretchFactor(0, 3)
         self.right_split.setStretchFactor(1, 2)
@@ -2126,10 +2144,13 @@ class MainWindow(Qt.QWidget):
 
     # ---- receive
     def _receive_rate(self):
+        if self._atsc_on and self._atsc_rate() is not None and self.radio.kind != 'file':
+            return self._atsc_rate()
         data = self.rx_rate_combo.currentData()
         return float(data) if data else self.radio.default_receive_rate
 
     def _start_receive(self):
+        self._atsc_tune_entries()
         self._run_receive('receive', self.tuner.value(), self._receive_rate(),
                           self.center_entry.value())
         self.rec_btn.setEnabled(True)
@@ -2151,8 +2172,9 @@ class MainWindow(Qt.QWidget):
         self.rf_view.clear_density()
         # Receiving, the view is the band the radio streams: no limits.
         self.rf_view.set_pan_limits(None, None)
+        television = bool(self._atsc_on and rate >= ATSC_MIN_RATE)
         self.engine.start_receive(
-            station_hz, rate, center_hz=center_hz,
+            station_hz, rate, center_hz=center_hz, atsc=television,
             channel_bw=self._shown_channel_hz(),
             region=self.region_combo.currentData(),
             stereo=self.stereo_check.isChecked(),
@@ -4047,6 +4069,10 @@ class MainWindow(Qt.QWidget):
             db = to_db(rf)
             self._rx_sig = (freqs, db)
             self.rf_view.set_data(freqs, db)
+            if self._fit_next and self._mode == 'playback':
+                self._fit_next -= 1
+                if not self._fit_next and not self.rf_view.auto_scale():
+                    self._fit_next = 1          # no trace yet: on the next frame
 
     def _draw_sweep(self):
         sweeper = self.engine.sweeper
@@ -4343,7 +4369,10 @@ class MainWindow(Qt.QWidget):
         self.stereo_label.setText(audio)
         self.sig_label.setText(self._signal_text(rx))
         self._refresh_rds(rx.rds.snapshot())
-        self._refresh_hd()
+        if self._atsc_active():
+            self._refresh_atsc()
+        else:
+            self._refresh_hd()
 
     def _signal_text(self, rx):
         power = rx.channel_power_db()
@@ -4432,8 +4461,8 @@ class MainWindow(Qt.QWidget):
         live = self._live or {}
         self.cfg.update({
             'mode': self._tab_mode(),
-            'frequency_mhz': live.get('tuner', self.tuner.value()) / 1e6,
-            'center_mhz': live.get('center', self.center_entry.value()) / 1e6,
+            'frequency_mhz': live.get('tuner', (self._atsc_fm or (self.tuner.value(),))[0]) / 1e6,
+            'center_mhz': live.get('center', (self._atsc_fm or (0, self.center_entry.value()))[1]) / 1e6,
             'step_khz': STEPS_KHZ[int(round(self.step_knob.value()))],
             'usrp_address': self.usrp_edit.text().strip(),
             'channel_bw_khz': int(round(self.chan_knob.value() / 1e3)),
