@@ -905,7 +905,12 @@ def _hypothesis_scores(eq0, eq1, templ):
 
 
 def _sss_chance(scores):
-    """Tail of the winning score under the other hypotheses, times the count."""
+    """One-draw tail of the winner under the other hypotheses, times how many there are.
+
+    The null is the other hypotheses' scores in this capture. The width is
+    1.4826 times their MAD, the usual normal scale. That tail, times the
+    number of hypotheses, is the chance. It is floored at 1e-300.
+    """
     flat = scores.ravel()
     k = int(np.argmax(flat))
     peak = float(flat[k])
@@ -916,10 +921,17 @@ def _sss_chance(scores):
     med = float(np.median(null))
     mad = float(np.median(np.abs(null - med)))
     scale = 1.4826 * mad
-    if scale < 1e-4:
-        if peak <= med + 0.05:
+    # A null whose scores are one value has no Gaussian width: MAD is roundoff
+    # next to the null's own magnitude, and any positive gap would become an
+    # infinite z. Treat that as "not separated" when the peak does not clear
+    # the null's own median by more than that roundoff, and as a floor tail
+    # when it does. The allowance is a fraction of the null's magnitude, not
+    # a fixed correlation gap.
+    level = float(np.median(np.abs(null)))
+    if scale <= 1e-9 * (1.0 + level):
+        if peak <= med + 1e-9 * (1.0 + level):
             return peak, 1.0, k
-        scale = max(scale, 0.02)
+        return peak, _CHANCE_FLOOR, k
     z = (peak - med) / scale
     if z <= 0.0:
         return peak, 1.0, k
