@@ -66,8 +66,9 @@ _MIN_DUR = 0.010
 _PASS = 1e-3
 _CHANCE_FLOOR = 1e-300
 _PSS_ROOTS = (25, 29, 34)
-# Coarse enough that a 5 kHz offset leaves only a few hundred Hz, fine enough
-# that a 0.1 s capture stays cheap. The prefix itself is not derotated.
+# 2 kHz steps from -6 to +6 kHz. A 5 kHz offset then sits 1 kHz off the
+# nearest trial. Finer than that costs another FFT per prefix peak; the
+# prefix check itself is not derotated.
 _CFO_HZ = np.arange(-6000.0, 6000.1, 2000.0)
 
 _PSS_SEQ = None  # (3, 62), unit-magnitude Zadoff-Chu, filled on first use
@@ -145,6 +146,29 @@ def _unknown(reason):
     }
 
 
+def _vector(iq):
+    """1-D complex samples, or None when the input is not a 1-D sequence.
+
+    Anything else (a missing buffer, an ``(N, 2)`` IQ pair, a matrix) is not
+    evaluated: the callers return unknown or a chance of 1, and do not raise.
+    Non-finite samples are zeros, so a NaN capture scores 0 with chance 1
+    instead of poisoning the correlations.
+    """
+    if iq is None:
+        return None
+    try:
+        a = np.asarray(iq)
+    except (TypeError, ValueError):
+        return None
+    if a.ndim != 1:
+        return None
+    out = np.array(a, dtype=np.complex128, copy=True)
+    bad = ~np.isfinite(out.real) | ~np.isfinite(out.imag)
+    if bad.any():
+        out[bad] = 0
+    return out
+
+
 def _too_small(iq, fs):
     try:
         fs = float(fs)
@@ -152,7 +176,8 @@ def _too_small(iq, fs):
         return True
     if not np.isfinite(fs) or fs < _MIN_FS:
         return True
-    n = 0 if iq is None else len(iq)
+    vec = iq if isinstance(iq, np.ndarray) and iq.ndim == 1 else _vector(iq)
+    n = 0 if vec is None else vec.size
     return n < _MIN_DUR * fs
 
 
@@ -303,39 +328,53 @@ def _cp_chance(align):
 
 
 def _class_from_width(n_used, fs):
-    """Snap a measured subcarrier count to a class whose native rate fits in ``fs``."""
+    """Snap a measured subcarrier count to the class it fits.
+
+    A class is eligible when its occupied width fits in the capture, not when
+    the capture was taken at that class's native rate: a 15 MHz carrier
+    (13.5 MHz occupied, FFT 1536) sampled at 20 MS/s is still that class.
+    Among eligible classes, the nearest subcarrier count wins and a tie goes
+    to the wider one. There is no error gate — once the prefix check has
+    passed, a measured width still names a class.
+    """
+    if n_used < 36:
+        return None
     best_n = None
-    best_err = None
-    for n_fft, rate, n_sc in _CLASSES:
-        if rate > fs * (1.0 + 5e-6):
+    best_key = None
+    for n_fft, _rate, n_sc in _CLASSES:
+        if n_sc * 15e3 > float(fs) * 1.05:
             continue
         err = abs(int(n_sc) - int(n_used))
-        if best_err is None or err < best_err:
-            best_err = err
+        key = (err, -n_fft)
+        if best_key is None or key < best_key:
+            best_key = key
             best_n = n_fft
-    if best_n is None or best_err > max(24, int(0.15 * max(n_used, 1))):
-        return None
     return best_n
 
 
 def _occupied_subcarriers(power):
     """How many subcarriers around DC are in use. DC itself is empty and not counted.
 
-    The noise reference is the outer guard, which every class leaves empty when
-    the transform is the widest class that fits. A bin is occupied when it holds
-    more than twice that floor: at 0 dB the used bins still sit near 2.7 times
-    the empty ones, and a tenth of a second of symbols makes the two levels
-    tight. A hole of a few bins (the DC bin) does not break the walk.
+    The floor is a low percentile of the smoothed bin powers, not the outer
+    twelfth of the transform. A 15 MHz carrier analysed at 1024 bins leaves
+    only a slim guard, so those outer bins are already signal, and a fixed
+    twice-the-edge rule then sees no band at all. The threshold sits a third
+    of the way (in log power) from that floor up to the high end: at -5 dB
+    the used bins are only about 1.5 times the empty ones, still above the
+    cut, and a flat noise spectrum (high end barely above the floor) counts
+    as empty. A hole of a few bins (the DC bin) does not break the walk.
     """
     n = power.size
-    ps = np.fft.fftshift(power)
-    edge = max(4, n // 12)
-    noise = float(min(np.median(ps[:edge]), np.median(ps[-edge:])))
-    if not np.isfinite(noise) or noise <= 0.0:
+    ps = np.fft.fftshift(np.maximum(power, 0.0))
+    smooth = np.convolve(ps, np.ones(5) / 5.0, mode='same')
+    lo = float(np.percentile(smooth, 5))
+    hi = float(np.percentile(smooth, 90))
+    if not np.isfinite(lo) or not np.isfinite(hi) or lo <= 0.0 or hi < lo * 1.15:
         return 0
-    above = ps > (noise * 2.0)
+    thr = lo * (hi / lo) ** 0.35
+    above = smooth > thr
     center = n // 2
-    gap = 4
+    gap = 6
 
     def walk(step):
         i = center
@@ -400,30 +439,65 @@ def _bandwidth(iq, n_fft, phase0, fs_capture):
     return _class_from_width(n_used, fs_capture), n_used
 
 
-def _pss_chance(peak, r2):
-    """Beta(1, β) tail of the best correlation, β fitted to this capture's bulk.
+def _pss_chance(peak, obs):
+    """Chance the best correlation is a Zadoff-Chu root, from this capture.
 
-    Random 62-bins give R² ~ Beta(1, 61). A signal whose centre bins are not a
-    Zadoff-Chu root has a heavier or lighter bulk; the 90th percentile of this
-    capture, with the very top excluded so a real PSS does not set the fit,
-    fixes β. The chance is then the probability the best of the trials beats
-    ``peak``.
+    The null is the same centre-bin vectors correlated against the three roots
+    with their bins scrambled: circular shifts, plus a fixed set of
+    permutations. Each scramble contributes its maximum over every symbol,
+    frequency trial and prefix peak that the real search used. A Beta tail
+    fitted to the unscrambled bulk is too thin for an OFDM signal that is not
+    LTE (an uplink-like waveform then scores as if it had a PSS).
+
+    When the real peak does not clear the scrambled maxima, the chance is the
+    rank of that peak, which cannot be finer than one over the number of
+    scrambles. When it does clear them, a Gaussian tail of those maxima is
+    used, with the scale held at least a few hundredths so a lucky gap of one
+    scramble cannot pretend to be 1e-30. A true PSS sits near 1 and the
+    scrambles near 0.4, so the tail is still far below 1e-6.
     """
-    if r2.size < 8 or not np.isfinite(peak):
+    if obs is None or obs.ndim != 2 or obs.shape[0] < 4 or not np.isfinite(peak):
         return 1.0
     peak = float(np.clip(peak, 0.0, 1.0))
-    cut = float(np.quantile(r2, 0.995))
-    bulk = r2[r2 <= cut]
-    if bulk.size < 8:
-        bulk = r2
-    q = float(np.quantile(bulk, 0.9))
-    q = min(max(q, 1e-12), 1.0 - 1e-9)
-    beta = math.log(0.1) / math.log(1.0 - q)
-    if beta <= 0.0:
+    refs = _pss_seqs()
+    refs = refs / np.linalg.norm(refs, axis=1, keepdims=True)
+    null_max = []
+    # Shifts of 0 are the real roots; they are the hypothesis, not the null.
+    for shift in range(1, 62):
+        templ = np.roll(refs, shift, axis=1)
+        corr = np.abs(obs @ templ.conj().T)
+        null_max.append(float(corr.max()))
+    # Bin permutations. The seed is fixed so the same capture always reports
+    # the same chance. Skip a draw that landed back on a real root.
+    draw = np.random.default_rng(0)
+    for _ in range(24):
+        perm = draw.permutation(62)
+        templ = refs[:, perm]
+        # A permutation of one root can match another; drop that draw.
+        if float(np.max(np.abs(templ.conj() @ refs.T))) > 0.9:
+            continue
+        corr = np.abs(obs @ templ.conj().T)
+        null_max.append(float(corr.max()))
+    null = np.asarray(null_max, dtype=np.float64)
+    null = null[np.isfinite(null)]
+    if null.size < 8:
         return 1.0
-    u = min(peak * peak, 1.0 - 1e-15)
-    p_one = (1.0 - u) ** beta
-    return _extreme(p_one, r2.size)
+    n_ge = int(np.sum(null >= peak))
+    rank = (n_ge + 1.0) / (null.size + 1.0)
+    # A few hundredths above the best scramble is what an OFDM signal that is
+    # not a PSS looks like (the uplink-like negative clears the scrambles by
+    # about 0.02). A real root clears them by two tenths even at -5 dB.
+    # Below that gap the chance stays the rank, no finer than one scramble.
+    if peak < float(np.max(null)) + 0.08:
+        return _floor_chance(max(rank, 1.0 / (null.size + 1.0)))
+    med = float(np.median(null))
+    mad = float(np.median(np.abs(null - med)))
+    scale = max(1.4826 * mad, 0.03)
+    z = (peak - med) / scale
+    if z <= 0.0:
+        return _floor_chance(rank)
+    p = 0.5 * math.erfc(z / math.sqrt(2.0))
+    return _floor_chance(p)
 
 
 def _prefix_peaks(folded, n_peaks, guard):
@@ -456,16 +530,6 @@ def _bodies_at(iq, n_fft, slot, useful_phase):
     return iq[idx]
 
 
-def _correlate_pss(spec, bins, ref_m):
-    """Correlation of each symbol's central bins with the three unit-norm roots."""
-    obs = spec[:, bins]
-    norms = np.linalg.norm(obs, axis=1)
-    obs_n = np.zeros_like(obs)
-    good = norms > 1e-12
-    obs_n[good] = obs[good] / norms[good, None]
-    return np.abs(obs_n @ ref_m)
-
-
 def _pss_on_grid(iq, fs, n_fft, folded, slot, cp):
     """Best PSS correlation at the prefix peaks.
 
@@ -477,7 +541,7 @@ def _pss_on_grid(iq, fs, n_fft, folded, slot, cp):
     """
     peaks = _prefix_peaks(folded, 7, max(cp // 2, 2))
     if not peaks:
-        return 0.0, None, 0.0, np.zeros(1), 0
+        return 0.0, None, 0.0, np.zeros((0, 62), dtype=np.complex128), 0
     refs = _pss_seqs()
     ref_m = (refs / np.linalg.norm(refs, axis=1, keepdims=True)).conj().T
     bins = np.concatenate((np.arange(-31, 0), np.arange(1, 32))) % n_fft
@@ -487,7 +551,7 @@ def _pss_on_grid(iq, fs, n_fft, folded, slot, cp):
     best = 0.0
     best_root = 0
     best_cfo = 0.0
-    chunks = []
+    kept = []
     n_sym = 0
     t = k / float(fs)
     for phase in peaks:
@@ -501,17 +565,24 @@ def _pss_on_grid(iq, fs, n_fft, folded, slot, cp):
             for d in offsets:
                 # Window starting d samples earlier, still inside the prefix.
                 spec_d = spec * np.exp(2j * np.pi * d * k / n_fft)
-                corr = _correlate_pss(spec_d, bins, ref_m)
-                chunks.append((corr * corr).ravel())
+                obs = spec_d[:, bins]
+                norms = np.linalg.norm(obs, axis=1)
+                good = norms > 1e-12
+                obs_n = np.zeros_like(obs)
+                obs_n[good] = obs[good] / norms[good, None]
+                corr = np.abs(obs_n @ ref_m)
+                # One row in five is enough for the scrambled null and keeps
+                # the store small; the peak itself still sees every symbol.
+                kept.append(obs_n[::5])
                 flat = int(np.argmax(corr))
                 m = float(corr.ravel()[flat])
                 if m > best:
                     best = m
                     best_root = int(flat % 3)
                     best_cfo = float(f)
-    if not chunks:
-        return 0.0, None, 0.0, np.zeros(1), 0
-    return best, best_root, best_cfo, np.concatenate(chunks), n_sym
+    if not kept:
+        return 0.0, None, 0.0, np.zeros((0, 62), dtype=np.complex128), 0
+    return best, best_root, best_cfo, np.concatenate(kept, axis=0), n_sym
 
 
 def _prepare(iq, fs):
@@ -523,7 +594,10 @@ def _prepare(iq, fs):
     if plan is None:
         return None
     n_fft, rate, _n_sc = plan
-    block = _resample(np.asarray(iq), fs, rate)
+    vec = _vector(iq)
+    if vec is None:
+        return None
+    block = _resample(vec, fs, rate)
     if block.size < n_fft * 4:
         return None
     return block, rate, n_fft, fs
@@ -547,6 +621,8 @@ def cp_autocorr(iq, fs):
                 'passed': False, 'nfft': None}
     align, _slot, cp, _n_slots, _folded = found
     score, chance = _cp_chance(align)
+    if not np.isfinite(score):
+        score, chance = 0.0, 1.0
     chance = _floor_chance(chance)
     phase0 = int(np.argmax(align))
     n_class, n_used = _bandwidth(block, n_fft, phase0, fs_in)
@@ -576,8 +652,8 @@ def pss_search(iq, fs):
         return {'score': 0.0, 'chance': 1.0, 'detail': 'no symbol grid to search',
                 'passed': False, 'nid2': None}
     align, slot, cp, _n_slots, folded = found
-    peak, root, cfo, r2, _n = _pss_on_grid(block, rate, n_fft, folded, slot, cp)
-    chance = _floor_chance(_pss_chance(peak, r2))
+    peak, root, cfo, obs, _n = _pss_on_grid(block, rate, n_fft, folded, slot, cp)
+    chance = _floor_chance(_pss_chance(peak, obs))
     passed = chance <= _PASS
     return {
         'score': float(peak),
@@ -596,12 +672,15 @@ def fingerprint(iq, fs):
     shorter than 10 ms or slower than 1.92 MS/s. ``pci`` is always None here.
     ``chance`` is the product of the two check chances, floored at 1e-300.
     """
-    if _too_small(iq, fs):
+    if _vector(iq) is None or _too_small(iq, fs):
         try:
             slow = float(fs) < _MIN_FS
         except (TypeError, ValueError):
             slow = True
-        why = 'sample rate under 1.92 MS/s' if slow else 'shorter than 10 ms'
+        if _vector(iq) is None and not slow:
+            why = 'not a 1-D capture'
+        else:
+            why = 'sample rate under 1.92 MS/s' if slow else 'shorter than 10 ms'
         return _unknown(why)
 
     prepared = _prepare(iq, fs)
@@ -623,8 +702,8 @@ def fingerprint(iq, fs):
             f'prefix correlation {score:.3f} over {cp_len} samples, '
             f'about {n_used} subcarriers in use',
         )
-        peak, root, cfo, r2, _n = _pss_on_grid(block, rate, n_fft, folded, slot, cp_len)
-        pss_chance = _pss_chance(peak, r2)
+        peak, root, cfo, obs, _n = _pss_on_grid(block, rate, n_fft, folded, slot, cp_len)
+        pss_chance = _pss_chance(peak, obs)
         pss = _check(
             'pss', True, peak, pss_chance,
             f'best root {root} correlation {peak:.3f} at {cfo:.0f} Hz',
