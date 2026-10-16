@@ -465,5 +465,252 @@ def main():
     return 0
 
 
+# ---- phase l2: the SSS check and the physical cell ID (spec l2) ---------------
+#
+# Each capture is built once: l2_case keeps the sss_search and fingerprint
+# results of one synthetic capture, so A's 20 dB cases also serve group F.
+#
+# Frame convention for the detector's ``frame_offset_samples``: the sample, in
+# the capture at the capture's own rate, where the first 10 ms frame starts (the
+# first sample of slot 0, symbol 0, prefix included), taken modulo 10 ms.
+# ``half_frame`` is 0 when the 5 ms half-frame starting there carries subframe
+# 0's SSS, and 1 when the SSS 5 ms later (subframe 5) is the one that starts it.
+# The generator draws its frame offset first from default_rng(seed) and rolls the
+# frame by it (lte_synth.synth_lte), so the first frame start in the capture is
+# that sample, with half_frame 0. Only native-rate captures are compared here.
+
+L2_PCIS = (0, 1, 2, 3, 123, 250, 251, 500, 503)
+L2_SNRS = (20.0, 0.0, -5.0)
+L2_SEEDS = (0, 1, 2)
+L2_KEYS = ('ran', 'nid1', 'nid2', 'pci', 'half_frame', 'frame_offset_samples',
+           'score', 'chance', 'halfframes_used', 'detail')
+
+
+def l2_case(bw=10, pci=123, snr=20.0, seed=0, fs=None, cfo=0.0, pss=True, sss=True,
+            n_frames=10):
+    """One synthetic capture, built once: its rate and its sss_search and fingerprint
+    results. ``sss=False`` is the generator's SSS-zeroed control, passed only then."""
+    key = ('l2', bw, pci, snr, seed, fs, cfo, pss, sss, n_frames)
+
+    def make():
+        kw = dict(bw_mhz=bw, n_frames=n_frames, pci=pci, snr_db=snr, seed=seed,
+                  cfo_hz=cfo, fs=fs, pss=pss)
+        if not sss:
+            kw['sss'] = False
+        iq, rate = synth(**kw)
+        return {'rate': rate, 'sss': api().sss_search(iq, rate),
+                'fp': api().fingerprint(iq, rate)}
+    return memo(key, make)
+
+
+def l2_negative(name, seed):
+    """sss_search and fingerprint of a negative example (20 MS/s, 0.1 s), built once."""
+    def make():
+        iq, rate = getattr(lte_negatives, name)(seed=seed)
+        return {'sss': api().sss_search(iq, rate), 'fp': api().fingerprint(iq, rate)}
+    return memo(('l2-neg', name, seed), make)
+
+
+def l2_short(seed):
+    """A 15 ms slice of a two-frame 10 MHz capture: shorter than the 20 ms the SSS needs."""
+    def make():
+        iq, rate = synth(bw_mhz=10, n_frames=2, pci=123, snr_db=20.0, seed=seed)
+        cut = iq[:int(round(0.015 * rate))]
+        return {'sss': api().sss_search(cut, rate), 'fp': api().fingerprint(cut, rate)}
+    return memo(('l2-short', seed), make)
+
+
+def true_offset(bw, seed):
+    """Where the generator's first frame starts in its capture at the native rate: its
+    first seeded draw (lte_synth.synth_lte), the np.roll that puts frame sample 0 there."""
+    import numpy as np
+    n_fft, _native, _n_sc = lte_synth._class(bw)
+    return int(np.random.default_rng(seed).integers(0, lte_synth._frame_samples(n_fft)))
+
+
+def frame_gap(got, want, frame):
+    """Distance in samples between two frame starts, modulo one 10 ms frame."""
+    d = (int(got) - int(want)) % frame
+    return min(d, frame - d)
+
+
+def l2_pci_check(bw, pci, snr, seed, fs=None, cfo=0.0):
+    out = l2_case(bw=bw, pci=pci, snr=snr, seed=seed, fs=fs, cfo=cfo)['sss']
+    return out['pci'] == pci, f"sss pci {out['pci']!r} (want {pci}), chance {out['chance']:.3g}"
+
+
+def l2_wrong_confident(pci, snr, seed):
+    out = l2_case(pci=pci, snr=snr, seed=seed)['sss']
+    bad = out['pci'] is not None and out['pci'] != pci and out['chance'] <= 1e-3
+    return not bad, f"pci {out['pci']!r} (want {pci}) at chance {out['chance']:.3g}"
+
+
+def l2_frame_check(pci, seed):
+    case = l2_case(pci=pci, snr=20.0, seed=seed)
+    out = case['sss']
+    frame = int(round(0.010 * case['rate']))
+    want = true_offset(10, seed)
+    gap = frame_gap(out['frame_offset_samples'], want, frame)
+    ok = out['half_frame'] == 0 and gap <= 2
+    return ok, (f"half_frame {out['half_frame']!r} (want 0), frame offset "
+                f"{out['frame_offset_samples']!r} (want {want}, gap {gap} of {frame})")
+
+
+def l2_negative_check(name, seed):
+    out = l2_negative(name, seed)['sss']
+    return out['pci'] is None, f"sss pci {out['pci']!r}, chance {out['chance']:.3g}"
+
+
+def l2_control(seed):
+    case = l2_case(bw=10, pci=123, snr=20.0, seed=seed, sss=False)
+    pss_ok = bool(find_check(case['fp'], 'pss')['passed'])
+    ok = case['sss']['pci'] is None and pss_ok
+    return ok, f"sss pci {case['sss']['pci']!r}, pss check passed {pss_ok}"
+
+
+# ---- groups A to G of phase l2 ------------------------------------------------
+
+def group_l2_a():
+    cases = [(pci, snr, seed) for pci in L2_PCIS for snr in L2_SNRS for seed in L2_SEEDS]
+    high = [c for c in cases if c[1] > -5.0]
+    low = [c for c in cases if c[1] == -5.0]
+    outs = [outcome(f'pci {p} {s:g} dB seed {d}', lambda p=p, s=s, d=d: l2_pci_check(10, p, s, d))
+            for p, s, d in high]
+    counted('L2 A (G1) 10 MHz at 20 and 0 dB: sss pci exact', outs)
+
+    low_outs = [outcome(f'pci {p} {s:g} dB seed {d}', lambda p=p, s=s, d=d: l2_pci_check(10, p, s, d))
+                for p, s, d in low]
+    n_low = sum(1 for _, ok, _ in low_outs if ok)
+    bad_low = [f'{label}: {why}' for label, ok, why in low_outs if not ok]
+    report(f'L2 A (G1) 10 MHz at -5 dB: sss pci exact in {n_low} of {len(low_outs)} (gate 24)',
+           n_low >= 24, '; '.join(bad_low[:6]))
+
+    wrong = [outcome(f'pci {p} {s:g} dB seed {d}', lambda p=p, s=s, d=d: l2_wrong_confident(p, s, d))
+             for p, s, d in cases]
+    counted('L2 A (G1) no wrong sss pci at chance <= 1e-3 (all 81)', wrong)
+
+
+def group_l2_b():
+    outs = [outcome(f'{bw} MHz seed {d}', lambda b=bw, d=d: l2_pci_check(b, 301, 20.0, d))
+            for bw in (1.4, 3, 5, 15, 20) for d in (0, 1)]
+    counted('L2 B (G2) bandwidths 1.4, 3, 5, 15, 20 MHz at 20 dB, PCI 301: sss pci exact', outs)
+
+
+def group_l2_c():
+    outs = [outcome(f'seed {d}', lambda d=d: l2_pci_check(10, 307, 10.0, d, fs=20e6, cfo=2000.0))
+            for d in range(5)]
+    counted('L2 C (G3) 10 MHz at 20 MS/s, CFO +2 kHz, 10 dB, PCI 307: sss pci exact', outs)
+
+
+def group_l2_d():
+    outs = [outcome(f'{name} seed {d}', lambda n=name, d=d: l2_negative_check(n, d))
+            for name in NEGATIVES for d in range(5)]
+    counted('L2 D (G4) negatives: sss pci None', outs)
+
+
+def group_l2_e():
+    outs = [outcome(f'seed {d}', lambda d=d: l2_control(d)) for d in range(5)]
+    counted('L2 E (G5) control sss=False at 20 dB: sss pci None, pss check passes', outs)
+
+    def short_ok(d):
+        case = l2_short(d)
+        return isinstance(case['sss'], dict) and isinstance(case['fp'], dict), 'not a dict'
+    outs_s = [outcome(f'seed {d}', lambda d=d: short_ok(d)) for d in range(3)]
+    counted('L2 E (G5) 15 ms capture: sss_search and fingerprint raise nothing', outs_s)
+
+
+def group_l2_f():
+    outs = [outcome(f'pci {p} seed {d}', lambda p=p, d=d: l2_frame_check(p, d))
+            for p in L2_PCIS for d in L2_SEEDS]
+    counted('L2 F (G6) 10 MHz at 20 dB: half_frame 0 and frame offset within 2 samples', outs)
+
+
+def group_l2_g():
+    """G7: fingerprint on 0.1 s at 15.36 MS/s, timed alone (the synthesis is outside the timer)."""
+    import time
+    iq, rate = synth(bw_mhz=10, n_frames=10, pci=123, snr_db=20.0, seed=0)
+    t0 = time.perf_counter()
+    api().fingerprint(iq, rate)
+    dt = time.perf_counter() - t0
+    try:
+        load = os.getloadavg()[0]
+    except (AttributeError, OSError):
+        load = 0.0
+    cores = os.cpu_count() or 1
+    ok = dt < 5.0 and load < 0.75 * cores
+    report(f'L2 G (G7) fingerprint on 0.1 s at 15.36 MS/s: {dt:.2f} s (gate under 5 s)',
+           ok, f'load {load:.2f} on {cores} cores, gate needs load under {0.75 * cores:.2f}')
+
+
+def check_l2_interface():
+    try:
+        case = l2_case(bw=10, pci=123, snr=20.0, seed=0)
+    except Exception as exc:
+        why = f'{type(exc).__name__}: {exc}'
+        expect('the 10 MHz 20 dB capture builds (sss_search and fingerprint run)',
+               lambda: (False, why))
+        return
+    out, fp = case['sss'], case['fp']
+
+    def keys():
+        missing = [k for k in L2_KEYS if k not in out]
+        return not missing, f'missing {missing}'
+    expect('sss_search returns ran, nid1, nid2, pci, half_frame, frame_offset_samples, '
+           'score, chance, halfframes_used, detail', keys)
+
+    expect('sss_search gives a pci on the 10 MHz 20 dB capture',
+           lambda: (bool(out['ran']) and out['pci'] is not None,
+                    f"ran {out['ran']!r}, pci {out['pci']!r}"))
+
+    def formula():
+        ok = out['pci'] == 3 * out['nid1'] + out['nid2'] and out['nid2'] in (0, 1, 2)
+        return ok, f"pci {out['pci']!r}, nid1 {out['nid1']!r}, nid2 {out['nid2']!r}"
+    expect('pci = 3 * nid1 + nid2, with nid2 in 0-2', formula)
+
+    def chance_range():
+        c = float(out['chance'])
+        return 1e-300 <= c <= 1.0, f'chance {c!r}'
+    expect('sss chance is a probability in [1e-300, 1]', chance_range)
+
+    expect('pci is None or its chance is at most 1e-3',
+           lambda: (out['pci'] is None or float(out['chance']) <= 1e-3,
+                    f"pci {out['pci']!r} at chance {out['chance']!r}"))
+
+    expect('half_frame is 0 or 1', lambda: (out['half_frame'] in (0, 1),
+                                            f"half_frame {out['half_frame']!r}"))
+
+    expect('halfframes_used is at least 1',
+           lambda: (int(out['halfframes_used']) >= 1, f"halfframes_used {out['halfframes_used']!r}"))
+
+    def sss_check_ran():
+        c = find_check(fp, 'sss')
+        return c['ran'] is True, f"sss check ran {c['ran']!r}"
+    expect('fingerprint: the sss check ran', sss_check_ran)
+
+    expect('fingerprint pci equals the sss pci (None when the sss gives none)',
+           lambda: (fp['pci'] == out['pci'], f"fingerprint pci {fp['pci']!r}, sss pci {out['pci']!r}"))
+
+    def nid2_rule():
+        pss_root = fp['nid2']
+        mismatch = pss_root is not None and out['pci'] is not None and out['pci'] % 3 != pss_root
+        want = 'possible' if mismatch else 'lte'
+        return fp['verdict'] == want, (f"verdict {fp['verdict']!r}, want {want!r} (sss nid2 "
+                                       f"{out['nid2']!r}, pss root {pss_root!r})")
+    expect('verdict stays lte; it drops to possible only when the sss nid2 differs from the PSS root',
+           nid2_rule)
+
+    def under_rate():
+        iq, rate = lte_negatives.synth_noise(seed=0, fs=1e6)
+        a = api().sss_search(iq, rate)
+        b = api().fingerprint(iq, rate)
+        ok = isinstance(a, dict) and isinstance(b, dict) and a['pci'] is None
+        return ok, f"sss pci {a.get('pci')!r}" if isinstance(a, dict) else 'not a dict'
+    expect('a 1 MS/s capture: sss_search and fingerprint return, sss pci None', under_rate)
+
+
+GROUPS.extend([group_l2_a, group_l2_b, group_l2_c, group_l2_d, group_l2_e, group_l2_f,
+               group_l2_g, check_l2_interface])
+
+
 if __name__ == '__main__':
     sys.exit(main())
