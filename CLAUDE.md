@@ -56,8 +56,8 @@ with no launcher.
   and CRC catalog `iqcatalog.py` (`tools/iq-frames`; the catalog is
   `knowledge/catalogs.md`, kept equal by a test); `iq-decode --bursts` feeds
   each burst to rtl_433 at the decoder's own rate. All numpy only.
-  `iqlte.py`, the LTE structural fingerprint (cyclic-prefix autocorrelation
-  and PSS search), is numpy only too; its test helpers `tools/tests/lte_synth.py`
+  `iqlte.py`, the LTE structural fingerprint (cyclic-prefix autocorrelation,
+  PSS search and SSS search for the cell ID), is numpy only too; its test helpers `tools/tests/lte_synth.py`
   and `lte_negatives.py` use scipy.
 - Knowledge: `knowledge/capabilities.md` is the living capability list.
   Update it (and its status marks) when a feature is added or verified.
