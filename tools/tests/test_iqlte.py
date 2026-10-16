@@ -141,12 +141,13 @@ def find_check(fp, key):
 
 
 def ran_checks(fp):
-    """The checks that ran: exactly two (the CP autocorrelation and the PSS search)."""
-    ran = [c for c in fp['checks'] if bool(c.get('ran'))]
-    if len(ran) != 2:
-        names = [c.get('name') for c in ran]
-        raise AssertionError(f'want two checks that ran, got {len(ran)}: {names}')
-    return ran
+    """The CP autocorrelation and PSS checks, by name. The SSS check runs now too,
+    so it is not one of these; both of these must have run."""
+    checks = [find_check(fp, 'cp-autocorr'), find_check(fp, 'pss')]
+    not_ran = [c.get('name') for c in checks if not bool(c.get('ran'))]
+    if not_ran:
+        raise AssertionError(f'want the cp and pss checks to have run, not: {not_ran}')
+    return checks
 
 
 def lte_fp(bw=10, pci=123, snr=20.0, seed=0, fs=None, cfo=0.0, pss=True):
@@ -343,18 +344,19 @@ def check_interface():
         return v in VERDICTS, f'verdict {v!r}'
     expect('verdict is lte, possible, not-lte or unknown', verdict)
 
-    expect('pci is None this phase', lambda: (fp()['pci'] is None, f"pci {fp()['pci']!r}"))
+    expect('pci is 123 for the 10 MHz 20 dB capture (the SSS pci)',
+           lambda: (fp()['pci'] == 123, f"pci {fp()['pci']!r}"))
 
     def later_stages():
         sss, crs = find_check(fp(), 'sss'), find_check(fp(), 'crs')
-        return (not bool(sss['ran']) and not bool(crs['ran']),
+        return (bool(sss['ran']) and not bool(crs['ran']),
                 f"sss ran {sss['ran']!r}, crs ran {crs['ran']!r}")
-    expect('SSS and CRS are checks with ran False', later_stages)
+    expect('SSS check ran True and CRS check ran False', later_stages)
 
     def two_ran():
-        ran = ran_checks(fp())
-        return len(ran) == 2, f'{len(ran)} checks ran'
-    expect('exactly two checks ran (CP autocorrelation and PSS search)', two_ran)
+        ran = sorted(c['name'] for c in fp()['checks'] if bool(c.get('ran')))
+        return ran == ['cp-autocorr', 'pss', 'sss'], f'checks that ran: {ran}'
+    expect('cp-autocorr, pss and sss ran; crs did not', two_ran)
 
     def chances():
         bad = []
@@ -477,7 +479,10 @@ def main():
 # 0's SSS, and 1 when the SSS 5 ms later (subframe 5) is the one that starts it.
 # The generator draws its frame offset first from default_rng(seed) and rolls the
 # frame by it (lte_synth.synth_lte), so the first frame start in the capture is
-# that sample, with half_frame 0. Only native-rate captures are compared here.
+# that sample, with half_frame 0. A detector may instead report the 5 ms boundary
+# it chose with half_frame 1 (subframe 5's SSS starts there): the frame start is
+# then that offset minus 5 ms, modulo 10 ms. Both labels are accepted (group F).
+# Only native-rate captures are compared here.
 
 L2_PCIS = (0, 1, 2, 3, 123, 250, 251, 500, 503)
 L2_SNRS = (20.0, 0.0, -5.0)
@@ -535,8 +540,18 @@ def frame_gap(got, want, frame):
 
 
 def l2_pci_check(bw, pci, snr, seed, fs=None, cfo=0.0):
-    out = l2_case(bw=bw, pci=pci, snr=snr, seed=seed, fs=fs, cfo=cfo)['sss']
-    return out['pci'] == pci, f"sss pci {out['pci']!r} (want {pci}), chance {out['chance']:.3g}"
+    case = l2_case(bw=bw, pci=pci, snr=snr, seed=seed, fs=fs, cfo=cfo)
+    out, fp_pci = case['sss'], case['fp']['pci']
+    ok = out['pci'] == pci and fp_pci == pci
+    return ok, (f"sss pci {out['pci']!r}, fingerprint pci {fp_pci!r} (want {pci}), "
+                f"chance {out['chance']:.3g}")
+
+
+def l2_rule_check(pci, snr, seed):
+    """The universal rule: the pci is None, or its chance is at most 1e-3."""
+    out = l2_case(pci=pci, snr=snr, seed=seed)['sss']
+    ok = out['pci'] is None or float(out['chance']) <= 1e-3
+    return ok, f"pci {out['pci']!r} at chance {out['chance']!r}"
 
 
 def l2_wrong_confident(pci, snr, seed):
@@ -549,23 +564,31 @@ def l2_frame_check(pci, seed):
     case = l2_case(pci=pci, snr=20.0, seed=seed)
     out = case['sss']
     frame = int(round(0.010 * case['rate']))
+    half = frame // 2
     want = true_offset(10, seed)
-    gap = frame_gap(out['frame_offset_samples'], want, frame)
-    ok = out['half_frame'] == 0 and gap <= 2
-    return ok, (f"half_frame {out['half_frame']!r} (want 0), frame offset "
-                f"{out['frame_offset_samples']!r} (want {want}, gap {gap} of {frame})")
+    hf = out['half_frame']
+    # Frame start implied by the label: half_frame 1 means the offset is 5 ms past it.
+    start = (int(out['frame_offset_samples']) - int(hf) * half) if hf in (0, 1) else None
+    gap = frame_gap(start, want, frame) if start is not None else None
+    ok = gap is not None and gap <= 2
+    return ok, (f"half_frame {hf!r}, frame offset {out['frame_offset_samples']!r}, "
+                f"frame start {start!r} (want {want}, gap {gap} of {frame})")
 
 
 def l2_negative_check(name, seed):
-    out = l2_negative(name, seed)['sss']
-    return out['pci'] is None, f"sss pci {out['pci']!r}, chance {out['chance']:.3g}"
+    case = l2_negative(name, seed)
+    out = case['sss']
+    ok = out['pci'] is None and case['fp']['pci'] is None
+    return ok, (f"sss pci {out['pci']!r}, fingerprint pci {case['fp']['pci']!r}, "
+                f"chance {out['chance']:.3g}")
 
 
 def l2_control(seed):
     case = l2_case(bw=10, pci=123, snr=20.0, seed=seed, sss=False)
     pss_ok = bool(find_check(case['fp'], 'pss')['passed'])
-    ok = case['sss']['pci'] is None and pss_ok
-    return ok, f"sss pci {case['sss']['pci']!r}, pss check passed {pss_ok}"
+    ok = case['sss']['pci'] is None and case['fp']['pci'] is None and pss_ok
+    return ok, (f"sss pci {case['sss']['pci']!r}, fingerprint pci {case['fp']['pci']!r}, "
+                f"pss check passed {pss_ok}")
 
 
 # ---- groups A to G of phase l2 ------------------------------------------------
@@ -588,6 +611,10 @@ def group_l2_a():
     wrong = [outcome(f'pci {p} {s:g} dB seed {d}', lambda p=p, s=s, d=d: l2_wrong_confident(p, s, d))
              for p, s, d in cases]
     counted('L2 A (G1) no wrong sss pci at chance <= 1e-3 (all 81)', wrong)
+
+    rule = [outcome(f'pci {p} {s:g} dB seed {d}', lambda p=p, s=s, d=d: l2_rule_check(p, s, d))
+            for p, s, d in cases]
+    counted('L2 A pci None or chance <= 1e-3 at every SNR (all 81)', rule)
 
 
 def group_l2_b():
@@ -614,9 +641,11 @@ def group_l2_e():
 
     def short_ok(d):
         case = l2_short(d)
-        return isinstance(case['sss'], dict) and isinstance(case['fp'], dict), 'not a dict'
+        ok = (isinstance(case['sss'], dict) and isinstance(case['fp'], dict)
+              and case['sss']['pci'] is None)
+        return ok, f"sss pci {case['sss'].get('pci')!r}"
     outs_s = [outcome(f'seed {d}', lambda d=d: short_ok(d)) for d in range(3)]
-    counted('L2 E (G5) 15 ms capture: sss_search and fingerprint raise nothing', outs_s)
+    counted('L2 E (G5) 15 ms capture: no exception, sss pci None', outs_s)
 
 
 def group_l2_f():
@@ -637,9 +666,8 @@ def group_l2_g():
     except (AttributeError, OSError):
         load = 0.0
     cores = os.cpu_count() or 1
-    ok = dt < 5.0 and load < 0.75 * cores
-    report(f'L2 G (G7) fingerprint on 0.1 s at 15.36 MS/s: {dt:.2f} s (gate under 5 s)',
-           ok, f'load {load:.2f} on {cores} cores, gate needs load under {0.75 * cores:.2f}')
+    report(f'L2 G (G7) fingerprint on 0.1 s at 15.36 MS/s: {dt:.2f} s (gate under 5 s; '
+           f'load {load:.2f} on {cores} cores)', dt < 5.0, f'{dt:.2f} s')
 
 
 def check_l2_interface():
@@ -672,10 +700,6 @@ def check_l2_interface():
         return 1e-300 <= c <= 1.0, f'chance {c!r}'
     expect('sss chance is a probability in [1e-300, 1]', chance_range)
 
-    expect('pci is None or its chance is at most 1e-3',
-           lambda: (out['pci'] is None or float(out['chance']) <= 1e-3,
-                    f"pci {out['pci']!r} at chance {out['chance']!r}"))
-
     expect('half_frame is 0 or 1', lambda: (out['half_frame'] in (0, 1),
                                             f"half_frame {out['half_frame']!r}"))
 
@@ -703,9 +727,42 @@ def check_l2_interface():
         iq, rate = lte_negatives.synth_noise(seed=0, fs=1e6)
         a = api().sss_search(iq, rate)
         b = api().fingerprint(iq, rate)
-        ok = isinstance(a, dict) and isinstance(b, dict) and a['pci'] is None
-        return ok, f"sss pci {a.get('pci')!r}" if isinstance(a, dict) else 'not a dict'
-    expect('a 1 MS/s capture: sss_search and fingerprint return, sss pci None', under_rate)
+        ok = a['pci'] is None and b['verdict'] == 'unknown'
+        return ok, f"sss pci {a['pci']!r}, fingerprint verdict {b['verdict']!r}"
+    expect('a 1 MS/s capture: sss pci None and fingerprint verdict unknown', under_rate)
+
+    def no_pss():
+        c = l2_case(bw=10, pci=123, snr=20.0, seed=0, pss=False)
+        ok = c['sss']['pci'] is None and c['fp']['pci'] is None
+        return ok, f"sss pci {c['sss']['pci']!r}, fingerprint pci {c['fp']['pci']!r}"
+    expect('pss=False control at 20 dB: sss pci None and fingerprint pci None', no_pss)
+
+    def mismatch():
+        """A fake sss_search whose N_ID(2) differs from the PSS root of a real capture:
+        the verdict must drop to possible, and a check's detail must say so."""
+        real_root = fp['nid2']
+        other = (real_root + 1) % 3
+        fake = {'ran': True, 'nid1': 41, 'nid2': other, 'pci': 3 * 41 + other,
+                'half_frame': 0, 'frame_offset_samples': 0, 'score': 1.0, 'chance': 1e-9,
+                'halfframes_used': 20, 'detail': 'fake'}
+        mod = api()
+        had = hasattr(mod, 'sss_search')
+        orig = getattr(mod, 'sss_search', None)
+        iq, rate = memo('l2-mismatch-iq', lambda: synth(bw_mhz=10, n_frames=10, pci=123,
+                                                        snr_db=20.0, seed=0))
+        mod.sss_search = lambda iq_, fs_: fake
+        try:
+            res = mod.fingerprint(iq, rate)
+        finally:
+            if had:
+                mod.sss_search = orig
+            else:
+                del mod.sss_search
+        mentions = any(s in str(c.get('detail', '')).lower()
+                       for c in res['checks'] for s in ('nid2', 'mismatch'))
+        ok = res['verdict'] == 'possible' and mentions
+        return ok, f"verdict {res['verdict']!r}, nid2/mismatch in a detail: {mentions}"
+    expect('sss nid2 differing from the PSS root: verdict possible, detail says so', mismatch)
 
 
 GROUPS.extend([group_l2_a, group_l2_b, group_l2_c, group_l2_d, group_l2_e, group_l2_f,
