@@ -7,7 +7,7 @@ They are hard on purpose: each has OFDM-like or pilot-like structure that a
 structure detector could mistake for LTE's.
 
     synth_noise(seed=0, fs=20e6, dur=0.1)        white complex Gaussian noise
-    synth_tone(seed=0, fs=20e6, dur=0.1)         a tone at a seeded offset, 30 dB under noise
+    synth_tone(seed=0, fs=20e6, dur=0.1)         a tone at a seeded offset, 30 dB above noise
     synth_wifi_like(seed=0, fs=20e6, dur=0.1)    64-point OFDM, 312.5 kHz spacing, CP 16
     synth_atsc_like(seed=0, fs=20e6, dur=0.1)    8VSB-like single sideband, 10.76 MBd
     synth_uplink_like(seed=0, fs=20e6, dur=0.1)  SC-FDMA-like bursts, 10 MHz, CP 72
@@ -34,7 +34,7 @@ def synth_noise(seed=0, fs=20e6, dur=0.1):
 
 
 def synth_tone(seed=0, fs=20e6, dur=0.1):
-    """A complex tone at a seeded offset in +-4 MHz, 30 dB under white noise: a
+    """A complex tone at a seeded offset in +-4 MHz, 30 dB above white noise: a
     constant envelope with one spectral line, which a narrowband search can
     mistake for structure."""
     n = int(round(dur * fs))

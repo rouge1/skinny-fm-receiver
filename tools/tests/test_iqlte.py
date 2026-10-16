@@ -6,9 +6,10 @@ Signals: ``tests/lte_synth.py`` (an LTE FDD downlink, seeded) and
 and only its fingerprint is kept, so the groups share results without holding
 every capture in memory.
 
-The checks are found by name: the check whose name contains 'cp' is the CP
-autocorrelation, 'pss' the PSS search, and 'sss' and 'crs' the two later stages
-(these must be present with ran False).
+The two checks that ran are the CP autocorrelation and the PSS search; they
+are taken by ``ran``, not by name, and the gates are order-free (both chances
+checked, whatever their order). SSS and CRS are found by name ('sss', 'crs')
+and must be present with ran False.
 
 Groups, one counted line each (the gates G1-G5, G7, G8 of the spec):
   A  G1  10 MHz, PCI 0/123/503, 20 and 0 dB, seeds 0-4 (30 cases):
@@ -17,14 +18,18 @@ Groups, one counted line each (the gates G1-G5, G7, G8 of the spec):
   B  G2  1.4, 3, 5, 10, 20 MHz at 20 dB, PCI 123, seeds 0-2 (15 cases):
          verdict lte, nfft = the class table's N
   C  G3  10 MHz resampled to 20 MS/s, CFO +2 kHz, 10 dB, PCI 123, seeds 0-4
-         (5 cases): verdict lte, nid2 == 0
+         (5 cases): verdict lte, nid2 == 0; and nfft 1024 (5 cases, its own line)
   D  G4  negatives noise, tone, wifi_like, atsc_like, uplink_like, seeds 0-4
          (25 cases): verdict not lte; and noise: both chances >= 0.01 (5 cases)
   E  G5  control pss=False at 20 dB, seeds 0-4 (5 cases): verdict not lte;
-         a 5 ms capture, seeds 0-2 (3 cases): verdict unknown, no exception
+         a 5 ms capture, seeds 0-2 (3 cases): verdict unknown, no exception, pci None
   G8     iqlte.py imports only numpy and the standard library (read with ast)
-  interface: the result's shape, cp_autocorr and pss_search return dicts with
-         score and chance, a 1 MS/s capture is unknown with no exception.
+  interface (ungated): the result's shape; each ran check has passed ==
+         (chance <= 1e-3), and the verdict agrees (lte: both, possible: one) on
+         three built fingerprints; pci None; cp_autocorr and pss_search return
+         dicts with score and chance; captures of 10 ms, of 1.92 MS/s and a 5 kHz
+         CFO are not unknown or are lte; unknown captures give only allowed nid2
+         and nfft values.
 Time F is not tested here: the manager measures it.
 
 Run:  QT_QPA_PLATFORM=offscreen PYTHONPATH=tools python tools/tests/test_iqlte.py
@@ -114,7 +119,7 @@ def outcome(label, test):
         ok, why = test()
     except Exception as exc:
         ok, why = False, f"{type(exc).__name__}: {exc}"
-    return label, ok, why
+    return label, bool(ok), why
 
 
 def counted(name, outcomes):
@@ -126,12 +131,22 @@ def counted(name, outcomes):
 
 
 def find_check(fp, key):
-    """The one check whose name contains ``key`` (case-insensitive)."""
+    """The one check whose name contains ``key`` (case-insensitive). Used for
+    SSS and CRS only: the spec names those stages."""
     hits = [c for c in fp['checks'] if key in str(c.get('name', '')).lower()]
     if len(hits) != 1:
         names = [c.get('name') for c in fp['checks']]
         raise AssertionError(f'want one check named like {key!r}, got {names}')
     return hits[0]
+
+
+def ran_checks(fp):
+    """The checks that ran: exactly two (the CP autocorrelation and the PSS search)."""
+    ran = [c for c in fp['checks'] if bool(c.get('ran'))]
+    if len(ran) != 2:
+        names = [c.get('name') for c in ran]
+        raise AssertionError(f'want two checks that ran, got {len(ran)}: {names}')
+    return ran
 
 
 def lte_fp(bw=10, pci=123, snr=20.0, seed=0, fs=None, cfo=0.0, pss=True):
@@ -153,6 +168,14 @@ def negative_fp(name, seed):
     return memo(('neg', name, seed), make)
 
 
+def short_fp(seed):
+    """The fingerprint of a 5 ms slice of a one-frame 10 MHz capture, measured once."""
+    def make():
+        iq, rate = synth(bw_mhz=10, n_frames=1, pci=123, snr_db=20.0, seed=seed)
+        return api().fingerprint(iq[:int(round(0.005 * rate))], rate)
+    return memo(('short', seed), make)
+
+
 def cheap_lte():
     """A 1.4 MHz LTE capture (1.92 MS/s, 10 frames): the cheap input for the
     two check functions."""
@@ -171,9 +194,9 @@ def gate_a(pci, snr, seed):
 
 def gate_g7(pci, seed):
     fp = lte_fp(pci=pci, snr=20.0, seed=seed)
-    cp, pss = find_check(fp, 'cp'), find_check(fp, 'pss')
-    ok = cp['chance'] <= 1e-6 and pss['chance'] <= 1e-6
-    return ok, f"cp chance {cp['chance']:.3g}, pss chance {pss['chance']:.3g}"
+    checks = ran_checks(fp)
+    ok = all(c['chance'] <= 1e-6 for c in checks)
+    return ok, '; '.join(f"{c['name']} chance {c['chance']:.3g}" for c in checks)
 
 
 def group_a():
@@ -210,9 +233,18 @@ def gate_c(seed):
     return ok, f"verdict {fp['verdict']}, nid2 {fp['nid2']} (want 0)"
 
 
+def gate_c_nfft(seed):
+    fp = lte_fp(bw=10, pci=123, snr=10.0, seed=seed, fs=20e6, cfo=2000.0)
+    ok = fp['nfft'] == 1024
+    return ok, f"nfft {fp['nfft']} (want 1024)"
+
+
 def group_c():
     outs = [outcome(f'seed {seed}', lambda d=seed: gate_c(d)) for seed in range(5)]
     counted('C (G3) 10 MHz at 20 MS/s, CFO +2 kHz, 10 dB: verdict lte, nid2 0', outs)
+
+    outs_n = [outcome(f'seed {seed}', lambda d=seed: gate_c_nfft(d)) for seed in range(5)]
+    counted('C 10 MHz at 20 MS/s, CFO +2 kHz, 10 dB: nfft 1024', outs_n)
 
 
 # ---- group D: G4 --------------------------------------------------------------
@@ -224,9 +256,9 @@ def gate_d(name, seed):
 
 def gate_noise_chance(seed):
     fp = negative_fp('synth_noise', seed)
-    cp, pss = find_check(fp, 'cp'), find_check(fp, 'pss')
-    ok = cp['chance'] >= 0.01 and pss['chance'] >= 0.01
-    return ok, f"cp chance {cp['chance']:.3g}, pss chance {pss['chance']:.3g}"
+    checks = ran_checks(fp)
+    ok = all(c['chance'] >= 0.01 for c in checks)
+    return ok, '; '.join(f"{c['name']} chance {c['chance']:.3g}" for c in checks)
 
 
 def group_d():
@@ -247,9 +279,9 @@ def gate_control(seed):
 
 
 def gate_short(seed):
-    iq, rate = synth(bw_mhz=10, n_frames=1, pci=123, snr_db=20.0, seed=seed)
-    fp = api().fingerprint(iq[:int(round(0.005 * rate))], rate)
-    return fp['verdict'] == 'unknown', f"verdict {fp['verdict']}"
+    fp = short_fp(seed)
+    ok = fp['verdict'] == 'unknown' and fp['pci'] is None
+    return ok, f"verdict {fp['verdict']}, pci {fp['pci']!r}"
 
 
 def group_e():
@@ -257,7 +289,7 @@ def group_e():
     counted('E (G5) control pss=False at 20 dB: verdict not lte', outs)
 
     outs5 = [outcome(f'seed {seed}', lambda d=seed: gate_short(d)) for seed in range(3)]
-    counted('E (G5) 5 ms capture: verdict unknown, no exception', outs5)
+    counted('E (G5) 5 ms capture: verdict unknown, no exception, pci None', outs5)
 
 
 # ---- G8: the imports ----------------------------------------------------------
@@ -315,34 +347,57 @@ def check_interface():
 
     def later_stages():
         sss, crs = find_check(fp(), 'sss'), find_check(fp(), 'crs')
-        return (sss['ran'] is False and crs['ran'] is False,
+        return (not bool(sss['ran']) and not bool(crs['ran']),
                 f"sss ran {sss['ran']!r}, crs ran {crs['ran']!r}")
     expect('SSS and CRS are checks with ran False', later_stages)
 
-    def ran_checks():
-        cp, pss = find_check(fp(), 'cp'), find_check(fp(), 'pss')
-        return (cp['ran'] is True and pss['ran'] is True,
-                f"cp ran {cp['ran']!r}, pss ran {pss['ran']!r}")
-    expect('the CP and PSS checks ran', ran_checks)
+    def two_ran():
+        ran = ran_checks(fp())
+        return len(ran) == 2, f'{len(ran)} checks ran'
+    expect('exactly two checks ran (CP autocorrelation and PSS search)', two_ran)
 
     def chances():
         bad = []
-        for key in ('cp', 'pss'):
-            c = find_check(fp(), key)
+        for c in ran_checks(fp()):
             try:
                 ok = 1e-300 <= float(c['chance']) <= 1.0
             except (TypeError, ValueError):
                 ok = False
             if not ok:
-                bad.append(f"{key} chance {c['chance']!r}")
+                bad.append(f"{c['name']} chance {c['chance']!r}")
         return not bad, f'want a probability floored at 1e-300: {bad}'
-    expect('CP and PSS chance are probabilities in [1e-300, 1]', chances)
+    expect('the chances of the checks that ran are probabilities in [1e-300, 1]', chances)
+
+    def consistent(make, label):
+        def test():
+            fp_ = make()
+            ran = ran_checks(fp_)
+            bad = [c['name'] for c in ran
+                   if bool(c['passed']) != (float(c['chance']) <= 1e-3)]
+            n = sum(1 for c in ran if bool(c['passed']))
+            v = fp_['verdict']
+            if n == 2:
+                verdict_ok = v == 'lte'
+            elif n == 1:
+                verdict_ok = v == 'possible'
+            else:
+                verdict_ok = v not in ('lte', 'possible')
+            return (not bad and verdict_ok,
+                    f'passed != (chance <= 1e-3) for {bad}; {n} passed, verdict {v!r}')
+        expect(f'consistency on {label}: passed == (chance <= 1e-3), verdict agrees', test)
+    consistent(fp, 'a 20 dB 10 MHz capture')
+    consistent(lambda: lte_fp(pci=123, snr=20.0, seed=0, pss=False), 'the pss=False control')
+    consistent(lambda: negative_fp('synth_noise', 0), 'one noise capture')
 
     def nid2_nfft():
         r = fp()
         ok = (r['nid2'] in (0, 1, 2)) and r['nfft'] == 1024
         return ok, f"nid2 {r['nid2']!r}, nfft {r['nfft']!r}"
     expect('10 MHz: nid2 is a PSS root (0-2), nfft 1024', nid2_nfft)
+
+    expect('a pci None on one negative (noise seed 0)',
+           lambda: (negative_fp('synth_noise', 0)['pci'] is None,
+                    f"pci {negative_fp('synth_noise', 0)['pci']!r}"))
 
     def returns_dict(name):
         def test():
@@ -353,6 +408,35 @@ def check_interface():
         return test
     expect('cp_autocorr returns a dict with score and chance', returns_dict('cp_autocorr'))
     expect('pss_search returns a dict with score and chance', returns_dict('pss_search'))
+
+    def one_frame_10ms():
+        iq, rate = memo('one-frame', lambda: synth(bw_mhz=10, n_frames=1, pci=123,
+                                                   snr_db=20.0, seed=0))
+        v = api().fingerprint(iq, rate)['verdict']
+        return v != 'unknown', f'a 10 ms capture gave verdict {v!r}'
+    expect('a capture of exactly 10 ms is not unknown (no exception)', one_frame_10ms)
+
+    def rate_1_92():
+        iq, rate = cheap_lte()
+        v = api().fingerprint(iq, rate)['verdict']
+        return v != 'unknown', f'a 1.92 MS/s capture gave verdict {v!r}'
+    expect('a 1.92 MS/s capture is not unknown (no exception)', rate_1_92)
+
+    def cfo_5k():
+        v = lte_fp(bw=10, pci=123, snr=20.0, seed=0, cfo=5000.0)['verdict']
+        return v == 'lte', f'verdict {v!r} at a 5 kHz CFO'
+    expect('a 5 kHz CFO at 10 MHz, 20 dB, PCI 123: verdict lte', cfo_5k)
+
+    def unknown_values(make, label):
+        def test():
+            r = make()
+            ok = (r['nid2'] in (None, 0, 1, 2)
+                  and (r['nfft'] is None or r['nfft'] in CLASS_N.values()))
+            return ok, f"nid2 {r['nid2']!r}, nfft {r['nfft']!r}"
+        expect(f'{label}: nid2 and nfft are allowed values', test)
+    unknown_values(lambda: short_fp(0), 'the 5 ms capture')
+    unknown_values(lambda: api().fingerprint(*lte_negatives.synth_noise(seed=0, fs=1e6)),
+                   'the 1 MS/s capture')
 
     def slow_rate():
         iq, rate = lte_negatives.synth_noise(seed=0, fs=1e6)
