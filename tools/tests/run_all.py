@@ -1,4 +1,4 @@
-"""Run the tests: the twenty-four that need no radio, with ``--hw`` the BB60D
+"""Run the tests: the twenty-five that need no radio, with ``--hw`` the BB60D
 check as well, with ``--hackrf`` the HackRF check (other sessions may
 use the HackRF too: make sure it is yours before running it), and with
 ``--rtl`` the RTL-SDR check (this app closed, so no rtl_tcp is running).
@@ -20,6 +20,7 @@ TESTS = ['test_sweep.py', 'test_tuning.py', 'test_receive_chain.py', 'test_gui.p
          'test_control.py', 'test_control_more.py',
          'test_iq_measure.py', 'test_iq_tools.py', 'test_iq_decode.py',
          'test_iq_catalog.py', 'test_iq_frames.py', 'test_iq_decode_bursts.py',
+         'test_iqlte.py',
          'test_hdradio.py', 'test_sceptre_dvr.py',
          'test_dvr_hd.py', 'test_dvr_iq.py', 'test_sceptre_library.py',
          'test_spectra.py', 'test_sceptre_spectra.py',
