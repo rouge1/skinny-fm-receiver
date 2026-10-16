@@ -2165,7 +2165,7 @@ class MainWindow(Qt.QWidget):
         rx.rf_probe.set_alpha(1.0 / max(1, self.rf_view.avg_knob.value()))
         rx.mpx_probe.set_alpha(1.0 / max(1, self.mpx_view.avg_knob.value()))
         self._place_receive_view(recentre=not keep_view)
-        self.bottom.setCurrentWidget(self.rx_page)
+        self._show_bottom(television, self._atsc_animate)
         self.bottom.setVisible(True)
         self._clear_rds_labels()
         self._show_audio_note()
@@ -3168,6 +3168,8 @@ class MainWindow(Qt.QWidget):
         one file there is nothing to choose."""
         fade(self.track_combo, shown, done=self._place_transport)
 
+    FIT_AFTER_FRAMES = 6
+
     def _track_chosen(self, index):
         if self._rec_sel is None or not 0 <= index < len(self._rec_sel.tracks):
             return
@@ -3266,6 +3268,15 @@ class MainWindow(Qt.QWidget):
                             else 'dBFS')
         view.set_pan_limits(None, None)
         self._spectrum_fit = False
+        self._fit_next = 0
+        if not audio and not track.is_spectrum:
+            # A recording chosen from the list opens on the whole of its
+            # band, at a scale that fits it, not at the last one's view:
+            # the span now, the Ref level and Range a few frames in (the
+            # first is not yet the spectrum the file has).
+            view.span_knob.setValue(high - low, emit=False)
+            view.set_center((low + high) / 2)
+            self._fit_next = self.FIT_AFTER_FRAMES
         if track.is_spectrum:
             # What was saved is an IQ file's band and dBFS levels. Open on
             # the whole of the recording, and let the view go no wider than

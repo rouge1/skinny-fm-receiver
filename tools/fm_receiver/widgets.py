@@ -2365,6 +2365,7 @@ class SpectrumView(Qt.QWidget):
         self.center_line.setVisible(False)
         self.plot.addItem(self.center_line, ignoreBounds=True)
         self.outside = []
+        self._usable = None                 # (low, high) the tuner reaches, in view units
         for _ in range(2):
             shade = pg.LinearRegionItem(movable=False)
             shade.setVisible(False)
@@ -2734,11 +2735,21 @@ class SpectrumView(Qt.QWidget):
         if self._x is None or not len(self._x):
             return False
         (x0, x1), _ = self.plot.getPlotItem().getViewBox().viewRange()
+        # Only what the tuner can reach: past the band's edge a recording's
+        # filter rolls off by a hundred dB, and would stretch the Range
+        # over nothing anyone is looking at.
+        usable = getattr(self, '_usable', None)
+        if usable is not None:
+            x0, x1 = max(x0, usable[0]), min(x1, usable[1])
         shown = self._db[(self._x >= x0) & (self._x <= x1)]
         shown = shown[np.isfinite(shown)]
         if not len(shown):
             return False
-        floor, peak = float(np.percentile(shown, 5)), float(np.max(shown))
+        # The noise floor, from below: the 5th percentile - or the 10th where
+        # the tuner's reach is known, since a recording's band edge still
+        # rolls off inside it and would take the 5th into the roll-off.
+        floor = float(np.percentile(shown, 10 if usable is not None else 5))
+        peak = float(np.max(shown))
         middle = (floor + peak) / 2
         if keep_ref:
             span = 2 * (self.ref_knob.value() - middle)
@@ -3252,6 +3263,7 @@ class SpectrumView(Qt.QWidget):
     def set_tuner_range(self, low_hz, high_hz):
         """Shade what lies outside ``low_hz``-``high_hz``, where the tuner
         cannot go; None clears it."""
+        self._usable = None if low_hz is None else (low_hz / self.scale, high_hz / self.scale)
         if low_hz is None:
             for region in self.outside:
                 region.setVisible(False)

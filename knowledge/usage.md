@@ -668,7 +668,10 @@ where it was.
    choose). The IQ is chosen first (the whole band before the channel), and
    the WAV is in the list too.
 3. **Press Play**, or double-click the line. Press it again to pause. Play,
-   **Loop** and the time are on the spectrum, at its top left.
+   **Loop** and the time are on the spectrum, at its top left. An IQ
+   recording opens on the whole of its band, and its Ref level and Range are
+   fitted to the spectrum a few frames after it starts (as **A** does), not
+   left at the last recording's view.
 4. **Jump** by clicking or dragging the **mini map** down the right of the view (below).
 
 **Sceptre's IQ files** play here too. **Folders...** (under the list)
