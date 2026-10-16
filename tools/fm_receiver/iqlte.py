@@ -1,7 +1,8 @@
 """LTE structural fingerprint of a centred capture (normal cyclic prefix only).
 
 Given complex IQ and its sample rate, say whether the block is an LTE FDD
-downlink, from the signal alone. Two checks run.
+downlink, from the signal alone. Three checks run. The carrier is assumed
+centred, normal cyclic prefix, FDD.
 
 The cyclic-prefix autocorrelation looks for the 15 kHz OFDM grid. Every
 bandwidth shares that spacing: the useful symbol is 1/15 ms, the first prefix
@@ -18,7 +19,20 @@ grid (a few kHz, the tolerance asked for), FFTs the last symbol of each slot
 and correlates the central 62 bins with the three Zadoff-Chu roots 25, 29 and
 34 (N_ID(2) = 0, 1, 2). The chance is a Beta tail fitted to the correlations
 of the other symbols in the capture, again counted over every root, frequency
-and symbol that was tried. SSS and CRS are named and not run.
+and symbol that was tried.
+
+The SSS check needs that PSS root and the symbol timing. In FDD the SSS sits
+in the symbol immediately before the PSS, on the same central 62 subcarriers,
+once per half-frame. The received PSS divided by the known root is the channel
+on those subcarriers, and that channel equalises the SSS. There are 168 x 2
+hypotheses: N_ID(1) from 0 to 167, and which half-frame is subframe 0 rather
+than subframe 5 (the swap of the two interleaved m-sequences, 36.211 6.11.2.1).
+Equalised half-frames of one kind are averaged, then correlated. The strongest
+hypothesis gives N_ID(1) and the half-frame. The chance is a Gaussian tail of
+the other hypotheses' scores in this same capture (the null), multiplied by
+the number of hypotheses and floored at 1e-300. The physical cell ID is
+3 * N_ID(1) + N_ID(2) when that chance is at most 1e-3. A capture shorter
+than 20 ms has no SSS result and raises nothing. CRS is named and not run.
 
 The carrier is assumed centred, so the 62 synchronisation bins sit on DC and
 the occupied width can be read from the same symbol FFTs. The reported FFT
@@ -46,6 +60,16 @@ Wrong turns, kept out of the result:
   other alignments are ignored. The chance is the extreme-value probability
   under the capture's own bulk, so a flat metric scores near 1 and pure noise
   stays above the 1e-3 line.
+- Adding every half-frame against one SSS sequence. Subframe 0 and subframe 5
+  swap the two m-sequences, so a coherent sum across a frame cancels the
+  cell ID. The two residues are scored as a pair, swapped in the two ways.
+- Zero-forcing the SSS with no floor. A weak PSS bin (a deep fade, or a slot
+  that is not a PSS) blows up and the average follows the noise. The channel
+  divide is floored at a fraction of the median bin power.
+- Reading the winning hypothesis off as a tiny chance because it beat the
+  second place. The other hypotheses are the null, and that one-draw tail is
+  multiplied by all 336 candidates. A capture with no SSS then stays above
+  1e-3, and a real one falls to the floor.
 """
 
 import math
@@ -72,6 +96,59 @@ _PSS_ROOTS = (25, 29, 34)
 _CFO_HZ = np.arange(-6000.0, 6000.1, 2000.0)
 
 _PSS_SEQ = None  # (3, 62), unit-magnitude Zadoff-Chu, filled on first use
+_SSS_TEMPL = None  # (3, 168, 2, 62) real ±1, nid2 then N_ID(1) then subframe
+_SSS_MIN_DUR = 0.020
+_N_SSS_HYP = 168 * 2
+
+
+def _m_sequence(taps):
+    """Length-31 m-sequence 1 - 2x(i), x(0..4) = 0,0,0,0,1 (36.211 6.11.2.1)."""
+    x = np.zeros(31, dtype=np.int8)
+    x[4] = 1
+    taps = np.asarray(taps, dtype=np.int64)
+    for i in range(26):
+        x[i + 5] = np.bitwise_xor.reduce(x[i + taps])
+    return 1.0 - 2.0 * x.astype(np.float64)
+
+
+def _sss_templates():
+    """SSS for every N_ID(2), N_ID(1) and both half-frames, shape (3, 168, 2, 62).
+
+    Index 0 of the pair is subframe 0, index 1 is subframe 5. Built from the
+    m-sequences, the cyclic shifts m0/m1 of N_ID(1), and the N_ID(2) scrambling
+    in 36.211 6.11.2.1. Real ±1.
+    """
+    global _SSS_TEMPL
+    if _SSS_TEMPL is not None:
+        return _SSS_TEMPL
+    s = _m_sequence((2, 0))
+    c = _m_sequence((3, 0))
+    z = _m_sequence((4, 2, 1, 0))
+    nid1 = np.arange(168)
+    q_prime = nid1 // 30
+    q = (nid1 + q_prime * (q_prime + 1) // 2) // 30
+    m_prime = nid1 + q * (q + 1) // 2
+    m0 = m_prime % 31
+    m1 = (m0 + m_prime // 31 + 1) % 31
+    n = np.arange(31)
+    s0 = s[(n + m0[:, None]) % 31]
+    s1 = s[(n + m1[:, None]) % 31]
+    z0 = z[(n + (m0 % 8)[:, None]) % 31]
+    z1 = z[(n + (m1 % 8)[:, None]) % 31]
+    out = np.empty((3, 168, 2, 62), dtype=np.float64)
+    for nid2 in range(3):
+        c0 = c[(n + nid2) % 31]
+        c1 = c[(n + nid2 + 3) % 31]
+        even0 = s0 * c0
+        odd0 = s1 * c1 * z0
+        even5 = s1 * c0
+        odd5 = s0 * c1 * z1
+        out[nid2, :, 0, 0::2] = even0
+        out[nid2, :, 0, 1::2] = odd0
+        out[nid2, :, 1, 0::2] = even5
+        out[nid2, :, 1, 1::2] = odd5
+    _SSS_TEMPL = out
+    return out
 
 
 def _pss_seqs():
@@ -664,13 +741,293 @@ def pss_search(iq, fs):
     }
 
 
+def _sss_result(ran, nid1, nid2, pci, half_frame, frame_offset, score, chance,
+                n_used, detail):
+    return {
+        'ran': bool(ran),
+        'nid1': None if nid1 is None else int(nid1),
+        'nid2': None if nid2 is None else int(nid2),
+        'pci': None if pci is None else int(pci),
+        'half_frame': None if half_frame is None else int(half_frame),
+        'frame_offset_samples': None if frame_offset is None else int(frame_offset),
+        'score': float(score) if score is not None and np.isfinite(score) else 0.0,
+        'chance': _floor_chance(1.0 if chance is None else chance),
+        'halfframes_used': int(n_used),
+        'detail': detail,
+    }
+
+
+def _sss_none(detail, ran=False):
+    return _sss_result(ran, None, None, None, None, None, 0.0, 1.0, 0, detail)
+
+
+def _pss_body_offset(n_fft):
+    """Samples from the start of a slot (prefix included) to the PSS body.
+
+    The PSS is symbol 6 of the slot. Symbol 0 has the long prefix; the other
+    six, including the PSS, have the short one.
+    """
+    cp0, cp = _cp_lengths(n_fft)
+    return cp0 + 6 * cp + 6 * n_fft, cp
+
+
+def _locate_pss(block, rate, n_fft, folded, slot, cp):
+    """Best PSS root, CFO and body start, plus the per-slot correlation.
+
+    Same grid as ``_pss_on_grid``: every prefix peak, the coarse CFO trials,
+    and a few samples of timing (a ramp across the bins, not a new FFT). The
+    body start is the sample, inside a slot, of the window that won.
+    """
+    peaks = _prefix_peaks(folded, 7, max(cp // 2, 2))
+    if not peaks:
+        return None
+    refs = _pss_seqs()
+    ref_m = (refs / np.linalg.norm(refs, axis=1, keepdims=True)).conj().T
+    bins = np.concatenate((np.arange(-31, 0), np.arange(1, 32))) % n_fft
+    k = np.arange(n_fft)
+    offsets = range(-3, 4)
+    best = -1.0
+    best_hit = None
+    t = k / float(rate)
+    ramp_d = [np.exp(2j * np.pi * d * k / n_fft) for d in offsets]
+    for phase in peaks:
+        base = _bodies_at(block, n_fft, slot, phase + cp)
+        if base.shape[0] < 2:
+            continue
+        for f in _CFO_HZ:
+            spec = np.fft.fft(base * np.exp(-2j * np.pi * float(f) * t), axis=1)
+            for d, ramp in zip(offsets, ramp_d):
+                obs = (spec * ramp)[:, bins]
+                norms = np.linalg.norm(obs, axis=1)
+                good = norms > 1e-12
+                obs_n = np.zeros_like(obs)
+                obs_n[good] = obs[good] / norms[good, None]
+                corr = np.abs(obs_n @ ref_m)
+                m = float(corr.max())
+                if m > best:
+                    best = m
+                    flat = int(np.argmax(corr))
+                    best_hit = {
+                        'score': m,
+                        'root': int(flat % 3),
+                        'cfo': float(f),
+                        'phase': int(phase),
+                        'd': int(d),
+                        'n_slots': int(base.shape[0]),
+                        'corr': corr[:, int(flat % 3)].copy(),
+                    }
+    if best_hit is None or best < 0.25:
+        return None
+    # The winning ramp starts the window ``d`` samples earlier than phase+cp.
+    best_hit['body'] = int(best_hit['phase'] + cp - best_hit['d'])
+    return best_hit
+
+
+def _equalise_sss(block, rate, n_fft, slot, hit):
+    """Channel-equalised SSS for every PSS occasion of the winning residue.
+
+    Returns ``(eq0, eq1, used0, used1)`` where each ``eq`` is (n, 62) complex
+    and the ``used`` arrays are the PSS slot indices that contributed. Group 0
+    is the earlier residue class (slot mod 20 == r), group 1 the other.
+    """
+    cp = _cp_lengths(n_fft)[1]
+    root = hit['root']
+    pss_ref = _pss_seqs()[root]
+    bins = np.concatenate((np.arange(-31, 0), np.arange(1, 32))) % n_fft
+    corr = hit['corr']
+    n_slots = min(corr.size, hit['n_slots'])
+    if n_slots < 2:
+        return None
+    residues = []
+    for r in range(10):
+        take = corr[r:n_slots:10]
+        residues.append(float(take.mean()) if take.size else -1.0)
+    r_best = int(np.argmax(residues))
+    if residues[r_best] < 0.2:
+        return None
+    idxs = np.arange(r_best, n_slots, 10, dtype=np.int64)
+    body = hit['body']
+    pss_at = idxs * slot + body
+    # Symbol 5 (SSS) to symbol 6 (PSS): one short prefix plus the useful symbol.
+    sss_at = pss_at - (n_fft + cp)
+    keep = (sss_at >= 0) & (pss_at + n_fft <= block.size)
+    idxs = idxs[keep]
+    pss_at = pss_at[keep]
+    sss_at = sss_at[keep]
+    if idxs.size < 1:
+        return None
+    k = np.arange(n_fft, dtype=np.int64)
+    cfo = hit['cfo']
+
+    def _specs(starts):
+        samp = starts[:, None] + k[None, :]
+        t = samp / float(rate)
+        window = block[samp] * np.exp(-2j * np.pi * cfo * t)
+        return np.fft.fft(window, axis=1)[:, bins]
+
+    yp = _specs(pss_at)
+    ys = _specs(sss_at)
+    power = np.abs(yp) ** 2
+    floor = 0.05 * np.median(power, axis=1, keepdims=True) + 1e-18
+    # H = Yp * conj(root); equalise Ys / H, with a floor on |H|^2.
+    eq = ys * np.conj(yp) * pss_ref / (power + floor)
+    group0 = (idxs % 20) == r_best
+    # r_best is in 0..9, so the other class is r_best+10, whose mod 20 is not r_best.
+    return eq[group0], eq[~group0], idxs[group0], idxs[~group0]
+
+
+def _hypothesis_scores(eq0, eq1, templ):
+    """Mean correlation of each (N_ID(1), half-frame assignment). Shape (168, 2).
+
+    Column 0 assigns subframe 0 to group 0. Column 1 swaps the two groups.
+    A missing group is left out of the average rather than filled with zeros.
+    """
+    seq_norm = math.sqrt(62.0)
+    dots = []
+    for eq, sign in ((eq0, 1), (eq1, -1)):
+        if eq.size == 0:
+            continue
+        mean = eq.mean(axis=0)
+        scale = float(np.linalg.norm(mean)) * seq_norm
+        if scale <= 1e-18:
+            continue
+        # templ is (168, 2, 62). Dot on the last axis -> (168, 2).
+        corr = np.real(templ @ mean) / scale
+        # sign < 0 swaps the subframe axis: group 1 against subframe 0 is column 1
+        # of the unswapped templates when we later add column-wise.
+        dots.append(corr if sign > 0 else corr[:, ::-1])
+    if not dots:
+        return None
+    acc = np.zeros_like(dots[0])
+    for d in dots:
+        acc += d
+    return acc / float(len(dots))
+
+
+def _sss_chance(scores):
+    """Tail of the winning score under the other hypotheses, times the count."""
+    flat = scores.ravel()
+    k = int(np.argmax(flat))
+    peak = float(flat[k])
+    null = np.concatenate((flat[:k], flat[k + 1:]))
+    null = null[np.isfinite(null)]
+    if null.size < 8 or not np.isfinite(peak):
+        return peak, 1.0, k
+    med = float(np.median(null))
+    mad = float(np.median(np.abs(null - med)))
+    scale = 1.4826 * mad
+    if scale < 1e-4:
+        if peak <= med + 0.05:
+            return peak, 1.0, k
+        scale = max(scale, 0.02)
+    z = (peak - med) / scale
+    if z <= 0.0:
+        return peak, 1.0, k
+    p_one = 0.5 * math.erfc(z / math.sqrt(2.0))
+    return peak, _floor_chance(p_one * _N_SSS_HYP), k
+
+
+def sss_search(iq, fs):
+    """SSS check and the physical cell ID. No exception on a short or slow capture.
+
+    See the module docstring for the method. ``pci`` is None when no PSS was
+    found, the capture is shorter than 20 ms, or the chance is above 1e-3.
+    ``half_frame`` is 0 when ``frame_offset_samples`` is the first sample of
+    subframe 0 (prefix included), and 1 when the reported offset is 5 ms later
+    and subframe 5's SSS starts that half. The offset is in samples of the
+    capture's own rate, modulo 10 ms.
+    """
+    try:
+        fs_in = float(fs)
+    except (TypeError, ValueError):
+        return _sss_none('not a sample rate')
+    vec = _vector(iq)
+    if vec is None or not np.isfinite(fs_in) or fs_in < _MIN_FS:
+        return _sss_none('too short or too slow to check')
+    if vec.size < _SSS_MIN_DUR * fs_in:
+        return _sss_none('shorter than 20 ms', ran=True)
+    prepared = _prepare(vec, fs_in)
+    if prepared is None:
+        return _sss_none('no LTE bandwidth class fits this sample rate', ran=True)
+    block, rate, n_fft, fs_cap = prepared
+    found = _cp_alignment(block, n_fft)
+    if found is None:
+        return _sss_none('no symbol grid to search', ran=True)
+    _align, slot, cp, _n_slots, folded = found
+    hit = _locate_pss(block, rate, n_fft, folded, slot, cp)
+    if hit is None:
+        return _sss_none('no PSS to equalise the SSS from', ran=True)
+    parts = _equalise_sss(block, rate, n_fft, slot, hit)
+    if parts is None:
+        return _sss_none('PSS timing left no SSS symbol', ran=True)
+    eq0, eq1, used0, used1 = parts
+    n_used = int(used0.size + used1.size)
+    templ = _sss_templates()[hit['root']]
+    scores = _hypothesis_scores(eq0, eq1, templ)
+    if scores is None:
+        return _sss_none('SSS symbols were empty', ran=True)
+    peak, chance, k = _sss_chance(scores)
+    nid1, col = (int(v) for v in np.unravel_index(k, scores.shape))
+    # Column 1 means group 0 carries subframe 5, so the frame starts 5 ms earlier.
+    group0_is_sub5 = col == 1
+    nid2 = int(hit['root'])
+    pci = 3 * nid1 + nid2
+    # A representative PSS of group 0 (or group 1 if group 0 contributed nothing).
+    if used0.size:
+        slot_i = int(used0[0])
+        this_is_sub5 = group0_is_sub5
+    else:
+        slot_i = int(used1[0])
+        this_is_sub5 = not group0_is_sub5
+    body_off, _cp_short = _pss_body_offset(n_fft)
+    pss_sample = slot_i * slot + hit['body']
+    half_slots = 10 * slot
+    frame = 20 * slot
+    frame_start = pss_sample - body_off - (half_slots if this_is_sub5 else 0)
+    frame_start_mod = frame_start % frame
+    # Both labels name the same instant. Report the subframe-0 boundary.
+    half_frame = 0
+    frame_cap = int(round(0.010 * fs_cap))
+    if frame_cap <= 0:
+        return _sss_none('sample rate is not a capture', ran=True)
+    offset = int(round(frame_start_mod * fs_cap / rate)) % frame_cap
+    reported = pci if chance <= _PASS else None
+    detail = (f'N_ID(1) {nid1} N_ID(2) {nid2} pci {pci} correlation {peak:.3f} '
+              f'over {n_used} half-frames at {hit["cfo"]:.0f} Hz')
+    return _sss_result(True, nid1 if reported is not None else None,
+                       nid2 if reported is not None else None,
+                       reported, half_frame if reported is not None else None,
+                       offset if reported is not None else None,
+                       peak, chance, n_used, detail)
+
+
+def _apply_sss(iq, fs, checks, verdict, nid2):
+    """Run ``sss_search`` and fold its PCI into the fingerprint.
+
+    The call goes through the module-level name so a test can replace it.
+    A PCI whose N_ID(2) is not the PSS root drops the verdict to ``possible``.
+    """
+    found = sss_search(iq, fs)
+    detail = str(found.get('detail', ''))
+    pci = found.get('pci')
+    if pci is not None and nid2 is not None and int(pci) % 3 != int(nid2):
+        verdict = 'possible'
+        detail = detail + '; N_ID(2) mismatch with the PSS root'
+    checks.append(_check('sss', bool(found.get('ran')), found.get('score'),
+                         found.get('chance'), detail))
+    checks.append(_later('crs', 'CRS is a later stage'))
+    return checks, verdict, pci
+
+
 def fingerprint(iq, fs):
     """Structural fingerprint. See the module docstring for the method.
 
-    ``verdict`` is ``lte`` when both checks pass at 1e-3, ``possible`` when one
-    does, ``not-lte`` when neither does, and ``unknown`` when the capture is
-    shorter than 10 ms or slower than 1.92 MS/s. ``pci`` is always None here.
-    ``chance`` is the product of the two check chances, floored at 1e-300.
+    ``verdict`` is ``lte`` when the CP and PSS checks both pass at 1e-3,
+    ``possible`` when one does, ``not-lte`` when neither does, and ``unknown``
+    when the capture is shorter than 10 ms or slower than 1.92 MS/s. It also
+    drops to ``possible`` when the SSS cell ID and the PSS root disagree.
+    ``pci`` is the SSS physical cell ID, or None when that check has none.
+    ``chance`` is the product of the CP and PSS chances, floored at 1e-300.
     """
     if _vector(iq) is None or _too_small(iq, fs):
         try:
@@ -713,7 +1070,6 @@ def fingerprint(iq, fs):
         # bump, and it is not a bandwidth.
         nid2 = int(root) if pss['passed'] and root is not None else None
         nfft = n_class if cp['passed'] else None
-        checks = [cp, pss, _later('sss', 'SSS is a later stage'), _later('crs', 'CRS is a later stage')]
         n_pass = int(cp['passed']) + int(pss['passed'])
         if n_pass == 2:
             verdict = 'lte'
@@ -721,22 +1077,23 @@ def fingerprint(iq, fs):
             verdict = 'possible'
         else:
             verdict = 'not-lte'
+        checks, verdict, pci = _apply_sss(iq, fs, [cp, pss], verdict, nid2)
         joint = _floor_chance(cp['chance'] * pss['chance'])
         return {
             'checks': checks,
             'verdict': verdict,
-            'pci': None,
+            'pci': pci,
             'nid2': nid2,
             'nfft': nfft,
             'chance': joint,
         }
 
-    checks = [cp, pss, _later('sss', 'SSS is a later stage'), _later('crs', 'CRS is a later stage')]
+    checks, verdict, pci = _apply_sss(iq, fs, [cp, pss], 'not-lte', None)
     joint = _floor_chance(cp['chance'] * pss['chance'])
     return {
         'checks': checks,
-        'verdict': 'not-lte',
-        'pci': None,
+        'verdict': verdict,
+        'pci': pci,
         'nid2': None,
         'nfft': None,
         'chance': joint,
