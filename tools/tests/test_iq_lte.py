@@ -998,6 +998,164 @@ GROUPS = [group_structure, group_negatives, group_errors, group_no_tools, group_
           group_cleanup, group_timing, group_imports]
 
 
+# ---- phase l4: several cells on one carrier (spec l4) ---------------------------
+#
+# A two-cell file (PCIs 61 and 288, the 288 cell 6 dB under and delayed by the async
+# draw of test_iqlte.py's l4_delay with seed 0) run through tools/iq-lte. The stub is
+# STUB_PY with one change: its MIB names the PCI it was called with, so each cell's
+# decode reads its own PCI. Offsets are compared modulo 5 ms (the two half-frame labels
+# of one frame start differ by 5 ms), within 4 samples.
+
+L4_PAIR = (61, 288)
+L4_POWER_DB = -6.0
+L4_TOL = 4                # samples
+
+_MIB_PCI_LINE = "' - PCI:             123'"
+assert _MIB_PCI_LINE in STUB_PY, 'the stub MIB line moved; update STUB_CELLS_PY'
+STUB_CELLS_PY = STUB_PY.replace(_MIB_PCI_LINE, "' - PCI:             %d' % int(pci)", 1)
+
+
+def make_cells_stub(name):
+    """make_stub's folder, with the cell-aware stub program in place of STUB_PY."""
+    folder = make_stub(name)
+    with open(os.path.join(folder, 'stub.py'), 'w') as fh:
+        fh.write(STUB_CELLS_PY)
+    return folder
+
+
+def l4_multi_delay():
+    """The weak cell's delay: the same draw as test_iqlte.py's l4_delay (async, seed 0)."""
+    rng = np.random.default_rng([0, L4_PAIR[0], L4_PAIR[1]])
+    return int(rng.integers(40000, 150001))
+
+
+def half_gap(a, b):
+    """Distance in samples between a and b, modulo one 5 ms half frame."""
+    half = FRAME // 2
+    d = (int(a) - int(b)) % half
+    return min(d, half - d)
+
+
+def l4_two_cell_file():
+    """0.3 s at 20 MS/s of the two cells, the carrier 300 kHz above 751.0 MHz (as lte_iq)."""
+    def make():
+        spec = [dict(pci=L4_PAIR[0], power_db=0.0, delay_samples=0),
+                dict(pci=L4_PAIR[1], power_db=L4_POWER_DB, delay_samples=l4_multi_delay())]
+        iq, _ = lte_synth.synth_lte_multi(cells=spec, bw_mhz=10, n_frames=30, snr_db=20.0,
+                                          seed=0, fs=FS)
+        t = np.arange(len(iq)) / FS
+        iq = (iq * np.exp(2j * np.pi * OFFSET * t)).astype(np.complex64)
+        return write_recording('lte-two', iq, FS, CENTRE)
+    return once('l4-two-file', make)
+
+
+def l4_two_cell_plain():
+    return once('l4-two-plain', lambda: run_tool([l4_two_cell_file(), '--block-center', BLOCK_S]))
+
+
+def l4_two_cell_decode():
+    """The two-cell file with --decode against the cell-aware stub: (run, card, calls)."""
+    def make():
+        stub = make_cells_stub('l4-two')
+        r = run_tool([l4_two_cell_file(), '--block-center', BLOCK_S, '--decode'], tools=stub)
+        return r, card_of(r), calls_of(stub)
+    return once('l4-two-decode', make)
+
+
+def l4_cells_of(card):
+    cells = card.get('cells') if card else None
+    return cells if isinstance(cells, list) else None
+
+
+def l4_first_decoded_offset(calls, pci):
+    hits = [x for x in calls if x.get('pci') == pci and x.get('decoded')]
+    return hits[0]['offset'] if hits else None
+
+
+def group_l4_cells():
+    def plain_has_both():
+        r = l4_two_cell_plain()
+        if r.timed_out or r.code != 0 or card_of(r) is None:
+            return False, describe(r)
+        cells = l4_cells_of(card_of(r))
+        if cells is None:
+            return False, 'no cells list in the JSON'
+        got = {c.get('pci') for c in cells if isinstance(c, dict)}
+        return set(L4_PAIR) <= got, f'cells pcis {sorted(p for p in got if p is not None)}'
+    expect('L4 two cells: exit 0, JSON cells holds both PCIs (no --decode)', plain_has_both)
+
+    def each_has_decode():
+        r, c, _ = l4_two_cell_decode()
+        if r.timed_out or r.code != 0 or c is None:
+            return False, describe(r)
+        cells = l4_cells_of(c) or []
+        dec = {x.get('pci'): x.get('decode') for x in cells if isinstance(x, dict)}
+        ok = all(isinstance(dec.get(p), dict) for p in L4_PAIR)
+        return ok, f"decode present for PCIs {sorted(p for p in dec if p is not None)}"
+    expect('L4 two cells --decode: each cell dict has a decode', each_has_decode)
+
+    def own_offset():
+        r, c, calls = l4_two_cell_decode()
+        if r.timed_out or r.code != 0 or c is None:
+            return False, describe(r)
+        cells = l4_cells_of(c) or []
+        bad = []
+        for p in L4_PAIR:
+            want = l4_first_decoded_offset(calls, p)
+            if want is None:
+                bad.append(f'the stub decoded no call for PCI {p}')
+                continue
+            mine = [x for x in cells if isinstance(x, dict) and x.get('pci') == p]
+            got = mine[0].get('decode', {}).get('offset_samples') if mine else None
+            if got != want:
+                bad.append(f'PCI {p}: decode offset {got!r}, stub decoded at {want}')
+        return not bad, '; '.join(bad)
+    expect('L4 two cells --decode: each cell decoded at its own offset (the offset the stub got)',
+           own_offset)
+
+    def offsets_apart():
+        r, c, calls = l4_two_cell_decode()
+        if r.timed_out or r.code != 0 or c is None:
+            return False, describe(r)
+        strong = l4_first_decoded_offset(calls, L4_PAIR[0])
+        weak = l4_first_decoded_offset(calls, L4_PAIR[1])
+        if strong is None or weak is None:
+            return False, f'stub offsets strong {strong!r}, weak {weak!r}'
+        delay = l4_multi_delay()
+        gap = half_gap(weak - strong, delay)
+        return gap <= L4_TOL, (f'stub offsets {strong} and {weak}: difference {weak - strong}, '
+                               f'delay {delay}, gap {gap} samples mod 5 ms (want <= {L4_TOL})')
+    expect("L4 two cells --decode: the stub's offsets differ by the cells' delay (within 4 samples)",
+           offsets_apart)
+
+    def top_level():
+        r, c, _ = l4_two_cell_decode()
+        if r.timed_out or r.code != 0 or c is None:
+            return False, describe(r)
+        cells = l4_cells_of(c) or []
+        if not cells or cells[0].get('pci') != L4_PAIR[0]:
+            first = cells[0].get('pci') if cells else None
+            return False, f'strongest first: cells[0] pci {first!r}'
+        top = c.get('decode')
+        ok = isinstance(top, dict) and top == cells[0].get('decode')
+        return ok, f"top-level decode {top!r} is not the strongest cell's decode"
+    expect("L4 two cells --decode: top-level decode is the strongest cell's (cells[0])", top_level)
+
+    def one_cell():
+        r, c, _, _ = default_decode()
+        if r.timed_out or r.code != 0 or c is None:
+            return False, describe(r)
+        cells = l4_cells_of(c)
+        ok = (cells is not None and len(cells) == 1 and cells[0].get('pci') == PCI
+              and isinstance(cells[0].get('decode'), dict) and isinstance(c.get('decode'), dict))
+        return ok, f'cells {repr(cells)[:120]}'
+    expect('L4 one cell: cells is a list of one (PCI 123) with a decode, and a top-level decode',
+           one_cell)
+
+
+GROUPS.append(group_l4_cells)
+
+
 def main():
     global WORK, TMP, EMPTY, PYC_PY
     WORK = tempfile.mkdtemp(prefix='iqlte-test-')
