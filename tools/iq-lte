@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""iq-lte: structural fingerprint of an LTE block, and optionally its broadcast SI.
+
+    tools/iq-lte FILE [--block-center HZ] [--t0 S --t1 S] [--rate R --center HZ]
+    tools/iq-lte FILE --decode [--ports N ...]
+
+The block is mixed to 0 Hz and read with ``iqmeasure.extract`` (band-limited,
+in chunks). Stdout is one JSON document: the fingerprint (verdict, PSS root,
+PCI, frame timing, bandwidth class) and, with ``--decode``, the MIB and the
+SIB1 from an outside ``pdsch_ue`` (``$FMRX_LTE_TOOLS/run_pdsch.sh``). Only the
+broadcast channel is decoded. Numpy only; the outside tools are subprocesses.
+
+Exit 0 when the run completed, whatever the verdict. Exit 1 for a bad option,
+a file that cannot be read, or a sweep file. Exit 2 when ``--decode`` needs a
+program that is not under ``$FMRX_LTE_TOOLS``.
+"""
+
+import argparse
+import json
+import math
+import os
+import sys
+
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fm_receiver import iqmeasure, iqlte, iqlte_decode  # noqa: E402
+
+# Default look, and the longest look. A longer request is cut to the cap.
+DEFAULT_SPAN_S = 0.2
+MAX_SPAN_S = 2.0
+_BW_MHZ = {128: 1.4, 256: 3, 512: 5, 1024: 10, 1536: 15, 2048: 20}
+# Phase advance per chunk while mixing the block down. A full-length ramp is
+# unnecessary; 2**20 stays under the 2**22 read cap the other tools use.
+_MIX_CHUNK = 1 << 20
+_DEFAULT_PORTS = (4, 2, 1)
+
+
+def _refuse(message):
+    """A bad option or a file this cannot read: stderr, nothing on stdout, exit 1."""
+    sys.stderr.write('iq-lte: %s\n' % message)
+    return 1
+
+
+def _missing(name):
+    """The outside tools directory or a program in it is absent. Exit 2."""
+    tools = iqlte_decode.tools_dir()
+    sys.stderr.write('iq-lte: %s is missing under FMRX_LTE_TOOLS (%s). '
+                     'srsRAN 4G is built separately and is not part of this repo; '
+                     'run_pdsch.sh, pdsch_ue and pyc/bin/python live in that directory.\n'
+                     % (name, tools))
+    return 2
+
+
+def _check_options(args):
+    for name, value in (('--t0', args.t0), ('--t1', args.t1),
+                        ('--center', args.center), ('--block-center', args.block_center)):
+        if value is not None and not math.isfinite(value):
+            return _refuse('%s must be a finite number.' % name)
+    if args.t0 is not None and args.t1 is not None and args.t0 >= args.t1:
+        return _refuse('--t0 (%g s) is not before --t1 (%g s).' % (args.t0, args.t1))
+    if args.rate is not None and (not math.isfinite(args.rate) or args.rate <= 0):
+        return _refuse('--rate must be a finite sample rate above 0.')
+    if args.ports is not None:
+        if not args.ports:
+            return _refuse('--ports needs at least one port count.')
+        for count in args.ports:
+            if count < 1:
+                return _refuse('--ports must be port counts of 1 or more.')
+    return None
+
+
+def _json_num(value):
+    """A JSON number, an integer when ``value`` is one, so a centre in Hz compares equal."""
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    x = float(value)
+    if not math.isfinite(x):
+        return None
+    rounded = round(x)
+    if abs(x - rounded) <= 1e-6 * max(1.0, abs(rounded)):
+        return int(rounded)
+    return x
+
+
+def _mix_to_dc(iq, rate, delta_hz):
+    """Move a tone at ``delta_hz`` (relative to the file centre) onto 0 Hz.
+
+    The whole capture bandwidth is kept. A brick-wall narrower than the file
+    digs a hole in the guard band; the occupied-width check then walks that
+    hole and reports a wider class (a 15 MHz carrier comes back as 20).
+    """
+    if abs(delta_hz) < 1e-3:
+        return iq
+    out = np.empty_like(iq)
+    rate = float(rate)
+    n = iq.shape[0]
+    for i in range(0, n, _MIX_CHUNK):
+        m = min(_MIX_CHUNK, n - i)
+        t = np.arange(i, i + m) / rate
+        out[i:i + m] = iq[i:i + m] * np.exp(-2j * np.pi * delta_hz * t)
+    return out
+
+
+def _span(args):
+    """``(t0, t1)`` in seconds. The default is 0.2 s from ``t0``; longer than 2 s is cut."""
+    t0 = 0.0 if args.t0 is None else float(args.t0)
+    if args.t1 is None:
+        t1 = t0 + DEFAULT_SPAN_S
+    else:
+        t1 = float(args.t1)
+    if t1 - t0 > MAX_SPAN_S:
+        t1 = t0 + MAX_SPAN_S
+    return t0, t1
+
+
+def _fingerprint(iq, fs):
+    """``fingerprint`` plus the SSS frame fields it already computed.
+
+    ``sss_search`` is the slow part and ``fingerprint`` calls it once. The
+    wrapper keeps that result (half-frame and frame offset) instead of
+    running the search a second time.
+    """
+    saved = {}
+    real = iqlte.sss_search
+
+    def wrapped(block, rate):
+        found = real(block, rate)
+        saved['sss'] = found
+        return found
+
+    iqlte.sss_search = wrapped
+    try:
+        card = iqlte.fingerprint(iq, fs)
+    finally:
+        iqlte.sss_search = real
+    return card, saved.get('sss')
+
+
+def _card(path, block_hz, sl, fp, sss, decode):
+    nfft = fp.get('nfft')
+    nfft = None if nfft is None else int(nfft)
+    pci = fp.get('pci')
+    pci = None if pci is None else int(pci)
+    nid2 = fp.get('nid2')
+    nid2 = None if nid2 is None else int(nid2)
+    nid1 = None
+    half = None
+    offset = None
+    if isinstance(sss, dict):
+        if sss.get('nid1') is not None:
+            nid1 = int(sss['nid1'])
+        if sss.get('half_frame') is not None:
+            half = int(sss['half_frame'])
+        if sss.get('frame_offset_samples') is not None:
+            offset = int(sss['frame_offset_samples'])
+    if nid1 is None and pci is not None:
+        nid1 = pci // 3
+    if nid2 is None and pci is not None:
+        nid2 = pci % 3
+    bw = _BW_MHZ.get(nfft)
+    return {
+        'file': path,
+        'block_center_hz': _json_num(block_hz),
+        'rate_sps': _json_num(sl.rate),
+        'duration_s': _json_num(sl.t1 - sl.t0),
+        'verdict': fp.get('verdict'),
+        'nid2': nid2,
+        'nid1': nid1,
+        'pci': pci,
+        'nfft': nfft,
+        'bandwidth_mhz': bw if isinstance(bw, float) else _json_num(bw) if bw is not None else None,
+        'half_frame': half,
+        'frame_offset_samples': offset,
+        'checks': fp.get('checks'),
+        'decode': decode,
+    }
+
+
+def _decode(args, sl, fp, sss):
+    """The ``decode`` object, or an exit code (1 or 2) when the run must stop."""
+    verdict = fp.get('verdict')
+    pci = fp.get('pci')
+    if verdict != 'lte' or pci is None:
+        why = 'verdict is %s' % verdict
+        if pci is None:
+            why = 'no PCI (verdict %s)' % verdict
+        return {'ran': False, 'reason': why}
+    nfft = fp.get('nfft')
+    if nfft != iqlte_decode.NFFT_10:
+        return {
+            'ran': False,
+            'reason': 'only a 10 MHz carrier is decoded in this phase (nfft %s)' % nfft,
+        }
+    offset = None
+    if isinstance(sss, dict) and sss.get('frame_offset_samples') is not None:
+        offset = int(sss['frame_offset_samples'])
+    ports = tuple(args.ports) if args.ports else _DEFAULT_PORTS
+    try:
+        return iqlte_decode.decode_cell(sl.iq, sl.rate, int(pci), offset, ports)
+    except iqlte_decode.ToolsMissing as exc:
+        return _missing(exc.name)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('file', help='the recording (.cfile, .sdvr or .cdif)')
+    ap.add_argument('--block-center', type=float, metavar='HZ',
+                    help='Hz of the LTE carrier (default: the file centre)')
+    ap.add_argument('--t0', type=float, metavar='S', help='start of the span, seconds (default 0)')
+    ap.add_argument('--t1', type=float, metavar='S',
+                    help='end of the span, seconds (default t0+0.2; at most 2 s is read)')
+    ap.add_argument('--rate', type=float, metavar='R',
+                    help='samples/s, for a .cfile with no .sigmf-meta')
+    ap.add_argument('--center', type=float, metavar='HZ',
+                    help='centre frequency in Hz, for a bare .cfile')
+    ap.add_argument('--decode', action='store_true',
+                    help='read the MIB and SIB1 with $FMRX_LTE_TOOLS/run_pdsch.sh')
+    ap.add_argument('--ports', type=int, nargs='+', metavar='N',
+                    help='antenna port counts to try, in order (default: 4 2 1)')
+    try:
+        args = ap.parse_args(argv)
+    except SystemExit as exc:
+        code = exc.code
+        if code is None or code == 0:
+            return 0
+        return 1
+    refused = _check_options(args)
+    if refused:
+        return refused
+
+    t0, t1 = _span(args)
+    try:
+        src = iqmeasure.open_iq(args.file, rate=args.rate, center_hz=args.center)
+        block_hz = src.center_hz if args.block_center is None else float(args.block_center)
+        # max_rate at the file rate: extract reads the span in chunks and does
+        # not decimate. The mix below is what centres the block.
+        sl = iqmeasure.extract(
+            args.file, t0=t0, t1=t1, band=None,
+            max_rate=float(src.rate),
+            rate=args.rate, center_hz=args.center)
+        sl = sl._replace(iq=_mix_to_dc(sl.iq, sl.rate, block_hz - float(src.center_hz)))
+    except iqmeasure.IQSourceError as exc:
+        return _refuse(exc)
+    except OSError as exc:
+        return _refuse(exc)
+
+    fp, sss = _fingerprint(sl.iq, sl.rate)
+    decode = None
+    if args.decode:
+        decode = _decode(args, sl, fp, sss)
+        if isinstance(decode, int):
+            return decode
+    card = _card(args.file, block_hz, sl, fp, sss, decode)
+    json.dump(card, sys.stdout, indent=2, allow_nan=False)
+    sys.stdout.write('\n')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
