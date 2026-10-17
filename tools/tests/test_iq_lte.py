@@ -4,9 +4,10 @@ The tool is run as a subprocess, from a temporary working directory, on syntheti
 recordings built here (``lte_synth``, ``lte_negatives``, ``signals``). With ``--decode``
 it runs ``$FMRX_LTE_TOOLS/run_pdsch.sh``: here that is a STUB, built by this file in
 a temporary folder (a Python script behind a shell wrapper). The stub logs its
-arguments, decodes only when its config says to, and appends one canned transport
-block to ``$PDSCH_DUMP``. No srsRAN program runs, and the payload holds no bytes
-from any real cell.
+arguments, decodes only when its config says to, and appends transport blocks to
+``$PDSCH_DUMP`` (the common subframe-5 block, a rarer one, a short one, and a
+subframe-0 one). No srsRAN program runs, and the payload holds no bytes from any
+real cell.
 
 Groups (each check prints one ``ok``/``FAIL`` line; the gate each one serves is in
 brackets, from the spec's "Gates" section):
@@ -15,13 +16,15 @@ brackets, from the spec's "Gates" section):
                     centre: JSON keys, verdict lte, pci 123, nid2, nid1, nfft,
                     bandwidth, block centre, span, decode null [G1]; without
                     --block-center not lte [G1]; a raw .cfile with --rate and
-                    --center; --t0/--t1; a 5 MHz class; an IQ .sdvr [any recording]
+                    --center; --t0/--t1; a span asked over 2 s; the 5 MHz class;
+                    the 1.4/3/15/20 MHz classes when detected; an IQ .sdvr
   B  negatives      noise, atsc_like, uplink_like: verdict not lte, pci None, exit 0 [G2]
   C  errors         missing file, sweep .sdvr, bad option, bad value: exit 1 [G2]
   D  no tools       --decode with an empty and with a missing FMRX_LTE_TOOLS: exit 2 [G2]
   E  decode, stub   not lte: decode ran false, stub never called, exit 0; the stub's
-                    success (mib, tried, offsets, file, sib1) [G1]; a retry after the
-                    first offset fails; --ports; a never-decoding stub [G1]
+                    success (mib, tried, offsets, file, sib1, common sf5 choice) [G1];
+                    a retry after the first offset fails; --ports; a stub whose ports-4
+                    call decodes only after a failed call; a never-decoding stub [G1]
   F  cleanup        temp folder identical before and after --decode; repo tree unchanged
   G  timing         the 0.2 s synthetic file in under 10 s [G3], printed
   H  imports        tools/iq-lte and tools/fm_receiver/iqlte_decode.py import only
@@ -29,7 +32,9 @@ brackets, from the spec's "Gates" section):
 
 SIB1 parse: when a Python with pycrate imports (``FMRX_TEST_PYCRATE_PYTHON``, else
 this interpreter), the test encodes a synthetic SIB1 with it (PLMN 001-01, TAC 0x1234,
-cell identity 0x0ABCD01, band 13) and checks the parsed fields. Otherwise it prints
+cell identity 0x0ABCD01, band 13, q-RxLevMin -70, not barred) and checks the parsed
+fields. If that encoder fails, the run continues with a 32-byte placeholder and only
+the SIB1 check fails, with the encoder's error. Without pycrate the check prints
 ``SKIP sib1 parse (pycrate not available)`` and checks only that ``sib1`` is null with
 a reason that names pycrate.
 
@@ -74,11 +79,15 @@ KEYS = ('file', 'block_center_hz', 'rate_sps', 'duration_s', 'verdict', 'nid2', 
         'decode')
 MIB_KEYS = ('pci', 'ports', 'prb', 'type', 'cp', 'sfn')
 DEC_KEYS = ('mib', 'offset_samples', 'sib1', 'tried')
+SIB1_WANT = {'plmns': [{'mcc': '001', 'mnc': '01'}], 'tac': 0x1234,
+             'cell_identity': 0x0ABCD01, 'enb_id': 0x0ABCD, 'cell_id': 1, 'freq_band': 13,
+             'q_rx_lev_min': -70}
 
 WORK = None
 TMP = None          # the private TMPDIR every tool run is given
 EMPTY = None        # an empty tools directory
 PYC_PY = None       # a Python that imports pycrate, or None
+SIB1_ERROR = None   # why the test SIB1 could not be encoded, or None
 RESULTS = []
 MEMO = {}
 
@@ -339,44 +348,70 @@ sys.stdout.buffer.write(sib1.to_uper())
 
 
 def canned_payload():
-    """The 32-byte transport block the stub returns: the encoded SIB1 padded with zeros
-    (the decoder takes the most common payload of 32 bytes or longer), or 32 zero bytes
-    when there is no pycrate (then no SIB1 is parsed)."""
+    """The transport block the stub returns on success, as the common subframe-5 payload.
+
+    The encoded SIB1, zero-padded to at least 32 bytes (a longer one is kept whole). With
+    no pycrate, or when the encoder fails, a 32-byte placeholder of zeros: the MIB and
+    attempt checks still run, and only the SIB1 check reports (``SIB1_ERROR``)."""
     def make():
+        global SIB1_ERROR
+        SIB1_ERROR = None
         if PYC_PY is None:
             return bytes(32)
-        proc = subprocess.run([PYC_PY, '-c', SIB1_ENCODER], capture_output=True, timeout=60)
-        if proc.returncode != 0:
-            raise RuntimeError('pycrate could not encode the test SIB1: '
-                               + proc.stderr.decode(errors='replace').strip()[-200:])
-        data = proc.stdout
-        if len(data) > 32:
-            raise RuntimeError(f'the encoded SIB1 is {len(data)} bytes, more than 32')
-        return data + bytes(32 - len(data))
+        try:
+            proc = subprocess.run([PYC_PY, '-c', SIB1_ENCODER], capture_output=True, timeout=60)
+            if proc.returncode != 0:
+                raise RuntimeError('encoder exit %d: %s' % (
+                    proc.returncode, proc.stderr.decode(errors='replace').strip()[-300:]))
+            data = proc.stdout
+            if not data:
+                raise RuntimeError('the encoder wrote nothing')
+        except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
+            SIB1_ERROR = str(exc)
+            print(f'  note  the test SIB1 did not encode; a 32-byte placeholder is used: {exc}')
+            return bytes(32)
+        return data + bytes(max(0, 32 - len(data)))
     return once('payload', make)
 
 
 # ---- the stub outside program ----------------------------------------------------
 
 # Test stub for run_pdsch.sh. Args: FILE PCI OFFSET NSF PORTS. It logs one JSON line per
-# call to calls.jsonl beside itself, with what it decided. It decodes when the config says
-# so: mode 'ok' decodes at ports 4 with offset != 0, except offsets in reject; mode 'never'
-# decodes nothing. The decoded lines are the ones pdsch_ue prints; the dump record is the
-# one the spec describes (0xA5, subframe, nbytes lo, nbytes hi, bytes).
+# call to calls.jsonl beside itself (argc, the arguments, and what it decided). Config
+# (config.json) sets when it decodes: mode 'ok' decodes at ports 4 with offset != 0, except
+# offsets in reject; mode 'after_fail' the same, but only on a ports-4 call that follows a
+# logged failed call; mode 'never' decodes nothing. A decoded call prints the pdsch_ue lines
+# and appends dump records (0xA5, subframe, nbytes lo, nbytes hi, bytes): a subframe-0 block,
+# the common subframe-5 block twice, a rarer subframe-5 block once, and a short (<32 bytes)
+# subframe-5 block once.
 STUB_PY = r'''
 import json
 import os
-import shutil
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def record(sub, data):
+    return bytes([0xA5, sub, len(data) & 0xFF, len(data) >> 8]) + data
+
+
+def logged():
+    path = os.path.join(HERE, 'calls.jsonl')
+    if not os.path.isfile(path):
+        return []
+    with open(path) as fh:
+        return [json.loads(line) for line in fh if line.strip()]
 
 
 def main():
     with open(os.path.join(HERE, 'config.json')) as fh:
         cfg = json.load(fh)
     args = sys.argv[1:]
+    prior = logged()
     if len(args) != 5:
+        with open(os.path.join(HERE, 'calls.jsonl'), 'a') as fh:
+            fh.write(json.dumps({'argc': len(args), 'decoded': False}) + '\n')
         print('stub: want FILE PCI OFFSET NSF PORTS', file=sys.stderr)
         return 0
     path, pci, offset, nsf, ports = args
@@ -384,13 +419,21 @@ def main():
     size = os.path.getsize(path) if os.path.isfile(path) else -1
     first = os.path.join(HERE, 'input.cf32')
     if size > 0 and not os.path.exists(first):
+        import shutil
         shutil.copyfile(path, first)
-    decoded = (cfg['mode'] == 'ok' and prt == 4 and off != 0 and off not in cfg['reject'])
+    any_fail = any(not c.get('decoded') for c in prior)
+    base = prt == 4 and off != 0 and off not in cfg['reject']
+    if cfg['mode'] == 'ok':
+        decoded = base
+    elif cfg['mode'] == 'after_fail':
+        decoded = base and any_fail
+    else:
+        decoded = False
     dump = os.environ.get('PDSCH_DUMP')
     with open(os.path.join(HERE, 'calls.jsonl'), 'a') as fh:
-        fh.write(json.dumps({'file': path, 'size': size, 'pci': int(pci), 'offset': off,
-                             'nsf': int(nsf), 'ports': prt, 'decoded': decoded,
-                             'dump': dump}) + '\n')
+        fh.write(json.dumps({'argc': len(args), 'file': path, 'size': size, 'pci': int(pci),
+                             'offset': off, 'nsf': int(nsf), 'ports': prt,
+                             'decoded': decoded, 'dump': dump}) + '\n')
     if not decoded:
         print('MIB not decoded')
         return 0
@@ -398,9 +441,14 @@ def main():
                  ' - PRB:             50', ' - Type:            FDD'):
         print(line)
     if dump:
-        payload = bytes.fromhex(cfg['payload_hex'])
+        common = bytes.fromhex(cfg['payload_hex'])
+        blocks = [record(0, bytes.fromhex(cfg['sf0_hex'])),
+                  record(5, common), record(5, common),
+                  record(5, bytes.fromhex(cfg['rare_hex'])),
+                  record(5, bytes.fromhex(cfg['short_hex']))]
         with open(dump, 'ab') as fh:
-            fh.write(bytes([0xA5, 5, len(payload) & 0xFF, len(payload) >> 8]) + payload)
+            for block in blocks:
+                fh.write(block)
     return 0
 
 
@@ -423,9 +471,14 @@ def make_stub(name, mode='ok', reject=()):
         fh.write('#!/bin/sh\nexec %s %s "$@"\n' % (shlex.quote(sys.executable),
                                                   shlex.quote(stub_py)))
     os.chmod(wrapper, 0o755)
+    # Rarer and short blocks differ from the common one, so a tool that takes the wrong
+    # subframe-5 block gets different bytes (and, with pycrate, wrong SIB1 fields).
     with open(os.path.join(folder, 'config.json'), 'w') as fh:
         json.dump({'mode': mode, 'reject': [int(x) for x in reject],
-                   'payload_hex': canned_payload().hex()}, fh)
+                   'payload_hex': canned_payload().hex(),
+                   'sf0_hex': bytes([0x77] * 32).hex(),
+                   'rare_hex': bytes((i * 7 + 3) & 0xFF for i in range(40)).hex(),
+                   'short_hex': bytes(range(16)).hex()}, fh)
     pyc_bin = os.path.join(folder, 'pyc', 'bin')
     os.makedirs(pyc_bin)
     os.symlink(PYC_PY or sys.executable, os.path.join(pyc_bin, 'python'))
@@ -478,7 +531,8 @@ def group_structure():
     def positive():
         return once('positive', lambda: run_tool([lte_file(), '--block-center', BLOCK_S]))
 
-    expect('A  exit 0 and one JSON object on stdout', lambda: printed(positive(), lambda c: (True, '')))
+    expect('A  exit 0 and one JSON object on stdout',
+           lambda: printed(positive(), lambda c: (True, '')))
     expect('A  every JSON key the spec lists is present',
            lambda: printed(positive(), lambda c: has_keys(c, KEYS)))
     expect('A  verdict lte with --block-center', lambda: printed(
@@ -506,6 +560,7 @@ def group_structure():
                                and isinstance(c.get('frame_offset_samples'), int),
                                f"half_frame {c.get('half_frame')!r}, "
                                f"frame_offset_samples {c.get('frame_offset_samples')!r}")))
+
     def checks_shape(c):
         checks = c.get('checks')
         ok = (isinstance(checks, list) and len(checks) >= 2
@@ -545,6 +600,18 @@ def group_structure():
                                      f"verdict {c.get('verdict')!r}"))
     expect('A  --t0 0.1 --t1 0.2: duration 0.1 s, still lte', span)
 
+    def long_span():
+        """A 3 s request on a 3 s file at 1 MS/s: the span is limited to 2 s (the spec
+        says a longer span is allowed up to 2 s). Exit 0 and duration_s <= 2 is the
+        expected behaviour here; a refusal would also be a reading of the spec."""
+        path = once('long-noise', lambda: write_recording(
+            'long-noise', lte_negatives.synth_noise(seed=0, fs=1e6, dur=3.0)[0], 1e6, CENTRE))
+        r = run_tool([path, '--t0', '0', '--t1', '3'])
+        return printed(r, lambda c: (
+            isinstance(c.get('duration_s'), (int, float)) and 0 < c['duration_s'] <= 2.0 + 0.005,
+            f"duration_s {c.get('duration_s')!r}"))
+    expect('A  a span asked as 3 s: exit 0, duration_s <= 2', long_span)
+
     def sdvr_iq():
         r = run_tool([lte_sdvr(), '--block-center', BLOCK_S])
         return printed(r, lambda c: (c.get('verdict') == 'lte' and c.get('pci') == PCI,
@@ -565,6 +632,35 @@ def group_structure():
                                      f"verdict {c.get('verdict')!r}, nfft {c.get('nfft')!r}, "
                                      f"bandwidth {c.get('bandwidth_mhz')!r}"))
     expect('A  5 MHz class: nfft 512, bandwidth_mhz 5', five_mhz)
+
+    def class_check(bw, n_fft, fs_b):
+        """The class table at a rate that holds the class. A class the tool does not detect
+        at this length is printed, not failed: only a detected one is checked."""
+        def check():
+            def make():
+                iq, _ = lte_synth.synth_lte(bw_mhz=bw, n_frames=3, pci=PCI, snr_db=20.0,
+                                            seed=0, fs=fs_b)
+                t = np.arange(len(iq)) / fs_b
+                return write_recording(f'lte-bw{bw}', iq * np.exp(2j * np.pi * OFFSET * t),
+                                       fs_b, CENTRE)
+            path = once(f'lte-bw{bw}', make)
+            r = run_tool([path, '--block-center', BLOCK_S])
+            if r.timed_out or r.code != 0:
+                return False, describe(r)
+            c = card_of(r)
+            if c is None:
+                return False, 'stdout is not one JSON object'
+            if c.get('verdict') != 'lte':
+                print(f'  info  {bw} MHz class: verdict {c.get("verdict")!r} at '
+                      f'{fs_b / 1e6:g} MS/s, not detected (no nfft check)')
+                return True, ''
+            return (c.get('nfft') == n_fft and c.get('bandwidth_mhz') == bw,
+                    f"nfft {c.get('nfft')!r}, bandwidth {c.get('bandwidth_mhz')!r}")
+        return check
+    for bw, n_fft, fs_b in ((1.4, 128, 1.92e6), (3, 256, 3.84e6),
+                            (15, 1536, 23.04e6), (20, 2048, 30.72e6)):
+        expect(f'A  {bw:g} MHz class (nfft {n_fft}): bandwidth_mhz {bw:g} when detected',
+               class_check(bw, n_fft, fs_b))
 
 
 def group_negatives():
@@ -604,6 +700,19 @@ def group_no_tools():
     expect('D  --decode, FMRX_LTE_TOOLS names no folder: exit 2', missing_dir)
 
 
+def tried_matches(d, calls):
+    """Each ``tried`` entry is ``{offset, ports, decoded}``. These keys are the interface the
+    tool must follow: the spec does not name them, so the tests fix them."""
+    tried = d.get('tried') if isinstance(d, dict) else None
+    if not isinstance(tried, list) or len(tried) != len(calls):
+        return False, f'tried {tried!r}, stub calls {len(calls)}'
+    for t, call in zip(tried, calls):
+        if not isinstance(t, dict) or (t.get('offset'), t.get('ports'), t.get('decoded')) \
+                != (call['offset'], call['ports'], call['decoded']):
+            return False, f'tried entry {t!r} is not the stub call {call!r}'
+    return True, ''
+
+
 def group_decode():
     def not_lte():
         r, c, calls, _ = decode_run('notlte', negative_file('noise'))
@@ -640,13 +749,9 @@ def group_decode():
     def attempts():
         r, c, calls, _ = default_decode()
         d = c.get('decode') if c else None
-        tried = d.get('tried') if isinstance(d, dict) else None
-        if not isinstance(tried, list) or len(tried) != len(calls):
-            return False, f'tried {tried!r}, stub calls {len(calls)}'
-        for t, call in zip(tried, calls):
-            if not isinstance(t, dict) or (t.get('offset'), t.get('ports'), t.get('decoded')) \
-                    != (call['offset'], call['ports'], call['decoded']):
-                return False, f'tried entry {t!r} is not the stub call {call!r}'
+        ok, detail = tried_matches(d, calls)
+        if not ok:
+            return False, detail
         if not calls or not calls[-1]['decoded'] or any(x['decoded'] for x in calls[:-1]):
             return False, 'the last attempt must be the only success'
         return (d.get('offset_samples') == calls[-1]['offset'],
@@ -671,7 +776,8 @@ def group_decode():
             if seq != sorted(seq, reverse=True) or len(set(seq)) != len(seq):
                 return False, f'ports {seq} at offset {off}, want a 4, 2, 1 order'
         return True, ''
-    expect('E  attempts: offsets o and o-76800 mod 153600, ports 4, 2, 1 in order', offsets_and_ports)
+    expect('E  attempts: offsets o and o-76800 mod 153600, ports 4, 2, 1 in order',
+           offsets_and_ports)
 
     def file_given():
         r, c, calls, stub = default_decode()
@@ -685,12 +791,13 @@ def group_decode():
             return False, f'{n_samples:.0f} samples, want 0.2 s at 15.36 MS/s'
         if any(x['size'] != size for x in calls):
             return False, 'the same file should go to every attempt'
+        if any(x.get('argc') != 5 for x in calls):
+            return False, f"arguments per call {[x.get('argc') for x in calls]}, want 5"
         if any(x['pci'] != PCI for x in calls):
             return False, 'pci argument is not 123'
-        if any(x['nsf'] <= 0 for x in calls):
-            return False, 'nsf is not positive'
         return True, ''
-    expect('E  the file given to run_pdsch.sh: cf32, 0.2 s at 15.36 MS/s, PCI 123', file_given)
+    expect('E  the file given to run_pdsch.sh: cf32, 0.2 s at 15.36 MS/s, five args, PCI 123',
+           file_given)
 
     def file_content():
         r, c, calls, stub = default_decode()
@@ -722,6 +829,28 @@ def group_decode():
         return True, ''
     expect('E  first offset refused: a failed attempt, then success at o-76800 mod 153600', retry)
 
+    def after_fail():
+        """The spec's failed-then-success order: the stub decodes only a ports-4 call that
+        follows a failed call. The full order must be (o,4) F, (o,2) F, (o,1) F, then
+        (o-76800,4) decoded, and the tool must stop there."""
+        r, c, calls, _ = decode_run('afterfail', lte_file(), ['--block-center', BLOCK_S],
+                                    mode='after_fail')
+        if r.timed_out or r.code != 0 or c is None:
+            return False, describe(r)
+        if not calls:
+            return False, 'the stub was not called'
+        o1 = calls[0]['offset']
+        o2 = second_offset(o1)
+        got = [(x['offset'], x['ports'], x['decoded']) for x in calls]
+        want = [(o1, 4, False), (o1, 2, False), (o1, 1, False), (o2, 4, True)]
+        if got != want:
+            return False, f'calls {got}, want {want}'
+        ok, detail = tried_matches(c.get('decode'), calls)
+        return (ok and c['decode'].get('offset_samples') == o2), \
+            detail or f"offset_samples {c['decode'].get('offset_samples')!r}, want {o2}"
+    expect('E  ports 4 decodes only after a failed call: (o,4),(o,2),(o,1) fail, '
+           '(o-76800,4) succeeds', after_fail)
+
     def ports_only_4():
         r, c, calls, _ = decode_run('ports4', lte_file(), ['--block-center', BLOCK_S,
                                                            '--ports', '4'],
@@ -743,33 +872,61 @@ def group_decode():
         if not calls:
             return False, 'the stub was not called'
         o1 = calls[0]['offset']
-        want = {(o, p) for o in (o1, second_offset(o1)) for p in (4, 2, 1)}
+        o2 = second_offset(o1)
+        want = [(o1, 4), (o1, 2), (o1, 1), (o2, 4), (o2, 2), (o2, 1)]
         got = [(x['offset'], x['ports']) for x in calls]
-        return (len(got) == 6 and set(got) == want and not any(x['decoded'] for x in calls),
-                f'attempts {got}')
-    expect('E  a stub that never decodes: 6 distinct attempts, exit 0', never)
+        return (got == want and not any(x['decoded'] for x in calls),
+                f'attempts {got}, want {want}')
+    expect('E  a stub that never decodes: 4,2,1 at o then 4,2,1 at o-76800 mod 153600, exit 0',
+           never)
+
+    def sib1_fields(d):
+        """(ok, detail) for the parsed SIB1 fields of a decode dict (pycrate present)."""
+        sib = d.get('sib1')
+        if not isinstance(sib, dict):
+            return False, f'sib1 {sib!r}'
+        got = {k: sib.get(k) for k in SIB1_WANT}
+        barred_ok = sib.get('cell_barred') in ('notBarred', False)
+        ok = got == SIB1_WANT and barred_ok
+        return ok, f'sib1 {sib!r}, want {SIB1_WANT} and cell_barred notBarred or false'
 
     def sib1():
         r, c, _, _ = default_decode()
         d = c.get('decode') if c else None
         if not isinstance(d, dict):
             return False, f'decode {d!r}'
-        sib = d.get('sib1')
         if PYC_PY is None:
+            sib = d.get('sib1')
             ok = sib is None and isinstance(d.get('sib1_reason'), str) \
                 and 'pycrate' in d['sib1_reason'].lower()
             return ok, f'sib1 {sib!r}, sib1_reason {d.get("sib1_reason")!r}'
-        if not isinstance(sib, dict):
-            return False, f'sib1 {sib!r}'
-        want = {'plmns': [{'mcc': '001', 'mnc': '01'}], 'tac': 0x1234,
-                'cell_identity': 0x0ABCD01, 'enb_id': 0x0ABCD, 'cell_id': 1, 'freq_band': 13}
-        got = {k: sib.get(k) for k in want}
-        keys_ok = all(k in sib for k in ('cell_barred', 'q_rx_lev_min'))
-        return (got == want and keys_ok), f'sib1 {sib!r}, want {want}'
+        if SIB1_ERROR is not None:
+            return False, f'the test SIB1 could not be encoded: {SIB1_ERROR}'
+        return sib1_fields(d)
     if PYC_PY is None:
         print('SKIP sib1 parse (pycrate not available)')
     expect('E  sib1: null with a reason naming pycrate (no pycrate here), or the SIB1 fields',
            sib1)
+
+    def common_sf5():
+        """The dump holds subframe 0, the common subframe-5 block twice, a rarer one and a
+        short one. The tool must choose the common subframe-5 block. With pycrate that is
+        shown by the SIB1 fields; without it, the run must still succeed and the stub must
+        have been given the records."""
+        r, c, calls, _ = default_decode()
+        d = c.get('decode') if c else None
+        if not isinstance(d, dict) or not calls:
+            return False, f'decode {d!r}'
+        if not calls[-1].get('dump'):
+            return False, 'the stub got no PDSCH_DUMP'
+        if d.get('mib', {}).get('pci') != PCI:
+            return False, f"mib {d.get('mib')!r}"
+        if PYC_PY is None:
+            return True, ''
+        if SIB1_ERROR is not None:
+            return False, f'the test SIB1 could not be encoded: {SIB1_ERROR}'
+        return sib1_fields(d)
+    expect('E  the common subframe-5 block is chosen over the rarer and short ones', common_sf5)
 
 
 def group_cleanup():
