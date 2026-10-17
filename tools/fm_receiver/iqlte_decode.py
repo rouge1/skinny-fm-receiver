@@ -372,6 +372,86 @@ def _run_once(script, cf32, pci, offset, nsf, ports, dump, timeout):
     return text, 'Decoded MIB' in text
 
 
+def _empty_block():
+    return {
+        'ran': False,
+        'reason': 'the 15.36 MS/s block is empty',
+        'mib': None,
+        'offset_samples': None,
+        'sib1': None,
+        'tried': [],
+    }
+
+
+def _search_offsets(script, cf32, pci, offsets, nsf, ports, tmp, timeout):
+    """Try ``ports`` at each frame offset. The first decoded MIB stops the search."""
+    tried = []
+    success = None
+    success_dump = None
+    for offset in offsets:
+        for count in ports:
+            dump = os.path.join(tmp, 'dump-%s-%d-%d.bin' % (int(pci), int(offset), int(count)))
+            text, ok = _run_once(script, cf32, pci, offset, nsf, count, dump, timeout)
+            tried.append({'offset': int(offset), 'ports': int(count), 'decoded': bool(ok)})
+            if ok:
+                success = parse_mib(text)
+                success_dump = dump
+                break
+        if success is not None:
+            break
+    return success, success_dump, tried
+
+
+def _decode_result(success, success_dump, tried, tools):
+    """The ``decode`` object once the port search has finished."""
+    if success is None:
+        return {
+            'ran': True,
+            'reason': 'MIB not decoded',
+            'mib': None,
+            'offset_samples': None,
+            'sib1': None,
+            'sib1_reason': 'MIB not decoded',
+            'tried': tried,
+        }
+    blob = b''
+    if success_dump and os.path.isfile(success_dump):
+        with open(success_dump, 'rb') as fh:
+            blob = fh.read()
+    payload = common_sib1(blob)
+    sib1 = None
+    sib1_reason = None
+    if payload is None:
+        sib1_reason = 'no subframe-5 transport block of 32 bytes or more'
+    else:
+        sib1, sib1_reason = parse_sib1(payload, tools)
+    out = {
+        'ran': True,
+        'mib': success,
+        'offset_samples': tried[-1]['offset'],
+        'sib1': sib1,
+        'tried': tried,
+    }
+    if sib1 is None:
+        out['sib1_reason'] = sib1_reason
+    return out
+
+
+def _prepare_block(iq, fs):
+    """``(tools, script, block)`` at 15.36 MS/s, or the empty-block decode object.
+
+    Raises :class:`ToolsMissing` when the tools directory or ``run_pdsch.sh``
+    is absent. The empty object is returned instead of a block when there is
+    nothing to give the decoder.
+    """
+    tools = tools_dir()
+    script = require_program(tools, 'run_pdsch.sh')
+    block = to_10mhz(iq, float(fs))
+    if block.size < 8 or float(np.mean(np.abs(block) ** 2)) == 0.0:
+        return tools, script, None
+    return tools, script, block
+
+
 def decode_cell(iq, fs, pci, frame_offset, ports, timeout=120):
     """MIB and SIB1 for a centred block whose fingerprint already says LTE.
 
@@ -382,71 +462,55 @@ def decode_cell(iq, fs, pci, frame_offset, ports, timeout=120):
 
     Bandwidths other than 10 MHz are not decoded in this phase.
     """
-    tools = tools_dir()
     nsf_rate = float(fs)
     # Bandwidth gate is the caller's. Here, only the 10 MHz file format is written.
-    script = require_program(tools, 'run_pdsch.sh')
-    block = to_10mhz(iq, nsf_rate)
-    if block.size < 8 or float(np.mean(np.abs(block) ** 2)) == 0.0:
-        return {
-            'ran': False,
-            'reason': 'the 15.36 MS/s block is empty',
-            'mib': None,
-            'offset_samples': None,
-            'sib1': None,
-            'tried': [],
-        }
+    tools, script, block = _prepare_block(iq, nsf_rate)
+    if block is None:
+        return _empty_block()
     o1, o2 = decoder_offsets(frame_offset, nsf_rate)
     nsf = max(1, int(round(block.size / float(_SUBFRAME))))
-    tried = []
     tmp = tempfile.mkdtemp(prefix='iqlte-')
     try:
         cf32 = os.path.join(tmp, 'block.cf32')
         with open(cf32, 'wb') as fh:
             block.tofile(fh)
-        success = None
-        success_dump = None
-        for offset in (o1, o2):
-            for count in ports:
-                dump = os.path.join(tmp, 'dump-%d-%d.bin' % (offset, int(count)))
-                text, ok = _run_once(script, cf32, pci, offset, nsf, count, dump, timeout)
-                tried.append({'offset': int(offset), 'ports': int(count), 'decoded': bool(ok)})
-                if ok:
-                    success = parse_mib(text)
-                    success_dump = dump
-                    break
-            if success is not None:
-                break
-        if success is None:
-            return {
-                'ran': True,
-                'reason': 'MIB not decoded',
-                'mib': None,
-                'offset_samples': None,
-                'sib1': None,
-                'sib1_reason': 'MIB not decoded',
-                'tried': tried,
-            }
-        blob = b''
-        if success_dump and os.path.isfile(success_dump):
-            with open(success_dump, 'rb') as fh:
-                blob = fh.read()
-        payload = common_sib1(blob)
-        sib1 = None
-        sib1_reason = None
-        if payload is None:
-            sib1_reason = 'no subframe-5 transport block of 32 bytes or more'
-        else:
-            sib1, sib1_reason = parse_sib1(payload, tools)
-        out = {
-            'ran': True,
-            'mib': success,
-            'offset_samples': tried[-1]['offset'],
-            'sib1': sib1,
-            'tried': tried,
-        }
-        if sib1 is None:
-            out['sib1_reason'] = sib1_reason
+        success, success_dump, tried = _search_offsets(
+            script, cf32, pci, (o1, o2), nsf, ports, tmp, timeout)
+        return _decode_result(success, success_dump, tried, tools)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def decode_cells(iq, fs, specs, ports, timeout=120):
+    """One ``decode`` object per ``(pci, frame_offset, half_frame)`` in ``specs``.
+
+    ``frame_offset`` is in samples of ``fs`` (modulo 10 ms), the same value
+    ``decode_cell`` takes. ``half_frame`` is the cell's label for that offset
+    (0 when it is the subframe-0 boundary, 1 when it is 5 ms later). As in
+    ``decode_cell``, the label does not pick a single boundary:
+    :func:`decoder_offsets` tries the reported offset and 5 ms away, both
+    scaled to 15.36 MS/s. The resampled file is written once and every cell
+    is read from it, so a second cell does not resample the capture again.
+    An empty ``specs`` returns ``[]`` and does not look for the outside tools.
+    """
+    if not specs:
+        return []
+    nsf_rate = float(fs)
+    tools, script, block = _prepare_block(iq, nsf_rate)
+    if block is None:
+        return [_empty_block() for _ in specs]
+    nsf = max(1, int(round(block.size / float(_SUBFRAME))))
+    tmp = tempfile.mkdtemp(prefix='iqlte-')
+    try:
+        cf32 = os.path.join(tmp, 'block.cf32')
+        with open(cf32, 'wb') as fh:
+            block.tofile(fh)
+        out = []
+        for pci, frame_offset, _half_frame in specs:
+            o1, o2 = decoder_offsets(frame_offset, nsf_rate)
+            success, success_dump, tried = _search_offsets(
+                script, cf32, pci, (o1, o2), nsf, ports, tmp, timeout)
+            out.append(_decode_result(success, success_dump, tried, tools))
         return out
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
