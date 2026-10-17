@@ -43,9 +43,9 @@ def _digits(seq):
     return "".join(str(int(d)) for d in seq)
 
 def _bitint(value):
-    """A pycrate BIT STRING is (nbits, int); a plain int is itself."""
-    if isinstance(value, tuple) and len(value) == 2 and isinstance(value[1], int):
-        return int(value[1])
+    """A pycrate BIT STRING is (int, nbits): the value first, then its length. A plain int is itself."""
+    if isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], int):
+        return int(value[0])
     if isinstance(value, int) and not isinstance(value, bool):
         return int(value)
     if isinstance(value, (bytes, bytearray)):
@@ -358,6 +358,7 @@ def parse_sib1(payload, tools):
 def _run_once(script, cf32, pci, offset, nsf, ports, dump, timeout):
     env = dict(os.environ)
     env['PDSCH_DUMP'] = dump
+    env['VERBOSE'] = '1'          # the wrapper's default filter drops the MIB block's PCI, ports and PRB lines
     try:
         proc = subprocess.run(
             [script, cf32, str(int(pci)), str(int(offset)), str(int(nsf)), str(int(ports))],
