@@ -1234,3 +1234,30 @@ Limits: the burst finder reports a transmission that is wholly inside a much
 stronger one's time and near its frequency as part of it; symbols sent while
 the power is 20 dB down (a slow ramp) are not reliable; a hit means a
 hypothesis fits, not that the system is named.
+
+## Verifying an LTE carrier: iq-lte
+
+For an LTE-looking block in a sweep, `tools/iq-lte` says whether it is an LTE
+downlink and what its cell ID is (the method is in
+[lte-verify.md](lte-verify.md)). It reads a span of a `.cfile`, `.sdvr` (IQ) or
+`.cdif`, mixes the block to 0 Hz and prints one JSON document.
+
+```sh
+tools/iq-lte CAPTURE.cfile                                # verdict, PCI, class, checks
+tools/iq-lte CAPTURE.cfile --block-center 751000000       # the carrier is not at the file centre
+tools/iq-lte CAPTURE.cfile --t0 1 --t1 1.2                # seconds 1 to 1.2 (at most 2 s is read)
+tools/iq-lte CAPTURE.cfile --rate 20000000 --center 751000000   # a bare .cfile, no .sigmf-meta
+tools/iq-lte CAPTURE.cfile --decode --ports 4 2 1         # also the MIB and SIB1 (outside srsRAN)
+```
+
+- Numpy only, and it classifies: the verdict is `lte`, `possible`, `not-lte` or
+  `unknown`, and each check in `checks` has its score and chance estimate.
+  The CP and PSS checks decide the verdict; SSS gives `pci`. `pci` is the
+  placeholder-free output of a real cell only when the capture holds one.
+- Exit 0 whatever the verdict; 1 for a bad option, a file it cannot read, or a
+  sweep file (the reason on stderr); 2 when `--decode` is asked and the outside
+  tools are not under `$FMRX_LTE_TOOLS`.
+- `--decode` needs srsRAN 4G's `pdsch_ue`, built by you (AGPL, not part of this
+  repo) and reached through `$FMRX_LTE_TOOLS`. It reads the MIB and the SIB1 only,
+  for a 10 MHz carrier in this phase. See [lte-verify.md](lte-verify.md) for the
+  wrapper, the local patch and the layout.

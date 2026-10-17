@@ -135,6 +135,7 @@ sample rate. Method and wrong turns: knowledge/silver-spring.md.
 
 `tools/iq-decode FILE [--t0 S --t1 S] [--band LO HI] [-R N ...]` scales a span and runs rtl_433 on it, printing its decodes as JSON (needs rtl_433 installed: exit 2 without it; see usage.md, "Decoding a recording with rtl_433"). Built, tested on a synthetic frame and over the air once (VSG60 to BB60D).
 `iqmeasure.extract(path, t0, t1, band, max_rate, rate, center_hz)` returns that span as an `IQSlice` (iq, rate, center_hz, t0, t1), band-limited and decimated, read in chunks; `tools/iq-decode` feeds it to rtl_433.
+`tools/iq-lte FILE [--block-center HZ] [--t0 S --t1 S] [--decode]` says whether an LTE-looking block is an LTE downlink (cyclic-prefix, PSS and SSS checks, numpy only; PCI from the SSS) and, with `--decode`, reads its MIB and SIB1 through an outside srsRAN 4G `pdsch_ue` under `$FMRX_LTE_TOOLS` (nothing of ours decodes; exit 2 without those tools). Method: knowledge/lte-verify.md. Built, tested on synthetic signals and a stub decoder; real-capture check by the planner.
 
 ## Decoding a recording
 

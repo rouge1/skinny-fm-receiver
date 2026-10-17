@@ -1,0 +1,143 @@
+# Verifying an LTE carrier found in a sweep
+
+How to tell whether an LTE-looking block in a sweep is LTE, and, with an
+outside decoder, which cell it is. The method is the Round 25 plan in
+[roadmap.md](roadmap.md). The app classifies (numpy only); `tools/iq-lte`
+reports the structure of a capture; the broadcast system information is read
+only with `--decode`, through a program that is not part of this repo.
+
+Placeholders are used throughout: PCI 123, PLMN 001-01, TAC 0x1234. Real
+captures, PCIs, PLMNs, TACs and cell IDs stay in the user's recordings
+folder, never in the repo or in these notes.
+
+## The method
+
+1. **Candidate from the sweep (no capture).** Look for a block whose occupied
+   width is near an LTE size: 1.4, 3, 5, 10, 15 or 20 MHz, about 0.9 of the
+   channel. Find the band it sits in. Downlink and uplink both look like this;
+   an uplink block (a phone) has no broadcast to read, so stop there and look
+   for the downlink partner, which is 30 MHz up in the bands that pair (Band 12
+   and 17 near 704 to 716 MHz). The band-plan lookup is not in `iq-lte`: the
+   block centre is given to the tool by hand.
+2. **Capture the block.** With the window open, `fmctl capture 2 iq-band`
+   records the block at 20 MS/s (about 17.8 MHz of it; 10 MS/s is too narrow
+   for a 9 MHz occupied width).
+3. **Structural fingerprint.** `tools/iq-lte` runs the checks that need only
+   the samples. They are independent, and each has a chance estimate:
+   - cyclic-prefix autocorrelation at the useful symbol (normal CP): the
+     15 kHz OFDM grid and its seven prefix positions per slot;
+   - PSS search: the three Zadoff-Chu roots (N_ID(2)) found in the symbol
+     before each slot's last symbol, with a small frequency grid;
+   - SSS search: N_ID(1) and which half-frame is subframe 0, from the SSS
+     beside the PSS. The physical cell ID is 3 x N_ID(1) + N_ID(2), given only
+     when its chance is at most 1e-3.
+   The verdict is `lte` when the prefix and PSS checks both pass at 1e-3. The
+   tool assumes the carrier is centred, normal CP and FDD. It does not run the
+   duplex check (a TDD pattern would show as gaps) or the CRS check (named in
+   the output, not run). Read the `checks` list in the output, not the verdict
+   alone.
+4. **Broadcast decode (only with `--decode`).** Read the MIB and the SIB1 with
+   an outside srsRAN 4G program. See below.
+
+Uplink, bursty, and wideband OFDM that is not LTE come out as not `lte`.
+
+## Commands
+
+```sh
+tools/iq-lte CAPTURE.cfile                                # the structure, as JSON
+tools/iq-lte CAPTURE.cfile --block-center 751000000       # the LTE carrier is not at the file centre
+tools/iq-lte CAPTURE.cfile --t0 1 --t1 1.2                # a span (default 0.2 s from 0; at most 2 s)
+tools/iq-lte CAPTURE.cfile --rate 20000000 --center 751000000   # a bare .cfile with no .sigmf-meta
+tools/iq-lte CAPTURE.sdvr                                 # an IQ Sceptre DVR works too
+tools/iq-lte CAPTURE.cfile --decode                       # also the MIB and SIB1 (needs srsRAN, below)
+tools/iq-lte CAPTURE.cfile --decode --ports 2 1           # antenna port counts to try, in order
+```
+
+The output is one JSON document on stdout: `verdict`, `nid2`, `nid1`, `pci`,
+`nfft` and `bandwidth_mhz` (the class from the occupied width), `half_frame`,
+`frame_offset_samples`, the `checks` list, and `decode` (null without
+`--decode`). `nfft` is the bandwidth class (1024 for 10 MHz), not the
+transform used. A span shorter than 20 ms gets no SSS result.
+
+A run on a 10 MHz downlink with PCI 123 (placeholder values) reads, in part:
+
+```json
+{
+  "verdict": "lte",
+  "nid2": 0,
+  "nid1": 41,
+  "pci": 123,
+  "nfft": 1024,
+  "bandwidth_mhz": 10,
+  "decode": {
+    "ran": true,
+    "mib": {"pci": 123, "ports": 2, "prb": 50, "type": "FDD", "cp": "normal", "sfn": 0},
+    "sib1": {"plmns": [{"mcc": "001", "mnc": "01"}], "tac": 4660}
+  }
+}
+```
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| 0 | The run completed, whatever the verdict (a negative is 0) |
+| 1 | A bad option or value, a file that cannot be read, or a sweep file (`.sdvr` of spectra); the reason is on stderr, nothing on stdout |
+| 2 | `--decode` was asked and the outside tools are missing (`FMRX_LTE_TOOLS` empty or absent, or `run_pdsch.sh` not in it) |
+
+## Decoding the broadcast: `--decode`
+
+`--decode` reads the MIB and SIB1 of a cell that the fingerprint called `lte`
+with a PCI. Nothing of ours decodes: the work is done by srsRAN 4G's
+`pdsch_ue`, which the user builds separately.
+
+What the decode does:
+
+- It is limited to the broadcast channel: the MIB and the SIB1, the system
+  information transmitted with the SI-RNTI. No user data is read.
+- It supports a 10 MHz carrier only in this phase. Other widths report
+  `ran: false` with the reason.
+- The block is written at 15.36 MS/s as a cf32 file in a private temporary
+  folder, which is removed afterwards.
+- It tries two frame offsets half a 10 ms frame apart: `o`, the SSS frame
+  offset at 15.36 MS/s, and `o` minus 76800 samples (modulo one frame). The
+  half-frame label does not say which of the two starts subframe 0, so both
+  are tried. If there is no SSS offset, `o` is 0. For each offset it tries the
+  antenna port counts 4, 2 and 1 in that order. The first run
+  whose output contains `Decoded MIB` wins; each run has a 120 s limit.
+- The SIB1 is taken from the transport blocks `pdsch_ue` dumped: the most
+  common subframe-5 payload of 32 bytes or more. It is parsed by a Python with
+  pycrate, which runs as a separate process at `pyc/bin/python` under the tools
+  directory. If that is missing or fails, `sib1` is null with `sib1_reason`,
+  and the MIB is still reported.
+
+Where the outside tools live:
+
+- `FMRX_LTE_TOOLS` is the directory that holds them. Set it explicitly: when
+  it is unset the tool uses a built-in default path, which is not a location
+  to rely on.
+- `run_pdsch.sh` is a wrapper in that directory. It takes five arguments: the
+  cf32 file, the PCI, the frame offset in samples, the number of 1 ms subframes
+  in the file, and the port count. It runs `pdsch_ue` and prints its output.
+- `pyc/bin/python` is a Python with pycrate installed.
+
+The srsRAN side is the user's to build. It is AGPL-licensed, is not in this
+repo, and this repo never installs, copies or commits it. The one local change
+to `pdsch_ue` that the wrapper relies on: after each transport block it decodes,
+it appends that block to a file whose name it takes from the `PDSCH_DUMP`
+environment variable, as a record of a marker byte (0xA5), the subframe number,
+the length as two bytes little-endian, then the bytes. Without that patch no
+transport block is dumped, so `sib1` is null; the MIB comes from the program's
+text output alone.
+
+Output of `--decode` is in the same JSON under `decode`: `ran`, `mib` (`pci`,
+`ports`, `prb`, `type`, `cp`, `sfn`), `offset_samples`, `tried` (each offset
+and port count with whether it decoded), `sib1` (`plmns`, `tac`,
+`cell_identity`, `enb_id`, `cell_id`, `freq_band`, `cell_barred`,
+`q_rx_lev_min`) or null with `sib1_reason`.
+
+## Status
+
+Built and tested on synthetic signals and a stub decoder. The real-capture
+check is the planner's: nothing in this method has been run against a real
+srsRAN program or a real cell here. See [capabilities.md](capabilities.md).

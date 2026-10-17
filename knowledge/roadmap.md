@@ -1260,13 +1260,22 @@ and cell IDs stay in `recordings/`, never in the repo or knowledge files.
   Verdict: LTE downlink confirmed (three independent checks agree, PSS+SSS
   give a PCI) / OFDM but not LTE / uplink or bursty / unknown. Checks 2 and 3
   come first: they rule out most false candidates.
+  Shipped in `tools/iq-lte` (2026-10-16, synthetic signals): checks 2, 3 and 4
+  (CP, PSS, SSS). Not run: 1, 5 (duplex is assumed FDD) and 6 (CRS is named
+  in the output). Left open until those are built.
 - [ ] Stage 4, report: an `lte` section on the `iqmeasure` card and class,
   `tools/iq-lte FILE`, a read-only `fmctl` reply, a PNG from `iq-picture`.
   Tests: a synthetic LTE downlink with a known PCI and width, negatives
   (noise, the recorded ATSC file, a non-LTE wideband OFDM).
-- [ ] Stage 5, decode (user approves installing and settles the legal
+  Shipped: `tools/iq-lte FILE` (2026-10-16; `test_iq_lte.py`, with synthetic
+  negatives). Not yet: the card section and class, the `fmctl` reply, the PNG.
+- [x] Stage 5, decode (user approves installing and settles the legal
   question first): srsRAN 4G (AGPL, installed outside this env) `synch_file`
   then `pdsch_ue -c <PCI>` on the capture resampled to 11.52 MS/s (72/125);
+  Shipped as `tools/iq-lte FILE --decode` (`iqlte_decode.py`, 2026-10-16):
+  the block is written at 15.36 MS/s, not 11.52, and `synch_file` is not
+  used. Tested on a stub decoder only; the real-capture check is the planner's.
+  See [lte-verify.md](lte-verify.md).
   MIB and SIB1 give the PLMN, TAC and cell ID, the only on-air proof of the
   operator. `srsue` with a file radio is untested. Fallback:
   JiaoXianjun/LTE-Cell-Scanner. Avoid LTESniffer, FALCON, gr-lte, QCSuper.
