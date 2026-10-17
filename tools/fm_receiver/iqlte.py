@@ -70,6 +70,52 @@ Wrong turns, kept out of the result:
   second place. The other hypotheses are the null, and that one-draw tail is
   multiplied by all 336 candidates. A capture with no SSS then stays above
   1e-3, and a real one falls to the floor.
+
+``cells`` lists every cell whose SSS clears that same 1e-3 line, strongest
+first. The PSS of the three roots is nearly orthogonal, so each root is
+correlated on its own: a normalised time-domain match against that root's
+useful symbol, folded onto one 10 ms frame by the mean of the magnitudes.
+Peaks of one root that sit more than a short guard apart are different
+timings (two towers that may share a root). Peaks of different roots that
+sit within a few samples are one timing (sectors of one tower). At that
+timing the three known PSS sequences share the symbol, so a per-bin divide
+by one root is the other sectors' PSS. A least-squares fit of the three
+roots gives a flat gain per root; the SSS hypotheses are then scored
+strongest root first, and a PCI that clears 1e-3 is subtracted (its SSS
+only) before the next one is scored. The same root is scored again after
+that, because two cells can share a root and a timing and then only the
+SSS tells them apart. A PCI the SSS does not support is not reported. Power is that root's fitted gain, and ``relative_power_db``
+is the gain against the strongest kept cell.
+
+Wrong turns for several cells, kept out of the result:
+
+- Folding the correlation onto 5 ms. The two PSS occasions then stack, which
+  is fine for one cell, but a neighbour with the same root sitting half a
+  frame away lands on the same bin and disappears. The fold is one frame,
+  and the half-frame mate is the same cell found twice.
+- Blanking that half-frame mate while picking peaks. A sidelobe blanked
+  5 ms away as well, and that is where a second tower sometimes sits.
+- Searching only the cyclic-prefix peaks of the strongest grid. A second
+  tower is not on that grid, so its PSS is never a candidate. The prefix
+  peaks stay the single-cell path; the multi-cell search is this other fold.
+- Keeping the single best root at a shared timing. The other sectors are
+  the other roots, and a global argmax drops them.
+- Zero-forcing each SSS bin with the raw PSS bin. On a shared timing that
+  bin is the sum of the sectors, and the weak sector's SSS chance stays
+  just above 1e-3. The joint gain, then subtracting the stronger SSS, is
+  what brings it under the line.
+- A coherent sum across frames before the peak pick. A few kilohertz of
+  offset turns the PSS from frame to frame and the sum cancels; the fold
+  averages magnitudes.
+- Subtracting a regenerated data subframe of the strong cell. The data is
+  not known, and a wrong regeneration leaves a residual that can look like
+  another cell. Only the SSS that already cleared the chance line is removed,
+  and only by its own amplitude. Taking the whole joint PSS gain out with
+  the first of two same-root cells leaves a residual that correlates with
+  an identity that was never there.
+- Keeping a same-root peak a few hundred samples off a stronger cell. That
+  is a sidelobe, not a second tower: a second tower is not that close, and
+  a sector on the same sample has a different root.
 """
 
 import math
@@ -207,7 +253,7 @@ def _later(name, detail):
     }
 
 
-def _unknown(reason):
+def _unknown(reason, iq=None, fs=None):
     return {
         'checks': [
             _check('cp-autocorr', False, 0.0, 1.0, reason),
@@ -220,6 +266,7 @@ def _unknown(reason):
         'nid2': None,
         'nfft': None,
         'chance': 1.0,
+        'cells': [] if iq is None else cells(iq, fs),
     }
 
 
@@ -1013,6 +1060,358 @@ def sss_search(iq, fs):
                        peak, chance, n_used, detail)
 
 
+def _pss_template(n_fft, root):
+    """Unit-norm time-domain PSS body for ``root`` (the useful symbol, no prefix)."""
+    spec = np.zeros(n_fft, dtype=np.complex128)
+    bins = np.concatenate((np.arange(-31, 0), np.arange(1, 32))) % n_fft
+    spec[bins] = _pss_seqs()[root]
+    td = np.fft.ifft(spec)
+    norm = np.linalg.norm(td)
+    if norm <= 0.0:
+        return td
+    return td / norm
+
+
+def _pss_match(block, td):
+    """Normalised correlation of ``block`` against a unit-norm PSS body.
+
+    ``out[t]`` is |<x[t:t+N], td>| / sqrt(sum |x[t:t+N]|^2). The peak sits on
+    the first sample of the useful symbol. The FFT length is zero-padded so
+    the match is linear, not circular, across the join of the block.
+    """
+    n = block.size
+    n_fft = td.size
+    if n <= n_fft:
+        return np.zeros(n, dtype=np.float64)
+    n_corr = 1 << int(n + n_fft - 1).bit_length()
+    spec = np.fft.fft(block, n_corr) * np.conj(np.fft.fft(td, n_corr))
+    corr = np.fft.ifft(spec)
+    m = n - n_fft + 1
+    mag = np.abs(corr[:m])
+    power = np.abs(block) ** 2
+    cum = np.empty(n + 1, dtype=np.float64)
+    cum[0] = 0.0
+    np.cumsum(power, out=cum[1:])
+    energy = cum[n_fft:n_fft + m] - cum[:m]
+    out = np.zeros(n, dtype=np.float64)
+    out[:m] = mag / np.sqrt(np.maximum(energy, 1e-20))
+    return out
+
+
+def _blank_around(work, center, guard):
+    """Write -1 over ``center`` ± ``guard``, wrapping on the frame."""
+    n = work.size
+    if n == 0 or guard < 0:
+        return
+    center = int(center) % n
+    guard = int(guard)
+    if 2 * guard + 1 >= n:
+        work[:] = -1.0
+        return
+    a = center - guard
+    b = center + guard
+    if a >= 0 and b < n:
+        work[a:b + 1] = -1.0
+        return
+    work[np.arange(a, b + 1) % n] = -1.0
+
+
+def _frame_peaks(folded, n_keep, guard, floor):
+    """The strongest samples of one frame of folded PSS correlation.
+
+    Each peak blanks only its own neighbourhood, so a second tower half a
+    frame away stays visible. The half-frame mate of a real cell is then a
+    second peak of the same cell and is removed when PCIs are merged.
+    Returns ``(index, height)`` strongest first, and nothing below ``floor``.
+    """
+    frame = folded.size
+    if frame < 4 or n_keep < 1:
+        return []
+    work = folded.copy()
+    found = []
+    for _ in range(n_keep):
+        i = int(np.argmax(work))
+        height = float(folded[i])
+        if height < floor or work[i] < 0.0:
+            break
+        found.append((i, height))
+        _blank_around(work, i, guard)
+    return found
+
+
+def _sync_groups(block, n_fft, frame, peak):
+    """PSS and SSS centre bins at ``peak`` and half a frame later.
+
+    Each entry is ``(yp, ys)`` with shape ``(occasions, 62)``, or None when
+    that half falls off the capture.
+    """
+    cp = _cp_lengths(n_fft)[1]
+    half = frame // 2
+    n = block.size
+    bins = np.concatenate((np.arange(-31, 0), np.arange(1, 32))) % n_fft
+    k = np.arange(n_fft, dtype=np.int64)
+
+    def _grab(base):
+        starts = np.arange(int(base) % int(frame), n - n_fft, frame, dtype=np.int64)
+        sss_at = starts - (n_fft + cp)
+        keep = (sss_at >= 0) & (starts + n_fft <= n)
+        starts = starts[keep]
+        sss_at = sss_at[keep]
+        if starts.size < 1:
+            return None
+        yp = np.fft.fft(block[starts[:, None] + k], axis=1)[:, bins]
+        ys = np.fft.fft(block[sss_at[:, None] + k], axis=1)[:, bins]
+        return yp, ys
+
+    return _grab(peak), _grab(int(peak) + half)
+
+
+def _offset_from_pss(pss_mod, n_fft, frame, fs_cap, rate, sub5):
+    """Capture-rate frame offset of the subframe-0 boundary, or None."""
+    slot = frame // 20
+    body_off, _cp_short = _pss_body_offset(n_fft)
+    frame_start = int(pss_mod) - body_off - (10 * slot if sub5 else 0)
+    frame_cap = int(round(0.010 * fs_cap))
+    if frame_cap <= 0:
+        return None
+    return int(round((frame_start % frame) * fs_cap / rate)) % frame_cap
+
+
+def _cells_at_timing(block, n_fft, fs_cap, rate, frame, peak):
+    """Cells at one PSS timing: joint root gains, then SSS with cancellation.
+
+    Roots are scored strongest gain first. A root whose SSS chance is above
+    1e-3 is left in the residual and not reported. One that passes is
+    subtracted before the next root, so a sector 6 dB down is not scored
+    against the stronger sector's SSS.
+    """
+    pair = _sync_groups(block, n_fft, frame, peak)
+    design = _pss_seqs().T  # (62, 3), the three roots side by side
+    groups = []
+    mags = np.zeros(3, dtype=np.float64)
+    n_groups = 0
+    for part in pair:
+        if part is None:
+            groups.append(None)
+            continue
+        yp, ys = part
+        gain = np.linalg.lstsq(design, yp.T, rcond=None)[0].T
+        groups.append({'ys': ys, 'g': gain})
+        mags += np.abs(gain).mean(axis=0)
+        n_groups += 1
+    if n_groups < 1 or float(mags.max()) <= 0.0:
+        return []
+    templ = _sss_templates()
+    order = np.argsort(-mags)
+    found = []
+    seen = set()
+    # A root this far under the loudest gain at this timing is the fit's
+    # leftover, not a sector. -10 dB is still above this cut. Two cells on
+    # one root share that gain, so a root that already produced a PCI is
+    # scored again on the residual.
+    gain_cut = 0.18 * float(mags[order[0]])
+    for root in order:
+        root = int(root)
+        if mags[root] < gain_cut:
+            continue
+        for _again in range(4):
+            eqs = []
+            n_used = 0
+            for info in groups:
+                if info is None:
+                    eqs.append(np.empty((0, 62), dtype=np.complex128))
+                    continue
+                alpha = info['g'][:, root]
+                n_used += int(alpha.size)
+                denom = (np.abs(alpha) ** 2) + 1e-18
+                eqs.append(info['ys'] * np.conj(alpha)[:, None] / denom[:, None])
+            scores = _hypothesis_scores(eqs[0], eqs[1], templ[root])
+            if scores is None:
+                break
+            peak_score, chance, k = _sss_chance(scores)
+            if chance > _PASS:
+                break
+            nid1, col = (int(v) for v in np.unravel_index(k, scores.shape))
+            pci = 3 * nid1 + root
+            if pci in seen:
+                break
+            offset = _offset_from_pss(
+                int(peak) % int(frame), n_fft, frame, fs_cap, rate, col == 1)
+            if offset is None:
+                break
+            seen.add(pci)
+            # Subtract this cell's own SSS amplitude, not the joint PSS gain.
+            # Two cells on one root share that gain; taking all of it out with
+            # the first SSS leaves a residual that correlates with a third,
+            # invented, identity.
+            seq0 = templ[root, nid1, 0]
+            seq5 = templ[root, nid1, 1]
+            power = 0.0
+            n_pow = 0
+            for gi, info in enumerate(groups):
+                if info is None:
+                    continue
+                sub5 = (col == 1) if gi == 0 else (col == 0)
+                seq = seq5 if sub5 else seq0
+                amp = info['ys'] @ seq / 62.0
+                power += float(np.mean(np.abs(amp)))
+                n_pow += 1
+                info['ys'] = info['ys'] - amp[:, None] * seq
+            if n_pow:
+                power /= n_pow
+            else:
+                power = float(mags[root])
+            detail = (f'N_ID(1) {nid1} N_ID(2) {root} pci {pci} correlation {peak_score:.3f} '
+                      f'over {n_used} half-frames')
+            found.append({
+                'pci': pci,
+                'nid1': nid1,
+                'nid2': root,
+                'frame_offset_samples': int(offset),
+                'half_frame': 0,
+                'score': float(peak_score),
+                'chance': _floor_chance(chance),
+                'detail': detail,
+                '_pss': power,
+            })
+    return found
+
+
+def _cluster_timings(peaks, frame, guard):
+    """Merge peaks that land within ``guard`` samples. Strongest position wins.
+
+    ``peaks`` is a list of ``(pos, height)``. The half-frame mate is not
+    merged: it is the same cell's other PSS and is deduplicated by PCI.
+    """
+    clusters = []
+    for pos, height in sorted(peaks, key=lambda item: item[1], reverse=True):
+        placed = False
+        for cluster in clusters:
+            delta = abs(int(pos) - int(cluster[0]))
+            dist = min(delta, frame - delta)
+            if dist <= guard:
+                placed = True
+                break
+        if not placed:
+            clusters.append((int(pos), float(height)))
+    return clusters
+
+
+def cells(iq, fs, max_cells=4):
+    """Every LTE cell on one carrier whose SSS chance is at most 1e-3.
+
+    See the module docstring for the method. The list is strongest first.
+    ``relative_power_db`` is 0.0 on the first entry and negative after it.
+    An empty list (no exception) means the capture is under 20 ms, under
+    1.92 MS/s, or nothing in it cleared the SSS line. ``max_cells`` caps
+    the list after that cut. A PCI is never filled in from the PSS alone.
+    """
+    try:
+        fs_in = float(fs)
+        limit = int(max_cells)
+    except (TypeError, ValueError):
+        return []
+    if limit < 1:
+        return []
+    vec = _vector(iq)
+    if vec is None or not np.isfinite(fs_in) or fs_in < _MIN_FS:
+        return []
+    if vec.size < _SSS_MIN_DUR * fs_in:
+        return []
+    prepared = _prepare(vec, fs_in)
+    if prepared is None:
+        return []
+    block, rate, n_fft, fs_cap = prepared
+    _starts, _lens, slot, _cp = _slot_layout(n_fft)
+    frame = 20 * slot
+    if block.size < frame:
+        return []
+    # Shoulders of one PSS are a few dozen samples wide (62 bins in a 1024
+    # transform). A second cell on the same root is much further away.
+    guard = max(24, n_fft // 32)
+    # Below this the folded match is what noise and the non-LTE negatives
+    # reach. A cell at 0 dB, and one 10 dB under another root, sit above it.
+    floor = 0.10
+    raw = []
+    for root in range(3):
+        match = _pss_match(block, _pss_template(n_fft, root))
+        n_frames = match.size // frame
+        if n_frames < 1:
+            continue
+        folded = match[:n_frames * frame].reshape(n_frames, frame).mean(axis=0)
+        # Enough peaks that a same-root neighbour under the strong cell's
+        # sidelobes is still in the list. The SSS chance drops the sidelobes.
+        raw.extend(_frame_peaks(folded, 8, guard, floor))
+    found = []
+    for pos, _height in _cluster_timings(raw, frame, 6):
+        found.extend(_cells_at_timing(block, n_fft, fs_cap, rate, frame, pos))
+    frame_cap = int(round(0.010 * fs_cap))
+    return _finish_cells(found, limit, frame_cap)
+
+
+def _drop_same_root_ghosts(kept, frame_cap):
+    """Drop a same-root hit that sits just off a stronger cell's timing.
+
+    Sectors that share a timing have different roots. A second cell on the
+    same root is another tower, so its timing is nowhere near the first.
+    A peak a few hundred samples away is a sidelobe of the strong PSS: the
+    SSS can still clear 1e-3 there when two equal cells were cancelled, and
+    the PCI is not one of the two. Same-sample hits (one root, two SSS) stay.
+    """
+    if frame_cap <= 0:
+        return kept
+    slot = frame_cap // 20
+    drop = set()
+    for weak in kept:
+        for strong in kept:
+            if weak['pci'] == strong['pci'] or weak['nid2'] != strong['nid2']:
+                continue
+            if weak['_pss'] > strong['_pss']:
+                continue
+            delta = abs(weak['frame_offset_samples'] - strong['frame_offset_samples'])
+            dist = min(delta, frame_cap - delta)
+            if 4 < dist < slot:
+                drop.add(weak['pci'])
+                break
+    if not drop:
+        return kept
+    return [hit for hit in kept if hit['pci'] not in drop]
+
+
+def _finish_cells(found, limit, frame_cap):
+    """One entry per PCI, strongest PSS first, relative power against that one."""
+    best = {}
+    for hit in found:
+        pci = hit['pci']
+        prev = best.get(pci)
+        if prev is None or hit['_pss'] > prev['_pss']:
+            best[pci] = hit
+    kept = sorted(best.values(), key=lambda h: h['_pss'], reverse=True)
+    kept = _drop_same_root_ghosts(kept, frame_cap)
+    kept = kept[:limit]
+    if not kept:
+        return []
+    top = kept[0]['_pss']
+    out = []
+    for i, hit in enumerate(kept):
+        if i == 0 or top <= 0.0:
+            rel = 0.0
+        else:
+            rel = float(20.0 * math.log10(max(hit['_pss'], 1e-30) / top))
+        out.append({
+            'pci': int(hit['pci']),
+            'nid1': int(hit['nid1']),
+            'nid2': int(hit['nid2']),
+            'frame_offset_samples': int(hit['frame_offset_samples']),
+            'half_frame': int(hit['half_frame']),
+            'relative_power_db': rel,
+            'score': float(hit['score']),
+            'chance': float(hit['chance']),
+            'detail': hit['detail'],
+        })
+    return out
+
+
 def _apply_sss(iq, fs, checks, verdict, nid2):
     """Run ``sss_search`` and fold its PCI into the fingerprint.
 
@@ -1040,6 +1439,8 @@ def fingerprint(iq, fs):
     drops to ``possible`` when the SSS cell ID and the PSS root disagree.
     ``pci`` is the SSS physical cell ID, or None when that check has none.
     ``chance`` is the product of the CP and PSS chances, floored at 1e-300.
+    ``cells`` is ``cells()`` of this capture (the module-level name, so a
+    caller can replace it): every cell that cleared the SSS line.
     """
     if _vector(iq) is None or _too_small(iq, fs):
         try:
@@ -1050,11 +1451,11 @@ def fingerprint(iq, fs):
             why = 'not a 1-D capture'
         else:
             why = 'sample rate under 1.92 MS/s' if slow else 'shorter than 10 ms'
-        return _unknown(why)
+        return _unknown(why, iq, fs)
 
     prepared = _prepare(iq, fs)
     if prepared is None:
-        return _unknown('no LTE bandwidth class fits this sample rate')
+        return _unknown('no LTE bandwidth class fits this sample rate', iq, fs)
 
     block, rate, n_fft, fs_in = prepared
     found = _cp_alignment(block, n_fft)
@@ -1098,6 +1499,7 @@ def fingerprint(iq, fs):
             'nid2': nid2,
             'nfft': nfft,
             'chance': joint,
+            'cells': cells(iq, fs),
         }
 
     checks, verdict, pci = _apply_sss(iq, fs, [cp, pss], 'not-lte', None)
@@ -1109,4 +1511,5 @@ def fingerprint(iq, fs):
         'nid2': None,
         'nfft': None,
         'chance': joint,
+        'cells': cells(iq, fs),
     }
