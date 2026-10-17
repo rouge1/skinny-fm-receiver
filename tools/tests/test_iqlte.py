@@ -37,8 +37,10 @@ Run:  QT_QPA_PLATFORM=offscreen PYTHONPATH=tools python tools/tests/test_iqlte.p
 """
 
 import ast
+import multiprocessing
 import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -808,23 +810,33 @@ def l4_delay(pair, seed, mode):
     return int(rng.integers(40000, 150001))
 
 
+def _multi_key(spec, seed, snr=20.0):
+    return ('l4', tuple(spec), seed, snr)
+
+
+def _l4_multi(spec, seed, snr):
+    """The cells of one 10-frame, 10 MHz capture (see multi_cells). Runs in a worker."""
+    cells_in = [dict(pci=int(p), power_db=float(w), delay_samples=int(d))
+                for p, w, d in spec]
+    iq, rate = synth_multi(cells=cells_in, bw_mhz=10, n_frames=10, snr_db=snr, seed=seed)
+    return {'rate': float(rate), 'cells': api().cells(iq, rate)}
+
+
 def multi_cells(spec, seed, snr=20.0):
     """The cells of one 10-frame, 10 MHz capture. ``spec`` is a list of
     (pci, power_db, delay_samples); the result is {'rate', 'cells'}, measured once."""
-    key = ('l4', tuple(spec), seed, snr)
+    return memo(_multi_key(spec, seed, snr), lambda: _l4_multi(spec, seed, snr))
 
-    def make():
-        cells_in = [dict(pci=int(p), power_db=float(w), delay_samples=int(d))
-                    for p, w, d in spec]
-        iq, rate = synth_multi(cells=cells_in, bw_mhz=10, n_frames=10, snr_db=snr, seed=seed)
-        return {'rate': float(rate), 'cells': api().cells(iq, rate)}
-    return memo(key, make)
+
+def pair_spec(pair, power_db, mode, seed):
+    """(spec, delay) of a two-cell case: the strong cell first, the weak one at power_db."""
+    delay = l4_delay(pair, seed, mode)
+    return [(pair[0], 0.0, 0), (pair[1], float(power_db), delay)], delay
 
 
 def pair_run(pair, power_db, mode, seed):
     """(result, delay) of a two-cell case: the strong cell first, the weak one at power_db."""
-    delay = l4_delay(pair, seed, mode)
-    spec = [(pair[0], 0.0, 0), (pair[1], float(power_db), delay)]
+    spec, delay = pair_spec(pair, power_db, mode, seed)
     return multi_cells(spec, seed), delay
 
 
@@ -872,7 +884,78 @@ def l4_both(case):
     return set(case[0]) <= reported(res)
 
 
+def _run_job(fn, args):
+    """Worker side of l4_prefill: what memo would store for fn(*args)."""
+    try:
+        return True, fn(*args)
+    except Exception as exc:
+        return False, exc
+
+
+def l4_prefill():
+    """Build every L4 capture of groups A to E in a process pool and store each result in
+    MEMO as memo would. A result depends only on its arguments, so the groups read the same
+    values as a serial run; a key already in MEMO is not built again. Group F is timed
+    after this returns, when no pool is running."""
+    jobs = []
+    for pci in L2_PCIS:                                       # group D first: the costliest
+        for snr in (20.0, 0.0):
+            for seed in range(3):
+                jobs.append((_single_key(pci, snr, seed), _l4_single, (pci, snr, seed)))
+    for pair in L4_PAIRS:                                     # group A
+        for power_db in (0.0, -6.0):
+            for mode in ('sync', 'async'):
+                for seed in (0, 1):
+                    spec, _ = pair_spec(pair, power_db, mode, seed)
+                    jobs.append((_multi_key(spec, seed), _l4_multi, (spec, seed, 20.0)))
+    for pair in L4_PAIRS:                                     # group B
+        for mode in ('async', 'sync'):
+            spec, _ = pair_spec(pair, -10.0, mode, 0)
+            jobs.append((_multi_key(spec, 0), _l4_multi, (spec, 0, 20.0)))
+    for seed in (0, 1, 2):                                    # group C
+        spec = [(90, 0.0, 0), (91, -3.0, 0), (92, -6.0, 0)]
+        jobs.append((_multi_key(spec, seed), _l4_multi, (spec, seed, 20.0)))
+    for name in NEGATIVES:                                    # group E
+        for seed in range(5):
+            jobs.append((_neg_key(name, seed), _l4_neg, (name, seed)))
+    for which in ('5ms', '1msps'):
+        jobs.append((_short_key(which), _l4_short, (which,)))
+
+    todo, seen = [], set()
+    for key, fn, args in jobs:
+        if key not in MEMO and key not in seen:
+            seen.add(key)
+            todo.append((key, fn, args))
+    if not todo:
+        return
+    # One BLAS/FFT thread per worker: each worker otherwise starts a thread pool of its own
+    # and 8 of them oversubscribe the cores. The parent has numpy loaded already, so a forked
+    # worker would keep that pool; spawn starts each worker fresh, reading these variables
+    # before it imports numpy. The parent's values are put back when the pool is done.
+    thread_vars = ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS')
+    saved = {var: os.environ.get(var) for var in thread_vars}
+    for var in thread_vars:
+        os.environ[var] = '1'
+    try:
+        ctx = multiprocessing.get_context('spawn')
+        with ProcessPoolExecutor(max_workers=min(8, os.cpu_count() or 1),
+                                 mp_context=ctx) as pool:
+            futures = [(key, pool.submit(_run_job, fn, args)) for key, fn, args in todo]
+            for key, fut in futures:
+                try:
+                    MEMO[key] = fut.result()
+                except Exception as exc:    # the result could not come back from the worker
+                    MEMO[key] = (False, RuntimeError(f'{type(exc).__name__}: {exc}'))
+    finally:
+        for var, old in saved.items():
+            if old is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = old
+
+
 def group_l4_a():
+    l4_prefill()
     cases = [(pair, p, m, s) for pair in L4_PAIRS for p in (0.0, -6.0)
              for m in ('sync', 'async') for s in (0, 1)]
     outs = [outcome(a_label(c), lambda c=c: l4_a_case(*c)) for c in cases]
@@ -938,17 +1021,24 @@ def group_l4_c():
 
 # ---- group D: G4 --------------------------------------------------------------
 
+def _single_key(pci, snr, seed):
+    return ('l4-single', pci, snr, seed)
+
+
+def _l4_single(pci, snr, seed):
+    """cells, the fingerprint's pci and the sss pci of one one-cell 10 MHz capture (see
+    l4_single). Runs in a worker. fingerprint() already runs sss_search and cells() on the
+    capture and returns both, so the signal is searched once: its 'cells' is cells(iq, rate)
+    and its 'pci' is the SSS pci that sss_search gives."""
+    iq, rate = synth(bw_mhz=10, n_frames=10, pci=pci, snr_db=snr, seed=seed)
+    fp = api().fingerprint(iq, rate)
+    return {'cells': fp['cells'], 'fp_pci': fp['pci'], 'sss_pci': fp['pci']}
+
+
 def l4_single(pci, snr, seed):
     """cells, the fingerprint's pci and the sss_search pci of one one-cell 10 MHz capture,
     measured once (the IQ is dropped). The 20 dB ones are reused by the interface checks."""
-    key = ('l4-single', pci, snr, seed)
-
-    def make():
-        iq, rate = synth(bw_mhz=10, n_frames=10, pci=pci, snr_db=snr, seed=seed)
-        return {'cells': api().cells(iq, rate),
-                'fp_pci': api().fingerprint(iq, rate)['pci'],
-                'sss_pci': api().sss_search(iq, rate)['pci']}
-    return memo(key, make)
+    return memo(_single_key(pci, snr, seed), lambda: _l4_single(pci, snr, seed))
 
 
 def l4_d_cells(pci, snr, seed):
@@ -978,12 +1068,18 @@ def group_l4_d():
 
 # ---- group E: G5 --------------------------------------------------------------
 
+def _neg_key(name, seed):
+    return ('l4-neg', name, seed)
+
+
+def _l4_neg(name, seed):
+    iq, rate = getattr(lte_negatives, name)(seed=seed)
+    return api().cells(iq, rate)
+
+
 def l4_neg(name, seed):
     """cells of one negative example (20 MS/s, 0.1 s), measured once."""
-    def make():
-        iq, rate = getattr(lte_negatives, name)(seed=seed)
-        return api().cells(iq, rate)
-    return memo(('l4-neg', name, seed), make)
+    return memo(_neg_key(name, seed), lambda: _l4_neg(name, seed))
 
 
 def l4_neg_check(name, seed):
@@ -991,17 +1087,23 @@ def l4_neg_check(name, seed):
     return len(cells) == 0, f'cells {[c["pci"] for c in cells]}'
 
 
+def _short_key(which):
+    return ('l4-short', which)
+
+
+def _l4_short(which):
+    if which == '5ms':
+        spec = [dict(pci=L4_PAIR_SHORT[0], power_db=0.0, delay_samples=0),
+                dict(pci=L4_PAIR_SHORT[1], power_db=-6.0, delay_samples=0)]
+        iq, rate = synth_multi(cells=spec, bw_mhz=10, n_frames=1, snr_db=20.0, seed=0)
+        return api().cells(iq[:int(round(0.005 * rate))], rate)
+    iq, rate = lte_negatives.synth_noise(seed=0, fs=1e6)
+    return api().cells(iq, rate)
+
+
 def l4_short_check(which):
     """cells of a 5 ms slice of a two-cell capture, or of a 1 MS/s noise capture."""
-    def make():
-        if which == '5ms':
-            spec = [dict(pci=L4_PAIR_SHORT[0], power_db=0.0, delay_samples=0),
-                    dict(pci=L4_PAIR_SHORT[1], power_db=-6.0, delay_samples=0)]
-            iq, rate = synth_multi(cells=spec, bw_mhz=10, n_frames=1, snr_db=20.0, seed=0)
-            return api().cells(iq[:int(round(0.005 * rate))], rate)
-        iq, rate = lte_negatives.synth_noise(seed=0, fs=1e6)
-        return api().cells(iq, rate)
-    return memo(('l4-short', which), make)
+    return memo(_short_key(which), lambda: _l4_short(which))
 
 
 L4_PAIR_SHORT = (61, 288)
