@@ -65,7 +65,7 @@ def section(table_id, ext, body):
 def tvct(channels):
     body = bytes([0, len(channels)])
     for name, major, minor, program, source in channels:
-        body += name.ljust(7).encode('utf-16-be')
+        body += name[:7].ljust(7).encode('utf-16-be')
         bits = (0xF << 20) | (major << 10) | minor
         body += bits.to_bytes(3, 'big') + bytes([4]) + (0).to_bytes(4, 'big')
         body += (1).to_bytes(2, 'big') + program.to_bytes(2, 'big')
@@ -100,7 +100,7 @@ def packets(pid, sect, first_cc=0):
 
 def test_psip():
     print("PSIP")
-    chans = [('STATION HD', 16, 1, 3, 1), ('SCC', 16, 2, 4, 2), ('KIDS', 16, 3, 5, 3),
+    chans = [('STN HD', 16, 1, 3, 1), ('SCC', 16, 2, 4, 2), ('KIDS', 16, 3, 5, 3),
              ('MORE', 16, 4, 6, 4), ('FIVE', 16, 5, 7, 5),
              ('SIX', 16, 6, 8, 6), ('SEVEN', 16, 7, 9, 7), ('EIGHT', 16, 8, 10, 8)]
     table = tvct(chans)
@@ -112,7 +112,7 @@ def test_psip():
     a.feed(packets(PID_PSIP, table))
     ch = a.psip.channels
     check("eight channels read", len(ch) == 8, str(len(ch)))
-    check("names and numbers", ch[3]['name'] == 'STATION HD' and (ch[3]['major'], ch[3]['minor']) == (16, 1)
+    check("names and numbers", ch[3]['name'] == 'STN HD' and (ch[3]['major'], ch[3]['minor']) == (16, 1)
           and ch[7]['name'] == 'FIVE' and ch[7]['source'] == 5, str(ch.get(3)))
     mgt_body = bytes([0, 0, 0, 1]) + (0x0100).to_bytes(2, 'big') + (0xE000 | 0x1D00).to_bytes(2, 'big') \
         + bytes([0]) + (0).to_bytes(4, 'big') + bytes([0xF0, 0]) + bytes([0xF0, 0])

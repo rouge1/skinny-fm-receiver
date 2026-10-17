@@ -1232,3 +1232,57 @@ so the video shows.
 - [ ] Record a program's transport stream (`.ts`) or its picture.
 - [ ] EIT titles sent Huffman-compressed; closed captions.
 
+
+## Round 25: verifying LTE carriers found in a sweep (requested 2026-10-16, planned)
+
+How to tell, for any LTE-looking block in a sweep, whether it is LTE and which
+cell and operator. The app classifies (stages 1-4, numpy only); an outside
+decoder, run on a recording, answers the rest (stage 5). Captures, PCIs, PLMNs
+and cell IDs stay in `recordings/`, never in the repo or knowledge files.
+
+- [ ] Stage 1, candidate from the sweep (no capture): occupied width near an
+  LTE size (1.4, 3, 5, 10, 15, 20 MHz; about 0.9 of the channel); band-plan
+  lookup to downlink or uplink and EARFCN. Uplink blocks (phones; Band 12/17
+  704-716 MHz) stop there with "uplink, no PLMN to read" and flag the
+  downlink partner (30 MHz up).
+- [x] Stage 2, capture: `fmctl capture 2 iq-band` on the block at 20 MS/s
+  (17.8 MHz wide; 10 MS/s is too narrow for 9 MHz).
+- [ ] Stage 3, structural fingerprint (`iqlte.py`, numpy only), each check
+  independent with a chance estimate:
+  1. 15 kHz subcarrier grid, empty DC bin, edge roll-off;
+  2. cyclic-prefix autocorrelation at the useful symbol (2048 samples at
+     30.72 MS/s), normal or extended CP;
+  3. 0.5 ms / 10 ms timing, PSS every 5 ms by Zadoff-Chu cross-correlation
+     (N_ID(2));
+  4. SSS (N_ID(1)), so the PCI;
+  5. duplex: continuous means FDD downlink, gaps in a 10 ms pattern mean TDD;
+  6. CRS positions and shift (PCI cross-check, antenna ports).
+  Verdict: LTE downlink confirmed (three independent checks agree, PSS+SSS
+  give a PCI) / OFDM but not LTE / uplink or bursty / unknown. Checks 2 and 3
+  come first: they rule out most false candidates.
+  Shipped in `tools/iq-lte` (2026-10-16, synthetic signals): checks 2, 3 and 4
+  (CP, PSS, SSS). Not run: 1, 5 (duplex is assumed FDD) and 6 (CRS is named
+  in the output). Left open until those are built. Real air (2026-10-16): the
+  verdict and PCI right on one 10 MHz cell; several cells on one carrier are not
+  told apart (see lte-verify.md, "Limits seen on real air").
+- [ ] Stage 4, report: an `lte` section on the `iqmeasure` card and class,
+  `tools/iq-lte FILE`, a read-only `fmctl` reply, a PNG from `iq-picture`.
+  Tests: a synthetic LTE downlink with a known PCI and width, negatives
+  (noise, the recorded ATSC file, a non-LTE wideband OFDM).
+  Shipped: `tools/iq-lte FILE` (2026-10-16; `test_iq_lte.py`, with synthetic
+  negatives). Not yet: the card section and class, the `fmctl` reply, the PNG.
+- [x] Stage 5, decode: `tools/iq-lte FILE --decode` (`iqlte_decode.py`,
+  2026-10-16). It writes the block at 15.36 MS/s and runs
+  `$FMRX_LTE_TOOLS/run_pdsch.sh` (srsRAN 4G's `pdsch_ue`, built by the user),
+  reading the MIB and SIB1 only, 10 MHz only. No `synch_file`. Tested on a stub
+  decoder, then on real air (2026-10-16, one 10 MHz Band 13 cell): MIB and SIB1
+  read, the operator code, tracking area, cell identity and band right. See
+  [lte-verify.md](lte-verify.md).
+
+  Not ticked, still open: `srsue` with a file radio is untested. Fallback:
+  JiaoXianjun/LTE-Cell-Scanner. Avoid LTESniffer, FALCON, gr-lte, QCSuper.
+  The MIB and SIB1 give the PLMN, TAC and cell ID, the only on-air proof of the
+  operator. The US reading of 18 USC 2511 / 47 USC 605 is not advice. The user
+  approves installing srsRAN and settles that question first.
+- Order: checks 2 and 3 with the synthetic test; band table and report;
+  checks 4-6; stage 5.
