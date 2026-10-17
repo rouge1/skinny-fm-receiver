@@ -140,6 +140,37 @@ and port count with whether it decoded), `sib1` (`plmns`, `tac`,
 
 ## Status
 
-Built and tested on synthetic signals and a stub decoder. The real-capture
-check is the planner's: nothing in this method has been run against a real
-srsRAN program or a real cell here. See [capabilities.md](capabilities.md).
+Built, tested on synthetic signals and a stub decoder, and run on real air once
+(2026-10-16, BB60D, the strongest block of the 698-800 MHz sweep: a 10 MHz FDD
+downlink in Band 13). The whole method worked end to end on two separate
+recordings of that cell: the fingerprint gave the PCI, srsRAN decoded the MIB
+(4 ports, 50 PRB, FDD, normal CP) with that PCI and the frame timing, and SIB1
+gave the PLMN, tracking area code, cell identity and band, with the band indicator
+agreeing with the carrier's frequency. SIB1 blocks repeated identically across
+the capture and a second decoder (pycrate) parsed the same fields. The values
+are not recorded here: they are kept with the recordings. See
+[capabilities.md](capabilities.md).
+
+### Limits seen on real air
+
+- **One cell per carrier is assumed.** A second carrier (Band 14) showed
+  LTE structure in every segment but the PSS root alternated between two values: two
+  cells on one frequency. The detector then flips between them and the SSS often
+  finds neither, so no PCI. Telling several cells apart is not built.
+- **Centre the block on the carrier.** The PSS check tolerates about 10 kHz.
+  An LTE carrier's centre is on a 100 kHz raster of the absolute frequency, so
+  try the raster values near the plateau's middle (`--block-center`). A block
+  sitting off-centre or beside other carriers can also read as the wrong bandwidth
+  class (a 10 MHz carrier read as 15 MHz).
+- **The cyclic-prefix check alone proves little.** On real captures it passed
+  with a chance near 1e-300 on blocks the other checks did not confirm. Trust the PSS
+  and SSS together, not CP alone.
+- **The generic card calls a block "noise"** when it is only a few dB over the floor of
+  a 17.8 MHz capture; run `iq-lte`, not `iq-measure`, on a suspected carrier.
+- **A first scan of other downlink bands** (the 600, 700, 850, 1900, 2100 and 2600
+  MHz bands, 15 MHz tiles) found no further confirmed cell; the high bands gave
+  no candidate block at all. That says "not found with this antenna and this block
+  test", not "no towers".
+- **`tools/iq-lte` bug found on first real use:** pycrate's BIT STRING is
+  `(value, nbits)`, and the srsRAN wrapper's default filter drops the MIB block's
+  lines. Both fixed; a stub test cannot catch either.

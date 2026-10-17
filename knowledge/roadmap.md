@@ -1245,7 +1245,7 @@ and cell IDs stay in `recordings/`, never in the repo or knowledge files.
   lookup to downlink or uplink and EARFCN. Uplink blocks (phones; Band 12/17
   704-716 MHz) stop there with "uplink, no PLMN to read" and flag the
   downlink partner (30 MHz up).
-- [ ] Stage 2, capture: `fmctl capture 2 iq-band` on the block at 20 MS/s
+- [x] Stage 2, capture: `fmctl capture 2 iq-band` on the block at 20 MS/s
   (17.8 MHz wide; 10 MS/s is too narrow for 9 MHz).
 - [ ] Stage 3, structural fingerprint (`iqlte.py`, numpy only), each check
   independent with a chance estimate:
@@ -1262,7 +1262,9 @@ and cell IDs stay in `recordings/`, never in the repo or knowledge files.
   come first: they rule out most false candidates.
   Shipped in `tools/iq-lte` (2026-10-16, synthetic signals): checks 2, 3 and 4
   (CP, PSS, SSS). Not run: 1, 5 (duplex is assumed FDD) and 6 (CRS is named
-  in the output). Left open until those are built.
+  in the output). Left open until those are built. Real air (2026-10-16): the
+  verdict and PCI right on one 10 MHz cell; several cells on one carrier are not
+  told apart (see lte-verify.md, "Limits seen on real air").
 - [ ] Stage 4, report: an `lte` section on the `iqmeasure` card and class,
   `tools/iq-lte FILE`, a read-only `fmctl` reply, a PNG from `iq-picture`.
   Tests: a synthetic LTE downlink with a known PCI and width, negatives
@@ -1273,7 +1275,8 @@ and cell IDs stay in `recordings/`, never in the repo or knowledge files.
   2026-10-16). It writes the block at 15.36 MS/s and runs
   `$FMRX_LTE_TOOLS/run_pdsch.sh` (srsRAN 4G's `pdsch_ue`, built by the user),
   reading the MIB and SIB1 only, 10 MHz only. No `synch_file`. Tested on a stub
-  decoder only; the real-capture check is the planner's. See
+  decoder, then on real air (2026-10-16, one 10 MHz Band 13 cell): MIB and SIB1
+  read, the operator code, tracking area, cell identity and band right. See
   [lte-verify.md](lte-verify.md).
 
   Not ticked, still open: `srsue` with a file radio is untested. Fallback:
