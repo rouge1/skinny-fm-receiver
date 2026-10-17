@@ -1,5 +1,7 @@
 # Verifying an LTE carrier found in a sweep
 
+Acronyms (PCI, MIB, SIB1, MCC, FDD and the rest) are explained in [glossary.md](glossary.md).
+
 How to tell whether an LTE-looking block in a sweep is LTE, and, with an
 outside decoder, which cell it is. The method is the Round 25 plan in
 [roadmap.md](roadmap.md). The app classifies (numpy only); `tools/iq-lte`
