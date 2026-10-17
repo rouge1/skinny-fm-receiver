@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 
 import numpy as np
 
@@ -383,15 +384,31 @@ def _empty_block():
     }
 
 
-def _search_offsets(script, cf32, pci, offsets, nsf, ports, tmp, timeout):
-    """Try ``ports`` at each frame offset. The first decoded MIB stops the search."""
+def _budget_used():
+    return {'ran': False, 'reason': 'decode time budget used'}
+
+
+def _search_offsets(script, cf32, pci, offsets, nsf, ports, tmp, timeout, deadline=None):
+    """Try ``ports`` at each frame offset. The first decoded MIB stops the search.
+
+    ``deadline`` is a ``time.monotonic`` instant. Each ``pdsch_ue`` call is
+    capped at the time still left before it, and at ``timeout``. A call is
+    not started once that instant has passed; attempts already made stay in
+    ``tried``.
+    """
     tried = []
     success = None
     success_dump = None
     for offset in offsets:
         for count in ports:
+            call_timeout = float(timeout)
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return success, success_dump, tried
+                call_timeout = min(call_timeout, remaining)
             dump = os.path.join(tmp, 'dump-%s-%d-%d.bin' % (int(pci), int(offset), int(count)))
-            text, ok = _run_once(script, cf32, pci, offset, nsf, count, dump, timeout)
+            text, ok = _run_once(script, cf32, pci, offset, nsf, count, dump, call_timeout)
             tried.append({'offset': int(offset), 'ports': int(count), 'decoded': bool(ok)})
             if ok:
                 success = parse_mib(text)
@@ -438,11 +455,12 @@ def _decode_result(success, success_dump, tried, tools):
 
 
 def _prepare_block(iq, fs):
-    """``(tools, script, block)`` at 15.36 MS/s, or the empty-block decode object.
+    """``(tools, script, block)`` at 15.36 MS/s.
 
-    Raises :class:`ToolsMissing` when the tools directory or ``run_pdsch.sh``
-    is absent. The empty object is returned instead of a block when there is
-    nothing to give the decoder.
+    ``block`` is None when the resampled capture is empty or silent. The
+    caller turns that into the empty-block decode object. Raises
+    :class:`ToolsMissing` when the tools directory or ``run_pdsch.sh`` is
+    absent.
     """
     tools = tools_dir()
     script = require_program(tools, 'run_pdsch.sh')
@@ -481,16 +499,25 @@ def decode_cell(iq, fs, pci, frame_offset, ports, timeout=120):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def decode_cells(iq, fs, specs, ports, timeout=120):
+def decode_cells(iq, fs, specs, ports, timeout=120, budget=15 * 60):
     """One ``decode`` object per ``(pci, frame_offset, half_frame)`` in ``specs``.
 
-    ``frame_offset`` is in samples of ``fs`` (modulo 10 ms), the same value
-    ``decode_cell`` takes. ``half_frame`` is the cell's label for that offset
-    (0 when it is the subframe-0 boundary, 1 when it is 5 ms later). As in
-    ``decode_cell``, the label does not pick a single boundary:
-    :func:`decoder_offsets` tries the reported offset and 5 ms away, both
-    scaled to 15.36 MS/s. The resampled file is written once and every cell
-    is read from it, so a second cell does not resample the capture again.
+    Specs are decoded in the order given. The caller passes the strongest
+    cell first, so that cell spends the budget before a weaker one.
+
+    ``frame_offset`` is in samples of ``fs``. ``half_frame`` is accepted and
+    not used: ``cells`` reports ``half_frame`` 0 always, and the offset is
+    only known modulo the 5 ms half-frame. Both boundaries are tried
+    (:func:`decoder_offsets` scales the reported offset to 15.36 MS/s and
+    also tries 5 ms away), the same as ``decode_cell``.
+
+    ``timeout`` caps one ``pdsch_ue`` call. ``budget`` is the wall-clock
+    allowance for every cell together (15 minutes unless the caller says
+    otherwise). Each call is also capped at the time still left. A cell
+    that has not been started when the budget is gone gets
+    ``{"ran": false, "reason": "decode time budget used"}``.
+
+    The resampled file is written once and every cell is read from it.
     An empty ``specs`` returns ``[]`` and does not look for the outside tools.
     """
     if not specs:
@@ -500,6 +527,7 @@ def decode_cells(iq, fs, specs, ports, timeout=120):
     if block is None:
         return [_empty_block() for _ in specs]
     nsf = max(1, int(round(block.size / float(_SUBFRAME))))
+    deadline = time.monotonic() + float(budget)
     tmp = tempfile.mkdtemp(prefix='iqlte-')
     try:
         cf32 = os.path.join(tmp, 'block.cf32')
@@ -507,10 +535,16 @@ def decode_cells(iq, fs, specs, ports, timeout=120):
             block.tofile(fh)
         out = []
         for pci, frame_offset, _half_frame in specs:
+            if deadline - time.monotonic() <= 0.0:
+                out.append(_budget_used())
+                continue
             o1, o2 = decoder_offsets(frame_offset, nsf_rate)
             success, success_dump, tried = _search_offsets(
-                script, cf32, pci, (o1, o2), nsf, ports, tmp, timeout)
-            out.append(_decode_result(success, success_dump, tried, tools))
+                script, cf32, pci, (o1, o2), nsf, ports, tmp, timeout, deadline)
+            if not tried and success is None:
+                out.append(_budget_used())
+            else:
+                out.append(_decode_result(success, success_dump, tried, tools))
         return out
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

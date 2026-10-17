@@ -199,7 +199,12 @@ def _card(path, block_hz, sl, fp, sss, decode, cells):
 
 
 def _skip_decode(fp, pci):
-    """Why this PCI is not given to ``pdsch_ue``, or None when it should be."""
+    """Why this PCI is not given to ``pdsch_ue``, or None when it should be.
+
+    Every cell is gated on the capture-level fingerprint verdict (and on
+    that fingerprint's FFT size), not on a per-cell verdict. A cell list
+    on a capture that is not ``lte``, or not 10 MHz, is not decoded.
+    """
     verdict = fp.get('verdict')
     if verdict != 'lte' or pci is None:
         why = 'verdict is %s' % verdict
@@ -281,7 +286,10 @@ def main(argv=None):
     ap.add_argument('--center', type=float, metavar='HZ',
                     help='centre frequency in Hz, for a bare .cfile')
     ap.add_argument('--decode', action='store_true',
-                    help='read the MIB and SIB1 with $FMRX_LTE_TOOLS/run_pdsch.sh')
+                    help='read the MIB and SIB1 of each cell with '
+                         '$FMRX_LTE_TOOLS/run_pdsch.sh, strongest cell first. '
+                         'A cell offset is only known modulo a 5 ms half-frame '
+                         '(cells report half_frame 0), so both boundaries are tried')
     ap.add_argument('--ports', type=int, nargs='+', metavar='N',
                     help='antenna port counts to try, in order (default: 4 2 1)')
     try:
