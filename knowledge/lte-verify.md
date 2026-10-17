@@ -77,13 +77,15 @@ A run on a 10 MHz downlink with PCI 123 (placeholder values) reads, in part:
 }
 ```
 
+The TAC 4660 above is 0x1234, the placeholder TAC.
+
 Exit codes:
 
 | Code | Meaning |
 |---|---|
 | 0 | The run completed, whatever the verdict (a negative is 0) |
 | 1 | A bad option or value, a file that cannot be read, or a sweep file (`.sdvr` of spectra); the reason is on stderr, nothing on stdout |
-| 2 | `--decode` was asked and the outside tools are missing (`FMRX_LTE_TOOLS` empty or absent, or `run_pdsch.sh` not in it) |
+| 2 | `--decode` was asked and the outside tools are missing: the tools directory (from `FMRX_LTE_TOOLS`, or the built-in default when that is unset or empty) or `run_pdsch.sh` in it. A missing pycrate interpreter is not exit 2: the MIB is still reported, with `sib1` null |
 
 ## Decoding the broadcast: `--decode`
 

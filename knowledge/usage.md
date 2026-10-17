@@ -1252,11 +1252,12 @@ tools/iq-lte CAPTURE.cfile --decode --ports 4 2 1         # also the MIB and SIB
 
 - Numpy only, and it classifies: the verdict is `lte`, `possible`, `not-lte` or
   `unknown`, and each check in `checks` has its score and chance estimate.
-  The CP and PSS checks decide the verdict; SSS gives `pci`. `pci` is the
-  placeholder-free output of a real cell only when the capture holds one.
+  The CP and PSS checks decide the verdict; SSS gives `pci`, which is null
+  unless the SSS chance is at most 1e-3.
 - Exit 0 whatever the verdict; 1 for a bad option, a file it cannot read, or a
   sweep file (the reason on stderr); 2 when `--decode` is asked and the outside
-  tools are not under `$FMRX_LTE_TOOLS`.
+  tools directory (`$FMRX_LTE_TOOLS`, or its default when unset) or `run_pdsch.sh` is
+  missing. A missing pycrate interpreter leaves `sib1` null and still exits 0.
 - `--decode` needs srsRAN 4G's `pdsch_ue`, built by you (AGPL, not part of this
   repo) and reached through `$FMRX_LTE_TOOLS`. It reads the MIB and the SIB1 only,
   for a 10 MHz carrier in this phase. See [lte-verify.md](lte-verify.md) for the

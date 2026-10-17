@@ -1269,16 +1269,17 @@ and cell IDs stay in `recordings/`, never in the repo or knowledge files.
   (noise, the recorded ATSC file, a non-LTE wideband OFDM).
   Shipped: `tools/iq-lte FILE` (2026-10-16; `test_iq_lte.py`, with synthetic
   negatives). Not yet: the card section and class, the `fmctl` reply, the PNG.
-- [x] Stage 5, decode (user approves installing and settles the legal
-  question first): srsRAN 4G (AGPL, installed outside this env) `synch_file`
-  then `pdsch_ue -c <PCI>` on the capture resampled to 11.52 MS/s (72/125);
-  Shipped as `tools/iq-lte FILE --decode` (`iqlte_decode.py`, 2026-10-16):
-  the block is written at 15.36 MS/s, not 11.52, and `synch_file` is not
-  used. Tested on a stub decoder only; the real-capture check is the planner's.
-  See [lte-verify.md](lte-verify.md).
-  MIB and SIB1 give the PLMN, TAC and cell ID, the only on-air proof of the
-  operator. `srsue` with a file radio is untested. Fallback:
+- [x] Stage 5, decode: `tools/iq-lte FILE --decode` (`iqlte_decode.py`,
+  2026-10-16). It writes the block at 15.36 MS/s and runs
+  `$FMRX_LTE_TOOLS/run_pdsch.sh` (srsRAN 4G's `pdsch_ue`, built by the user),
+  reading the MIB and SIB1 only, 10 MHz only. No `synch_file`. Tested on a stub
+  decoder only; the real-capture check is the planner's. See
+  [lte-verify.md](lte-verify.md).
+
+  Not ticked, still open: `srsue` with a file radio is untested. Fallback:
   JiaoXianjun/LTE-Cell-Scanner. Avoid LTESniffer, FALCON, gr-lte, QCSuper.
-  The US reading of 18 USC 2511 / 47 USC 605 is not advice.
+  The MIB and SIB1 give the PLMN, TAC and cell ID, the only on-air proof of the
+  operator. The US reading of 18 USC 2511 / 47 USC 605 is not advice. The user
+  approves installing srsRAN and settles that question first.
 - Order: checks 2 and 3 with the synthetic test; band table and report;
   checks 4-6; stage 5.
