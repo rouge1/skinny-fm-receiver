@@ -134,11 +134,70 @@ the length as two bytes little-endian, then the bytes. Without that patch no
 transport block is dumped, so `sib1` is null; the MIB comes from the program's
 text output alone.
 
-Output of `--decode` is in the same JSON under `decode`: `ran`, `mib` (`pci`,
+Output of `--decode` is in the same JSON under `decode` (the strongest cell's;
+per-cell decodes are the planned l4 tool step, below): `ran`, `mib` (`pci`,
 `ports`, `prb`, `type`, `cp`, `sfn`), `offset_samples`, `tried` (each offset
 and port count with whether it decoded), `sib1` (`plmns`, `tac`,
 `cell_identity`, `enb_id`, `cell_id`, `freq_band`, `cell_barred`,
 `q_rx_lev_min`) or null with `sib1_reason`.
+
+## Several cells on one carrier: `cells`
+
+`iqlte.cells(iq, fs, max_cells=4)` lists every cell on the carrier whose SSS
+clears the same 1e-3 line, strongest first. Each entry gives the PCI, N_ID(1),
+N_ID(2), the frame offset in samples, the half-frame, the power relative to the
+strongest (0 dB for it, negative below), the SSS chance and a detail string.
+A cell whose PSS is found but whose SSS is not is left out: a PCI is never
+guessed. An empty list is returned for noise, for a capture under 20 ms and for
+one under 1.92 MS/s, without an exception.
+
+The method:
+
+1. Each of the three PSS roots is correlated on its own against that root's
+   useful symbol, and the correlation is folded onto one 10 ms frame by the
+   mean of the magnitudes. The fold is one frame, so a neighbour half a frame
+   away is not lost, and the half-frame mate of a cell is the same cell found
+   twice.
+2. Peaks of one root more than a short guard apart are different timings:
+   different towers, which may share a root. Peaks of different roots within a
+   few samples are one timing: sectors of one tower, which are time-synchronised.
+3. At a shared timing a least-squares fit gives one gain per root. The SSS
+   hypotheses are scored strongest root first. A PCI that clears 1e-3 has its
+   SSS subtracted before the next is scored, and the same root is scored again
+   after that, because two cells on one root and one timing can only be told
+   apart by their SSS.
+4. The fold is first tried at zero frequency offset. Only when its best peak is
+   still at the noise is a 2 kHz grid from -10 kHz to +10 kHz tried, and the
+   winning offset is used to derotate the SSS.
+
+The wrong turns that shaped this (a fold on 5 ms, blanking the half-frame mate,
+a regenerated data subframe subtracted, and others) are listed in the
+`iqlte.py` docstring. Single-cell results are unchanged: `fingerprint`'s `pci`
+is still the strongest cell's, and `cp_autocorr`, `pss_search` and `sss_search`
+are not touched.
+
+Limits of `cells`:
+
+- **Sectors and towers are told apart differently.** Sectors share a timing and
+  differ by root; a second tower shows as a second timing. A tower whose sector
+  has the same root and the same timing as another cell is separated by its SSS
+  alone, so it is reported only if that SSS clears the line.
+- **A weak cell.** The synthetic targets were a cell 6 dB under the strong one
+  and a cell 10 dB under it. At 10 dB under, the strong cell is the one the
+  target requires; the weak one is not required to appear.
+- **Frequency offset.** Zero offset, then a grid to +/-10 kHz. A larger offset
+  is not covered by `cells`. The single-cell path still covers +/-6 kHz only.
+- **Three cells are the tested case.** `max_cells` defaults to 4. Four or more
+  cells are not tested.
+- **Synthetic only.** Real air has not been checked. Two carriers the planner
+  holds (Band 14 and Band 17) are the check; see the status below.
+
+The JSON the tool prints: the planned l4 tool step adds a `cells` list (the
+same entries as above) to `tools/iq-lte`'s output, and with `--decode` gives
+each cell its own `decode` (the same shape as the top-level one, or
+`{"ran": false, "reason": ...}`), decoded at that cell's frame offset. Until
+that step is merged, `iq-lte` does not print `cells`, and its `decode` is still
+the strongest cell's only. The per-cell decode is not verified on air.
 
 ## Status
 
@@ -155,10 +214,11 @@ are not recorded here: they are kept with the recordings. See
 
 ### Limits seen on real air
 
-- **One cell per carrier is assumed.** A second carrier (Band 14) showed
+- **One cell per carrier was assumed.** A second carrier (Band 14) showed
   LTE structure in every segment but the PSS root alternated between two values: two
   cells on one frequency. The detector then flips between them and the SSS often
-  finds neither, so no PCI. Telling several cells apart is not built.
+  finds neither, so no PCI. Telling several cells apart is the `cells` step above
+  (phase l4), built and tested on synthetic signals; its real-air check is pending.
 - **Centre the block on the carrier.** The PSS check tolerates about 10 kHz.
   An LTE carrier's centre is on a 100 kHz raster of the absolute frequency, so
   try the raster values near the plateau's middle (`--block-center`). A block

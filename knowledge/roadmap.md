@@ -1265,6 +1265,11 @@ and cell IDs stay in `recordings/`, never in the repo or knowledge files.
   in the output). Left open until those are built. Real air (2026-10-16): the
   verdict and PCI right on one 10 MHz cell; several cells on one carrier are not
   told apart (see lte-verify.md, "Limits seen on real air").
+- [x] Stage 3b, several cells on one carrier (`iqlte.cells`, phase l4, 2026-10-17):
+  every cell whose SSS clears 1e-3, sectors and towers told apart, no PCI guessed.
+  Built and tested on synthetic signals; the real-air check (Band 14, Band 17) is
+  the planner's, and the `iq-lte` JSON step is not yet merged. See
+  [lte-verify.md](lte-verify.md#several-cells-on-one-carrier-cells).
 - [ ] Stage 4, report: an `lte` section on the `iqmeasure` card and class,
   `tools/iq-lte FILE`, a read-only `fmctl` reply, a PNG from `iq-picture`.
   Tests: a synthetic LTE downlink with a known PCI and width, negatives
