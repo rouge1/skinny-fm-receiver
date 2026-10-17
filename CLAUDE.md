@@ -57,7 +57,8 @@ with no launcher.
   `knowledge/catalogs.md`, kept equal by a test); `iq-decode --bursts` feeds
   each burst to rtl_433 at the decoder's own rate. All numpy only.
   `iqlte.py`, the LTE structural fingerprint (cyclic-prefix autocorrelation,
-  PSS search and SSS search for the cell ID), is numpy only too; its test helpers `tools/tests/lte_synth.py`
+  PSS search and SSS search for the cell ID, and `cells` for several cells on
+  one carrier), is numpy only too; its test helpers `tools/tests/lte_synth.py`
   and `lte_negatives.py` use scipy.
   `tools/iq-lte` is its command (`knowledge/lte-verify.md`); `iqlte_decode.py` hands a
   centred 10 MHz block to an outside srsRAN 4G `pdsch_ue` for the MIB and SIB1 (`--decode`,

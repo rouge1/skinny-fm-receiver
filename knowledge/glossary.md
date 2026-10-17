@@ -38,6 +38,7 @@ FirstNet).
 | PCI | Physical Cell ID, 0-503. A short ID that nearby cells use so they are not confused. Not unique worldwide, so two far-apart cells can share one. |
 | N_ID(1), N_ID(2) | The two parts of the PCI: PCI = 3 x N_ID(1) + N_ID(2). N_ID(2) is 0-2, N_ID(1) is 0-167. |
 | PSS | Primary Synchronization Signal: a fixed pattern sent every 5 ms. Which of three patterns (Zadoff-Chu roots 25, 29, 34) gives N_ID(2), i.e. PCI mod 3. |
+| Sector | One of a tower's cells (usually three, one per antenna direction). Sectors of one tower share a timing and have different PSS roots, so they can be told apart by root. |
 | SSS | Secondary Synchronization Signal: sent in the symbol just before the PSS. Its pattern gives N_ID(1), and so the full PCI, and which half of the 10 ms frame it is. |
 | CRS | Cell-specific Reference Signals: known pilot symbols scattered through the downlink so phones can estimate the channel. Their positions depend on the PCI, so they are a second, independent check of it, and show the antenna-port count. Not built here yet. |
 | SFN | System Frame Number: a counter 0-1023, one frame per 10 ms. |
