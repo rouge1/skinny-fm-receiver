@@ -181,16 +181,12 @@ def _resample(iq, native, fs):
     return out
 
 
-def synth_lte(bw_mhz=10, n_frames=10, pci=123, snr_db=20.0, seed=0, cfo_hz=0.0,
-              fs=None, pss=True, sss=True):
-    """FDD downlink, one port, normal CP.
+def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True):
+    """One downlink at the native rate, after its seeded frame roll.
 
-    Returns ``(iq complex64, fs)``. ``fs`` None keeps the native rate of the
-    bandwidth class. The mean power is 1 before the noise; complex white noise
-    is then added so that signal power over noise power is ``snr_db`` at the
-    output rate (a non-finite ``snr_db`` adds none). ``cfo_hz`` rotates the
-    output. ``pss`` False zeroes the primary synchronisation signal. ``sss``
-    False zeroes the secondary synchronisation signal.
+    Not normalised and with no noise. Returns ``(iq, native_fs, frame_offset, rng)``.
+    ``rng`` has already drawn the offset and the QPSK bits, which is the point
+    where ``synth_lte`` draws its noise, so that stream is unchanged.
     """
     pci = int(pci)
     if not 0 <= pci <= 503:
@@ -230,6 +226,22 @@ def synth_lte(bw_mhz=10, n_frames=10, pci=123, snr_db=20.0, seed=0, cfo_hz=0.0,
 
     iq = _assemble(grid, n_fft, n_sc)
     iq = np.roll(iq, offset)
+    return iq, native, offset, rng
+
+
+def synth_lte(bw_mhz=10, n_frames=10, pci=123, snr_db=20.0, seed=0, cfo_hz=0.0,
+              fs=None, pss=True, sss=True):
+    """FDD downlink, one port, normal CP.
+
+    Returns ``(iq complex64, fs)``. ``fs`` None keeps the native rate of the
+    bandwidth class. The mean power is 1 before the noise; complex white noise
+    is then added so that signal power over noise power is ``snr_db`` at the
+    output rate (a non-finite ``snr_db`` adds none). ``cfo_hz`` rotates the
+    output. ``pss`` False zeroes the primary synchronisation signal. ``sss``
+    False zeroes the secondary synchronisation signal.
+    """
+    iq, native, _offset, rng = _cell_native(
+        bw_mhz, n_frames, pci, seed, pss=pss, sss=sss)
 
     rate = native if fs is None else float(fs)
     if fs is not None and int(round(fs)) != int(round(native)):
@@ -245,6 +257,69 @@ def synth_lte(bw_mhz=10, n_frames=10, pci=123, snr_db=20.0, seed=0, cfo_hz=0.0,
     if cfo_hz:
         iq = iq * np.exp(2j * np.pi * float(cfo_hz) * np.arange(len(iq)) / rate)
     return iq.astype(np.complex64), rate
+
+
+def synth_lte_multi(cells, bw_mhz=10, n_frames=10, snr_db=20.0, seed=0, cfo_hz=0.0,
+                    fs=None):
+    """Several FDD downlinks on one carrier, summed, then one noise draw.
+
+    ``cells`` is a list of ``dict(pci, power_db, delay_samples)``. Cell ``i`` is
+    the same native-rate waveform as ``synth_lte`` with ``seed + i`` (so cell 0
+    and ``synth_lte(..., seed=seed)`` share data and the random frame offset),
+    with no per-cell noise. ``power_db`` 0 is that waveform's amplitude (about
+    unit power, as ``_assemble`` leaves it); the cell is multiplied by
+    ``10 ** (power_db / 20)``.
+
+    ``delay_samples`` is an integer circular ``np.roll`` at the native rate,
+    relative to the first cell: cell ``i``'s frame offset becomes the first
+    cell's offset plus ``delay_samples``. A delay of 0 lines the PSS up with
+    cell 0; it does not keep each cell's own random offset. The roll is
+    ``np.roll(iq, first_offset + delay - own_offset)``.
+
+    The weighted cells are summed, resampled with the same rule as ``synth_lte``
+    (``fs`` None stays at the native rate), then scaled so the sum has unit
+    mean power. Complex white noise is added at that output rate so total
+    signal power over noise power is ``snr_db`` (non-finite adds none). The
+    noise generator is ``SeedSequence([seed, 1])``, not a cell seed. ``cfo_hz``
+    then rotates the output exactly as in ``synth_lte``.
+
+    Returns ``(iq complex64, fs)`` and nothing else.
+    """
+    if not cells:
+        raise ValueError('cells is empty')
+    waves = []
+    offsets = []
+    native = None
+    for i, cell in enumerate(cells):
+        iq_i, native_i, offset, _rng = _cell_native(
+            bw_mhz, n_frames, cell['pci'], int(seed) + i)
+        if native is None:
+            native = native_i
+        waves.append(iq_i)
+        offsets.append(offset)
+
+    base = offsets[0]
+    acc = np.zeros(waves[0].shape, dtype=np.complex128)
+    for i, cell in enumerate(cells):
+        extra = base + int(cell['delay_samples']) - offsets[i]
+        weight = 10.0 ** (float(cell['power_db']) / 20.0)
+        acc += np.roll(waves[i], extra) * weight
+
+    rate = native if fs is None else float(fs)
+    if fs is not None and int(round(fs)) != int(round(native)):
+        acc = _resample(acc, native, rate)
+
+    power = np.mean(np.abs(acc) ** 2)
+    acc = acc / np.sqrt(power)
+    if np.isfinite(snr_db):
+        noise_rng = np.random.default_rng(np.random.SeedSequence([int(seed), 1]))
+        noise_power = 10.0 ** (-float(snr_db) / 10.0)
+        noise = np.sqrt(noise_power / 2.0) * (
+            noise_rng.standard_normal(len(acc)) + 1j * noise_rng.standard_normal(len(acc)))
+        acc = acc + noise
+    if cfo_hz:
+        acc = acc * np.exp(2j * np.pi * float(cfo_hz) * np.arange(len(acc)) / rate)
+    return acc.astype(np.complex64), rate
 
 
 def _symbol_spans(n_fft, n_symbols):

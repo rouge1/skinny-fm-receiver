@@ -141,7 +141,23 @@ def _fingerprint(iq, fs):
     return card, saved.get('sss')
 
 
-def _card(path, block_hz, sl, fp, sss, decode):
+def _cells_of(fp):
+    """The cell list ``fingerprint`` already computed on this block.
+
+    ``fingerprint`` calls ``iqlte.cells`` once and keeps the list. A second
+    call would search the same block again. Entries are copied so a later
+    ``decode`` key is not written back into the fingerprint.
+    """
+    found = fp.get('cells')
+    if not isinstance(found, list):
+        return []
+    out = []
+    for cell in found:
+        out.append(dict(cell) if isinstance(cell, dict) else cell)
+    return out
+
+
+def _card(path, block_hz, sl, fp, sss, decode, cells):
     nfft = fp.get('nfft')
     nfft = None if nfft is None else int(nfft)
     pci = fp.get('pci')
@@ -177,14 +193,19 @@ def _card(path, block_hz, sl, fp, sss, decode):
         'half_frame': half,
         'frame_offset_samples': offset,
         'checks': fp.get('checks'),
+        'cells': cells,
         'decode': decode,
     }
 
 
-def _decode(args, sl, fp, sss):
-    """The ``decode`` object, or an exit code (1 or 2) when the run must stop."""
+def _skip_decode(fp, pci):
+    """Why this PCI is not given to ``pdsch_ue``, or None when it should be.
+
+    Every cell is gated on the capture-level fingerprint verdict (and on
+    that fingerprint's FFT size), not on a per-cell verdict. A cell list
+    on a capture that is not ``lte``, or not 10 MHz, is not decoded.
+    """
     verdict = fp.get('verdict')
-    pci = fp.get('pci')
     if verdict != 'lte' or pci is None:
         why = 'verdict is %s' % verdict
         if pci is None:
@@ -196,12 +217,57 @@ def _decode(args, sl, fp, sss):
             'ran': False,
             'reason': 'only a 10 MHz carrier is decoded in this phase (nfft %s)' % nfft,
         }
+    return None
+
+
+def _frame_of(cell):
+    """``(frame_offset_samples, half_frame)`` for one cell, either of them None."""
+    offset = cell.get('frame_offset_samples')
+    half = cell.get('half_frame')
+    if offset is not None:
+        offset = int(offset)
+    if half is not None:
+        half = int(half)
+    return offset, half
+
+
+def _decode(args, sl, fp, sss, cells):
+    """The top-level ``decode``, or an exit code (2) when the tools are missing.
+
+    Each cell dict that has a PCI gains its own ``decode``, read at that
+    cell's frame offset. The top-level object stays the strongest cell's,
+    which is the first entry. With no such cell, it is the single-cell
+    decode of the fingerprint PCI, as before.
+    """
+    ports = tuple(args.ports) if args.ports else _DEFAULT_PORTS
+    runnable = []
+    for cell in cells:
+        if not isinstance(cell, dict) or cell.get('pci') is None:
+            continue
+        blocked = _skip_decode(fp, cell.get('pci'))
+        if blocked is not None:
+            cell['decode'] = blocked
+            continue
+        offset, half = _frame_of(cell)
+        runnable.append((cell, int(cell['pci']), offset, half))
+    if runnable:
+        try:
+            specs = [(pci, offset, half) for _cell, pci, offset, half in runnable]
+            decoded = iqlte_decode.decode_cells(sl.iq, sl.rate, specs, ports)
+        except iqlte_decode.ToolsMissing as exc:
+            return _missing(exc.name)
+        for (cell, _pci, _offset, _half), result in zip(runnable, decoded):
+            cell['decode'] = result
+    if cells and isinstance(cells[0], dict) and isinstance(cells[0].get('decode'), dict):
+        return cells[0]['decode']
+    blocked = _skip_decode(fp, fp.get('pci'))
+    if blocked is not None:
+        return blocked
     offset = None
     if isinstance(sss, dict) and sss.get('frame_offset_samples') is not None:
         offset = int(sss['frame_offset_samples'])
-    ports = tuple(args.ports) if args.ports else _DEFAULT_PORTS
     try:
-        return iqlte_decode.decode_cell(sl.iq, sl.rate, int(pci), offset, ports)
+        return iqlte_decode.decode_cell(sl.iq, sl.rate, int(fp['pci']), offset, ports)
     except iqlte_decode.ToolsMissing as exc:
         return _missing(exc.name)
 
@@ -220,7 +286,10 @@ def main(argv=None):
     ap.add_argument('--center', type=float, metavar='HZ',
                     help='centre frequency in Hz, for a bare .cfile')
     ap.add_argument('--decode', action='store_true',
-                    help='read the MIB and SIB1 with $FMRX_LTE_TOOLS/run_pdsch.sh')
+                    help='read the MIB and SIB1 of each cell with '
+                         '$FMRX_LTE_TOOLS/run_pdsch.sh, strongest cell first. '
+                         'A cell offset is only known modulo a 5 ms half-frame '
+                         '(cells report half_frame 0), so both boundaries are tried')
     ap.add_argument('--ports', type=int, nargs='+', metavar='N',
                     help='antenna port counts to try, in order (default: 4 2 1)')
     try:
@@ -251,12 +320,13 @@ def main(argv=None):
         return _refuse(exc)
 
     fp, sss = _fingerprint(sl.iq, sl.rate)
+    cells = _cells_of(fp)
     decode = None
     if args.decode:
-        decode = _decode(args, sl, fp, sss)
+        decode = _decode(args, sl, fp, sss, cells)
         if isinstance(decode, int):
             return decode
-    card = _card(args.file, block_hz, sl, fp, sss, decode)
+    card = _card(args.file, block_hz, sl, fp, sss, decode, cells)
     json.dump(card, sys.stdout, indent=2, allow_nan=False)
     sys.stdout.write('\n')
     return 0
