@@ -1009,6 +1009,32 @@ GROUPS = [group_structure, group_negatives, group_errors, group_no_tools, group_
 L4_PAIR = (61, 288)
 L4_POWER_DB = -6.0
 L4_TOL = 4                # samples
+L4_CELL_KEYS = ('pci', 'nid1', 'nid2', 'frame_offset_samples', 'half_frame',
+                'relative_power_db', 'score', 'chance', 'detail')
+
+
+def cell_shape_problems(cells):
+    """What is wrong with the JSON ``cells`` list (spec l4.md:43-45): every cell has the
+    L4_CELL_KEYS, chance at most 1e-3, and relative_power_db 0.0 for the strongest, then <= 0."""
+    bad = []
+    for i, c in enumerate(cells):
+        if not isinstance(c, dict):
+            bad.append(f'cell {i} is not a dict')
+            continue
+        miss = [k for k in L4_CELL_KEYS if k not in c]
+        if miss:
+            bad.append(f'cell {i} missing {miss}')
+        ch = c.get('chance')
+        if not isinstance(ch, (int, float)) or ch > 1e-3:
+            bad.append(f'cell {i} chance {ch!r} (want <= 1e-3)')
+        rel = c.get('relative_power_db')
+        if not isinstance(rel, (int, float)):
+            bad.append(f'cell {i} relative_power_db {rel!r}')
+        elif i == 0 and rel != 0.0:
+            bad.append(f'strongest cell relative_power_db {rel!r} (want 0.0)')
+        elif i > 0 and rel > 0:
+            bad.append(f'cell {i} relative_power_db {rel!r} (want <= 0)')
+    return bad
 
 _MIB_PCI_LINE = "' - PCI:             123'"
 assert _MIB_PCI_LINE in STUB_PY, 'the stub MIB line moved; update STUB_CELLS_PY'
@@ -1081,7 +1107,9 @@ def group_l4_cells():
         if cells is None:
             return False, 'no cells list in the JSON'
         got = {c.get('pci') for c in cells if isinstance(c, dict)}
-        return set(L4_PAIR) <= got, f'cells pcis {sorted(p for p in got if p is not None)}'
+        bad = cell_shape_problems(cells)
+        pcis = f'cells pcis {sorted(p for p in got if p is not None)}'
+        return set(L4_PAIR) <= got and not bad, '; '.join([pcis] + bad)
     expect('L4 two cells: exit 0, JSON cells holds both PCIs (no --decode)', plain_has_both)
 
     def each_has_decode():
@@ -1090,7 +1118,13 @@ def group_l4_cells():
             return False, describe(r)
         cells = l4_cells_of(c) or []
         dec = {x.get('pci'): x.get('decode') for x in cells if isinstance(x, dict)}
-        ok = all(isinstance(dec.get(p), dict) for p in L4_PAIR)
+        def decode_shape(d):
+            if not isinstance(d, dict):
+                return False
+            if d.get('ran') is False:
+                return isinstance(d.get('reason'), str)
+            return has_keys(d, DEC_KEYS)[0]
+        ok = all(decode_shape(dec.get(p)) for p in L4_PAIR)
         return ok, f"decode present for PCIs {sorted(p for p in dec if p is not None)}"
     expect('L4 two cells --decode: each cell dict has a decode', each_has_decode)
 
