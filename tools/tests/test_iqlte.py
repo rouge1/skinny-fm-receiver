@@ -872,12 +872,6 @@ def l4_both(case):
     return set(case[0]) <= reported(res)
 
 
-def l4_a_timing(case):
-    res, delay = pair_run(*case)
-    gap = timing_gap(res, case[0], delay)
-    return gap <= L4_TOL, f'gap {gap} samples (want <= {L4_TOL})'
-
-
 def group_l4_a():
     cases = [(pair, p, m, s) for pair in L4_PAIRS for p in (0.0, -6.0)
              for m in ('sync', 'async') for s in (0, 1)]
@@ -887,13 +881,19 @@ def group_l4_a():
     report(f'L4 A (G1) two cells, 10 MHz: both PCIs reported in {n} of {len(outs)} cases (gate 44)',
            n >= 44, '; '.join(bad[:6]))
 
+    # The timing gap is printed, not gated: G1 gates the both-PCI count only (l4.md:68).
     timed = [c for c in cases if l4_both(c)]
-    touts = [outcome(a_label(c), lambda c=c: l4_a_timing(c)) for c in timed]
-    tn = sum(1 for _, ok, _ in touts if ok)
-    tbad = [f'{label}: {why}' for label, ok, why in touts if not ok]
-    report(f'L4 A timing: reported frame starts within {L4_TOL} samples (sync) or the delay '
-           f'apart (async): {tn} of {len(touts)} cases with both reported',
-           len(touts) > 0 and tn == len(touts), '; '.join(tbad[:6]))
+    gaps = []
+    for c in timed:
+        try:
+            res, delay = pair_run(*c)
+            gaps.append(timing_gap(res, c[0], delay))
+        except Exception:
+            pass
+    worst = max(gaps) if gaps else None
+    report(f'L4 A timing (printed, not gated): {len(timed)} cases with both reported, '
+           f'{len(timed) - len(gaps)} without a timing; worst frame-start gap {worst} samples '
+           f'(L4_TOL {L4_TOL})', True)
 
 
 # ---- group B: G2 --------------------------------------------------------------
@@ -959,7 +959,7 @@ def l4_d_cells(pci, snr, seed):
 
 def l4_d_fp(pci, snr, seed):
     r = l4_single(pci, snr, seed)
-    return r['fp_pci'] == r['sss_pci'], f"fingerprint pci {r['fp_pci']!r}, sss pci {r['sss_pci']!r}"
+    return r['fp_pci'] == pci, f"fingerprint pci {r['fp_pci']!r} (want {pci})"
 
 
 def group_l4_d():
@@ -973,7 +973,7 @@ def group_l4_d():
 
     fp = [outcome(f'pci {p} {s:g} dB seed {d}', lambda p=p, s=s, d=d: l4_d_fp(p, s, d))
           for p, s, d in cases]
-    counted('L4 D (G4) one-cell regression: fingerprint pci unchanged (equal to sss_search pci)', fp)
+    counted('L4 D (G4) one-cell regression: fingerprint pci unchanged (equal to the cell PCI)', fp)
 
 
 # ---- group E: G5 --------------------------------------------------------------
