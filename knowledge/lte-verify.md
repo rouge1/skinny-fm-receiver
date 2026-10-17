@@ -135,7 +135,7 @@ transport block is dumped, so `sib1` is null; the MIB comes from the program's
 text output alone.
 
 Output of `--decode` is in the same JSON under `decode` (the strongest cell's;
-per-cell decodes are the planned l4 tool step, below): `ran`, `mib` (`pci`,
+per-cell decodes are in the `cells` list, below): `ran`, `mib` (`pci`,
 `ports`, `prb`, `type`, `cp`, `sfn`), `offset_samples`, `tried` (each offset
 and port count with whether it decoded), `sib1` (`plmns`, `tac`,
 `cell_identity`, `enb_id`, `cell_id`, `freq_band`, `cell_barred`,
@@ -192,12 +192,16 @@ Limits of `cells`:
 - **Synthetic only.** Real air has not been checked. Two carriers the planner
   holds (Band 14 and Band 17) are the check; see the status below.
 
-The JSON the tool prints: the planned l4 tool step adds a `cells` list (the
-same entries as above) to `tools/iq-lte`'s output, and with `--decode` gives
-each cell its own `decode` (the same shape as the top-level one, or
-`{"ran": false, "reason": ...}`), decoded at that cell's frame offset. Until
-that step is merged, `iq-lte` does not print `cells`, and its `decode` is still
-the strongest cell's only. The per-cell decode is not verified on air.
+The JSON the tool prints: a `cells` list (the same entries as above) in
+`tools/iq-lte`'s output. With `--decode`, each cell gets its own `decode` (the
+same shape as the top-level one, or `{"ran": false, "reason": ...}`), decoded
+at that cell's frame offset. The strongest cell's decode stays the top-level
+`decode`. The decode time budget is about 15 minutes for all cells together.
+The per-cell decode is synthetic and stub-tested only; the planner's real-air
+check is pending, so it is not verified on air.
+
+`cells` reports `half_frame` 0 always: the frame offset is only known modulo
+the 5 ms half-frame, so the decode tries both boundaries.
 
 ## Status
 

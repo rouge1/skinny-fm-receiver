@@ -1268,7 +1268,8 @@ and cell IDs stay in `recordings/`, never in the repo or knowledge files.
 - [x] Stage 3b, several cells on one carrier (`iqlte.cells`, phase l4, 2026-10-17):
   every cell whose SSS clears 1e-3, sectors and towers told apart, no PCI guessed.
   Built and tested on synthetic signals; the real-air check (Band 14, Band 17) is
-  the planner's, and the `iq-lte` JSON step is not yet merged. See
+  the planner's; the `iq-lte` JSON step (`cells`, and a per-cell `decode` with
+  `--decode`) is built on the tool branch. See
   [lte-verify.md](lte-verify.md#several-cells-on-one-carrier-cells).
 - [ ] Stage 4, report: an `lte` section on the `iqmeasure` card and class,
   `tools/iq-lte FILE`, a read-only `fmctl` reply, a PNG from `iq-picture`.
