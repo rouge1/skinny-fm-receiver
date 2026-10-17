@@ -84,8 +84,12 @@ roots gives a flat gain per root; the SSS hypotheses are then scored
 strongest root first, and a PCI that clears 1e-3 is subtracted (its SSS
 only) before the next one is scored. The same root is scored again after
 that, because two cells can share a root and a timing and then only the
-SSS tells them apart. A PCI the SSS does not support is not reported. Power is that root's fitted gain, and ``relative_power_db``
-is the gain against the strongest kept cell.
+SSS tells them apart. A PCI the SSS does not support is not reported.
+Power is that root's fitted gain, and ``relative_power_db`` is the gain
+against the strongest kept cell. The fold is first tried at zero
+frequency offset. When its best peak is still down at the noise, a 2 kHz
+grid from -10 kHz to +10 kHz is tried (a shift of the same block FFT, not
+a new copy of the capture) and the winning offset derotates the SSS.
 
 Wrong turns for several cells, kept out of the result:
 
@@ -116,6 +120,11 @@ Wrong turns for several cells, kept out of the result:
 - Keeping a same-root peak a few hundred samples off a stronger cell. That
   is a sidelobe, not a second tower: a second tower is not that close, and
   a sector on the same sample has a different root.
+- Reading the PSS and the SSS with no frequency trial. At 10 kHz the tone
+  has walked two-thirds of a bin and the match sits in the noise, so the
+  list comes back empty. The single-cell grid stops at 6 kHz; this search
+  covers 10 kHz, and only when zero offset already failed, so a centred
+  capture does not pay for the extra transforms.
 """
 
 import math
@@ -140,6 +149,12 @@ _PSS_ROOTS = (25, 29, 34)
 # nearest trial. Finer than that costs another FFT per prefix peak; the
 # prefix check itself is not derotated.
 _CFO_HZ = np.arange(-6000.0, 6000.1, 2000.0)
+# The multi-cell search has to cover 10 kHz. Same 2 kHz step as the
+# single-cell grid, which is left alone. Tried only when zero offset is weak.
+_CELLS_CFO_HZ = np.arange(-10000.0, 10000.1, 2000.0)
+# A centred cell at 0 dB still clears this. Noise and a 10 kHz offset do not,
+# which is what opens the grid above.
+_CELLS_CFO_SKIP = 0.18
 
 _PSS_SEQ = None  # (3, 62), unit-magnitude Zadoff-Chu, filled on first use
 _SSS_TEMPL = None  # (3, 168, 2, 62) real ±1, nid2 then N_ID(1) then subframe
@@ -1072,30 +1087,64 @@ def _pss_template(n_fft, root):
     return td / norm
 
 
-def _pss_match(block, td):
-    """Normalised correlation of ``block`` against a unit-norm PSS body.
-
-    ``out[t]`` is |<x[t:t+N], td>| / sqrt(sum |x[t:t+N]|^2). The peak sits on
-    the first sample of the useful symbol. The FFT length is zero-padded so
-    the match is linear, not circular, across the join of the block.
-    """
+def _pss_window_energy(block, n_fft):
+    """Normaliser for a length-``n_fft`` match, and how many lags are valid."""
     n = block.size
-    n_fft = td.size
-    if n <= n_fft:
-        return np.zeros(n, dtype=np.float64)
-    n_corr = 1 << int(n + n_fft - 1).bit_length()
-    spec = np.fft.fft(block, n_corr) * np.conj(np.fft.fft(td, n_corr))
-    corr = np.fft.ifft(spec)
     m = n - n_fft + 1
-    mag = np.abs(corr[:m])
     power = np.abs(block) ** 2
     cum = np.empty(n + 1, dtype=np.float64)
     cum[0] = 0.0
     np.cumsum(power, out=cum[1:])
     energy = cum[n_fft:n_fft + m] - cum[:m]
+    return m, np.sqrt(np.maximum(energy, 1e-20))
+
+
+def _fold_match(mag, m, n, frame):
+    """Mean magnitude over whole frames. The tail past the last frame is dropped."""
     out = np.zeros(n, dtype=np.float64)
-    out[:m] = mag / np.sqrt(np.maximum(energy, 1e-20))
-    return out
+    out[:m] = mag
+    n_frames = out.size // frame
+    if n_frames < 1:
+        return None
+    return out[:n_frames * frame].reshape(n_frames, frame).mean(axis=0)
+
+
+def _folded_pss(block, rate, n_fft, frame, cfos):
+    """Folded PSS correlation of each root, at the CFO in ``cfos`` with the strongest peak.
+
+    One FFT of the block. A frequency offset of an integer number of those
+    bins is a roll of that spectrum (the same ramp the single-cell search
+    applies in time). Returns ``(cfo_hz, [folded_root0, folded_root1, folded_root2])``.
+    """
+    n = block.size
+    if n <= n_fft or frame < 4:
+        return 0.0, None
+    m, scale = _pss_window_energy(block, n_fft)
+    n_corr = 1 << int(n + n_fft - 1).bit_length()
+    spectrum = np.fft.fft(block, n_corr)
+    templates = [np.conj(np.fft.fft(_pss_template(n_fft, root), n_corr)) for root in range(3)]
+    bin_hz = float(rate) / float(n_corr)
+    best_cfo = 0.0
+    best_peak = -1.0
+    best_folds = None
+    for f in cfos:
+        shift = int(round(float(f) / bin_hz))
+        # x[n] * exp(-2j pi f n / rate) moves DFT bin k to k-shift.
+        shifted = spectrum if shift == 0 else np.roll(spectrum, -shift)
+        folds = []
+        peak = 0.0
+        for templ in templates:
+            corr = np.fft.ifft(shifted * templ)
+            folded = _fold_match(np.abs(corr[:m]) / scale, m, n, frame)
+            if folded is None:
+                continue
+            folds.append(folded)
+            peak = max(peak, float(folded.max()))
+        if len(folds) == 3 and peak > best_peak:
+            best_peak = peak
+            best_cfo = float(f)
+            best_folds = folds
+    return best_cfo, best_folds
 
 
 def _blank_around(work, center, guard):
@@ -1139,17 +1188,19 @@ def _frame_peaks(folded, n_keep, guard, floor):
     return found
 
 
-def _sync_groups(block, n_fft, frame, peak):
+def _sync_groups(block, n_fft, frame, peak, rate, cfo):
     """PSS and SSS centre bins at ``peak`` and half a frame later.
 
     Each entry is ``(yp, ys)`` with shape ``(occasions, 62)``, or None when
-    that half falls off the capture.
+    that half falls off the capture. ``cfo`` is the offset removed before
+    the FFT, in hertz. Zero skips the ramp.
     """
     cp = _cp_lengths(n_fft)[1]
     half = frame // 2
     n = block.size
     bins = np.concatenate((np.arange(-31, 0), np.arange(1, 32))) % n_fft
     k = np.arange(n_fft, dtype=np.int64)
+    cfo = float(cfo)
 
     def _grab(base):
         starts = np.arange(int(base) % int(frame), n - n_fft, frame, dtype=np.int64)
@@ -1159,9 +1210,14 @@ def _sync_groups(block, n_fft, frame, peak):
         sss_at = sss_at[keep]
         if starts.size < 1:
             return None
-        yp = np.fft.fft(block[starts[:, None] + k], axis=1)[:, bins]
-        ys = np.fft.fft(block[sss_at[:, None] + k], axis=1)[:, bins]
-        return yp, ys
+        samp_p = starts[:, None] + k
+        samp_s = sss_at[:, None] + k
+        yp_t = block[samp_p]
+        ys_t = block[samp_s]
+        if cfo != 0.0:
+            yp_t = yp_t * np.exp(-2j * np.pi * cfo * samp_p / float(rate))
+            ys_t = ys_t * np.exp(-2j * np.pi * cfo * samp_s / float(rate))
+        return np.fft.fft(yp_t, axis=1)[:, bins], np.fft.fft(ys_t, axis=1)[:, bins]
 
     return _grab(peak), _grab(int(peak) + half)
 
@@ -1177,7 +1233,7 @@ def _offset_from_pss(pss_mod, n_fft, frame, fs_cap, rate, sub5):
     return int(round((frame_start % frame) * fs_cap / rate)) % frame_cap
 
 
-def _cells_at_timing(block, n_fft, fs_cap, rate, frame, peak):
+def _cells_at_timing(block, n_fft, fs_cap, rate, frame, peak, cfo):
     """Cells at one PSS timing: joint root gains, then SSS with cancellation.
 
     Roots are scored strongest gain first. A root whose SSS chance is above
@@ -1185,7 +1241,7 @@ def _cells_at_timing(block, n_fft, fs_cap, rate, frame, peak):
     subtracted before the next root, so a sector 6 dB down is not scored
     against the stronger sector's SSS.
     """
-    pair = _sync_groups(block, n_fft, frame, peak)
+    pair = _sync_groups(block, n_fft, frame, peak, rate, cfo)
     design = _pss_seqs().T  # (62, 3), the three roots side by side
     groups = []
     mags = np.zeros(3, dtype=np.float64)
@@ -1262,7 +1318,7 @@ def _cells_at_timing(block, n_fft, fs_cap, rate, frame, peak):
             else:
                 power = float(mags[root])
             detail = (f'N_ID(1) {nid1} N_ID(2) {root} pci {pci} correlation {peak_score:.3f} '
-                      f'over {n_used} half-frames')
+                      f'over {n_used} half-frames at {cfo:.0f} Hz')
             found.append({
                 'pci': pci,
                 'nid1': nid1,
@@ -1332,19 +1388,21 @@ def cells(iq, fs, max_cells=4):
     # Below this the folded match is what noise and the non-LTE negatives
     # reach. A cell at 0 dB, and one 10 dB under another root, sit above it.
     floor = 0.10
+    cfo, folds = _folded_pss(block, rate, n_fft, frame, (0.0,))
+    if folds is None:
+        return []
+    if float(max(fold.max() for fold in folds)) < _CELLS_CFO_SKIP:
+        cfo, folds = _folded_pss(block, rate, n_fft, frame, _CELLS_CFO_HZ)
+        if folds is None:
+            return []
     raw = []
-    for root in range(3):
-        match = _pss_match(block, _pss_template(n_fft, root))
-        n_frames = match.size // frame
-        if n_frames < 1:
-            continue
-        folded = match[:n_frames * frame].reshape(n_frames, frame).mean(axis=0)
+    for folded in folds:
         # Enough peaks that a same-root neighbour under the strong cell's
         # sidelobes is still in the list. The SSS chance drops the sidelobes.
         raw.extend(_frame_peaks(folded, 8, guard, floor))
     found = []
     for pos, _height in _cluster_timings(raw, frame, 6):
-        found.extend(_cells_at_timing(block, n_fft, fs_cap, rate, frame, pos))
+        found.extend(_cells_at_timing(block, n_fft, fs_cap, rate, frame, pos, cfo))
     frame_cap = int(round(0.010 * fs_cap))
     return _finish_cells(found, limit, frame_cap)
 
