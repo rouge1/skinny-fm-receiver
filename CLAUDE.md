@@ -61,7 +61,7 @@ with no launcher.
   one carrier), is numpy only too; its test helpers `tools/tests/lte_synth.py`
   and `lte_negatives.py` use scipy.
   `tools/iq-lte` is its command (`knowledge/lte-verify.md`); `iqlte_decode.py` hands a
-  centred 10 MHz block to an outside srsRAN 4G `pdsch_ue` for the MIB and SIB1 (`--decode`,
+  centred 10 or 15 MHz block to an outside srsRAN 4G `pdsch_ue` for the MIB and SIB1 (`--decode`,
   through `$FMRX_LTE_TOOLS`; nothing of ours decodes, and srsRAN is never installed here).
 - Knowledge: `knowledge/capabilities.md` is the living capability list.
   Update it (and its status marks) when a feature is added or verified.

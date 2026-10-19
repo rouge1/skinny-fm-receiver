@@ -99,10 +99,14 @@ What the decode does:
 
 - It is limited to the broadcast channel: the MIB and the SIB1, the system
   information transmitted with the SI-RNTI. No user data is read.
-- It supports a 10 MHz carrier only in this phase. Other widths report
+- It supports 10 MHz carriers (nfft 1024) and 15 MHz carriers (nfft 1536,
+  added 2026-10-19, not yet run on a real 15 MHz carrier). Other widths report
   `ran: false` with the reason.
-- The block is written at 15.36 MS/s as a cf32 file in a private temporary
-  folder, which is removed afterwards.
+- The block is written at 15.36 MS/s (10 MHz) or 23.04 MS/s (15 MHz) as a cf32
+  file in a private temporary folder, which is removed afterwards. The PRB count
+  (50 or 75) reaches the wrapper as the `PRB` environment variable, so
+  `run_pdsch.sh` must pass `-p ${PRB:-50}` to `pdsch_ue`; an older wrapper with a
+  fixed `-p 50` decodes only 10 MHz.
 - It tries two frame offsets half a 10 ms frame apart: `o`, the SSS frame
   offset at 15.36 MS/s, and `o` minus 76800 samples (modulo one frame). The
   half-frame label does not say which of the two starts subframe 0, so both
@@ -237,6 +241,21 @@ are not recorded here: they are kept with the recordings. See
   MHz bands, 15 MHz tiles) found no further confirmed cell; the high bands gave
   no candidate block at all. That says "not found with this antenna and this block
   test", not "no towers".
+- **A second location (2026-10-19, BB60D).** The 700 MHz band held three 10 MHz
+  carriers (Bands 12/17, 13 and 14). The Band 13 cell decoded fully (MIB and SIB1,
+  operator named). On the other two carriers the same two cells (two PCIs) showed
+  on both carriers, synchronised (equal SFN at one instant), with 2 antenna ports.
+  Their MIBs decoded every time but SIB1 never did, over 12 captures: 20 and
+  40 MS/s, gain 50 to 100 %, 0.2 to 2 s spans. `pdsch_ue` found no SI-RNTI DCI in
+  subframe 5, with about 4 dB SNR on the PBCH. So the operator is not proven for
+  those carriers. Not established: whether it is the weak signal, the two
+  synchronised cells overlapping, or both. More captures of the same kind did not
+  help; a better antenna is the next test. The 600 MHz and 850 MHz bands and 1.9-2.7 GHz
+  gave no confirmed cell.
+- **Draw the block before trusting its width.** A carrier 2.3 MHz off the file
+  centre read as 15 MHz; centred, it read 10 MHz and its MIB said 50 PRB. Step 3
+  of [workflow.md](workflow.md) (`tools/iq-picture`) shows the occupied edges and
+  the true centre.
 - **`tools/iq-lte` bug found on first real use:** pycrate's BIT STRING is
   `(value, nbits)`, and the srsRAN wrapper's default filter drops the MIB block's
   lines. Both fixed; a stub test cannot catch either.

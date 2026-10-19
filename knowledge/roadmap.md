@@ -1284,6 +1284,11 @@ and cell IDs stay in `recordings/`, never in the repo or knowledge files.
   decoder, then on real air (2026-10-16, one 10 MHz Band 13 cell): MIB and SIB1
   read, the operator code, tracking area, cell identity and band right. See
   [lte-verify.md](lte-verify.md).
+- [ ] 15 MHz decode (2026-10-19): built (`nfft=1536`, 23.04 MS/s, `PRB` to the
+  wrapper), pure functions tested; not ticked until a real 15 MHz carrier decodes.
+- [ ] SIB1 on weak, synchronised cells: MIB decodes, SIB1 never (2026-10-19,
+  second location). Try a better antenna first; then a decoder with a stronger
+  PDCCH search.
 
   Not ticked, still open: `srsue` with a file radio is untested. Fallback:
   JiaoXianjun/LTE-Cell-Scanner. Avoid LTESniffer, FALCON, gr-lte, QCSuper.

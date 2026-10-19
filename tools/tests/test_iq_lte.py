@@ -1190,6 +1190,35 @@ def group_l4_cells():
 GROUPS.append(group_l4_cells)
 
 
+def group_15mhz():
+    """The 15 MHz geometry (nfft 1536): pure functions only. No real 15 MHz carrier has
+    been decoded yet, and the stub does not see the wrapper's PRB variable."""
+    from fm_receiver import iqlte_decode as dec
+
+    def offsets():
+        got = dec.decoder_offsets(10000, FS, nfft=1536)
+        base = round(10000 * 23.04e6 / FS) % 230400
+        return got == (base, (base - 115200) % 230400), f'got {got}, want base {base}'
+    expect('15 MHz: decoder_offsets scales to 23.04 MS/s with a 230400-sample frame', offsets)
+
+    def rate():
+        out = dec.to_10mhz(np.zeros(200000, np.complex64), FS, nfft=1536)
+        return abs(out.size - 230400) <= 4, f'{out.size} samples for 10 ms'
+    expect('15 MHz: the block is written at 23.04 MS/s', rate)
+
+    def default_kept():
+        got = dec.decoder_offsets(10000, FS)
+        base = round(10000 * RATE_DEC / FS) % FRAME
+        return got == (base, (base - HALF) % FRAME), f'got {got}'
+    expect('15 MHz: the default (10 MHz) offsets are unchanged', default_kept)
+
+    expect('15 MHz: 1024 and 1536 are the decoded FFT sizes',
+           lambda: (set(dec.SUPPORTED_NFFT) == {1024, 1536}, repr(dec.SUPPORTED_NFFT)))
+
+
+GROUPS.append(group_15mhz)
+
+
 def main():
     global WORK, TMP, EMPTY, PYC_PY
     WORK = tempfile.mkdtemp(prefix='iqlte-test-')

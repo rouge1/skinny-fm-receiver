@@ -32,6 +32,13 @@ FRAME_10 = 153600
 HALF_10 = 76800
 NFFT_10 = 1024
 _SUBFRAME = 15360
+NFFT_15 = 1536
+# FFT size -> (sample rate, samples per frame, per half-frame, per subframe, PRBs)
+_GEOMETRY = {
+    NFFT_10: (RATE_10, FRAME_10, HALF_10, _SUBFRAME, 50),
+    NFFT_15: (23.04e6, 230400, 115200, 23040, 75),
+}
+SUPPORTED_NFFT = tuple(_GEOMETRY)
 _SIB1_MIN = 32
 _DUMP_MARK = 0xA5
 
@@ -213,13 +220,15 @@ def require_program(tools, name):
     return path
 
 
-def to_10mhz(iq, fs_in):
-    """``iq`` at ``fs_in`` as complex64 at 15.36 MS/s. Already-there rates are a view cast."""
+def to_10mhz(iq, fs_in, nfft=NFFT_10):
+    """``iq`` at ``fs_in`` as complex64 at the carrier's decoder rate (15.36 MS/s for 10 MHz,
+    23.04 for 15 MHz). Already-there rates are a view cast."""
     fs_in = float(fs_in)
-    if abs(fs_in - RATE_10) <= 1.0:
+    rate = _GEOMETRY[nfft][0]
+    if abs(fs_in - rate) <= 1.0:
         out = np.ascontiguousarray(iq, dtype=np.complex64)
     else:
-        out = np.ascontiguousarray(iqlte._resample(iq, fs_in, RATE_10), dtype=np.complex64)
+        out = np.ascontiguousarray(iqlte._resample(iq, fs_in, rate), dtype=np.complex64)
     bad = ~np.isfinite(out.real) | ~np.isfinite(out.imag)
     if bad.any():
         out = out.copy()
@@ -227,18 +236,19 @@ def to_10mhz(iq, fs_in):
     return out
 
 
-def decoder_offsets(frame_offset, fs_in):
-    """``(o, (o - 76800) mod 153600)`` at 15.36 MS/s.
+def decoder_offsets(frame_offset, fs_in, nfft=NFFT_10):
+    """``(o, (o - half-frame) mod frame)`` at the decoder rate (15.36 MS/s for 10 MHz).
 
     ``frame_offset`` is the SSS frame start in samples of the capture rate
     (modulo 10 ms). The half-frame label does not say which of the two is
     subframe 0, so both are tried.
     """
+    rate, frame, half = _GEOMETRY[nfft][:3]
     if frame_offset is None or not fs_in:
         base = 0
     else:
-        base = int(round(float(frame_offset) * RATE_10 / float(fs_in))) % FRAME_10
-    return base, (base - HALF_10) % FRAME_10
+        base = int(round(float(frame_offset) * rate / float(fs_in))) % frame
+    return base, (base - half) % frame
 
 
 def parse_mib(text):
@@ -356,9 +366,10 @@ def parse_sib1(payload, tools):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _run_once(script, cf32, pci, offset, nsf, ports, dump, timeout):
+def _run_once(script, cf32, pci, offset, nsf, ports, dump, timeout, nfft=NFFT_10):
     env = dict(os.environ)
     env['PDSCH_DUMP'] = dump
+    env['PRB'] = str(_GEOMETRY[nfft][4])
     env['VERBOSE'] = '1'          # the wrapper's default filter drops the MIB block's PCI, ports and PRB lines
     try:
         proc = subprocess.run(
@@ -388,7 +399,7 @@ def _budget_used():
     return {'ran': False, 'reason': 'decode time budget used'}
 
 
-def _search_offsets(script, cf32, pci, offsets, nsf, ports, tmp, timeout, deadline=None):
+def _search_offsets(script, cf32, pci, offsets, nsf, ports, tmp, timeout, deadline=None, nfft=NFFT_10):
     """Try ``ports`` at each frame offset. The first decoded MIB stops the search.
 
     ``deadline`` is a ``time.monotonic`` instant. Each ``pdsch_ue`` call is
@@ -408,7 +419,7 @@ def _search_offsets(script, cf32, pci, offsets, nsf, ports, tmp, timeout, deadli
                     return success, success_dump, tried
                 call_timeout = min(call_timeout, remaining)
             dump = os.path.join(tmp, 'dump-%s-%d-%d.bin' % (int(pci), int(offset), int(count)))
-            text, ok = _run_once(script, cf32, pci, offset, nsf, count, dump, call_timeout)
+            text, ok = _run_once(script, cf32, pci, offset, nsf, count, dump, call_timeout, nfft)
             tried.append({'offset': int(offset), 'ports': int(count), 'decoded': bool(ok)})
             if ok:
                 success = parse_mib(text)
@@ -454,7 +465,7 @@ def _decode_result(success, success_dump, tried, tools):
     return out
 
 
-def _prepare_block(iq, fs):
+def _prepare_block(iq, fs, nfft=NFFT_10):
     """``(tools, script, block)`` at 15.36 MS/s.
 
     ``block`` is None when the resampled capture is empty or silent. The
@@ -464,13 +475,13 @@ def _prepare_block(iq, fs):
     """
     tools = tools_dir()
     script = require_program(tools, 'run_pdsch.sh')
-    block = to_10mhz(iq, float(fs))
+    block = to_10mhz(iq, float(fs), nfft)
     if block.size < 8 or float(np.mean(np.abs(block) ** 2)) == 0.0:
         return tools, script, None
     return tools, script, block
 
 
-def decode_cell(iq, fs, pci, frame_offset, ports, timeout=120):
+def decode_cell(iq, fs, pci, frame_offset, ports, timeout=120, nfft=NFFT_10):
     """MIB and SIB1 for a centred block whose fingerprint already says LTE.
 
     ``ports`` is the port counts to try, in that order, at each of the two
@@ -478,28 +489,28 @@ def decode_cell(iq, fs, pci, frame_offset, ports, timeout=120):
     when the tools directory or ``run_pdsch.sh`` is absent. A missing pycrate
     interpreter leaves ``sib1`` null and still returns the MIB.
 
-    Bandwidths other than 10 MHz are not decoded in this phase.
+    ``nfft`` picks the carrier: 1024 (10 MHz, the default) or 1536 (15 MHz).
     """
     nsf_rate = float(fs)
     # Bandwidth gate is the caller's. Here, only the 10 MHz file format is written.
-    tools, script, block = _prepare_block(iq, nsf_rate)
+    tools, script, block = _prepare_block(iq, nsf_rate, nfft)
     if block is None:
         return _empty_block()
-    o1, o2 = decoder_offsets(frame_offset, nsf_rate)
-    nsf = max(1, int(round(block.size / float(_SUBFRAME))))
+    o1, o2 = decoder_offsets(frame_offset, nsf_rate, nfft)
+    nsf = max(1, int(round(block.size / float(_GEOMETRY[nfft][3]))))
     tmp = tempfile.mkdtemp(prefix='iqlte-')
     try:
         cf32 = os.path.join(tmp, 'block.cf32')
         with open(cf32, 'wb') as fh:
             block.tofile(fh)
         success, success_dump, tried = _search_offsets(
-            script, cf32, pci, (o1, o2), nsf, ports, tmp, timeout)
+            script, cf32, pci, (o1, o2), nsf, ports, tmp, timeout, nfft=nfft)
         return _decode_result(success, success_dump, tried, tools)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def decode_cells(iq, fs, specs, ports, timeout=120, budget=15 * 60):
+def decode_cells(iq, fs, specs, ports, timeout=120, budget=15 * 60, nfft=NFFT_10):
     """One ``decode`` object per ``(pci, frame_offset, half_frame)`` in ``specs``.
 
     Specs are decoded in the order given. The caller passes the strongest
@@ -523,10 +534,10 @@ def decode_cells(iq, fs, specs, ports, timeout=120, budget=15 * 60):
     if not specs:
         return []
     nsf_rate = float(fs)
-    tools, script, block = _prepare_block(iq, nsf_rate)
+    tools, script, block = _prepare_block(iq, nsf_rate, nfft)
     if block is None:
         return [_empty_block() for _ in specs]
-    nsf = max(1, int(round(block.size / float(_SUBFRAME))))
+    nsf = max(1, int(round(block.size / float(_GEOMETRY[nfft][3]))))
     deadline = time.monotonic() + float(budget)
     tmp = tempfile.mkdtemp(prefix='iqlte-')
     try:
@@ -538,9 +549,9 @@ def decode_cells(iq, fs, specs, ports, timeout=120, budget=15 * 60):
             if deadline - time.monotonic() <= 0.0:
                 out.append(_budget_used())
                 continue
-            o1, o2 = decoder_offsets(frame_offset, nsf_rate)
+            o1, o2 = decoder_offsets(frame_offset, nsf_rate, nfft)
             success, success_dump, tried = _search_offsets(
-                script, cf32, pci, (o1, o2), nsf, ports, tmp, timeout, deadline)
+                script, cf32, pci, (o1, o2), nsf, ports, tmp, timeout, deadline, nfft)
             if not tried and success is None:
                 out.append(_budget_used())
             else:

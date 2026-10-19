@@ -1260,5 +1260,5 @@ tools/iq-lte CAPTURE.cfile --decode --ports 4 2 1         # also the MIB and SIB
   missing. A missing pycrate interpreter leaves `sib1` null and still exits 0.
 - `--decode` needs srsRAN 4G's `pdsch_ue`, built by you (AGPL, not part of this
   repo) and reached through `$FMRX_LTE_TOOLS`. It reads the MIB and the SIB1 only,
-  for a 10 MHz carrier in this phase. See [lte-verify.md](lte-verify.md) for the
+  for a 10 or 15 MHz carrier (15 MHz not yet run on real air). See [lte-verify.md](lte-verify.md) for the
   wrapper, the local patch and the layout.

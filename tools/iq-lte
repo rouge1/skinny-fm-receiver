@@ -212,10 +212,10 @@ def _skip_decode(fp, pci):
             why = 'no PCI (verdict %s)' % verdict
         return {'ran': False, 'reason': why}
     nfft = fp.get('nfft')
-    if nfft != iqlte_decode.NFFT_10:
+    if nfft not in iqlte_decode.SUPPORTED_NFFT:
         return {
             'ran': False,
-            'reason': 'only a 10 MHz carrier is decoded in this phase (nfft %s)' % nfft,
+            'reason': 'only 10 and 15 MHz carriers are decoded (nfft %s)' % nfft,
         }
     return None
 
@@ -253,7 +253,7 @@ def _decode(args, sl, fp, sss, cells):
     if runnable:
         try:
             specs = [(pci, offset, half) for _cell, pci, offset, half in runnable]
-            decoded = iqlte_decode.decode_cells(sl.iq, sl.rate, specs, ports)
+            decoded = iqlte_decode.decode_cells(sl.iq, sl.rate, specs, ports, nfft=fp.get('nfft'))
         except iqlte_decode.ToolsMissing as exc:
             return _missing(exc.name)
         for (cell, _pci, _offset, _half), result in zip(runnable, decoded):
@@ -267,7 +267,7 @@ def _decode(args, sl, fp, sss, cells):
     if isinstance(sss, dict) and sss.get('frame_offset_samples') is not None:
         offset = int(sss['frame_offset_samples'])
     try:
-        return iqlte_decode.decode_cell(sl.iq, sl.rate, int(fp['pci']), offset, ports)
+        return iqlte_decode.decode_cell(sl.iq, sl.rate, int(fp['pci']), offset, ports, nfft=fp.get('nfft'))
     except iqlte_decode.ToolsMissing as exc:
         return _missing(exc.name)
 
