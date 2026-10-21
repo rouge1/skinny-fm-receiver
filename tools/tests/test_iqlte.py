@@ -358,8 +358,8 @@ def check_interface():
 
     def two_ran():
         ran = sorted(c['name'] for c in fp()['checks'] if bool(c.get('ran')))
-        return ran == ['cp-autocorr', 'crs', 'pss', 'sss'], f'checks that ran: {ran}'
-    expect('cp-autocorr, pss, sss and crs ran', two_ran)
+        return ran == ['cp-autocorr', 'crs', 'duplex', 'pss', 'sss'], f'checks that ran: {ran}'
+    expect('cp-autocorr, pss, sss, crs and duplex ran', two_ran)
 
     def chances():
         bad = []

@@ -277,12 +277,14 @@ def _unknown(reason, iq=None, fs=None):
             _check('pss', False, 0.0, 1.0, reason),
             _later('sss', 'SSS is a later stage'),
             _later('crs', 'CRS is a later stage'),
+            _later('duplex', reason),
         ],
         'verdict': 'unknown',
         'pci': None,
         'nid2': None,
         'nfft': None,
         'chance': 1.0,
+        'duplex': None,
         'cells': [] if iq is None else cells(iq, fs),
     }
 
@@ -1190,14 +1192,37 @@ def _frame_peaks(folded, n_keep, guard, floor):
     return found
 
 
-def _sync_groups(block, n_fft, frame, peak, rate, cfo):
+def _sss_back(n_fft, duplex):
+    """Samples from the SSS body start back from the PSS body start.
+
+    FDD: the SSS is the symbol just before the PSS (symbols 5 and 6 of a slot).
+    TDD: the SSS is the last symbol of slot 1 (or 11) and the PSS symbol 2 of
+    the next slot, so three symbols and the next slot's long prefix lie between.
+    """
+    cp0, cp = _cp_lengths(n_fft)
+    if duplex == 'tdd':
+        return 3 * n_fft + cp0 + 2 * cp
+    return n_fft + cp
+
+
+def _pss_frame_start(n_fft, slot, duplex):
+    """Samples from a frame start to the first PSS body (subframe 0's half)."""
+    cp0, cp = _cp_lengths(n_fft)
+    if duplex == 'tdd':
+        # symbol 2 of slot 2
+        return 2 * slot + cp0 + 2 * cp + 2 * n_fft
+    body_off, _cp_short = _pss_body_offset(n_fft)
+    return body_off
+
+
+def _sync_groups(block, n_fft, frame, peak, rate, cfo, duplex='fdd'):
     """PSS and SSS centre bins at ``peak`` and half a frame later.
 
     Each entry is ``(yp, ys)`` with shape ``(occasions, 62)``, or None when
     that half falls off the capture. ``cfo`` is the offset removed before
-    the FFT, in hertz. Zero skips the ramp.
+    the FFT, in hertz. Zero skips the ramp. ``duplex`` places the SSS.
     """
-    cp = _cp_lengths(n_fft)[1]
+    back = _sss_back(n_fft, duplex)
     half = frame // 2
     n = block.size
     bins = np.concatenate((np.arange(-31, 0), np.arange(1, 32))) % n_fft
@@ -1206,7 +1231,7 @@ def _sync_groups(block, n_fft, frame, peak, rate, cfo):
 
     def _grab(base):
         starts = np.arange(int(base) % int(frame), n - n_fft, frame, dtype=np.int64)
-        sss_at = starts - (n_fft + cp)
+        sss_at = starts - back
         keep = (sss_at >= 0) & (starts + n_fft <= n)
         starts = starts[keep]
         sss_at = sss_at[keep]
@@ -1224,10 +1249,10 @@ def _sync_groups(block, n_fft, frame, peak, rate, cfo):
     return _grab(peak), _grab(int(peak) + half)
 
 
-def _offset_from_pss(pss_mod, n_fft, frame, fs_cap, rate, sub5):
+def _offset_from_pss(pss_mod, n_fft, frame, fs_cap, rate, sub5, duplex='fdd'):
     """Capture-rate frame offset of the subframe-0 boundary, or None."""
     slot = frame // 20
-    body_off, _cp_short = _pss_body_offset(n_fft)
+    body_off = _pss_frame_start(n_fft, slot, duplex)
     frame_start = int(pss_mod) - body_off - (10 * slot if sub5 else 0)
     frame_cap = int(round(0.010 * fs_cap))
     if frame_cap <= 0:
@@ -1236,6 +1261,19 @@ def _offset_from_pss(pss_mod, n_fft, frame, fs_cap, rate, sub5):
 
 
 def _cells_at_timing(block, n_fft, fs_cap, rate, frame, peak, cfo):
+    """Cells at one PSS timing, FDD first; TDD only when FDD found none there.
+
+    The SSS position says the duplex: just before the PSS in FDD, three
+    symbols before it in TDD. Each cell carries ``duplex``. Trying TDD costs a
+    second set of SSS FFTs, so a timing that already gave FDD cells skips it.
+    """
+    found = _cells_at_timing_duplex(block, n_fft, fs_cap, rate, frame, peak, cfo, 'fdd')
+    if found:
+        return found
+    return _cells_at_timing_duplex(block, n_fft, fs_cap, rate, frame, peak, cfo, 'tdd')
+
+
+def _cells_at_timing_duplex(block, n_fft, fs_cap, rate, frame, peak, cfo, duplex):
     """Cells at one PSS timing: joint root gains, then SSS with cancellation.
 
     Roots are scored strongest gain first. A root whose SSS chance is above
@@ -1243,7 +1281,7 @@ def _cells_at_timing(block, n_fft, fs_cap, rate, frame, peak, cfo):
     subtracted before the next root, so a sector 6 dB down is not scored
     against the stronger sector's SSS.
     """
-    pair = _sync_groups(block, n_fft, frame, peak, rate, cfo)
+    pair = _sync_groups(block, n_fft, frame, peak, rate, cfo, duplex)
     design = _pss_seqs().T  # (62, 3), the three roots side by side
     groups = []
     mags = np.zeros(3, dtype=np.float64)
@@ -1287,6 +1325,9 @@ def _cells_at_timing(block, n_fft, fs_cap, rate, frame, peak, cfo):
             if scores is None:
                 break
             peak_score, chance, k = _sss_chance(scores)
+            if duplex == 'tdd':
+                # A second look at the same timing: count it.
+                chance = min(1.0, 2.0 * chance)
             if chance > _PASS:
                 break
             nid1, col = (int(v) for v in np.unravel_index(k, scores.shape))
@@ -1294,7 +1335,7 @@ def _cells_at_timing(block, n_fft, fs_cap, rate, frame, peak, cfo):
             if pci in seen:
                 break
             offset = _offset_from_pss(
-                int(peak) % int(frame), n_fft, frame, fs_cap, rate, col == 1)
+                int(peak) % int(frame), n_fft, frame, fs_cap, rate, col == 1, duplex)
             if offset is None:
                 break
             seen.add(pci)
@@ -1330,6 +1371,7 @@ def _cells_at_timing(block, n_fft, fs_cap, rate, frame, peak, cfo):
                 'score': float(peak_score),
                 'chance': _floor_chance(chance),
                 'detail': detail,
+                'duplex': duplex.upper(),
                 '_pss': power,
             })
     return found
@@ -1468,6 +1510,7 @@ def _finish_cells(found, limit, frame_cap):
             'score': float(hit['score']),
             'chance': float(hit['chance']),
             'detail': hit['detail'],
+            'duplex': hit.get('duplex', 'FDD'),
         })
     return out
 
@@ -1750,6 +1793,44 @@ def _crs_check(iq, fs, pci, offset, nfft):
     return _check('crs', bool(found.get('ran')), found.get('score'), found.get('chance'), detail)
 
 
+def _apply_duplex(iq, fs, checks, pci, found, nfft):
+    """The ``duplex`` check, and the PCI of a TDD cell. Returns ``(checks, pci, duplex)``.
+
+    ``sss_search`` reads the FDD position only. ``cells`` tries TDD at a timing
+    where FDD found nothing, so a TDD carrier shows there first: its strongest
+    cell then gives the PCI, and the CRS check is run on it at its own timing.
+    ``duplex`` is 'FDD', 'TDD', or None when no cell ID was found.
+    """
+    top = found[0] if found else None
+    if pci is not None:
+        duplex = 'FDD'
+    elif top is not None:
+        duplex = top.get('duplex', 'FDD')
+    else:
+        duplex = None
+    if duplex == 'TDD' and top is not None:
+        pci = int(top['pci'])
+        crs = top.get('crs')
+        checks = [c for c in checks if c['name'] != 'crs']
+        if crs is None:
+            checks.append(_crs_check(iq, fs, pci, top['frame_offset_samples'], nfft))
+        else:
+            checks.append(_check('crs', True, crs['score'], crs['chance'],
+                                 f"pci {pci} at the TDD timing; best pci {crs['best_pci']}"))
+    if duplex is None:
+        checks.append(_later('duplex', 'not run: no cell ID to place the SSS from'))
+    elif duplex == 'TDD':
+        checks.append(_check('duplex', True, top['score'], top['chance'],
+                             f'TDD: the SSS three symbols before the PSS, pci {pci}'))
+    else:
+        sss = [c for c in checks if c['name'] == 'sss']
+        score = sss[0]['score'] if sss else 0.0
+        chance = sss[0]['chance'] if sss else 1.0
+        checks.append(_check('duplex', True, score, chance,
+                             f'FDD: the SSS just before the PSS, pci {pci}'))
+    return checks, pci, duplex
+
+
 def _cells_crs(iq, fs, found, nfft):
     """Each cell gains ``crs``: ``{pci, score, chance, best_pci}`` at its own timing.
 
@@ -1777,7 +1858,10 @@ def fingerprint(iq, fs):
     ``pci`` is the SSS physical cell ID, or None when that check has none.
     ``chance`` is the product of the CP and PSS chances, floored at 1e-300.
     ``cells`` is ``cells()`` of this capture (the module-level name, so a
-    caller can replace it): every cell that cleared the SSS line.
+    caller can replace it): every cell that cleared the SSS line, each with its
+    ``duplex`` and ``crs``. ``duplex`` is 'FDD' when the SSS gave a PCI, 'TDD'
+    when only ``cells`` found one at the TDD position (``pci`` is then that
+    cell's), and None without a cell ID.
     """
     if _vector(iq) is None or _too_small(iq, fs):
         try:
@@ -1829,6 +1913,8 @@ def fingerprint(iq, fs):
             verdict = 'not-lte'
         checks, verdict, pci = _apply_sss(iq, fs, [cp, pss], verdict, nid2, nfft)
         joint = _floor_chance(cp['chance'] * pss['chance'])
+        found = _cells_crs(iq, fs, cells(iq, fs), nfft)
+        checks, pci, duplex = _apply_duplex(iq, fs, checks, pci, found, nfft)
         return {
             'checks': checks,
             'verdict': verdict,
@@ -1836,11 +1922,14 @@ def fingerprint(iq, fs):
             'nid2': nid2,
             'nfft': nfft,
             'chance': joint,
-            'cells': _cells_crs(iq, fs, cells(iq, fs), nfft),
+            'duplex': duplex,
+            'cells': found,
         }
 
     checks, verdict, pci = _apply_sss(iq, fs, [cp, pss], 'not-lte', None)
     joint = _floor_chance(cp['chance'] * pss['chance'])
+    found = cells(iq, fs)
+    checks, pci, duplex = _apply_duplex(iq, fs, checks, pci, found, None)
     return {
         'checks': checks,
         'verdict': verdict,
@@ -1848,5 +1937,6 @@ def fingerprint(iq, fs):
         'nid2': None,
         'nfft': None,
         'chance': joint,
-        'cells': cells(iq, fs),
+        'duplex': duplex,
+        'cells': found,
     }

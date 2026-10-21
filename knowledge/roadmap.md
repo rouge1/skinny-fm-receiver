@@ -1262,8 +1262,9 @@ and cell IDs stay in `recordings/`, never in the repo or knowledge files.
   come first: they rule out most false candidates.
   Shipped in `tools/iq-lte` (2026-10-16, synthetic signals): checks 2, 3 and 4
   (CP, PSS, SSS). Check 6, CRS, added 2026-10-21 (`iqlte.crs_search`; synthetic,
-  and srsRAN's own waveform; not yet on real air). Not run: 1 and 5 (duplex is
-  assumed FDD). Left open until those are built. Real air (2026-10-16): the
+  and srsRAN's own waveform; not yet on real air). Check 5, duplex, added the
+  same day from the SSS position (`cells`; synthetic only, no TDD carrier on
+  air yet). Not run: 1. Left open until it is built and 5 and 6 are seen on air. Real air (2026-10-16): the
   verdict and PCI right on one 10 MHz cell; several cells on one carrier are not
   told apart (see lte-verify.md, "Limits seen on real air").
 - [x] Stage 3b, several cells on one carrier (`iqlte.cells`, phase l4, 2026-10-17):

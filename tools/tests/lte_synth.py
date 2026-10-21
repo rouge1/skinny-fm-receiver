@@ -1,4 +1,4 @@
-"""LTE FDD downlink test signal (phase l1).
+"""LTE FDD downlink test signal (phase l1), and a TDD one (``duplex='tdd'``).
 
 One antenna port, normal cyclic prefix, from the bandwidth-class table in
 ``tools/swarm-records/specs/l1.md``. PSS, SSS and the port-0 cell-specific
@@ -181,8 +181,31 @@ def _resample(iq, native, fs):
     return out
 
 
-def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True):
+# TDD (36.211 4.2): uplink-downlink configuration 1, D S U U D D S U U D, and
+# special subframe configuration 7 (normal CP): DwPTS 10 symbols, then the guard
+# period and UpPTS, 4 symbols, silent from the downlink's side.
+_TDD_PATTERN = 'DSUUDDSUUD'
+_TDD_DWPTS = 10
+
+
+def _tdd_mask(n_frames):
+    """True for every downlink OFDM symbol of ``n_frames`` TDD frames."""
+    per_sf = 2 * _SYMS_PER_SLOT
+    one = np.zeros(10 * per_sf, dtype=bool)
+    for sf, kind in enumerate(_TDD_PATTERN):
+        if kind == 'D':
+            one[sf * per_sf:(sf + 1) * per_sf] = True
+        elif kind == 'S':
+            one[sf * per_sf:sf * per_sf + _TDD_DWPTS] = True
+    return np.tile(one, int(n_frames))
+
+
+def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True, duplex='fdd'):
     """One downlink at the native rate, after its seeded frame roll.
+
+    ``duplex`` 'tdd' moves the PSS to symbol 2 of slots 2 and 12 (DwPTS) and the
+    SSS to symbol 6 of slots 1 and 11, and silences the uplink subframes, the
+    guard period and UpPTS (configuration 1, special subframe 7).
 
     Not normalised and with no noise. Returns ``(iq, native_fs, frame_offset, rng)``.
     ``rng`` has already drawn the offset and the QPSK bits, which is the point
@@ -208,15 +231,25 @@ def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True):
     grid[:, used] = qpsk
 
     rows = np.arange(int(n_frames)) * (_SLOTS_PER_FRAME * _SYMS_PER_SLOT)
+    if duplex not in ('fdd', 'tdd'):
+        raise ValueError(f'duplex {duplex!r} is not fdd or tdd')
     pss_seq = _pss(nid2)
     center = _center62(n_fft)
-    # PSS: last symbol of slots 0 and 10. SSS: the symbol before it (6.11.1, 6.11.2).
-    # np.ix_ so the write hits the grid; a chained slice of integer rows is a copy.
-    for slot in (0, 10):
-        grid[np.ix_(rows + slot * _SYMS_PER_SLOT + 6, center)] = pss_seq if pss else 0
+    if duplex == 'fdd':
+        # PSS: last symbol of slots 0 and 10. SSS: the symbol before it.
+        pss_at = (0 * _SYMS_PER_SLOT + 6, 10 * _SYMS_PER_SLOT + 6)
+        sss_at = (0 * _SYMS_PER_SLOT + 5, 10 * _SYMS_PER_SLOT + 5)
+    else:
+        # PSS: symbol 2 of slots 2 and 12. SSS: last symbol of slots 1 and 11.
+        pss_at = (2 * _SYMS_PER_SLOT + 2, 12 * _SYMS_PER_SLOT + 2)
+        sss_at = (1 * _SYMS_PER_SLOT + 6, 11 * _SYMS_PER_SLOT + 6)
+    # (6.11.1, 6.11.2). np.ix_ so the write hits the grid; a chained slice of
+    # integer rows is a copy.
+    for at in pss_at:
+        grid[np.ix_(rows + at, center)] = pss_seq if pss else 0
     sss0, sss5 = _sss(nid1, nid2)
-    grid[np.ix_(rows + 5, center)] = sss0 if sss else 0
-    grid[np.ix_(rows + 10 * _SYMS_PER_SLOT + 5, center)] = sss5 if sss else 0
+    grid[np.ix_(rows + sss_at[0], center)] = sss0 if sss else 0
+    grid[np.ix_(rows + sss_at[1], center)] = sss5 if sss else 0
 
     for slot in range(_SLOTS_PER_FRAME):
         for symbol in (0, 4):
@@ -224,13 +257,15 @@ def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True):
             idx = rows + slot * _SYMS_PER_SLOT + symbol
             grid[np.ix_(idx, used[k])] = r
 
+    if duplex == 'tdd':
+        grid[~_tdd_mask(n_frames)] = 0
     iq = _assemble(grid, n_fft, n_sc)
     iq = np.roll(iq, offset)
     return iq, native, offset, rng
 
 
 def synth_lte(bw_mhz=10, n_frames=10, pci=123, snr_db=20.0, seed=0, cfo_hz=0.0,
-              fs=None, pss=True, sss=True):
+              fs=None, pss=True, sss=True, duplex='fdd'):
     """FDD downlink, one port, normal CP.
 
     Returns ``(iq complex64, fs)``. ``fs`` None keeps the native rate of the
@@ -238,10 +273,11 @@ def synth_lte(bw_mhz=10, n_frames=10, pci=123, snr_db=20.0, seed=0, cfo_hz=0.0,
     is then added so that signal power over noise power is ``snr_db`` at the
     output rate (a non-finite ``snr_db`` adds none). ``cfo_hz`` rotates the
     output. ``pss`` False zeroes the primary synchronisation signal. ``sss``
-    False zeroes the secondary synchronisation signal.
+    False zeroes the secondary synchronisation signal. ``duplex`` 'tdd' makes a
+    TDD downlink (see ``_cell_native``); its silent symbols get noise only.
     """
     iq, native, _offset, rng = _cell_native(
-        bw_mhz, n_frames, pci, seed, pss=pss, sss=sss)
+        bw_mhz, n_frames, pci, seed, pss=pss, sss=sss, duplex=duplex)
 
     rate = native if fs is None else float(fs)
     if fs is not None and int(round(fs)) != int(round(native)):
@@ -260,7 +296,7 @@ def synth_lte(bw_mhz=10, n_frames=10, pci=123, snr_db=20.0, seed=0, cfo_hz=0.0,
 
 
 def synth_lte_multi(cells, bw_mhz=10, n_frames=10, snr_db=20.0, seed=0, cfo_hz=0.0,
-                    fs=None):
+                    fs=None, duplex='fdd'):
     """Several FDD downlinks on one carrier, summed, then one noise draw.
 
     ``cells`` is a list of ``dict(pci, power_db, delay_samples)``. Cell ``i`` is
@@ -292,7 +328,7 @@ def synth_lte_multi(cells, bw_mhz=10, n_frames=10, snr_db=20.0, seed=0, cfo_hz=0
     native = None
     for i, cell in enumerate(cells):
         iq_i, native_i, offset, _rng = _cell_native(
-            bw_mhz, n_frames, cell['pci'], int(seed) + i)
+            bw_mhz, n_frames, cell['pci'], int(seed) + i, duplex=duplex)
         if native is None:
             native = native_i
         waves.append(iq_i)

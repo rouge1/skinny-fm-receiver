@@ -40,10 +40,17 @@ folder, never in the repo or in these notes.
      verdict. Each entry of `cells` gets its own `crs` at its own timing, with
      the other cells left out of the null, so a weak second cell's PCI is
      checked by its pilots as well as its SSS.
+   - duplex check (added 2026-10-21): FDD puts the SSS in the symbol just
+     before the PSS; TDD puts it three symbols earlier (last symbol of slot 1,
+     PSS in symbol 2 of slot 2). `cells` tries the FDD position first and the
+     TDD one only where FDD found nothing, and each cell carries `duplex`. The
+     output's `duplex` is `FDD`, `TDD`, or null without a cell ID. For a TDD
+     carrier the PCI and frame offset come from `cells` (the `sss` check reads
+     the FDD position only), and the CRS check is run at that timing.
    The verdict is `lte` when the prefix and PSS checks both pass at 1e-3. The
-   tool assumes the carrier is centred, normal CP and FDD. It does not run the
-   duplex check (a TDD pattern would show as gaps). Read the `checks` list in
-   the output, not the verdict alone.
+   tool assumes the carrier is centred and normal CP. Read the `checks` list
+   in the output, not the verdict alone. `--decode` refuses a TDD carrier (the
+   srsRAN wrapper is FDD only).
 4. **Broadcast decode (only with `--decode`).** Read the MIB and the SIB1 with
    an outside srsRAN 4G program. See below.
 
@@ -63,7 +70,7 @@ tools/iq-lte CAPTURE.cfile --decode --ports 2 1           # antenna port counts 
 
 The output is one JSON document on stdout: `verdict`, `nid2`, `nid1`, `pci`,
 `nfft` and `bandwidth_mhz` (the class from the occupied width), `half_frame`,
-`frame_offset_samples`, the `checks` list, `cells` (each with its `crs`:
+`frame_offset_samples`, `duplex`, the `checks` list, `cells` (each with its `duplex` and `crs`:
 `pci`, `score`, `chance`, `best_pci`), and `decode` (null without
 `--decode`). `nfft` is the bandwidth class (1024 for 10 MHz), not the
 transform used. A span shorter than 20 ms gets no SSS result.
@@ -116,6 +123,19 @@ with ours. The test makes that file when `pdsch_enodeb` is built under
 Limit: the timing must be the SSS's. A timing off by whole subframes lines the
 pilots up with the wrong slot numbers, and another PCI can then match part of
 them (weakly).
+
+### TDD
+
+Tested (`test_iqlte_tdd.py`) on our generator only: uplink-downlink
+configuration 1 and special subframe 7, with the uplink and guard symbols
+silent; 10 MHz at 20 and 0 dB, 5 and 20 MHz, two cells at one timing, five
+negatives, and `tools/iq-lte` (card and `--decode` refusal). srsRAN's
+`pdsch_enodeb` has no TDD mode, so there is no second implementation. The frame
+timing is checked two other ways: it equals the FDD signal's offset for the
+same seed, and the CRS (which matches only at the right slot numbers) confirms
+the PCI there. A TDD carrier's CRS scores lower (about 0.5 at 20 dB): the
+uplink subframes carry none. Not yet run on air: no TDD carrier was found here
+(Band 41 at 2.5 GHz was empty; CBRS, Band 48 at 3.55-3.7 GHz, is not swept).
 
 ## Decoding the broadcast: `--decode`
 

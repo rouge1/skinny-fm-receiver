@@ -58,7 +58,8 @@ with no launcher.
   each burst to rtl_433 at the decoder's own rate. All numpy only.
   `iqlte.py`, the LTE structural fingerprint (cyclic-prefix autocorrelation,
   PSS search and SSS search for the cell ID, and `cells` for several cells on
-  one carrier, and `crs_search`: which PCI the reference signals belong to),
+  one carrier with each cell's FDD or TDD, and `crs_search`: which PCI the
+  reference signals belong to),
   is numpy only too; its test helpers `tools/tests/lte_synth.py`
   and `lte_negatives.py` use scipy.
   `tools/iq-lte` is its command (`knowledge/lte-verify.md`); `iqlte_decode.py` hands a

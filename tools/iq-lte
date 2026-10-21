@@ -174,6 +174,12 @@ def _card(path, block_hz, sl, fp, sss, decode, cells):
             half = int(sss['half_frame'])
         if sss.get('frame_offset_samples') is not None:
             offset = int(sss['frame_offset_samples'])
+    duplex = fp.get('duplex')
+    if duplex == 'TDD' and cells and isinstance(cells[0], dict):
+        # The TDD cell came from cells(): its own timing and IDs.
+        offset = cells[0].get('frame_offset_samples')
+        half = cells[0].get('half_frame')
+        nid1 = nid2 = None
     if nid1 is None and pci is not None:
         nid1 = pci // 3
     if nid2 is None and pci is not None:
@@ -192,6 +198,7 @@ def _card(path, block_hz, sl, fp, sss, decode, cells):
         'bandwidth_mhz': bw if isinstance(bw, float) else _json_num(bw) if bw is not None else None,
         'half_frame': half,
         'frame_offset_samples': offset,
+        'duplex': duplex,
         'checks': fp.get('checks'),
         'cells': cells,
         'decode': decode,
@@ -206,6 +213,8 @@ def _skip_decode(fp, pci):
     on a capture that is not ``lte``, or not 10 MHz, is not decoded.
     """
     verdict = fp.get('verdict')
+    if fp.get('duplex') == 'TDD':
+        return {'ran': False, 'reason': 'TDD: the srsRAN wrapper decodes FDD only'}
     if verdict != 'lte' or pci is None:
         why = 'verdict is %s' % verdict
         if pci is None:
