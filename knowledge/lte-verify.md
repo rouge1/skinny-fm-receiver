@@ -32,12 +32,18 @@ folder, never in the repo or in these notes.
      before each slot's last symbol, with a small frequency grid;
    - SSS search: N_ID(1) and which half-frame is subframe 0, from the SSS
      beside the PSS. The physical cell ID is 3 x N_ID(1) + N_ID(2), given only
-     when its chance is at most 1e-3.
+     when its chance is at most 1e-3;
+   - CRS check (`iqlte.crs_search`, added 2026-10-21): at the SSS timing, the
+     port-0 reference signals scored against all 504 PCIs (and both
+     half-frames). It runs only when the SSS gave a PCI, reports that PCI's
+     coherence and chance and the strongest CRS PCI, and does not change the
+     verdict. Each entry of `cells` gets its own `crs` at its own timing, with
+     the other cells left out of the null, so a weak second cell's PCI is
+     checked by its pilots as well as its SSS.
    The verdict is `lte` when the prefix and PSS checks both pass at 1e-3. The
    tool assumes the carrier is centred, normal CP and FDD. It does not run the
-   duplex check (a TDD pattern would show as gaps) or the CRS check (named in
-   the output, not run). Read the `checks` list in the output, not the verdict
-   alone.
+   duplex check (a TDD pattern would show as gaps). Read the `checks` list in
+   the output, not the verdict alone.
 4. **Broadcast decode (only with `--decode`).** Read the MIB and the SIB1 with
    an outside srsRAN 4G program. See below.
 
@@ -57,7 +63,8 @@ tools/iq-lte CAPTURE.cfile --decode --ports 2 1           # antenna port counts 
 
 The output is one JSON document on stdout: `verdict`, `nid2`, `nid1`, `pci`,
 `nfft` and `bandwidth_mhz` (the class from the occupied width), `half_frame`,
-`frame_offset_samples`, the `checks` list, and `decode` (null without
+`frame_offset_samples`, the `checks` list, `cells` (each with its `crs`:
+`pci`, `score`, `chance`, `best_pci`), and `decode` (null without
 `--decode`). `nfft` is the bandwidth class (1024 for 10 MHz), not the
 transform used. A span shorter than 20 ms gets no SSS result.
 
@@ -88,6 +95,27 @@ Exit codes:
 | 0 | The run completed, whatever the verdict (a negative is 0) |
 | 1 | A bad option or value, a file that cannot be read, or a sweep file (`.sdvr` of spectra); the reason is on stderr, nothing on stdout |
 | 2 | `--decode` was asked and the outside tools are missing: the tools directory (from `FMRX_LTE_TOOLS`, or the built-in default when that is unset or empty) or `run_pdsch.sh` in it. A missing pycrate interpreter is not exit 2: the MIB is still reported, with `sib1` null |
+
+### The CRS check
+
+The CRS sits in symbols 0 and 4 of each slot on every sixth subcarrier,
+shifted by PCI mod 6, with values from a Gold sequence seeded by the PCI and
+the slot (36.211 6.10.1). Each hypothesis takes its pilots, removes its own
+sequence and measures how alike neighbouring pilots are (the channel changes
+little over 90 kHz). Only phases are used, so a tone cannot dominate. The
+chance is the larger of the analytic noise tail and the other hypotheses'
+spread, times the 1008 hypotheses.
+
+Tested (`test_iqlte_crs.py`): our generator at 20 to -10 dB, 5, 10 and 15 MHz,
+both half-frames, two cells at one timing (0 and -6 dB, each confirmed), a wrong
+timing and five non-LTE negatives (none passes), and a waveform made by
+srsRAN's `pdsch_enodeb` (1 and 2 ports), an implementation that shares no code
+with ours. The test makes that file when `pdsch_enodeb` is built under
+`$FMRX_LTE_TOOLS`. Not yet run on real air or through a radio.
+
+Limit: the timing must be the SSS's. A timing off by whole subframes lines the
+pilots up with the wrong slot numbers, and another PCI can then match part of
+them (weakly).
 
 ## Decoding the broadcast: `--decode`
 

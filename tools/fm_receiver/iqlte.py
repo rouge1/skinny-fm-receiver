@@ -32,7 +32,9 @@ hypothesis gives N_ID(1) and the half-frame. The chance is a Gaussian tail of
 the other hypotheses' scores in this same capture (the null), multiplied by
 the number of hypotheses and floored at 1e-300. The physical cell ID is
 3 * N_ID(1) + N_ID(2) when that chance is at most 1e-3. A capture shorter
-than 20 ms has no SSS result and raises nothing. CRS is named and not run.
+than 20 ms has no SSS result and raises nothing. The CRS check (``crs_search``)
+then scores that PCI's reference signals at the SSS timing, and each entry of
+``cells`` gains its own ``crs``. It does not change the verdict.
 
 The carrier is assumed centred, so the 62 synchronisation bins sit on DC and
 the occupied width can be read from the same symbol FFTs. The reported FFT
@@ -1470,11 +1472,259 @@ def _finish_cells(found, limit, frame_cap):
     return out
 
 
-def _apply_sss(iq, fs, checks, verdict, nid2):
-    """Run ``sss_search`` and fold its PCI into the fingerprint.
+# ---- CRS: which PCI the reference signals belong to ---------------------------
+#
+# The fourth structural check (``knowledge/lte-verify.md``), and no decoder: it
+# reads the reference symbols every LTE downlink sends on antenna port 0 and
+# asks which physical cell ID generated them.
+#
+# Port 0's CRS sits in symbols 0 and 4 of every slot (normal cyclic prefix), on
+# every sixth subcarrier, shifted by PCI mod 6 (and by 3 more in symbol 4). Its
+# values are QPSK from the Gold sequence of 36.211 7.2, seeded by the slot
+# number, the symbol and the PCI (6.10.1). Given a frame boundary (the SSS
+# offset), each hypothesis (PCI, which half-frame is subframe 0) picks its
+# resource elements out of the symbol FFTs and multiplies them by the conjugate
+# of its own sequence. Under the right hypothesis what is left is the channel,
+# which changes slowly from one pilot to the next (90 kHz apart). Under a wrong
+# one it is random. With each pilot reduced to its phase (u = z / |z|), the
+# score is the coherence of neighbouring products:
+#
+#     |mean of u[m] * conj(u[m + 1])|
+#
+# over every pilot pair of every symbol of the first four frames. A channel phase that differs between
+# symbols (frequency offset, Doppler, a timing slip) does not matter, because the
+# products are taken within one symbol. A timing error inside the cyclic prefix
+# turns every product by the same angle, which does not matter either.
+#
+# Phase only, so a tone or a strong narrow
+# interferer is one pilot among hundreds, not most of the sum. Under a wrong
+# hypothesis the K neighbour products are then random unit phasors, and the
+# mean of K has the Rayleigh tail exp(-K s^2). There are 504 PCIs x 2
+# half-frame choices = 1008 hypotheses. The chance is the larger of that tail
+# and a Gaussian tail against the median and MAD of the other hypotheses
+# (robust: a second real cell at this timing is an outlier, not the null),
+# multiplied by 1008 and floored at 1e-300. The best hypothesis and PCIs named
+# in ``exclude`` (other cells already found) are left out of that null.
+#
+# Port 1 (2- and 4-port cells) sends its own CRS on the REs shifted by 3. Those
+# REs are where port 0 of a PCI three apart in ``pci mod 6`` would sit, but with
+# this cell's sequence, not that PCI's, so they score as a wrong hypothesis does.
+#
+# Limit: the timing must be the SSS's. A timing off by a whole number of
+# subframes still lines the real pilots up, with the slot numbers shifted, and
+# some other PCI's sequence then matches part of them: in a test, 3 ms off gave
+# a stray PCI at coherence 0.05 (the real cell scores near 1). The SSS fixes the
+# frame to within 5 ms and the two halves are both tried, so this does not arise
+# from ``sss_search`` or ``cells``.
+#
+# Wrong turns, kept out of the result:
+#
+# - A coherent sum of z[m] across the whole band. The channel turns many times
+#   across 9 MHz (delay spread, and any timing error), so the sum cancels on the
+#   right PCI too. Only neighbouring pilots are compared.
+# - Weighting each pilot by its magnitude. A tone on one subcarrier then is
+#   most of the sum, some PCI's sequence lines up with it, and that PCI passed.
+# - The other hypotheses alone as the null (median and MAD). Structured signals
+#   (an OFDM neighbour, a tone) leave a null with a heavier tail than the MAD
+#   says, and a Wi-Fi-like burst cleared 1e-3. The analytic tail is the guard.
+# - Mean and standard deviation of the other hypotheses as the null. On a
+#   carrier with two synchronised cells the second cell sits at the far tail and
+#   inflates the spread, and the first cell's chance stops meaning anything.
+
+_N_RB_MAX = 110
+_GOLD_NC = 1600
+_SLOTS = 20
+# Frames the CRS check reads. 40 ms is about 16000 pilot pairs: noise then
+# scores near 0.008, and a real cell at -10 dB near 0.15.
+_CRS_FRAMES = 4
+# FFT size -> used subcarriers excluding DC
+_CRS_USED = {128: 72, 256: 180, 512: 300, 1024: 600, 1536: 900, 2048: 1200}
+
+_GOLD_CACHE = {}
+_CRS_SEQ_CACHE = {}
+
+
+def _gold_matrix(nbits):
+    """``(x1, G)``: ``c = x1 xor (init_bits @ G mod 2)`` for 36.211's Gold sequence.
+
+    x2 is linear in its 31 initial bits, so its run from each unit initial
+    state, kept after the Nc = 1600 skip, is a basis.
+    """
+    hit = _GOLD_CACHE.get(nbits)
+    if hit is not None:
+        return hit
+    total = _GOLD_NC + nbits
+    x1 = np.zeros(total + 31, dtype=np.uint8)
+    x1[0] = 1
+    for n in range(total):
+        x1[n + 31] = x1[n + 3] ^ x1[n]
+    x2 = np.zeros((31, total + 31), dtype=np.uint8)
+    x2[np.arange(31), np.arange(31)] = 1
+    for n in range(total):
+        x2[:, n + 31] = x2[:, n + 3] ^ x2[:, n + 2] ^ x2[:, n + 1] ^ x2[:, n]
+    out = (x1[_GOLD_NC:total].astype(np.int64), x2[:, _GOLD_NC:total].astype(np.int64))
+    _GOLD_CACHE[nbits] = out
+    return out
+
+
+def crs_sequences(n_rb):
+    """Port-0 CRS values for every PCI, slot and CRS symbol: ``(504, 20, 2, 2 * n_rb)``.
+
+    Symbol index 0 is OFDM symbol 0 of the slot and index 1 is symbol 4.
+    Normal cyclic prefix (N_CP = 1).
+    """
+    hit = _CRS_SEQ_CACHE.get(n_rb)
+    if hit is not None:
+        return hit
+    nbits = 4 * _N_RB_MAX
+    x1, g = _gold_matrix(nbits)
+    pci = np.arange(504)[:, None, None]
+    slot = np.arange(_SLOTS)[None, :, None]
+    sym = np.array([0, 4])[None, None, :]
+    c_init = ((1 << 10) * (7 * (slot + 1) + sym + 1) * (2 * pci + 1) + 2 * pci + 1)
+    c_init = c_init.reshape(-1)
+    bits = (c_init[:, None] >> np.arange(31)[None, :]) & 1
+    c = (bits @ g + x1[None, :]) & 1
+    m = np.arange(2 * n_rb) + (_N_RB_MAX - n_rb)
+    re = 1.0 - 2.0 * c[:, 2 * m]
+    im = 1.0 - 2.0 * c[:, 2 * m + 1]
+    r = ((re + 1j * im) / math.sqrt(2.0)).reshape(504, _SLOTS, 2, 2 * n_rb)
+    _CRS_SEQ_CACHE[n_rb] = r
+    return r
+
+
+def _crs_grid(x, n_fft, n_sc, base):
+    """Pilot-row FFTs: ``(frames, 20, 2, n_sc)`` used subcarriers, lowest first.
+
+    ``base`` is the first sample of a frame. Each FFT window starts half a
+    short prefix early, so a timing error of a few samples either way stays
+    inside the prefix.
+    """
+    cp0 = 160 * n_fft // 2048
+    cp = 144 * n_fft // 2048
+    slot_len = (cp0 + n_fft) + 6 * (cp + n_fft)
+    frame_len = _SLOTS * slot_len
+    # body starts of symbols 0 and 4 inside a slot
+    body = (cp0, (cp0 + n_fft) + 3 * (cp + n_fft) + cp)
+    back = cp // 2
+    half = n_sc // 2
+    bins = np.concatenate((np.arange(-half, 0), np.arange(1, half + 1))) % n_fft
+    n_frames = (x.size - base) // frame_len
+    if base < 0 or n_frames < 1:
+        return None
+    starts = (base + np.arange(n_frames)[:, None, None] * frame_len
+              + np.arange(_SLOTS)[None, :, None] * slot_len
+              + np.array(body)[None, None, :] - back)
+    idx = starts[..., None] + np.arange(n_fft)
+    spec = np.fft.fft(x[idx], axis=-1)
+    # Undo the half-prefix advance: a linear phase across the band.
+    k = np.fft.fftfreq(n_fft, d=1.0 / n_fft)
+    spec *= np.exp(-2j * np.pi * k * back / n_fft)
+    return spec[..., bins]
+
+
+def _crs_none(detail, ran=False):
+    return {'ran': bool(ran), 'pci': None, 'best_pci': None, 'score': 0.0, 'chance': 1.0,
+            'half_frame': None, 'ranking': [], 'detail': detail}
+
+
+def crs_search(iq, fs, frame_offset, nfft, exclude=(), target=None):
+    """Rank every PCI by its port-0 CRS at a known frame timing.
+
+    ``frame_offset`` is the first sample of a frame in samples of ``fs``, as
+    ``iqlte.sss_search`` and ``iqlte.cells`` report it (only known modulo 5 ms:
+    both halves are tried). ``nfft`` is the bandwidth class (1024 for 10 MHz).
+    The carrier must be centred. ``exclude`` are PCIs left out of the null.
+    ``target`` (a PCI) asks about that cell instead of the best one: its
+    score and chance are reported, whether or not it is the top of the list.
+    That is how a weaker cell sharing a timing with a stronger one is checked.
+
+    Returns ``ran``, ``pci`` (the hypothesis asked about, or None when its
+    chance is above 1e-3), ``best_pci`` (the top of the list, whatever its
+    chance), ``score`` and ``chance`` of the hypothesis, ``half_frame`` (0 when
+    the offset given is subframe 0, 1 when it is subframe 5), ``ranking`` (the
+    top five PCIs as ``{pci, score, z}``) and ``detail``.
+    """
+    try:
+        fs_in = float(fs)
+        n_fft = int(nfft)
+    except (TypeError, ValueError):
+        return _crs_none('no sample rate or bandwidth class')
+    if n_fft not in _CRS_USED or frame_offset is None:
+        return _crs_none('needs a bandwidth class and a frame offset')
+    n_sc = _CRS_USED[n_fft]
+    n_rb = n_sc // 12
+    rate = n_fft * 15000.0
+    x = np.asarray(iq, dtype=np.complex128).reshape(-1)
+    x = np.where(np.isfinite(x), x, 0)
+    x = _resample(x, fs_in, rate)
+    cp0 = 160 * n_fft // 2048
+    cp = 144 * n_fft // 2048
+    frame_len = _SLOTS * ((cp0 + n_fft) + 6 * (cp + n_fft))
+    base = int(round(float(frame_offset) * rate / fs_in)) % frame_len
+    grid = _crs_grid(x, n_fft, n_sc, base)
+    if grid is None:
+        return _crs_none('shorter than one frame after the offset', ran=True)
+    mag = np.abs(grid)
+    grid = np.where(mag > 0, grid / np.where(mag > 0, mag, 1.0), 0)
+    grid = grid[:_CRS_FRAMES]
+    r = crs_sequences(n_rb)
+    pcis = np.arange(504)
+    scores = np.zeros((504, 2))
+    # PCIs that share pci mod 6 read the same pilots: one batch per shift.
+    for shift in range(6):
+        group = pcis[pcis % 6 == shift]
+        y = np.stack((grid[:, :, 0, shift::6][..., :2 * n_rb],
+                      grid[:, :, 1, (shift + 3) % 6::6][..., :2 * n_rb]), axis=2)
+        for half in (0, 1):
+            # half 1: the given offset is subframe 5, so slot s is slot s + 10.
+            seq = np.roll(r[group], -10 * half, axis=1) if half else r[group]
+            z = y[None] * np.conj(seq)[:, None]
+            d = z[..., :-1] * np.conj(z[..., 1:])
+            scores[group, half] = np.abs(d.reshape(len(group), -1).mean(axis=1))
+    flat = scores.reshape(-1)
+    top_pci = int(np.argmax(flat)) // 2
+    if target is not None and 0 <= int(target) < 504:
+        k = 2 * int(target) + int(np.argmax(scores[int(target)]))
+    else:
+        k = int(np.argmax(flat))
+    best_pci, best_half = divmod(k, 2)
+    keep = np.ones(504, dtype=bool)
+    keep[best_pci] = False
+    keep[top_pci] = False
+    for p in exclude or ():
+        if 0 <= int(p) < 504:
+            keep[int(p)] = False
+    null = scores[keep].reshape(-1)
+    med = float(np.median(null))
+    mad = float(np.median(np.abs(null - med))) * 1.4826
+    sigma = max(mad, 1e-9)
+    z_best = (flat[k] - med) / sigma
+    # Pairs of random unit phasors: |mean of K| has the Rayleigh tail exp(-K s^2).
+    n_pairs = grid.shape[0] * _SLOTS * 2 * (2 * n_rb - 1)
+    tail = math.exp(-n_pairs * float(flat[k]) ** 2)
+    # The empirical null as well: whichever says the winner is less rare.
+    tail = max(tail, 0.5 * math.erfc(z_best / math.sqrt(2.0)))
+    chance = float(min(1.0, max(_CHANCE_FLOOR, tail * flat.size)))
+    per_pci = scores.max(axis=1)
+    order = np.argsort(per_pci)[::-1][:5]
+    ranking = [{'pci': int(p), 'score': float(per_pci[p]),
+                'z': float((per_pci[p] - med) / sigma)} for p in order]
+    reported = int(best_pci) if chance <= _PASS else None
+    detail = (f'{"pci" if target is not None else "best pci"} {best_pci} coherence {flat[k]:.3f} (null median {med:.3f}, '
+              f'z {z_best:.1f}) over {grid.shape[0]} frames')
+    return {'ran': True, 'pci': reported, 'best_pci': top_pci, 'score': float(flat[k]), 'chance': chance,
+            'half_frame': int(best_half) if reported is not None else None,
+            'ranking': ranking, 'detail': detail}
+
+
+def _apply_sss(iq, fs, checks, verdict, nid2, nfft=None):
+    """Run ``sss_search`` and fold its PCI into the fingerprint, then the CRS check.
 
     The call goes through the module-level name so a test can replace it.
     A PCI whose N_ID(2) is not the PSS root drops the verdict to ``possible``.
+    The CRS check (``crs_search``) runs only when the SSS gave a PCI and the
+    prefix gave a bandwidth class; it does not change the verdict.
     """
     found = sss_search(iq, fs)
     detail = str(found.get('detail', ''))
@@ -1484,8 +1734,37 @@ def _apply_sss(iq, fs, checks, verdict, nid2):
         detail = detail + '; N_ID(2) mismatch with the PSS root'
     checks.append(_check('sss', bool(found.get('ran')), found.get('score'),
                          found.get('chance'), detail))
-    checks.append(_later('crs', 'CRS is a later stage'))
+    checks.append(_crs_check(iq, fs, pci, found.get('frame_offset_samples'), nfft))
     return checks, verdict, pci
+
+
+def _crs_check(iq, fs, pci, offset, nfft):
+    """The ``crs`` check for the SSS PCI at the SSS timing, or not run."""
+    if pci is None or offset is None or nfft is None:
+        return _later('crs', 'not run: needs the SSS cell ID, its timing and a bandwidth class')
+    found = crs_search(iq, fs, offset, nfft, target=pci)
+    detail = str(found.get('detail', ''))
+    best = found.get('best_pci')
+    if best is not None and best != pci:
+        detail += f'; the strongest CRS is pci {best}'
+    return _check('crs', bool(found.get('ran')), found.get('score'), found.get('chance'), detail)
+
+
+def _cells_crs(iq, fs, found, nfft):
+    """Each cell gains ``crs``: ``{pci, score, chance, best_pci}`` at its own timing.
+
+    The other cells' PCIs are left out of the null. Not run without a class.
+    """
+    for cell in found:
+        if nfft is None:
+            cell['crs'] = None
+            continue
+        others = [c['pci'] for c in found if c['pci'] != cell['pci']]
+        got = crs_search(iq, fs, cell['frame_offset_samples'], nfft,
+                                   exclude=others, target=cell['pci'])
+        cell['crs'] = {'pci': got.get('pci'), 'score': float(got.get('score') or 0.0),
+                       'chance': float(got.get('chance', 1.0)), 'best_pci': got.get('best_pci')}
+    return found
 
 
 def fingerprint(iq, fs):
@@ -1548,7 +1827,7 @@ def fingerprint(iq, fs):
             verdict = 'possible'
         else:
             verdict = 'not-lte'
-        checks, verdict, pci = _apply_sss(iq, fs, [cp, pss], verdict, nid2)
+        checks, verdict, pci = _apply_sss(iq, fs, [cp, pss], verdict, nid2, nfft)
         joint = _floor_chance(cp['chance'] * pss['chance'])
         return {
             'checks': checks,
@@ -1557,7 +1836,7 @@ def fingerprint(iq, fs):
             'nid2': nid2,
             'nfft': nfft,
             'chance': joint,
-            'cells': cells(iq, fs),
+            'cells': _cells_crs(iq, fs, cells(iq, fs), nfft),
         }
 
     checks, verdict, pci = _apply_sss(iq, fs, [cp, pss], 'not-lte', None)

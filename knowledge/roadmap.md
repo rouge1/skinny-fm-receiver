@@ -1261,8 +1261,9 @@ and cell IDs stay in `recordings/`, never in the repo or knowledge files.
   give a PCI) / OFDM but not LTE / uplink or bursty / unknown. Checks 2 and 3
   come first: they rule out most false candidates.
   Shipped in `tools/iq-lte` (2026-10-16, synthetic signals): checks 2, 3 and 4
-  (CP, PSS, SSS). Not run: 1, 5 (duplex is assumed FDD) and 6 (CRS is named
-  in the output). Left open until those are built. Real air (2026-10-16): the
+  (CP, PSS, SSS). Check 6, CRS, added 2026-10-21 (`iqlte.crs_search`; synthetic,
+  and srsRAN's own waveform; not yet on real air). Not run: 1 and 5 (duplex is
+  assumed FDD). Left open until those are built. Real air (2026-10-16): the
   verdict and PCI right on one 10 MHz cell; several cells on one carrier are not
   told apart (see lte-verify.md, "Limits seen on real air").
 - [x] Stage 3b, several cells on one carrier (`iqlte.cells`, phase l4, 2026-10-17):

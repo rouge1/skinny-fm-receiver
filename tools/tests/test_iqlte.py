@@ -8,8 +8,9 @@ every capture in memory.
 
 The two checks that ran are the CP autocorrelation and the PSS search; they
 are taken by ``ran``, not by name, and the gates are order-free (both chances
-checked, whatever their order). SSS and CRS are found by name ('sss', 'crs')
-and must be present with ran False.
+checked, whatever their order). SSS and CRS are found by name ('sss', 'crs').
+Since the CRS check (``crs_search``, tested in test_iqlte_crs.py) both run when
+the SSS gives a PCI.
 
 Groups, one counted line each (the gates G1-G5, G7, G8 of the spec):
   A  G1  10 MHz, PCI 0/123/503, 20 and 0 dB, seeds 0-4 (30 cases):
@@ -351,14 +352,14 @@ def check_interface():
 
     def later_stages():
         sss, crs = find_check(fp(), 'sss'), find_check(fp(), 'crs')
-        return (bool(sss['ran']) and not bool(crs['ran']),
-                f"sss ran {sss['ran']!r}, crs ran {crs['ran']!r}")
-    expect('SSS check ran True and CRS check ran False', later_stages)
+        return (bool(sss['ran']) and bool(crs['ran']) and bool(crs['passed']),
+                f"sss ran {sss['ran']!r}, crs ran {crs['ran']!r} passed {crs['passed']!r}")
+    expect('SSS check ran True, and the CRS check ran and passed on the SSS PCI', later_stages)
 
     def two_ran():
         ran = sorted(c['name'] for c in fp()['checks'] if bool(c.get('ran')))
-        return ran == ['cp-autocorr', 'pss', 'sss'], f'checks that ran: {ran}'
-    expect('cp-autocorr, pss and sss ran; crs did not', two_ran)
+        return ran == ['cp-autocorr', 'crs', 'pss', 'sss'], f'checks that ran: {ran}'
+    expect('cp-autocorr, pss, sss and crs ran', two_ran)
 
     def chances():
         bad = []
@@ -1213,7 +1214,9 @@ def check_l4_interface():
         if 'cells' not in fp:
             return False, 'fingerprint has no cells key'
         want = multi_cells(L4_SPEC3, 0)['cells']
-        same = bool(fp['cells'] == want)
+        # fingerprint adds each cell's CRS result; the rest is cells() as it is.
+        got = [{k: v for k, v in c.items() if k != 'crs'} for c in fp['cells']]
+        same = bool(got == want)
         strongest = want[0]['pci'] if want else None
         ok = same and fp['pci'] == strongest
         return ok, f"cells equal {same}; fingerprint pci {fp['pci']!r}, strongest {strongest!r}"
