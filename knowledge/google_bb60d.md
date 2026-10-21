@@ -25,3 +25,5 @@ The BB60 API is a dynamic link library (bb_api.dll on Windows or libbb_api.so on
 [4] [https://signalhound.com](https://signalhound.com/sigdownloads/BB60C/BB60-API-Manual.pdf)
 [5] [https://signalhound.com](https://signalhound.com/sigdownloads/BB60C/BB60C-User-Manual.pdf)
 [6] [https://signalhound.com](https://signalhound.com/sigdownloads/SDK/bb_api_release_notes.txt)
+
+Calibration, temperature and the 10 MHz timebase: [signal-hound-calibration.md](signal-hound-calibration.md).
