@@ -118,7 +118,17 @@ both half-frames, two cells at one timing (0 and -6 dB, each confirmed), a wrong
 timing and five non-LTE negatives (none passes), and a waveform made by
 srsRAN's `pdsch_enodeb` (1 and 2 ports), an implementation that shares no code
 with ours. The test makes that file when `pdsch_enodeb` is built under
-`$FMRX_LTE_TOOLS`. Not yet run on real air or through a radio.
+`$FMRX_LTE_TOOLS`. Not yet run on real air.
+
+**Through a radio (2026-10-21).** Two files were played from a VSG60A at
+751.0 MHz, about -40 dBm, over a bare cable into the BB60D, and captured 2 s at
+20 MS/s through the window: srsRAN's `pdsch_enodeb` downlink (FDD, 2 ports,
+made-up PCI 217) and our generator's TDD downlink (made-up PCI 321). FDD: verdict
+`lte`, PCI 217, duplex FDD, CRS coherence 0.998 (chance at the floor), and srsRAN
+decoded the MIB (2 ports, 50 PRB). TDD: PCI 321 from `cells`, duplex TDD, CRS
+coherence 0.55 (the uplink subframes carry none), and `--decode` refused it.
+The `sss` check read noise on the TDD file, as it should: it looks at the FDD
+position only.
 
 Limit: the timing must be the SSS's. A timing off by whole subframes lines the
 pilots up with the wrong slot numbers, and another PCI can then match part of
@@ -134,7 +144,8 @@ negatives, and `tools/iq-lte` (card and `--decode` refusal). srsRAN's
 timing is checked two other ways: it equals the FDD signal's offset for the
 same seed, and the CRS (which matches only at the right slot numbers) confirms
 the PCI there. A TDD carrier's CRS scores lower (about 0.5 at 20 dB): the
-uplink subframes carry none. Not yet run on air: no TDD carrier was found here
+uplink subframes carry none. Through a radio (VSG60A to BB60D over a cable,
+2026-10-21; see the CRS section): right. Not yet run on air: no TDD carrier was found here
 (Band 41 at 2.5 GHz was empty; CBRS, Band 48 at 3.55-3.7 GHz, is not swept).
 
 ## Decoding the broadcast: `--decode`
