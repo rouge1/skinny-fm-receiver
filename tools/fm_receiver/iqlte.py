@@ -68,6 +68,12 @@ Wrong turns, kept out of the result:
 - Zero-forcing the SSS with no floor. A weak PSS bin (a deep fade, or a slot
   that is not a PSS) blows up and the average follows the noise. The channel
   divide is floored at a fraction of the median bin power.
+- Separating the prefix peaks by half a prefix. On a quiet real carrier the
+  data symbols are nearly empty, so the folded prefix profile is carried by
+  the reference and control symbols in broad humps (several cells, echoes):
+  the seven peaks fell on three prefixes and the PSS symbol was never tried,
+  for a PSS chance near 0.5. The peaks are kept half a symbol apart, one per
+  prefix. Echoes spread over 40 samples at 3 dB SNR still miss it.
 - Reading the winning hypothesis off as a tiny chance because it beat the
   second place. The other hypotheses are the null, and that one-draw tail is
   multiplied by all 336 candidates. A capture with no SSS then stays above
@@ -659,6 +665,11 @@ def _prefix_peaks(folded, n_peaks, guard):
     return peaks
 
 
+def _symbol_guard(n_fft, cp):
+    """Half a symbol: the seven prefix peaks then sit on seven different prefixes."""
+    return (n_fft + cp) // 2
+
+
 def _bodies_at(iq, n_fft, slot, useful_phase):
     """One OFDM body per slot, starting at ``useful_phase`` inside the slot."""
     phase = int(useful_phase) % int(slot)
@@ -682,7 +693,7 @@ def _pss_on_grid(iq, fs, n_fft, folded, slot, cp):
     A couple of samples of timing error (the peak jitters at low SNR, and a
     CFO walks the bin phase) is a ramp across the FFT bins, not a new FFT.
     """
-    peaks = _prefix_peaks(folded, 7, max(cp // 2, 2))
+    peaks = _prefix_peaks(folded, 7, _symbol_guard(n_fft, cp))
     if not peaks:
         return 0.0, None, 0.0, np.zeros((0, 62), dtype=np.complex128), 0
     refs = _pss_seqs()
@@ -844,7 +855,7 @@ def _locate_pss(block, rate, n_fft, folded, slot, cp):
     and a few samples of timing (a ramp across the bins, not a new FFT). The
     body start is the sample, inside a slot, of the window that won.
     """
-    peaks = _prefix_peaks(folded, 7, max(cp // 2, 2))
+    peaks = _prefix_peaks(folded, 7, _symbol_guard(n_fft, cp))
     if not peaks:
         return None
     refs = _pss_seqs()
