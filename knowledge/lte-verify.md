@@ -118,7 +118,7 @@ both half-frames, two cells at one timing (0 and -6 dB, each confirmed), a wrong
 timing and five non-LTE negatives (none passes), and a waveform made by
 srsRAN's `pdsch_enodeb` (1 and 2 ports), an implementation that shares no code
 with ours. The test makes that file when `pdsch_enodeb` is built under
-`$FMRX_LTE_TOOLS`. Not yet run on real air.
+`$FMRX_LTE_TOOLS`.
 
 **Through a radio (2026-10-21).** Two files were played from a VSG60A at
 751.0 MHz, about -40 dBm, over a bare cable into the BB60D, and captured 2 s at
@@ -129,6 +129,12 @@ decoded the MIB (2 ports, 50 PRB). TDD: PCI 321 from `cells`, duplex TDD, CRS
 coherence 0.55 (the uplink subframes carry none), and `--decode` refused it.
 The `sss` check read noise on the TDD file, as it should: it looks at the FDD
 position only.
+
+**On real air (2026-10-22, BB60D, antenna).** The three 10 MHz carriers at the
+second location, 1 s at 20 MS/s each: every cell `cells` found, two per carrier
+(six in all, one of them about 8 dB under its neighbour and never decoded by
+srsRAN), was confirmed by its own CRS at the floor chance (1e-300), coherence
+0.30 to 0.88, all FDD. The values stay with the recordings.
 
 Limit: the timing must be the SSS's. A timing off by whole subframes lines the
 pilots up with the wrong slot numbers, and another PCI can then match part of
@@ -146,7 +152,8 @@ same seed, and the CRS (which matches only at the right slot numbers) confirms
 the PCI there. A TDD carrier's CRS scores lower (about 0.5 at 20 dB): the
 uplink subframes carry none. Through a radio (VSG60A to BB60D over a cable,
 2026-10-21; see the CRS section): right. Not yet run on air: no TDD carrier was found here
-(Band 41 at 2.5 GHz was empty; CBRS, Band 48 at 3.55-3.7 GHz, is not swept).
+(Band 41 at 2.5 GHz was empty; CBRS, Band 48, 3.5-3.75 GHz, swept 2026-10-22 at
+full gain: noise only, floor about -120 dBm).
 
 ## Decoding the broadcast: `--decode`
 
@@ -311,6 +318,18 @@ are not recorded here: they are kept with the recordings. See
   synchronised cells overlapping, or both. More captures of the same kind did not
   help; a better antenna is the next test. The 600 MHz and 850 MHz bands and 1.9-2.7 GHz
   gave no confirmed cell.
+- **A quiet carrier failed the PSS check (fixed 2026-10-22).** On the three
+  700 MHz carriers at the second location the verdict was `possible` with no PCI,
+  although `cells` found both cells on each. The PSS check, not the SSS, failed
+  (chance about 0.5). With little traffic the data symbols are nearly empty, so
+  the folded prefix profile is broad humps on the reference and control symbols,
+  and the seven prefix peaks, kept only half a prefix apart, fell on three
+  symbols and missed the PSS symbol. They are now kept half a symbol apart: all
+  three carriers read `lte` with the strongest cell's PCI, every check passing.
+  Our generator only fills every symbol, so it never showed this;
+  `lte_synth`'s `idle=True` (QPSK in the control region only) reproduces it,
+  and `test_iqlte_idle.py` fails every check with the old spacing. Still
+  missed: echoes spread over 40 samples at 3 dB SNR.
 - **Draw the block before trusting its width.** A carrier 2.3 MHz off the file
   centre read as 15 MHz; centred, it read 10 MHz and its MIB said 50 PRB. Step 3
   of [workflow.md](workflow.md) (`tools/iq-picture`) shows the occupied edges and

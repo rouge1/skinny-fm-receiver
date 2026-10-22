@@ -200,12 +200,16 @@ def _tdd_mask(n_frames):
     return np.tile(one, int(n_frames))
 
 
-def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True, duplex='fdd'):
+def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True, duplex='fdd', idle=False):
     """One downlink at the native rate, after its seeded frame roll.
 
     ``duplex`` 'tdd' moves the PSS to symbol 2 of slots 2 and 12 (DwPTS) and the
     SSS to symbol 6 of slots 1 and 11, and silences the uplink subframes, the
     guard period and UpPTS (configuration 1, special subframe 7).
+
+    ``idle`` True keeps the QPSK only in the control region (the first three
+    symbols of each subframe), as on a quiet real carrier: the other symbols
+    carry the reference and synchronisation signals alone.
 
     Not normalised and with no noise. Returns ``(iq, native_fs, frame_offset, rng)``.
     ``rng`` has already drawn the offset and the QPSK bits, which is the point
@@ -229,6 +233,8 @@ def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True, duplex='fdd'):
     qpsk = ((1 - 2 * bits[..., 0]) + 1j * (1 - 2 * bits[..., 1])) / np.sqrt(2.0)
     grid = np.zeros((n_sym, n_fft), dtype=np.complex128)
     grid[:, used] = qpsk
+    if idle:
+        grid[np.arange(n_sym) % (2 * _SYMS_PER_SLOT) >= 3] = 0
 
     rows = np.arange(int(n_frames)) * (_SLOTS_PER_FRAME * _SYMS_PER_SLOT)
     if duplex not in ('fdd', 'tdd'):
@@ -265,7 +271,7 @@ def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True, duplex='fdd'):
 
 
 def synth_lte(bw_mhz=10, n_frames=10, pci=123, snr_db=20.0, seed=0, cfo_hz=0.0,
-              fs=None, pss=True, sss=True, duplex='fdd'):
+              fs=None, pss=True, sss=True, duplex='fdd', idle=False):
     """FDD downlink, one port, normal CP.
 
     Returns ``(iq complex64, fs)``. ``fs`` None keeps the native rate of the
@@ -275,9 +281,10 @@ def synth_lte(bw_mhz=10, n_frames=10, pci=123, snr_db=20.0, seed=0, cfo_hz=0.0,
     output. ``pss`` False zeroes the primary synchronisation signal. ``sss``
     False zeroes the secondary synchronisation signal. ``duplex`` 'tdd' makes a
     TDD downlink (see ``_cell_native``); its silent symbols get noise only.
+    ``idle`` True leaves the data symbols empty (see ``_cell_native``).
     """
     iq, native, _offset, rng = _cell_native(
-        bw_mhz, n_frames, pci, seed, pss=pss, sss=sss, duplex=duplex)
+        bw_mhz, n_frames, pci, seed, pss=pss, sss=sss, duplex=duplex, idle=idle)
 
     rate = native if fs is None else float(fs)
     if fs is not None and int(round(fs)) != int(round(native)):
@@ -296,7 +303,7 @@ def synth_lte(bw_mhz=10, n_frames=10, pci=123, snr_db=20.0, seed=0, cfo_hz=0.0,
 
 
 def synth_lte_multi(cells, bw_mhz=10, n_frames=10, snr_db=20.0, seed=0, cfo_hz=0.0,
-                    fs=None, duplex='fdd'):
+                    fs=None, duplex='fdd', idle=False):
     """Several FDD downlinks on one carrier, summed, then one noise draw.
 
     ``cells`` is a list of ``dict(pci, power_db, delay_samples)``. Cell ``i`` is
@@ -317,7 +324,8 @@ def synth_lte_multi(cells, bw_mhz=10, n_frames=10, snr_db=20.0, seed=0, cfo_hz=0
     mean power. Complex white noise is added at that output rate so total
     signal power over noise power is ``snr_db`` (non-finite adds none). The
     noise generator is ``SeedSequence([seed, 1])``, not a cell seed. ``cfo_hz``
-    then rotates the output exactly as in ``synth_lte``.
+    then rotates the output exactly as in ``synth_lte``. ``idle`` is passed to
+    every cell.
 
     Returns ``(iq complex64, fs)`` and nothing else.
     """
@@ -328,7 +336,7 @@ def synth_lte_multi(cells, bw_mhz=10, n_frames=10, snr_db=20.0, seed=0, cfo_hz=0
     native = None
     for i, cell in enumerate(cells):
         iq_i, native_i, offset, _rng = _cell_native(
-            bw_mhz, n_frames, cell['pci'], int(seed) + i, duplex=duplex)
+            bw_mhz, n_frames, cell['pci'], int(seed) + i, duplex=duplex, idle=idle)
         if native is None:
             native = native_i
         waves.append(iq_i)
