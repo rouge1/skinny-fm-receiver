@@ -1,6 +1,8 @@
 # Verifying an LTE carrier found in a sweep
 
 Acronyms (PCI, MIB, SIB1, MCC, FDD and the rest) are explained in [glossary.md](glossary.md).
+What a cell broadcasts after SIB1 (SIB2 to SIB24, network time, NR, NB-IoT)
+and how to read it is in [lte-broadcast.md](lte-broadcast.md).
 
 How to tell whether an LTE-looking block in a sweep is LTE, and, with an
 outside decoder, which cell it is. The method is the Round 25 plan in
