@@ -120,7 +120,8 @@ calculation); the rest were hit while building this.
   added in E.
 - A trial factor of only 336. The best of the many peaks and frequencies tried
   then lands on the 1e-3 line for noise; the factor is
-  336 x peaks x frequencies x spacings, so only a strong match clears it.
+  336 x PSS peaks submitted to an SSS trial (every one, before any is dropped for
+  falling too near the capture edge) x frequencies x spacings, so only a strong match clears it.
 - Scanning the PSS at the full working rate with the offset grid: the
   elementwise work of 15 correlations dominated a raster search (63 candidates
   at 20 MS/s). Half the rate and one batched argmax cut it by a third.
@@ -542,7 +543,7 @@ def _search_candidate(cap, ssb_hz, center_hz, scs_khz, n_trials):
             bursts.append(b)
     if not bursts:
         return []
-    trials = 336.0 * len(bursts) * n_trials
+    trials = 336.0 * len(peaks) * n_trials
     groups = {}
     for b in bursts:
         groups.setdefault((b['root'], b['nid1']), []).append(b)
