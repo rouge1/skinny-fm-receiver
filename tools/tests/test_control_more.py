@@ -14,6 +14,9 @@ band), ``recordings-folder`` (the app's folder, via update_config),
 and the new ``status`` keys (``sweep``, ``file``, ``level_unit``).
 ``measure`` (phase m2) is checked last: refused with no capture, the card of
 a capture, the seconds and ``card`` options, bad seconds, a missing file.
+``cells`` runs tools/iq-lte or tools/iq-nr the same way: on a synthetic LTE
+and NR recording (made-up PCI 123), a relative path through fmctl, bad
+usage, and ``decode`` with no outside decoder (its refusal comes back).
 
 Run:  QT_QPA_PLATFORM=offscreen PYTHONPATH=tools \\
       /home/user/miniconda3/envs/gnu/bin/python tools/tests/test_control_more.py
@@ -42,7 +45,7 @@ os.environ['FMRX_CONTROL'] = os.path.join(FOLDER, 'control.sock')
 
 from fm_receiver import app as fmapp  # noqa: E402
 from fm_receiver import radios  # noqa: E402
-from tests import signals  # noqa: E402
+from tests import lte_synth, nr_synth, signals  # noqa: E402
 from tests.test_sweep import slow_radio  # noqa: E402
 import numpy as np  # noqa: E402
 
@@ -321,7 +324,7 @@ def main():
         def t_help_lists_new():
             h = c.ok('help')
             for name in ('filter', 'step', 'radio', 'start', 'stop', 'open',
-                         'delete', 'recordings-folder', 'marker', 'status'):
+                         'delete', 'recordings-folder', 'marker', 'status', 'cells'):
                 assert name in h, f"help lists no {name!r}: {sorted(h)}"
 
         def t_filter_sets():
@@ -946,6 +949,118 @@ def main():
             finally:
                 ctl.MEASURE_TOOL, ctl.MEASURE_LIMIT_S = original_tool, original_limit
 
+        def write_cells_file(name, iq, rate, centre):
+            """``iq`` as FOLDER/cells/<name>.cfile with its .sigmf-meta."""
+            folder = os.path.join(FOLDER, 'cells')
+            os.makedirs(folder, exist_ok=True)
+            base = os.path.join(folder, name)
+            np.asarray(iq, dtype=np.complex64).tofile(base + '.cfile')
+            with open(base + '.sigmf-meta', 'w') as fh:
+                json.dump({'global': {'core:datatype': 'cf32_le', 'core:sample_rate': rate},
+                           'captures': [{'core:sample_start': 0, 'core:frequency': centre}],
+                           'annotations': []}, fh)
+            return base + '.cfile'
+
+        cells_files = {}
+
+        def cells_file(kind):
+            """A synthetic cell, PCI 123, at 20 MS/s: 0.2 s of LTE (10 MHz) or
+            0.1 s of NR (its SSB 150 kHz above a made-up 600.0 MHz centre)."""
+            if kind not in cells_files:
+                if kind == 'lte':
+                    iq, _ = lte_synth.synth_lte(bw_mhz=10, n_frames=20, pci=123,
+                                                snr_db=20.0, seed=0, fs=20e6)
+                    cells_files[kind] = write_cells_file('lte', iq, 20e6, 600.0e6)
+                else:
+                    iq, _, _ = nr_synth.synth_nr(pci=123, scs_khz=15, case='A', l_max=4,
+                                                 ssb_sent=(0,), period_ms=20, n_hf=0,
+                                                 bw_mhz=20, ssb_offset_hz=0.15e6,
+                                                 dur_ms=100, fs=20e6, seed=0)
+                    cells_files[kind] = write_cells_file('nr', iq, 20e6, 600.0e6)
+            return cells_files[kind]
+
+        def t_cells_refused_without_capture():
+            assert not getattr(w, '_last_capture', None), 'a capture was made before this check'
+            err = c.refused('cells nr', 'capture')
+            assert 'PATH' in err, err
+
+        def t_cells_lte_path():
+            r = c.ask(f"cells lte {cells_file('lte')}", timeout=90)
+            assert r['ok'], r
+            got = r['result']
+            assert got['verdict'] == 'lte' and got['pci'] == 123, \
+                {k: got.get(k) for k in ('verdict', 'pci')}
+            assert [cell['pci'] for cell in got['cells']] == [123], got['cells']
+            assert got['decode'] is None, got['decode']
+
+        def t_cells_nr_path():
+            r = c.ask(f"cells nr {cells_file('nr')}", timeout=90)
+            assert r['ok'], r
+            got = r['result']
+            assert got['verdict'] == 'nr', got['verdict']
+            assert got['ssbs'] and got['ssbs'][0]['pci'] == 123, got['ssbs']
+            assert all('decode' not in ssb for ssb in got['ssbs']), got['ssbs'][0]
+
+        def t_cells_last_capture():
+            ensure_receive(c, w)
+            assert getattr(w, '_last_capture', None), 'no capture to search'
+            r = c.ask('cells nr', timeout=90)
+            assert r['ok'], r
+            assert os.path.abspath(r['result']['file']) == os.path.abspath(w._last_capture), \
+                (r['result']['file'], w._last_capture)
+            assert r['result']['verdict'] == 'none', r['result']['verdict']
+
+        def t_fmctl_cells_relative():
+            cells_file('nr')
+            code, out, err = fmctl_in(FOLDER, 'cells', 'nr', 'cells/nr.cfile', timeout=90)
+            assert code == 0, (code, out, err)
+            got = json.loads(out)['result']
+            assert os.path.abspath(got['file']) == os.path.abspath(cells_file('nr')), got['file']
+            assert got['ssbs'][0]['pci'] == 123, got['ssbs']
+
+        def t_cells_refused_bad_usage():
+            for line in ('cells', 'cells gsm', 'cells nr decode a b', 'cells lte x y'):
+                err = c.refused(line)
+                assert 'usage' in err, (line, err)
+            err = c.refused(f"cells nr {os.path.join(FOLDER, 'no-such.cfile')}", 'missing')
+            assert 'no-such.cfile' in err, err
+
+        def t_cells_decode_reports_missing_tools():
+            # No outside decoder in an empty FMRX_LTE_TOOLS: the tool's own
+            # refusal comes back as the error, and the window keeps answering.
+            empty = os.path.join(FOLDER, 'no-lte-tools')
+            os.makedirs(empty, exist_ok=True)
+            before = os.environ.get('FMRX_LTE_TOOLS')
+            os.environ['FMRX_LTE_TOOLS'] = empty
+            try:
+                for kind, script in (('nr', 'run_nr.sh'), ('lte', 'run_pdsch.sh')):
+                    r = c.ask(f'cells {kind} decode {cells_file(kind)}', timeout=90)
+                    assert r['ok'] is False, (kind, r)
+                    assert r['error'].startswith('cells: ') and script in r['error'], (kind, r)
+            finally:
+                if before is None:
+                    os.environ.pop('FMRX_LTE_TOOLS', None)
+                else:
+                    os.environ['FMRX_LTE_TOOLS'] = before
+            assert c.ok('status')['running'], 'the window did not answer after the refusal'
+
+        def t_cells_timeout_kills():
+            from fm_receiver import control as ctl
+            original_tools, original_limit = dict(ctl.CELLS_TOOLS), ctl.CELLS_LIMIT_S
+            sleeper = os.path.join(FOLDER, 'sleep-tool.py')
+            with open(sleeper, 'w') as fh:
+                fh.write("import time\ntime.sleep(60)\n")
+            ctl.CELLS_TOOLS['nr'], ctl.CELLS_LIMIT_S = sleeper, 1.0
+            try:
+                began = time.time()
+                r = c.ask(f"cells nr {cells_file('nr')}", timeout=20)
+                assert r['ok'] is False and 'stopped' in r['error'], r
+                assert time.time() - began < 10, 'the limit did not stop the tool'
+            finally:
+                ctl.CELLS_TOOLS.clear()
+                ctl.CELLS_TOOLS.update(original_tools)
+                ctl.CELLS_LIMIT_S = original_limit
+
         checks = [
             ('status gains sweep/file/level_unit', t_status_keys),
             ('status file None without a file', t_status_file_none),
@@ -984,6 +1099,7 @@ def main():
             ('a file sweep from Recordings opens the file once',
              t_file_sweep_from_recordings_opens_once),
             ('measure refused with no capture yet', t_measure_refused_without_capture),
+            ('cells refused with no capture and no PATH', t_cells_refused_without_capture),
             ('measure gives the card of the last capture', t_measure_reads_capture),
             ('measure SECONDS measures that span', t_measure_seconds_span),
             ('measure card writes the card beside the .cfile', t_measure_card_writes_file),
@@ -996,7 +1112,14 @@ def main():
              t_measure_numbers_refused_or_clipped),
             ('measure: bad tool output and exit refused', t_measure_bad_tool_output_refused),
             ('measure: a tool over its limit is killed', t_measure_timeout_kills_and_window_lives),
+            ('cells nr on the last capture', t_cells_last_capture),
             ('measure refused for a missing capture file', t_measure_refused_missing_file),
+            ('cells lte PATH finds the synthetic cell', t_cells_lte_path),
+            ('cells nr PATH finds the synthetic SSB', t_cells_nr_path),
+            ('fmctl cells of a relative path', t_fmctl_cells_relative),
+            ('cells refused for bad usage and a missing file', t_cells_refused_bad_usage),
+            ('cells decode: the missing decoder is refused', t_cells_decode_reports_missing_tools),
+            ('cells: a tool over its limit is killed', t_cells_timeout_kills),
         ]
         for name, fn in checks:
             check(name, fn)

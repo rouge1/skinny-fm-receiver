@@ -970,6 +970,7 @@ tools/fmctl help                          # every command
 | `recordings-folder PATH` | Sets the app's recordings folder (where Record saves, and what the list reads), saved in the settings, and reads the list again. Refused if PATH is not a directory. Replies `recordings_folder` and `recordings` (the count) |
 | `marker FREQ` | On a spectrum recording (Recordings tab), places the spectrum marker there, as a click does, and replies. Elsewhere read-only: the level at FREQ (MHz) on the RF trace, in the view's unit: the held trace while Peak hold is on, otherwise the live one. Refused for a frequency off the shown band. Replies `freq_mhz`, `level_db`, `unit` and `trace` |
 | `measure [SECONDS] [card]` | Measures the last capture (the file the last `capture` replied with) with `tools/iq-measure`, and replies the card (see [Measuring a recording](#measuring-a-recording-iq-measure-and-iq-picture)). `SECONDS` measures only the first that long. `card` also writes `<base>.card.json` beside a `.cfile`. Runs for at most 60 s, and the window keeps running meanwhile. Refused when there is no capture yet
+| `cells lte` / `nr [decode] [PATH]` | Runs `tools/iq-lte` or `tools/iq-nr` on PATH (default: the file the last `capture` replied with) and replies with what it prints, unchanged (see [Verifying an LTE carrier](#verifying-an-lte-carrier-iq-lte) and [Finding and decoding 5G NR cells](#finding-and-decoding-5g-nr-cells-iq-nr)). `decode` adds `--decode`: each cell's MIB, SIB1, other SI and network time, through the outside tools under `$FMRX_LTE_TOOLS`. Read-only: the window is not changed. Runs for at most 60 s, or 300 s with `decode`, and the window keeps running meanwhile. Refused with no PATH and no capture yet, for a missing file, and with the tool's own message when it fails (for example, no outside tools) |
 | `record audio` / `iq-channel` / `iq-band` `on` / `off`, `record start` / `stop` | The Record box. `stop` replies with the files saved, the `.sigmf-meta` beside each IQ file included |
 | `capture SECONDS [iq-band` / `iq-channel` / `audio]` | Records only that (IQ of the whole band by default) for SECONDS and replies with the files; the Record box's ticks are put back after. Refused over 4 GB: at 40 MS/s the whole band is 320 MB/s, so 12 s at most |
 | `scan START STOP [step KHZ] [quick S] [listen S] [snr DB]` | Tunes each channel from START to STOP MHz and replies with one row for each: level, SNR, stereo pilot, and `rds` (the same block as `status`) and `hd` (station, programs, now playing, BER) where something was decoded. The step is the Tuner's Step unless given. Each channel is heard for `quick` seconds (2); one with a pilot or an SNR of `snr` dB (6) or more is heard `listen` seconds more (12; 0 for none), long enough for RDS and for HD Radio's name. A channel outside an IQ file's band is a row with the reason. Receive's, refused while recording (retuning would spoil it). The Tuner goes back where it was afterwards, and also if the client leaves, which ends the scan. Up to 30 minutes, worst case |
@@ -1240,7 +1241,9 @@ hypothesis fits, not that the system is named.
 For an LTE-looking block in a sweep, `tools/iq-lte` says whether it is an LTE
 downlink and what its cell ID is (the method is in
 [lte-verify.md](lte-verify.md)). It reads a span of a `.cfile`, `.sdvr` (IQ) or
-`.cdif`, mixes the block to 0 Hz and prints one JSON document.
+`.cdif`, mixes the block to 0 Hz and prints one JSON document. With the window
+open, `fmctl cells lte [decode] [PATH]` runs it on the last capture (or PATH) and
+replies with the same document.
 
 ```sh
 tools/iq-lte CAPTURE.cfile                                # verdict, PCI, class, checks
@@ -1274,7 +1277,9 @@ tools/iq-lte CAPTURE.cfile --decode --si-seconds 2        # decode 2 s instead o
 For a carrier that may be 5G NR (`iq-lte` can only say "possible" for one),
 `tools/iq-nr` lists the NR cells whose sync block (SSB) is in a recording, and
 with `--decode` reads what each cell broadcasts. The method, every output field
-and the limits are in [nr-verify.md](nr-verify.md).
+and the limits are in [nr-verify.md](nr-verify.md). With the window open,
+`fmctl cells nr [decode] [PATH]` runs it on the last capture (or PATH) and
+replies with the same document.
 
 ```sh
 tools/iq-nr CAPTURE.cfile                                  # every raster point in the capture, 15 and 30 kHz

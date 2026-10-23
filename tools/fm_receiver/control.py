@@ -1232,6 +1232,20 @@ def cmd_measure(w, args):
         argv += ['--t0', '0', '--t1', str(seconds)]
     if cards:
         argv.append('--card')
+
+    def done(result):
+        written = card_path(path) if cards else None
+        if written and os.path.isfile(written):
+            result['card_file'] = written
+        return result
+    return _run_tool('measure', argv, MEASURE_LIMIT_S, 'card', done)
+
+
+def _run_tool(name, argv, limit, printed, done):
+    """Run one of our tools for command ``name``, the window running meanwhile,
+    and reply ``done(the JSON it printed)``. A tool past ``limit`` seconds is
+    killed; a failed exit is refused with its stderr. ``printed`` names what a
+    good run prints, for the refusal when it prints something else."""
     # The output goes to files, not pipes: nothing waits on a pipe the window
     # cannot drain, and a killed tool is never read from.
     out_file, err_file = tempfile.TemporaryFile(), tempfile.TemporaryFile()
@@ -1263,23 +1277,57 @@ def cmd_measure(w, args):
     # Polled in steps, as ``wait`` is: the window keeps running meanwhile.
     def check():
         if proc.poll() is None:
-            if time.monotonic() - began > MEASURE_LIMIT_S:
+            if time.monotonic() - began > limit:
                 stop()
-                raise CommandError(f"measure: still running after {MEASURE_LIMIT_S:.0f} s; "
-                                   "stopped")
+                raise CommandError(f"{name}: still running after {limit:.0f} s; stopped")
             return Later(MEASURE_POLL_S, check, abort=stop)
         out, err = read(out_file), read(err_file)
         if proc.returncode != 0:
-            raise CommandError(f"measure: {err.strip() or f'exit {proc.returncode}'}")
+            raise CommandError(f"{name}: {err.strip() or f'exit {proc.returncode}'}")
         try:
             result = json.loads(out)
         except ValueError as exc:
-            raise CommandError(f"measure: the tool printed no card ({exc})") from None
-        written = card_path(path) if cards else None
-        if written and os.path.isfile(written):
-            result['card_file'] = written
-        return result
+            raise CommandError(f"{name}: the tool printed no {printed} ({exc})") from None
+        return done(result)
     return Later(MEASURE_POLL_S, check, abort=stop)
+
+
+#: The longest a ``cells`` search may run, and a ``cells ... decode``: the
+#: decode reads seconds of the file and runs srsRAN on each cell.
+CELLS_LIMIT_S = 60.0
+CELLS_DECODE_LIMIT_S = 300.0
+CELLS_USAGE = 'cells lte|nr [decode] [PATH]'
+#: The cell tools, beside iq-measure: tools/iq-lte and tools/iq-nr.
+CELLS_TOOLS = {kind: os.path.join(os.path.dirname(MEASURE_TOOL), f'iq-{kind}')
+               for kind in ('lte', 'nr')}
+
+
+@command('cells', CELLS_USAGE, "The LTE or 5G NR cells in PATH (default the last "
+         "capture), with tools/iq-lte or tools/iq-nr: their reply as it is. decode also "
+         "reads each cell's broadcast (MIB, SIB1, other SI, the network time) through "
+         f"$FMRX_LTE_TOOLS. Read only. At most {CELLS_LIMIT_S:.0f} s, or "
+         f"{CELLS_DECODE_LIMIT_S:.0f} s with decode; the window runs meanwhile.")
+def cmd_cells(w, args):
+    words = _args(args, 1, 3, CELLS_USAGE)
+    kind = words[0].lower()
+    if kind not in CELLS_TOOLS:
+        raise CommandError(f"usage: {CELLS_USAGE}")
+    rest = list(words[1:])
+    decode = bool(rest) and rest[0].lower() == 'decode'
+    if decode:
+        rest.pop(0)
+    if len(rest) > 1:
+        raise CommandError(f"usage: {CELLS_USAGE}")
+    path = rest[0] if rest else getattr(w, '_last_capture', None)
+    if not path:
+        raise CommandError("cells: no capture yet ('capture SECONDS' first, or give a PATH)")
+    if not os.path.isfile(path):
+        raise CommandError(f"cells: the file {os.path.basename(path)} is missing")
+    argv = [sys.executable, CELLS_TOOLS[kind], path]
+    if decode:
+        argv.append('--decode')
+    limit = CELLS_DECODE_LIMIT_S if decode else CELLS_LIMIT_S
+    return _run_tool('cells', argv, limit, 'cell list', lambda result: result)
 
 
 def parse(line):

@@ -9,7 +9,7 @@
 
 Each command goes to the window's control socket (fm_receiver/control.py)
 and its reply is printed as JSON. A path (open, recordings-folder, folders
-add/remove, screenshot) is made absolute here: the window has its own working
+add/remove, screenshot, cells) is made absolute here: the window has its own working
 folder. Exits 1 if any command failed, 2 if no window is listening. Plain
 Python: no Qt, no conda environment needed.
 """
@@ -33,6 +33,8 @@ def absolute(name, args):
             return [args[0], here(args[1])]
     elif name in ('open', 'screenshot', 'recordings-folder') and len(args) == 1:
         return [here(args[0])]
+    elif name == 'cells' and len(args) >= 2 and args[-1].lower() not in ('lte', 'nr', 'decode'):
+        return [*args[:-1], here(args[-1])]
     return args
 
 

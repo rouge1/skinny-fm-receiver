@@ -1278,7 +1278,8 @@ and cell IDs stay in `recordings/`, never in the repo or knowledge files.
   Tests: a synthetic LTE downlink with a known PCI and width, negatives
   (noise, the recorded ATSC file, a non-LTE wideband OFDM).
   Shipped: `tools/iq-lte FILE` (2026-10-16; `test_iq_lte.py`, with synthetic
-  negatives). Not yet: the card section and class, the `fmctl` reply, the PNG.
+  negatives). The `fmctl` reply: `fmctl cells lte [decode] [PATH]` (2026-10-23,
+  `test_control_more.py`). Not yet: the card section and class, the PNG.
 - [x] Stage 5, decode: `tools/iq-lte FILE --decode` (`iqlte_decode.py`,
   2026-10-16). It writes the block at 15.36 MS/s and runs
   `$FMRX_LTE_TOOLS/run_pdsch.sh` (srsRAN 4G's `pdsch_ue`, built by the user),
@@ -1330,5 +1331,6 @@ outside the repo. Method, output and limits: [nr-verify.md](nr-verify.md).
   SIB1 schedules it, so that cell's `si` is null.
 - [ ] TDD special slots, and SSBs above 3 GHz with a 30 kHz CORESET 0 (srsRAN
   lacks the table): not handled.
-- [ ] An `nr` section on the `iqmeasure` card and a read-only `fmctl` reply, as
-  for LTE's stage 4.
+- [x] A read-only `fmctl` reply: `fmctl cells nr [decode] [PATH]` (2026-10-23,
+  `test_control_more.py`), which runs `iq-nr` and replies with its JSON.
+- [ ] An `nr` section on the `iqmeasure` card, as for LTE's stage 4.
