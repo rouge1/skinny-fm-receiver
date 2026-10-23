@@ -1247,7 +1247,8 @@ tools/iq-lte CAPTURE.cfile                                # verdict, PCI, class,
 tools/iq-lte CAPTURE.cfile --block-center 751000000       # the carrier is not at the file centre
 tools/iq-lte CAPTURE.cfile --t0 1 --t1 1.2                # seconds 1 to 1.2 (at most 2 s is read)
 tools/iq-lte CAPTURE.cfile --rate 20000000 --center 751000000   # a bare .cfile, no .sigmf-meta
-tools/iq-lte CAPTURE.cfile --decode --ports 4 2 1         # also the MIB and SIB1 (outside srsRAN)
+tools/iq-lte CAPTURE.cfile --decode --ports 4 2 1         # also the MIB and every SIB (outside srsRAN)
+tools/iq-lte CAPTURE.cfile --decode --si-seconds 2        # decode 2 s instead of 6 (slow SIBs may be missed)
 ```
 
 - Numpy only, and it classifies: the verdict is `lte`, `possible`, `not-lte` or
@@ -1259,6 +1260,11 @@ tools/iq-lte CAPTURE.cfile --decode --ports 4 2 1         # also the MIB and SIB
   tools directory (`$FMRX_LTE_TOOLS`, or its default when unset) or `run_pdsch.sh` is
   missing. A missing pycrate interpreter leaves `sib1` null and still exits 0.
 - `--decode` needs srsRAN 4G's `pdsch_ue`, built by you (AGPL, not part of this
-  repo) and reached through `$FMRX_LTE_TOOLS`. It reads the MIB and the SIB1 only,
-  for a 10 or 15 MHz carrier (15 MHz not yet run on real air). See [lte-verify.md](lte-verify.md) for the
-  wrapper, the local patch and the layout.
+  repo) and reached through `$FMRX_LTE_TOOLS`. It reads the MIB, the SIB1 and
+  every other SIB the cell broadcasts (`si`: the schedule, each SIB, the LTE and
+  NR carriers it points to, and the network time from SIB16 when the cell
+  sends one), for a 10 or 15 MHz carrier (15 MHz not yet run on real air). It
+  reads 6 s from `--t0` (`--si-seconds`), because the slowest SIB repeats every
+  5.12 s; record at least that long. A 6 s decode takes about half a minute. See
+  [lte-verify.md](lte-verify.md) for the wrapper, the local changes and the
+  output, and [lte-broadcast.md](lte-broadcast.md) for what each SIB holds.

@@ -1,6 +1,8 @@
 # Verifying an LTE carrier found in a sweep
 
 Acronyms (PCI, MIB, SIB1, MCC, FDD and the rest) are explained in [glossary.md](glossary.md).
+What a cell broadcasts after SIB1 (SIB2 to SIB24, network time, NR, NB-IoT)
+and how to read it is in [lte-broadcast.md](lte-broadcast.md).
 
 How to tell whether an LTE-looking block in a sweep is LTE, and, with an
 outside decoder, which cell it is. The method is the Round 25 plan in
@@ -157,14 +159,22 @@ full gain: noise only, floor about -120 dBm).
 
 ## Decoding the broadcast: `--decode`
 
-`--decode` reads the MIB and SIB1 of a cell that the fingerprint called `lte`
-with a PCI. Nothing of ours decodes: the work is done by srsRAN 4G's
+`--decode` reads the MIB, the SIB1 and every other SIB of a cell that the
+fingerprint called `lte` with a PCI (the other SIBs since 2026-10-22; what they
+hold is in [lte-broadcast.md](lte-broadcast.md)). Nothing of ours decodes: the work is done by srsRAN 4G's
 `pdsch_ue`, which the user builds separately.
 
 What the decode does:
 
-- It is limited to the broadcast channel: the MIB and the SIB1, the system
-  information transmitted with the SI-RNTI. No user data is read.
+- It is limited to the broadcast channel: the MIB and the system information
+  transmitted with the SI-RNTI (SIB1 and the SI messages). No user data is read.
+- It reads `--si-seconds` (default 6, at most 10) from `--t0`, not the
+  fingerprint's short span: the slowest SI message (SIB24, every 512 frames)
+  needs 5.12 s plus a window. A span longer than the fingerprint's is read,
+  mixed and resampled in pieces of about 2 M samples (each with a guard on
+  both sides that is dropped) and written straight to the decoder's file, so
+  it is never held whole: resampling 6 s at 20 MS/s in one FFT took several
+  GB and got the terminal killed for memory pressure.
 - It supports 10 MHz carriers (nfft 1024) and 15 MHz carriers (nfft 1536,
   added 2026-10-19, not yet run on a real 15 MHz carrier). Other widths report
   `ran: false` with the reason.
@@ -178,12 +188,17 @@ What the decode does:
   half-frame label does not say which of the two starts subframe 0, so both
   are tried. If there is no SSS offset, `o` is 0. For each offset it tries the
   antenna port counts 4, 2 and 1 in that order. The first run
-  whose output contains `Decoded MIB` wins; each run has a 120 s limit.
+  whose output contains `Decoded MIB` wins; each run has a limit of 120 s or
+  50 ms per subframe, whichever is longer (every subframe is searched), passed
+  to the wrapper as `PDSCH_TIMEOUT`.
 - The SIB1 is taken from the transport blocks `pdsch_ue` dumped: the most
   common subframe-5 payload of 32 bytes or more. It is parsed by a Python with
   pycrate, which runs as a separate process at `pyc/bin/python` under the tools
   directory. If that is missing or fails, `sib1` is null with `sib1_reason`,
   and the MIB is still reported.
+- Every distinct block in the dump is then parsed by the same Python as a
+  `BCCH-DL-SCH-Message`, and `si` is built from them (below). If that fails,
+  `si` is null with `si_reason`.
 
 Where the outside tools live:
 
@@ -196,20 +211,53 @@ Where the outside tools live:
 - `pyc/bin/python` is a Python with pycrate installed.
 
 The srsRAN side is the user's to build. It is AGPL-licensed, is not in this
-repo, and this repo never installs, copies or commits it. The one local change
-to `pdsch_ue` that the wrapper relies on: after each transport block it decodes,
-it appends that block to a file whose name it takes from the `PDSCH_DUMP`
-environment variable, as a record of a marker byte (0xA5), the subframe number,
-the length as two bytes little-endian, then the bytes. Without that patch no
-transport block is dumped, so `sib1` is null; the MIB comes from the program's
-text output alone.
+repo, and this repo never installs, copies or commits it. The local changes
+to it that the decode relies on, each read from the environment so the stock
+behaviour stays the default:
+
+- `PDSCH_DUMP` (`pdsch_ue.c`): after each transport block it decodes whose CRC
+  passed, it appends that block to the named file, as a record of a marker
+  byte (0xA5), the subframe number, the length as two bytes little-endian,
+  then the bytes. Without it no transport block is dumped, so `sib1` and `si`
+  are null; the MIB comes from the program's text output alone. (Until
+  2026-10-22 blocks were dumped whatever their CRC, so one corrupt copy could
+  get in; the parse counts those as `blocks_failed`.)
+- `PDSCH_ALL_SF` (`pdsch_ue.c`): look for the SI-RNTI in every downlink
+  subframe, not only subframe 5 of even frames. Without it only SIB1 is heard,
+  and `si` carries a `note` that says so.
+- `PDSCH_FORCE_CFI` (`ue_dl.c`), for diagnosis only: force the control region
+  size. The decode does not set it.
+- `run_pdsch.sh` takes its `pdsch_ue` time limit from `PDSCH_TIMEOUT` (120 s
+  when unset).
 
 Output of `--decode` is in the same JSON under `decode` (the strongest cell's;
 per-cell decodes are in the `cells` list, below): `ran`, `mib` (`pci`,
 `ports`, `prb`, `type`, `cp`, `sfn`), `offset_samples`, `tried` (each offset
 and port count with whether it decoded), `sib1` (`plmns`, `tac`,
 `cell_identity`, `enb_id`, `cell_id`, `freq_band`, `cell_barred`,
-`q_rx_lev_min`) or null with `sib1_reason`.
+`q_rx_lev_min`) or null with `sib1_reason`, and `si` or null with `si_reason`:
+
+- `blocks`, `blocks_failed` (distinct blocks, and those that did not parse),
+  `capture_frames` (10 ms frames decoded), `window_ms`, `value_tag`;
+- `schedule`: one entry per SI message in SIB1 (the Rel-12 extension list
+  after the main one), with `si` (1-based), `period_frames`, `sibs` (SIB2 is
+  always in the first), `sfn_mod_period` and `subframe` (where its window
+  opens), `covered` (the capture held one period plus one window) and `heard`;
+- `sibs`: each SIB heard (`sib2` ... `sib33`) with `count`, `scheduled`, the
+  whole decoded `value` as JSON, and for some a `summary`: SIB2 `ul_earfcn`,
+  SIB3 `priority`, SIB4 `neighbour_pcis`, SIB5 `carriers` (`earfcn`, `band`,
+  `mhz`, `priority`; a 65535 entry is read from the v9e0 list), SIB16 the time,
+  SIB24 `nr_carriers` (`nr_arfcn`, `mhz`, `ssb_khz`, `priority`);
+- `time`: SIB16's network time (`utc`, `utc_10ms`, `leap_seconds`, `gps`,
+  `local_offset_minutes`, `local`, `dst_hours`, as far as the cell sends them),
+  or null with `time_reason`: not scheduled (the cell sends no time), scheduled
+  but not heard, or not heard in a capture shorter than its period;
+- `alerts`: `sib10`, `sib11` or `sib12` when an ETWS or CMAS alert was heard;
+- `note` when no SI message besides SIB1 was decoded.
+
+EARFCNs become MHz through TS 36.101's table for the bands in
+`iqlte_decode._EARFCN_DL` (the US ones and a few others; `band` and `mhz`
+are null outside it), NR-ARFCNs through TS 38.104's global raster.
 
 ## Several cells on one carrier: `cells`
 

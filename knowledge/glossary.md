@@ -15,6 +15,10 @@ own numbers.
 | FDD | Frequency-division duplex: downlink and uplink on separate frequencies. The downlink is continuous. |
 | TDD | Time-division duplex: one frequency, and downlink and uplink take turns, so the downlink has gaps in a repeating 10 ms pattern (for example Band 41, 2.5 GHz). `iqlte` assumes FDD. |
 | eNodeB (eNB) | LTE's name for the base station, the tower's radio. |
+| NR-ARFCN | The 5G NR channel number for a frequency (TS 38.104's global raster: 5 kHz steps below 3 GHz, 15 kHz up to 24.25 GHz). |
+| NR, SSB, GSCN | 5G New Radio; its Synchronisation Signal Block (sync signals plus the MIB, 20 resource blocks wide); and the sync raster the SSB can sit on. |
+| NSA | Non-standalone 5G: NR cells that rely on an LTE anchor and send no SIB1 of their own. |
+| NB-IoT, LTE-M | Two low-rate LTE variants for meters and sensors, each with its own MIB and SIB1 (SIB1-NB, SIB1-BR). |
 | EARFCN | The channel number for a frequency. LTE carriers are centred on a 100 kHz raster, which is why the PSS check needs the block centred to within about 10 kHz. |
 
 ## LTE: who runs the tower (what SIB1 gives)
@@ -59,6 +63,10 @@ FirstNet).
 | PBCH | Physical Broadcast Channel: carries the MIB. |
 | MIB | Master Information Block: bandwidth, PHICH setting and the frame number. The port count is read from the PBCH's error check. |
 | SIB1 | System Information Block Type 1: the PLMN list, tracking area, cell identity, barring and the band. Repeated about every 20 ms. |
+| SIB, SI message | The other System Information Blocks (SIB2 to SIB33), sent inside SI messages at the periods SIB1 schedules ([lte-broadcast.md](lte-broadcast.md)). |
+| SI window | The stretch of time (1 to 40 ms, SIB1's `si-WindowLength`) in which one SI message may be sent once per period. |
+| SIB16 | The SIB that carries the network time: UTC, GPS time, leap seconds, local time offset. Optional; many cells do not send it. |
+| ETWS, CMAS | Earthquake and Tsunami Warning System, Commercial Mobile Alert System (WEA in the US): emergency alerts, broadcast in SIB10 to SIB12 while one is on. |
 | PDSCH | Physical Downlink Shared Channel: where SIB1 is sent (user data goes here too; this work does not read it). |
 | SI-RNTI | The fixed address 0xFFFF meaning "everyone": the broadcast system information. |
 | RNTI | Radio Network Temporary Identifier: a phone's temporary address. |

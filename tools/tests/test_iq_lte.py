@@ -319,20 +319,19 @@ def pycrate_python():
 
 
 # The encoder for the synthetic SIB1. It runs under PYC_PY, the only place pycrate exists.
-# It is NOT verified against a real pycrate install (none is available where it was
-# written): the field names follow 36.331 and pycrate's generated RRC module.
+# Checked against pycrate 2026-10-22: a BIT STRING is (value, nbits).
 SIB1_ENCODER = r'''
 import sys
 from pycrate_asn1dir import RRCLTE
-sib1 = RRCLTE.SystemInformationBlockType1()
+sib1 = RRCLTE.EUTRA_RRC_Definitions.SystemInformationBlockType1
 sib1.set_val({
     'cellAccessRelatedInfo': {
         'plmn-IdentityList': [{
             'plmn-Identity': {'mcc': [0, 0, 1], 'mnc': [0, 1]},
             'cellReservedForOperatorUse': 'notReserved',
         }],
-        'trackingAreaCode': (16, 0x1234),
-        'cellIdentity': (28, 0x0ABCD01),
+        'trackingAreaCode': (0x1234, 16),
+        'cellIdentity': (0x0ABCD01, 28),
         'cellBarred': 'notBarred',
         'intraFreqReselection': 'allowed',
         'csg-Indication': False,
@@ -481,7 +480,10 @@ def make_stub(name, mode='ok', reject=()):
                    'short_hex': bytes(range(16)).hex()}, fh)
     pyc_bin = os.path.join(folder, 'pyc', 'bin')
     os.makedirs(pyc_bin)
-    os.symlink(PYC_PY or sys.executable, os.path.join(pyc_bin, 'python'))
+    # A wrapper, not a symlink: a venv's Python finds its packages only from its own path.
+    with open(os.path.join(pyc_bin, 'python'), 'w') as fh:
+        fh.write('#!/bin/sh\nexec %s "$@"\n' % shlex.quote(PYC_PY or sys.executable))
+    os.chmod(os.path.join(pyc_bin, 'python'), 0o755)
     return folder
 
 
@@ -787,8 +789,10 @@ def group_decode():
         n_samples = size / 8.0
         if size % 8 != 0:
             return False, f'size {size} is not a multiple of 8 (cf32)'
-        if abs(n_samples / RATE_DEC - 0.2) > 0.01:
-            return False, f'{n_samples:.0f} samples, want 0.2 s at 15.36 MS/s'
+        # --decode reads up to --si-seconds (6 s) from t0: here the whole 0.3 s file,
+        # read in pieces (a SampleSource), not the fingerprint's 0.2 s.
+        if abs(n_samples / RATE_DEC - 0.3) > 0.01:
+            return False, f'{n_samples:.0f} samples, want 0.3 s (the whole file) at 15.36 MS/s'
         if any(x['size'] != size for x in calls):
             return False, 'the same file should go to every attempt'
         if any(x.get('argc') != 5 for x in calls):
@@ -796,7 +800,7 @@ def group_decode():
         if any(x['pci'] != PCI for x in calls):
             return False, 'pci argument is not 123'
         return True, ''
-    expect('E  the file given to run_pdsch.sh: cf32, 0.2 s at 15.36 MS/s, five args, PCI 123',
+    expect('E  the file given to run_pdsch.sh: cf32, the whole 0.3 s at 15.36 MS/s, five args, PCI 123',
            file_given)
 
     def file_content():
@@ -808,6 +812,19 @@ def group_decode():
         ok = bool(np.all(np.isfinite(x))) and float(np.mean(np.abs(x) ** 2)) > 0.0
         return ok, f'{x.size} samples, mean power {float(np.mean(np.abs(x) ** 2)):.3g}'
     expect('E  the file given to run_pdsch.sh is finite, non-silent cf32', file_content)
+
+    def file_centred():
+        # The carrier sits OFFSET (300 kHz) above the file centre; --decode mixes the long
+        # span piece by piece at the global sample index. Centred, the occupied band's
+        # power centroid is near 0 Hz; a wrong sign would put it near -2 x OFFSET.
+        r, c, calls, stub = default_decode()
+        x = np.fromfile(os.path.join(stub, 'input.cf32'), dtype='<c8')
+        p = np.abs(np.fft.fftshift(np.fft.fft(x))) ** 2
+        f = np.fft.fftshift(np.fft.fftfreq(x.size, 1.0 / RATE_DEC))
+        keep = np.abs(f) < 4.5e6
+        centroid = float(np.sum(f[keep] * p[keep]) / np.sum(p[keep]))
+        return abs(centroid) < 30e3, f'power centroid {centroid / 1e3:.1f} kHz'
+    expect('E  the decode file is centred on the carrier (300 kHz off in the capture)', file_centred)
 
     def retry():
         r, c, calls, _ = retry_decode()

@@ -12,9 +12,19 @@ read. The dump records are ``0xA5, subframe, nbytes_lo, nbytes_hi, bytes``.
 The SIB1 is the most common subframe-5 payload of 32 bytes or more, decoded
 with ``$FMRX_LTE_TOOLS/pyc/bin/python`` (pycrate). That interpreter is a
 subprocess: this module does not import pycrate.
+
+Every other distinct block is parsed too (``read_si``): SIB1's schedule, each
+SIB heard (SIB2 to SIB33, as plain JSON), and summaries of the ones that say
+most (SIB5's LTE carriers, SIB16's network time, SIB24's NR carriers). The
+outside ``pdsch_ue`` searches every subframe only with its local
+``PDSCH_ALL_SF`` change; a stock build hears SIB1 alone, and ``si`` says so.
 """
 
+import collections
+import datetime
+import fractions
 import json
+import math
 import os
 import re
 import shutil
@@ -196,6 +206,357 @@ if __name__ == "__main__":
         sys.exit(1)
 '''
 
+# Runs under the outside interpreter: every block in the JSON list of hex strings
+# argv[1] as a BCCH-DL-SCH-Message, printed as plain JSON (a tuple, which is a CHOICE
+# or a BIT STRING, becomes a list; bytes become hex).
+_SI_HELPER = r'''
+import json
+import sys
+
+def _plain(value):
+    if isinstance(value, (tuple, list)):
+        return [_plain(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).hex()
+    return value
+
+def _decode(obj, data):
+    """from_uper, dropping a trailing 0x00 pad until it decodes."""
+    blob = data
+    while True:
+        try:
+            obj.from_uper(blob)
+            return obj.get_val()
+        except Exception:
+            if not blob.endswith(b"\x00") or len(blob) < 2:
+                raise
+            blob = blob[:-1]
+
+def main():
+    try:
+        from pycrate_asn1dir import RRCLTE
+    except ImportError as exc:
+        sys.stderr.write("pycrate is not available: %s\n" % exc)
+        return 1
+    msg = RRCLTE.EUTRA_RRC_Definitions.BCCH_DL_SCH_Message
+    out = []
+    for hexed in json.load(open(sys.argv[1])):
+        try:
+            val = _decode(msg, bytes.fromhex(hexed))
+            out.append({"ok": True, "message": _plain(val["message"])})
+        except Exception as exc:
+            out.append({"ok": False, "error": str(exc)[:200]})
+    json.dump(out, sys.stdout)
+    sys.stdout.write("\n")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+# Downlink EARFCN to MHz (TS 36.101 table 5.7.3-1): band -> (F_DL_low MHz, N_Offs-DL,
+# last EARFCN). The bands used in the US and a few common elsewhere; others give None.
+_EARFCN_DL = (
+    (1, 2110.0, 0, 599), (2, 1930.0, 600, 1199), (3, 1805.0, 1200, 1949),
+    (4, 2110.0, 1950, 2399), (5, 869.0, 2400, 2649), (7, 2620.0, 2750, 3449),
+    (8, 925.0, 3450, 3799), (12, 729.0, 5010, 5179), (13, 746.0, 5180, 5279),
+    (14, 758.0, 5280, 5379), (17, 734.0, 5730, 5849), (20, 791.0, 6150, 6449),
+    (25, 1930.0, 8040, 8689), (26, 859.0, 8690, 9039), (29, 717.0, 9660, 9769),
+    (30, 2350.0, 9770, 9869), (38, 2570.0, 37750, 38249), (40, 2300.0, 38650, 39649),
+    (41, 2496.0, 39650, 41589), (46, 5150.0, 46790, 54539), (48, 3550.0, 55240, 56739),
+    (66, 2110.0, 66436, 67335), (71, 617.0, 68586, 68935),
+)
+_MAX_EARFCN = 65535          # SIB5's "see the v9e0 list" value
+_NTP_1900 = datetime.datetime(1900, 1, 1, tzinfo=datetime.timezone.utc)
+
+
+def earfcn_dl(earfcn):
+    """``(band, MHz)`` of a downlink EARFCN, or ``(None, None)`` outside the table."""
+    n = int(earfcn)
+    for band, low, offs, last in _EARFCN_DL:
+        if offs <= n <= last:
+            return band, round(low + 0.1 * (n - offs), 1)
+    return None, None
+
+
+def nr_arfcn_mhz(arfcn):
+    """MHz of an NR-ARFCN (TS 38.104 5.4.2.1, the global raster)."""
+    n = int(arfcn)
+    if n < 600000:
+        return round(0.005 * n, 3)
+    if n < 2016667:
+        return round(3000.0 + 0.015 * (n - 600000), 3)
+    return round(24250.08 + 0.06 * (n - 2016667), 3)
+
+
+def _iso(when):
+    return when.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+
+
+def sib16_time(sib16):
+    """The network time in a SIB16 value, or None when it carries no ``timeInfo-r11``.
+
+    ``timeInfoUTC-r11`` counts 10 ms units from 00:00:00 UTC on 1 January 1900, at the
+    frame boundary that ends the SI window that carried it; ``leapSeconds-r11`` is GPS
+    minus UTC; ``localTimeOffset-r11`` is in 15-minute steps (local = UTC + offset);
+    ``dayLightSavingTime-r11`` is two bits, the hours already in that offset (0, 1, 2).
+    """
+    info = sib16.get('timeInfo-r11') if isinstance(sib16, dict) else None
+    if not isinstance(info, dict) or 'timeInfoUTC-r11' not in info:
+        return None
+    units = int(info['timeInfoUTC-r11'])
+    utc = _NTP_1900 + datetime.timedelta(milliseconds=10 * units)
+    out = {'utc': _iso(utc), 'utc_10ms': units}
+    if info.get('leapSeconds-r11') is not None:
+        leap = int(info['leapSeconds-r11'])
+        out['leap_seconds'] = leap
+        out['gps'] = _iso(utc + datetime.timedelta(seconds=leap))
+    if info.get('localTimeOffset-r11') is not None:
+        minutes = 15 * int(info['localTimeOffset-r11'])
+        out['local_offset_minutes'] = minutes
+        zone = datetime.timezone(datetime.timedelta(minutes=minutes))
+        out['local'] = utc.astimezone(zone).isoformat(timespec='milliseconds')
+    dst = info.get('dayLightSavingTime-r11')
+    if dst is not None:
+        out['dst_hours'] = int(dst[0] if isinstance(dst, list) else dst)
+    return out
+
+
+def _sib_name(name):
+    """``sibType24-v1530`` or ``sib24-v1530`` as ``sib24``; anything else as it is."""
+    match = re.match(r'sib(?:Type)?(\d+a?)', str(name))
+    return 'sib' + match.group(1) if match else str(name)
+
+
+def _find_key(val, key, depth=0):
+    """The first value under ``key`` anywhere in ``val`` (a SIB1's extension chain)."""
+    if depth > 30:
+        return None
+    if isinstance(val, dict):
+        if key in val:
+            return val[key]
+        items = val.values()
+    elif isinstance(val, list):
+        items = val
+    else:
+        return None
+    for item in items:
+        found = _find_key(item, key, depth + 1)
+        if found is not None:
+            return found
+    return None
+
+
+def _frames(enum, prefix):
+    """``rf16`` -> 16, ``ms10`` -> 10; None when it is not that form."""
+    match = re.match(prefix + r'(\d+)$', str(enum))
+    return int(match.group(1)) if match else None
+
+
+def si_schedule(sib1):
+    """SIB1's SI messages in order: ``si`` (1-based), ``period_frames``, ``sibs``, and
+    where its window opens (``sfn_mod_period``, ``subframe``; TS 36.331 5.2.3, FDD).
+
+    The first message carries SIB2 as well. Messages in ``schedulingInfoListExt-r12``
+    follow those of ``schedulingInfoList``. Returns ``(window_ms, messages)``.
+    """
+    window = _frames(sib1.get('si-WindowLength'), 'ms')
+    entries = []
+    for item in sib1.get('schedulingInfoList') or []:
+        entries.append((item.get('si-Periodicity'), item.get('sib-MappingInfo') or []))
+    for item in _find_key(sib1, 'schedulingInfoListExt-r12') or []:
+        entries.append((item.get('si-Periodicity-r12'), item.get('sib-MappingInfo-r12') or []))
+    out = []
+    for n, (period, mapping) in enumerate(entries, start=1):
+        sibs = ['sib2'] if n == 1 else []
+        sibs += [_sib_name(m) for m in mapping]
+        msg = {'si': n, 'period_frames': _frames(period, 'rf'), 'sibs': sibs}
+        if window:
+            x = (n - 1) * window
+            msg['sfn_mod_period'] = x // 10
+            msg['subframe'] = x % 10
+        out.append(msg)
+    return window, out
+
+
+def _sib5_carriers(sib5):
+    carriers = sib5.get('interFreqCarrierFreqList') or []
+    ext = _find_key(sib5, 'interFreqCarrierFreqList-v9e0') or []
+    out = []
+    for i, item in enumerate(carriers):
+        earfcn = item.get('dl-CarrierFreq')
+        if earfcn == _MAX_EARFCN and i < len(ext) and isinstance(ext[i], dict):
+            earfcn = ext[i].get('dl-CarrierFreq-v9e0', earfcn)
+        band, mhz = earfcn_dl(earfcn) if earfcn is not None else (None, None)
+        out.append({'earfcn': earfcn, 'band': band, 'mhz': mhz,
+                    'priority': item.get('cellReselectionPriority')})
+    return out
+
+
+def _sib24_carriers(sib24):
+    out = []
+    for item in sib24.get('carrierFreqListNR-r15') or []:
+        arfcn = item.get('carrierFreq-r15')
+        scs = _frames(item.get('subcarrierSpacingSSB-r15'), 'kHz')
+        out.append({'nr_arfcn': arfcn, 'mhz': nr_arfcn_mhz(arfcn) if arfcn is not None else None,
+                    'ssb_khz': scs, 'priority': item.get('cellReselectionPriority-r15')})
+    return out
+
+
+def _summary(name, value):
+    """A short reading of the SIBs that say most; None for the rest."""
+    if not isinstance(value, dict):
+        return None
+    if name == 'sib2':
+        return {'ul_earfcn': _find_key(value.get('freqInfo') or {}, 'ul-CarrierFreq')}
+    if name == 'sib3':
+        return {'priority': _find_key(value, 'cellReselectionPriority')}
+    if name == 'sib4':
+        return {'neighbour_pcis': [c.get('physCellId') for c in value.get('intraFreqNeighCellList') or []]}
+    if name == 'sib5':
+        return {'carriers': _sib5_carriers(value)}
+    if name == 'sib16':
+        return sib16_time(value)
+    if name == 'sib24':
+        return {'nr_carriers': _sib24_carriers(value)}
+    return None
+
+
+def summarise_si(parsed, capture_frames):
+    """The ``si`` object from parsed blocks.
+
+    ``parsed`` is ``(count, subframe, helper result)`` per distinct block, the helper
+    result being ``{"ok": true, "message": [...]}`` or ``{"ok": false, "error": ...}``.
+    ``capture_frames`` is how many 10 ms frames were decoded: a scheduled message is
+    ``covered`` when that is at least its period plus one window.
+    """
+    sib1, sib1_count = None, -1
+    heard = {}
+    failed = 0
+    for count, _sub, res in parsed:
+        if not res.get('ok'):
+            failed += 1
+            continue
+        msg = res.get('message')
+        body = msg[1] if isinstance(msg, list) and len(msg) == 2 else None
+        if not (isinstance(body, list) and len(body) == 2):
+            failed += 1
+            continue
+        kind, value = body
+        if kind == 'systemInformationBlockType1':
+            if count > sib1_count:
+                sib1, sib1_count = value, count
+            continue
+        ext = value.get('criticalExtensions') if isinstance(value, dict) else None
+        ies = ext[1] if isinstance(ext, list) and len(ext) == 2 else {}
+        for item in (ies.get('sib-TypeAndInfo') or []) if isinstance(ies, dict) else []:
+            if isinstance(item, list) and len(item) == 2:
+                name = _sib_name(item[0])
+                entry = heard.setdefault(name, {'count': 0, 'value': item[1]})
+                entry['count'] += count
+    out = {'blocks': len(parsed), 'blocks_failed': failed,
+           'capture_frames': int(capture_frames)}
+    if sib1 is None:
+        out.update({'schedule': None, 'sibs': {}, 'time': None,
+                    'time_reason': 'no SIB1 among the blocks'})
+        return out
+    window, schedule = si_schedule(sib1)
+    window_frames = int(math.ceil((window or 10) / 10.0))
+    scheduled = set()
+    for msg in schedule:
+        period = msg['period_frames']
+        msg['covered'] = bool(period) and capture_frames >= period + window_frames
+        msg['heard'] = [n for n in msg['sibs'] if n in heard]
+        scheduled.update(msg['sibs'])
+    out['window_ms'] = window
+    out['value_tag'] = sib1.get('systemInfoValueTag')
+    out['schedule'] = schedule
+    sibs = {}
+    for name in sorted(heard, key=lambda n: (len(n), n)):
+        entry = {'count': heard[name]['count'], 'scheduled': name in scheduled}
+        summ = _summary(name, heard[name]['value'])
+        if summ is not None:
+            entry['summary'] = summ
+        entry['value'] = heard[name]['value']
+        sibs[name] = entry
+    out['sibs'] = sibs
+    if not heard:
+        out['note'] = ('no SI message besides SIB1 was decoded: the outside pdsch_ue searches '
+                       'other subframes only with its PDSCH_ALL_SF change (lte-verify.md)')
+    alerts = [n for n in ('sib10', 'sib11', 'sib12') if n in heard]
+    if alerts:
+        out['alerts'] = alerts
+    if 'sib16' in heard and sibs['sib16'].get('summary'):
+        out['time'] = sibs['sib16']['summary']
+    else:
+        out['time'] = None
+        if 'sib16' in heard:
+            out['time_reason'] = 'SIB16 was heard but carries no timeInfo'
+        elif 'sib16' in scheduled:
+            msg = next(m for m in schedule if 'sib16' in m['sibs'])
+            out['time_reason'] = 'SIB16 is scheduled but was not heard' + (
+                '' if msg['covered'] else
+                ' (the capture is shorter than its period, %s frames, plus a window)' % msg['period_frames'])
+        else:
+            out['time_reason'] = 'SIB1 does not schedule SIB16: this cell broadcasts no network time'
+    return out
+
+
+def distinct_blocks(blob):
+    """``(count, subframe, payload)`` per distinct payload in a dump, first-seen order."""
+    seen = {}
+    order = []
+    for sub, payload in dump_payloads(blob):
+        if payload not in seen:
+            seen[payload] = [0, sub]
+            order.append(payload)
+        seen[payload][0] += 1
+    return [(seen[p][0], seen[p][1], p) for p in order]
+
+
+def read_si(blob, tools, capture_frames):
+    """``(si, None)`` or ``(None, reason)``: every block of a dump, via pycrate."""
+    blocks = distinct_blocks(blob)
+    if not blocks:
+        return None, 'no transport block in the dump'
+    python = os.path.join(tools, 'pyc', 'bin', 'python') if tools else ''
+    if not python or not os.path.isfile(python):
+        return None, 'pycrate interpreter is missing (%s)' % (python or 'pyc/bin/python')
+    tmp = tempfile.mkdtemp(prefix='iqlte-si-')
+    try:
+        script = os.path.join(tmp, 'si_parse.py')
+        listing = os.path.join(tmp, 'blocks.json')
+        with open(script, 'w') as fh:
+            fh.write(_SI_HELPER)
+        with open(listing, 'w') as fh:
+            json.dump([p.hex() for _c, _s, p in blocks], fh)
+        try:
+            proc = subprocess.run([python, script, listing], capture_output=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            return None, 'SI parse failed: timed out'
+        except OSError as exc:
+            return None, 'pycrate interpreter failed to start (%s)' % exc
+        if proc.returncode != 0:
+            err = proc.stderr.decode('utf-8', errors='replace').strip()
+            tail = err.splitlines()[-1] if err else 'exit %d' % proc.returncode
+            if 'pycrate' in err.lower() or 'ModuleNotFoundError' in err:
+                return None, 'pycrate is not available (%s)' % tail
+            return None, 'SI parse failed: %s' % tail
+        try:
+            results = json.loads(proc.stdout.decode('utf-8'))
+        except ValueError:
+            return None, 'SI parse failed: the helper did not print JSON'
+        if not isinstance(results, list) or len(results) != len(blocks):
+            return None, 'SI parse failed: the helper gave %s results for %d blocks' % (
+                len(results) if isinstance(results, list) else 'no', len(blocks))
+        parsed = [(c, s, r if isinstance(r, dict) else {'ok': False})
+                  for (c, s, _p), r in zip(blocks, results)]
+        return summarise_si(parsed, capture_frames), None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
 
 class ToolsMissing(Exception):
     """``FMRX_LTE_TOOLS`` or a program under it is not there. ``name`` is the missing piece."""
@@ -234,6 +595,50 @@ def to_10mhz(iq, fs_in, nfft=NFFT_10):
         out = out.copy()
         out[bad] = 0
     return out
+
+
+# A long span (seconds at 20 MS/s or more) given without holding it whole: ``n``
+# samples at ``fs`` Hz, ``read(i0, i1)`` returning samples i0..i1 as complex64,
+# already mixed so the carrier sits at 0 Hz.
+SampleSource = collections.namedtuple('SampleSource', 'n fs read')
+# Resampling a SampleSource: pieces of about this many input samples, with this
+# many more on each side, cut off after the resample (the FFT's wrap-around).
+_PIECE = 1 << 21
+_GUARD = 1 << 13
+
+
+def _write_resampled(src, rate, fh):
+    """``src`` (a :data:`SampleSource`) resampled to ``rate`` and written to ``fh`` in
+    pieces. Returns ``(samples written, mean power)``.
+
+    Pieces start on input samples that map onto whole output samples (the rate
+    ratio as a fraction p/q: every p inputs give q outputs), so the joins line
+    up exactly; each piece is resampled with a guard on both sides that is then
+    dropped.
+    """
+    ratio = fractions.Fraction(float(src.fs) / float(rate)).limit_denominator(100000)
+    p, q = ratio.numerator, ratio.denominator
+    step = max(p, (_PIECE // p) * p)
+    guard = max(p, (_GUARD // p) * p)
+    n_out = int(round(src.n * float(rate) / float(src.fs)))
+    written = 0
+    power = 0.0
+    for a in range(0, src.n, step):
+        lo = max(0, a - guard)
+        hi = min(src.n, a + step + guard)
+        piece = iqlte._resample(src.read(lo, hi), float(src.fs), float(rate))
+        skip = (a - lo) * q // p
+        want = min(step * q // p, n_out - written)
+        out = np.ascontiguousarray(piece[skip:skip + want], dtype=np.complex64)
+        bad = ~np.isfinite(out.real) | ~np.isfinite(out.imag)
+        if bad.any():
+            out[bad] = 0
+        out.tofile(fh)
+        written += out.size
+        power += float(np.sum(np.abs(out) ** 2))
+        if written >= n_out:
+            break
+    return written, (power / written if written else 0.0)
 
 
 def decoder_offsets(frame_offset, fs_in, nfft=NFFT_10):
@@ -371,6 +776,8 @@ def _run_once(script, cf32, pci, offset, nsf, ports, dump, timeout, nfft=NFFT_10
     env['PDSCH_DUMP'] = dump
     env['PRB'] = str(_GEOMETRY[nfft][4])
     env['VERBOSE'] = '1'          # the wrapper's default filter drops the MIB block's PCI, ports and PRB lines
+    env['PDSCH_ALL_SF'] = '1'     # the outside build's change: SI-RNTI in every subframe, not only SIB1's
+    env['PDSCH_TIMEOUT'] = str(int(math.ceil(timeout)) + 5)   # the wrapper's own cap, past ours
     try:
         proc = subprocess.run(
             [script, cf32, str(int(pci)), str(int(offset)), str(int(nsf)), str(int(ports))],
@@ -384,6 +791,12 @@ def _run_once(script, cf32, pci, offset, nsf, ports, dump, timeout, nfft=NFFT_10
     return text, 'Decoded MIB' in text
 
 
+def _call_timeout(timeout, nsf):
+    """One call's cap: ``timeout``, or 50 ms per subframe when that is longer (every
+    subframe is searched, so a 6 s capture takes minutes)."""
+    return max(float(timeout), 0.05 * nsf)
+
+
 def _empty_block():
     return {
         'ran': False,
@@ -391,6 +804,7 @@ def _empty_block():
         'mib': None,
         'offset_samples': None,
         'sib1': None,
+        'si': None,
         'tried': [],
     }
 
@@ -430,8 +844,9 @@ def _search_offsets(script, cf32, pci, offsets, nsf, ports, tmp, timeout, deadli
     return success, success_dump, tried
 
 
-def _decode_result(success, success_dump, tried, tools):
-    """The ``decode`` object once the port search has finished."""
+def _decode_result(success, success_dump, tried, tools, nsf=0):
+    """The ``decode`` object once the port search has finished. ``nsf`` is the
+    subframes decoded, for ``si``'s coverage."""
     if success is None:
         return {
             'ran': True,
@@ -440,6 +855,8 @@ def _decode_result(success, success_dump, tried, tools):
             'offset_samples': None,
             'sib1': None,
             'sib1_reason': 'MIB not decoded',
+            'si': None,
+            'si_reason': 'MIB not decoded',
             'tried': tried,
         }
     blob = b''
@@ -462,23 +879,41 @@ def _decode_result(success, success_dump, tried, tools):
     }
     if sib1 is None:
         out['sib1_reason'] = sib1_reason
+    si, si_reason = read_si(blob, tools, nsf // 10)
+    out['si'] = si
+    if si is None:
+        out['si_reason'] = si_reason
     return out
 
 
-def _prepare_block(iq, fs, nfft=NFFT_10):
-    """``(tools, script, block)`` at 15.36 MS/s.
+def _prepare_block(iq, fs, nfft, path):
+    """Write the block at the decoder rate (15.36 MS/s for 10 MHz) to ``path``.
 
-    ``block`` is None when the resampled capture is empty or silent. The
-    caller turns that into the empty-block decode object. Raises
-    :class:`ToolsMissing` when the tools directory or ``run_pdsch.sh`` is
-    absent.
+    ``iq`` is an array, or a :data:`SampleSource` for a long span, which is
+    resampled and written in pieces so it is never held whole. Returns
+    ``(tools, script, samples)``; ``samples`` is 0 when the block is empty or
+    silent, which the caller turns into the empty-block decode object. Raises
+    :class:`ToolsMissing` when the tools directory or ``run_pdsch.sh`` is absent
+    (before anything is written).
     """
     tools = tools_dir()
     script = require_program(tools, 'run_pdsch.sh')
-    block = to_10mhz(iq, float(fs), nfft)
-    if block.size < 8 or float(np.mean(np.abs(block) ** 2)) == 0.0:
-        return tools, script, None
-    return tools, script, block
+    rate = _GEOMETRY[nfft][0]
+    with open(path, 'wb') as fh:
+        if isinstance(iq, SampleSource):
+            if abs(float(iq.fs) - rate) <= 1.0:
+                src = SampleSource(iq.n, rate, iq.read)
+                written, power = _write_resampled(src, rate, fh)
+            else:
+                written, power = _write_resampled(iq, rate, fh)
+        else:
+            block = to_10mhz(iq, float(fs), nfft)
+            written = block.size
+            power = float(np.mean(np.abs(block) ** 2)) if written else 0.0
+            block.tofile(fh)
+    if written < 8 or power == 0.0:
+        return tools, script, 0
+    return tools, script, written
 
 
 def decode_cell(iq, fs, pci, frame_offset, ports, timeout=120, nfft=NFFT_10):
@@ -491,21 +926,20 @@ def decode_cell(iq, fs, pci, frame_offset, ports, timeout=120, nfft=NFFT_10):
 
     ``nfft`` picks the carrier: 1024 (10 MHz, the default) or 1536 (15 MHz).
     """
-    nsf_rate = float(fs)
+    nsf_rate = float(iq.fs if isinstance(iq, SampleSource) else fs)
     # Bandwidth gate is the caller's. Here, only the 10 MHz file format is written.
-    tools, script, block = _prepare_block(iq, nsf_rate, nfft)
-    if block is None:
-        return _empty_block()
-    o1, o2 = decoder_offsets(frame_offset, nsf_rate, nfft)
-    nsf = max(1, int(round(block.size / float(_GEOMETRY[nfft][3]))))
     tmp = tempfile.mkdtemp(prefix='iqlte-')
     try:
         cf32 = os.path.join(tmp, 'block.cf32')
-        with open(cf32, 'wb') as fh:
-            block.tofile(fh)
+        tools, script, samples = _prepare_block(iq, nsf_rate, nfft, cf32)
+        if not samples:
+            return _empty_block()
+        o1, o2 = decoder_offsets(frame_offset, nsf_rate, nfft)
+        nsf = max(1, int(round(samples / float(_GEOMETRY[nfft][3]))))
+        timeout = _call_timeout(timeout, nsf)
         success, success_dump, tried = _search_offsets(
             script, cf32, pci, (o1, o2), nsf, ports, tmp, timeout, nfft=nfft)
-        return _decode_result(success, success_dump, tried, tools)
+        return _decode_result(success, success_dump, tried, tools, nsf)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -528,22 +962,23 @@ def decode_cells(iq, fs, specs, ports, timeout=120, budget=15 * 60, nfft=NFFT_10
     that has not been started when the budget is gone gets
     ``{"ran": false, "reason": "decode time budget used"}``.
 
-    The resampled file is written once and every cell is read from it.
-    An empty ``specs`` returns ``[]`` and does not look for the outside tools.
+    The resampled file is written once and every cell is read from it. ``iq``
+    may be a :data:`SampleSource` (a long span read in pieces; ``fs`` is then
+    its own). An empty ``specs`` returns ``[]`` and does not look for the
+    outside tools.
     """
     if not specs:
         return []
-    nsf_rate = float(fs)
-    tools, script, block = _prepare_block(iq, nsf_rate, nfft)
-    if block is None:
-        return [_empty_block() for _ in specs]
-    nsf = max(1, int(round(block.size / float(_GEOMETRY[nfft][3]))))
-    deadline = time.monotonic() + float(budget)
+    nsf_rate = float(iq.fs if isinstance(iq, SampleSource) else fs)
     tmp = tempfile.mkdtemp(prefix='iqlte-')
     try:
         cf32 = os.path.join(tmp, 'block.cf32')
-        with open(cf32, 'wb') as fh:
-            block.tofile(fh)
+        tools, script, samples = _prepare_block(iq, nsf_rate, nfft, cf32)
+        if not samples:
+            return [_empty_block() for _ in specs]
+        nsf = max(1, int(round(samples / float(_GEOMETRY[nfft][3]))))
+        timeout = _call_timeout(timeout, nsf)
+        deadline = time.monotonic() + float(budget)
         out = []
         for pci, frame_offset, _half_frame in specs:
             if deadline - time.monotonic() <= 0.0:
@@ -555,7 +990,7 @@ def decode_cells(iq, fs, specs, ports, timeout=120, budget=15 * 60, nfft=NFFT_10
             if not tried and success is None:
                 out.append(_budget_used())
             else:
-                out.append(_decode_result(success, success_dump, tried, tools))
+                out.append(_decode_result(success, success_dump, tried, tools, nsf))
         return out
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
