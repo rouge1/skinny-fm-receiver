@@ -37,8 +37,13 @@ check against 38.331.
 
 Wrong turns:
 
-- The ARFCN of point A is not in SIB1 (``FrequencyInfoDL-SIB`` has only the offset), so
-  it is worked back from ``NR_CORESET0`` ``pointA_hz`` through the global raster.
+- Point A is not in SIB1 (``FrequencyInfoDL-SIB`` has only the offset), so it is worked
+  out from the SSB (38.211 4.4.4.2, 7.4.3.1; FR1): ``ssb_hz - 120 * ssb_scs - k_SSB * 15 kHz
+  - offsetToPointA * 12 * 15 kHz``, k_SSB being the MIB's ``ssb_subcarrier_offset``; the
+  ARFCN is that on the global raster (``point_a_arfcn``). The formula is FR1, SSB at 15
+  or 30 kHz via the scs field; FR2 is out of scope for this rule. ``NR_CORESET0`` ``pointA_hz`` is the outside
+  program's stand-in grid (5.4 MHz off on air) and is not used. Without
+  ``offsetToPointA`` or the MIB's k_SSB the carrier is null.
 - ``blocks.crc_fail`` is the largest count of ``NR_SI_CRC_FAIL`` lines over the passes,
   not the sum: both passes read the same span, so the same blocks fail twice.
   ``NR_SI_ERR`` lines are diagnostic and not counted.
@@ -60,7 +65,7 @@ import tempfile
 import numpy as np
 
 from fm_receiver.iqlte_decode import (SampleSource, ToolsMissing, _find_key, _iso, _sib_name,
-                                      _write_resampled, nr_arfcn_mhz, require_program,
+                                      _write_resampled, require_program,
                                       sib16_time, tools_dir)
 
 RATE = 23040000                      # the outside program's sample rate: 106 PRB at 15 kHz
@@ -338,15 +343,22 @@ def _offset_to_point_a(sib1):
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _point_a_hz(ssb_hz, ssb_scs_hz, k_ssb, offset):
+    """Point A (FR1) from the SSB centre, its spacing, the MIB k_SSB and offsetToPointA."""
+    return ssb_hz - 120 * ssb_scs_hz - k_ssb * 15e3 - offset * 12 * 15e3
+
+
 def _carrier(sib1, point_a_hz):
+    if point_a_hz is None:
+        return None
     freq = _find_key(sib1, 'frequencyInfoDL')
     if not isinstance(freq, dict):
         return None
     bands = [b.get('freqBandIndicatorNR') for b in freq.get('frequencyBandList') or []
              if isinstance(b, dict) and b.get('freqBandIndicatorNR') is not None]
     first = next((c for c in freq.get('scs-SpecificCarrierList') or [] if isinstance(c, dict)), {})
-    arfcn = point_a_arfcn(point_a_hz) if point_a_hz else None
-    return {'point_a_arfcn': arfcn, 'point_a_mhz': nr_arfcn_mhz(arfcn) if arfcn is not None else None,
+    return {'point_a_arfcn': point_a_arfcn(point_a_hz),
+            'point_a_mhz': round(point_a_hz / 1e6, 3),
             'bands': bands, 'carrier_prb': first.get('carrierBandwidth'),
             'scs_khz': _scs(first.get('subcarrierSpacing')),
             'offset_to_point_a': _offset_to_point_a(sib1)}
@@ -493,7 +505,6 @@ def decode_ssb(src, centre_hz, ssb, tools=None, cut_reason=None):
         out['mib'] = {k: first.mib.get(k) for k in _MIB_KEYS}
         out['mib'].update({k: v for k, v in first.mib.items() if k not in out['mib']})
         done_reason = (first.done or {}).get('reason')
-        point_a = (first.coreset0 or {}).get('pointA_hz')
 
         sib1 = None
         candidates = _common(first.blocks, 0)
@@ -513,10 +524,14 @@ def decode_ssb(src, centre_hz, ssb, tools=None, cut_reason=None):
             out['time_reason'] = 'no SIB1'
             return finish(done_reason or (None if candidates else
                                           'no SIB1 heard in %g s' % round(seconds, 3)))
+        offset = _offset_to_point_a(sib1)
+        k_ssb = out['mib'].get('ssb_subcarrier_offset')
+        point_a = None
+        if offset is not None and k_ssb is not None:
+            point_a = _point_a_hz(ssb_hz, scs * 1000.0, k_ssb, offset)
         out['sib1'] = _summarise_sib1(sib1, out['mib'], point_a)
 
         _window, entries = _schedule(sib1)
-        offset = _offset_to_point_a(sib1)
         searched = False
         if entries and offset is not None:
             args = list(base)
