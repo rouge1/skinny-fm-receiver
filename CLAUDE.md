@@ -24,47 +24,20 @@ with no launcher.
   copies reaching people without the hardware. The same licence forbids
   reverse engineering, decompiling or disassembling it: debug it by what it
   does (return codes, crash reports, the samples), never by its code.
-- Code: `tools/fm_receiver/`. `app.py` is the window, `engine.py` the
-  flowgraph, `sweep.py` the FFT sweep, `dsp.py` the receive chain,
-  `radios.py` the radios, `recording.py` IQ/WAV output, `library.py` the
-  Recordings tab's list and `render` (a track, or a stretch of it, as a waterfall), `widgets.py` the knobs, digit
-  entries, theme disc, spectrum view, the Recordings mini map and the foldable boxes
-  (`Card` on a grid `Form`: Qt 5's `QFormLayout` leaves gaps for hidden
-  rows), `bb60_sweep.py` the
-  BB60D's own sweep (Signal Hound's API through ctypes, on the device the
-  SoapySDR module opened), `hackrf_sweep.py` the HackRF's (its firmware's
-  sweep mode through libhackrf, on the device the SoapySDR module lets go),
-  `rtl_tcp.py` the RTL-SDR (an rtl_tcp client; rtl_tcp started here, or on
-  another computer over ssh), `sceptre_dvr.py` Signal Hound Sceptre's DVR
-  file (`.sdvr`) read as IQ or as spectrum tiles, running or paused (numpy
-  only, so `tools/dvr-hd` and `tools/dvr-sweep` run anywhere),
-  `dvr_iq.py` a DVR cut to any channel (`tools/dvr-to-iq`), `dvr_hd.py` HD
-  Radio from one, offline with nrsc5 (`tools/dvr-hd`), `sceptre_blue.py`
-  Sceptre's BLUE recordings (`.cdif`, `.fft`),
-  `control.py` the control socket the running window listens on,
-  which `tools/fmctl` talks to (with the window open, use it rather than
-  opening the radio), `iqmeasure.py` the card of a recording (what a signal
-  is: level, bandwidth, tones, bursts, class; numpy only, and no decoder),
-  behind `tools/iq-measure` (the card as JSON) and `tools/iq-picture` (a PNG
-  of the spectrum and waterfall, which needs matplotlib), and `fmctl measure`.
-  `iqmeasure.extract` cuts a span out of any file the app reads (band-limited,
-  decimated, read in chunks), and `tools/iq-decode` scales it and runs rtl_433
-  on it, printing its decodes as JSON (rtl_433 must be on PATH; nothing of ours
-  decodes).
-  `iqburst.py` finds the bursts of a wide capture and demodulates each as FSK
-  (`tools/iq-demod`); `iqframes.py` aligns the frames and searches the scrambler
-  and CRC catalog `iqcatalog.py` (`tools/iq-frames`; the catalog is
-  `knowledge/catalogs.md`, kept equal by a test); `iq-decode --bursts` feeds
-  each burst to rtl_433 at the decoder's own rate. All numpy only.
-  `iqlte.py`, the LTE structural fingerprint (cyclic-prefix autocorrelation,
-  PSS search and SSS search for the cell ID, and `cells` for several cells on
-  one carrier with each cell's FDD or TDD, and `crs_search`: which PCI the
-  reference signals belong to),
-  is numpy only too; its test helpers `tools/tests/lte_synth.py`
-  and `lte_negatives.py` use scipy.
-  `tools/iq-lte` is its command (`knowledge/lte-verify.md`); `iqlte_decode.py` hands a
-  centred 10 or 15 MHz block to an outside srsRAN 4G `pdsch_ue` for the MIB and SIB1 (`--decode`,
-  through `$FMRX_LTE_TOOLS`; nothing of ours decodes, and srsRAN is never installed here).
+- Code: `tools/fm_receiver/`; each module's docstring says what it is. Not
+  obvious from the code:
+  - `widgets.Card` sits on a grid `Form` because Qt 5's `QFormLayout`
+    leaves gaps for hidden rows.
+  - With the window open, drive it with `tools/fmctl` (`control.py`'s
+    socket) rather than opening the radio.
+  - Nothing of ours decodes: `tools/iq-decode` runs rtl_433 (on PATH);
+    `iqlte_decode.py` hands off to an outside srsRAN 4G `pdsch_ue` via
+    `$FMRX_LTE_TOOLS`, and srsRAN is never installed here
+    (`knowledge/lte-verify.md`).
+  - `sceptre_dvr`, `iqmeasure`, `iqburst`, `iqframes`, `iqcatalog` and
+    `iqlte` stay numpy only, so their tools run anywhere (`iq-picture`
+    needs matplotlib; the LTE test helpers use scipy).
+  - `knowledge/catalogs.md` is kept equal to `iqcatalog.py` by a test.
 - Knowledge: `knowledge/capabilities.md` is the living capability list.
   Update it (and its status marks) when a feature is added or verified.
   `knowledge/usage.md` is the user guide. `knowledge/roadmap.md` holds
