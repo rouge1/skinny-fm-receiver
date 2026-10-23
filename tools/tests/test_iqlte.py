@@ -512,10 +512,11 @@ def l2_case(bw=10, pci=123, snr=20.0, seed=0, fs=None, cfo=0.0, pss=True, sss=Tr
 
 
 def l2_negative(name, seed):
-    """sss_search and fingerprint of a negative example (20 MS/s, 0.1 s), built once."""
+    """sss_search and fingerprint of a negative example (20 MS/s, 0.1 s), built once.
+    The fingerprint is group D's (negative_fp), so it is measured only once."""
     def make():
         iq, rate = getattr(lte_negatives, name)(seed=seed)
-        return {'sss': api().sss_search(iq, rate), 'fp': api().fingerprint(iq, rate)}
+        return {'sss': api().sss_search(iq, rate), 'fp': negative_fp(name, seed)}
     return memo(('l2-neg', name, seed), make)
 
 
