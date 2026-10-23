@@ -95,7 +95,7 @@ CENTRE_HZ = 600.0e6
 POINT_A_ARFCN = 120000                       # 600.000 MHz
 POINT_A_HZ = 600.0e6
 OFFSET_TO_POINT_A = 10
-TIME_ALLOC = (156, 46)                       # startSymbolAndLength values, list order
+TIME_ALLOC = (86, 46)                        # SLIVs in 0..127: 14*(L-1)+S for (S,L)=(2,7),(4,4)
 PLMNS = ['001-01', '001-001']
 TAC = 0x1234                                 # 4660
 CELL_IDENTITY = 0x123456789                  # 4886718345
@@ -293,18 +293,22 @@ def info(plmns):
 
 def scc():
     return {'downlinkConfigCommon': {
+                'pcch-Config': {'defaultPagingCycle': 'rf32',
+                                'nAndPagingFrameOffset': ('quarterT', 1), 'ns': 'four'},
+                'bcch-Config': {'modificationPeriodCoeff': 'n2'},
                 'frequencyInfoDL': {
-                    'frequencyBandList': [78],
+                    'frequencyBandList': [{'freqBandIndicatorNR': 78}],
                     'offsetToPointA': 10,
                     'scs-SpecificCarrierList': [{'offsetToCarrier': 0, 'subcarrierSpacing': 'kHz15',
                                                  'carrierBandwidth': 106}]},
                 'initialDownlinkBWP': {
                     'genericParameters': {'locationAndBandwidth': 13750, 'subcarrierSpacing': 'kHz15'},
-                    'pdsch-ConfigCommon': ('setup', {'pdsch-TimeDomainAllocationList': ('setup', [
-                        {'k0': 0, 'mappingType': 'typeA', 'startSymbolAndLength': 156},
-                        {'k0': 0, 'mappingType': 'typeA', 'startSymbolAndLength': 46}])})}},
-            'ssb-PositionsInBurst': ('shortBitmap', (8, 4)),
-            'ss-PBCH-BlockPower': -10}
+                    'pdsch-ConfigCommon': ('setup', {'pdsch-TimeDomainAllocationList': [
+                        {'k0': 0, 'mappingType': 'typeA', 'startSymbolAndLength': 86},
+                        {'k0': 0, 'mappingType': 'typeA', 'startSymbolAndLength': 46}]})}},
+            'ssb-PositionsInBurst': {'inOneGroup': (0xA0, 8)},
+            'ssb-PeriodicityServingCell': 'ms20',
+            'ss-PBCH-BlockPower': 0}
 
 
 def sched(variant):
@@ -332,7 +336,8 @@ def sib1(variant):
 def sib2():
     return {'cellReselectionInfoCommon': {'q-Hyst': 'dB4'},
             'cellReselectionServingFreqInfo': {'threshServingLowP': 10, 'cellReselectionPriority': 4},
-            'intraFreqCellReselectionInfo': {'q-RxLevMin': -60}}
+            'intraFreqCellReselectionInfo': {'q-RxLevMin': -60, 's-IntraSearchP': 10,
+                                             'deriveSSB-IndexFromCell': False, 't-ReselectionNR': 2}}
 
 
 def sib9(payload, with_ref):
@@ -340,8 +345,9 @@ def sib9(payload, with_ref):
                         'leapSeconds': 18, 'localTimeOffset': -20}}
     if with_ref:
         r = payload['ref']
-        out['referenceTimeInfo-r16'] = {'refDays': r[0], 'refSeconds': r[1],
-                                        'refMilliSeconds': r[2], 'refTenNanoSeconds': r[3]}
+        out['referenceTimeInfo-r16'] = {'time-r16': {'refDays-r16': r[0], 'refSeconds-r16': r[1],
+                                                     'refMilliSeconds-r16': r[2],
+                                                     'refTenNanoSeconds-r16': r[3]}}
     return out
 
 
@@ -368,6 +374,7 @@ for key, kind, variant in payload['jobs']:
         MSG.from_uper(data)
         out.append({'key': key, 'hex': data.hex(), 'plain': plain(MSG.get_val())})
     except Exception:
+        sys.stderr.write('encode %s failed:\n%s' % (key, traceback.format_exc()))
         out.append({'key': key, 'error': traceback.format_exc()[-400:]})
 print(json.dumps(out))
 '''
@@ -401,6 +408,8 @@ def fixtures():
         if proc.returncode != 0:
             tail = (proc.stderr or proc.stdout).strip()[-400:]
             return {job[0]: {'error': 'the pycrate encoder failed: ' + tail} for job in JOBS}
+        if proc.stderr.strip():
+            sys.stderr.write(proc.stderr)        # full pycrate tracebacks, one per failed block
         try:
             rows = json.loads(proc.stdout.strip().splitlines()[-1])
         except (ValueError, IndexError):
@@ -418,7 +427,7 @@ def need(*keys):
         row = fx.get(key, {})
         if 'error' in row or 'hex' not in row:
             raise AssertionError('fixture %s did not encode: %s'
-                                 % (key, row.get('error', 'missing')))
+                                 % (key, str(row.get('error', 'missing'))[-400:]))
     return fx
 
 
@@ -673,7 +682,7 @@ def test_s0_pycrate_encodes_each_fixture_block():
     """S0: pycrate encodes every fixture block (SIB1 variants, SI with SIB2 and SIB9)."""
     fx = need(*[job[0] for job in JOBS])
     bad = {key: row['error'] for key, row in fx.items() if 'error' in row}
-    assert not bad, 'encode failed: %s' % json.dumps(bad)[:800]
+    assert not bad, 'encode failed: %s' % {k: v[-400:] for k, v in bad.items()}
 
 
 def test_s0_sib1_fixture_decodes_to_made_up_values():
@@ -705,7 +714,8 @@ def test_s0_si_message_decodes_sib2_and_sib9_time():
     assert bitint(info_['dayLightSavingTime']) == DST_HOURS, 'dayLightSavingTime'
     ref = find_key(sib9, 'referenceTimeInfo-r16')
     assert ref is not None, 'no referenceTimeInfo-r16 in the SIB9'
-    assert (ref['refDays'], ref['refSeconds'], ref['refMilliSeconds'], ref['refTenNanoSeconds']) == (
+    rt = ref['time-r16']
+    assert (rt['refDays-r16'], rt['refSeconds-r16'], rt['refMilliSeconds-r16'], rt['refTenNanoSeconds-r16']) == (
         REF_DAYS, REF_SECONDS, REF_MS, REF_TENNS), 'referenceTimeInfo-r16 fields'
 
 
