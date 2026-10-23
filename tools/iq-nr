@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""iq-nr: list 5G NR synchronisation blocks in a recording.
+
+    tools/iq-nr FILE [--rate HZ --center HZ] [--t0 S] [--seconds S]
+                     [--ssb-hz HZ] [--scs 15|30] [--max-cells N]
+
+Rate and centre come from the ``.sigmf-meta`` beside the file; the options
+override them. Only the span ``[t0, t0 + seconds]`` is read (default 0.1 s,
+at most 2 s; a longer request is cut and ``reason`` says so). Stdout is one
+JSON document: ``file, rate, center_hz, t0, seconds, verdict, reason, ssbs``.
+``verdict`` is ``nr`` when at least one SSB is listed, otherwise ``none``.
+``ssbs`` is the list from ``iqnr.ssb_search``. Nothing is decoded.
+
+Exit 0 when the run completed, whatever the verdict. Exit 1 for a bad option,
+a file that cannot be read, a sweep file, or no centre frequency.
+"""
+
+import argparse
+import json
+import math
+import os
+import sys
+
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fm_receiver import iqmeasure, iqnr  # noqa: E402
+
+# Default look, and the longest look. A longer request is cut to the cap.
+DEFAULT_SPAN_S = 0.1
+MAX_SPAN_S = 2.0
+
+
+def _refuse(message):
+    """A bad option or a file this cannot read: stderr, nothing on stdout, exit 1."""
+    sys.stderr.write('iq-nr: %s\n' % message)
+    return 1
+
+
+def _check_options(args):
+    for name, value in (('--t0', args.t0), ('--seconds', args.seconds),
+                        ('--center', args.center), ('--ssb-hz', args.ssb_hz)):
+        if value is not None and not math.isfinite(value):
+            return _refuse('%s must be a finite number.' % name)
+    if args.rate is not None and (not math.isfinite(args.rate) or args.rate <= 0):
+        return _refuse('--rate must be a finite sample rate above 0.')
+    if args.t0 is not None and args.t0 < 0:
+        return _refuse('--t0 must be 0 or later.')
+    if args.seconds is not None and args.seconds <= 0:
+        return _refuse('--seconds must be above 0.')
+    if args.max_cells is not None and args.max_cells < 1:
+        return _refuse('--max-cells must be 1 or more.')
+    return None
+
+
+def _span(args):
+    """``(t0, seconds, reason)``. Default 0.1 s from ``t0``; longer than 2 s is cut."""
+    t0 = 0.0 if args.t0 is None else float(args.t0)
+    seconds = DEFAULT_SPAN_S if args.seconds is None else float(args.seconds)
+    reason = ''
+    if seconds > MAX_SPAN_S:
+        reason = 'requested %.6g s; reading at most %.6g s' % (seconds, MAX_SPAN_S)
+        seconds = MAX_SPAN_S
+    return t0, seconds, reason
+
+
+def _meta_centre(path):
+    """The sidecar capture frequency, or None when the file does not give one."""
+    meta_path = os.path.splitext(path)[0] + '.sigmf-meta'
+    if not os.path.isfile(meta_path):
+        return None
+    try:
+        with open(meta_path) as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    captures = meta.get('captures') or []
+    if not captures or not isinstance(captures[0], dict):
+        return None
+    freq = captures[0].get('core:frequency')
+    try:
+        freq = float(freq)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(freq):
+        return None
+    return freq
+
+
+def _json_num(value):
+    """A JSON number, an integer when ``value`` is one."""
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    x = float(value)
+    rounded = round(x)
+    if abs(x - rounded) <= 1e-6 * max(1.0, abs(rounded)):
+        return int(rounded)
+    return x
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('file', help='the recording (.cfile, .sdvr or .cdif)')
+    ap.add_argument('--rate', type=float, metavar='HZ',
+                    help='samples/s, for a .cfile with no .sigmf-meta')
+    ap.add_argument('--center', type=float, metavar='HZ',
+                    help='centre frequency in Hz, for a bare .cfile')
+    ap.add_argument('--t0', type=float, metavar='S', help='start of the span, seconds (default 0)')
+    ap.add_argument('--seconds', type=float, metavar='S',
+                    help='length of the span, seconds (default 0.1; at most 2 s is read)')
+    ap.add_argument('--ssb-hz', type=float, metavar='HZ',
+                    help='SSB frequency in Hz (default: every sync-raster point in the capture)')
+    ap.add_argument('--scs', type=int, choices=(15, 30), metavar='15|30',
+                    help='subcarrier spacing in kHz (default: 15 and 30)')
+    ap.add_argument('--max-cells', type=int, metavar='N', dest='max_cells',
+                    help='most SSBs to list (default 4)')
+    try:
+        args = ap.parse_args(argv)
+    except SystemExit as exc:
+        code = exc.code
+        if code is None or code == 0:
+            return 0
+        return 1
+    refused = _check_options(args)
+    if refused:
+        return refused
+
+    t0, seconds, reason = _span(args)
+    try:
+        src = iqmeasure.open_iq(args.file, rate=args.rate, center_hz=args.center)
+    except iqmeasure.IQSourceError as exc:
+        return _refuse(exc)
+    except OSError as exc:
+        return _refuse(exc)
+    # open_iq fills a missing centre with 0. A bare file, or a sidecar with no
+    # capture frequency, has no centre: refuse it rather than search at 0 Hz.
+    if args.center is None and _meta_centre(args.file) is None and src.kind == 'cfile':
+        return _refuse('%s has no centre frequency: pass --center.' % os.path.basename(args.file))
+
+    start = int(round(t0 * src.rate))
+    count = int(round(seconds * src.rate))
+    try:
+        iq = src.read(start, count)
+    except OSError as exc:
+        return _refuse(exc)
+
+    ssbs = iqnr.ssb_search(
+        iq, src.rate, src.center_hz,
+        ssb_hz=args.ssb_hz, scs_khz=args.scs,
+        max_cells=4 if args.max_cells is None else args.max_cells)
+    card = {
+        'file': args.file,
+        'rate': _json_num(src.rate),
+        'center_hz': _json_num(src.center_hz),
+        't0': _json_num(t0),
+        'seconds': _json_num(seconds),
+        'verdict': 'nr' if ssbs else 'none',
+        'reason': reason,
+        'ssbs': ssbs,
+    }
+    json.dump(card, sys.stdout, indent=2, allow_nan=False)
+    sys.stdout.write('\n')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
