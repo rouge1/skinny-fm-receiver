@@ -27,14 +27,16 @@ Reading choices where the spec is open:
   subcarrier spacing the whole carrier is rotated by the remainder (under scs/2), so SS_REF
   is exact and the carrier's centre moves by that remainder.
 * Frame timing: the first radio-frame boundary is at ``truth['frame_start_s']`` (seconds
-  from the capture's first sample, seeded, 0 to 10 ms); earlier signal is the previous frame.
+  from the capture's first sample, seeded, 1 sample to 10 ms, so sample 0 is never a boundary); earlier signal is the previous frame.
   A period of 5 ms sends in every half frame, n_hf alternating 0/1 (the given ``n_hf``
   is ignored); longer periods send in half frame ``n_hf`` of each frame with frame number
   (counted from the boundary above) a multiple of period/10 (period 10: every frame).
 * ``truth['ssb_times_s']`` is the start of the first symbol's cyclic prefix of every SSB
   sent that lies wholly inside the capture, in order, with parallel lists
   ``ssb_indices`` and ``ssb_half_frames``.
-* Power: the cell is normalised to unit mean power before the noise, as ``synth_lte``;
+* Power: a data RE has mean power ``load`` (QPSK present with probability ``load``), so every
+  SSB RE (PSS, SSS, DM-RS, PBCH data) is scaled by sqrt(load) to have that same mean power;
+  load = 1 is unchanged. The cell is normalised to unit mean power before the noise, as ``synth_lte``;
   non-finite ``snr_db`` adds none. ``cfo_hz`` rotates the output.
 * ``synth_nr_multi`` returns ``(iq, fs, truths)``: ``truths`` one ``synth_nr`` truth per
   cell, plus ``power_db``, ``carrier_offset_hz`` and ``ssb_hz_from_center`` (the SSB's
@@ -177,7 +179,7 @@ def _ssb_re(pci, i_bar, load, rng):
     data = pbch & ~dm
     vals = _qpsk(rng, (4, _SSB_SC)) * (rng.random((4, _SSB_SC)) < load)
     g[data] = vals[data]
-    return g
+    return g * np.sqrt(load)
 
 
 def _resample(iq, native, fs):
@@ -219,7 +221,7 @@ def _cell_native(pci, scs_khz, case, l_max, ssb_sent, period_ms, n_hf, bw_mhz,
     starts, cps, frame_len = _frame_layout(nfft, mu)
     syms_per_frame = len(starts)
     syms_per_hf = syms_per_frame // 2
-    offset = int(rng.integers(0, frame_len))           # first boundary, in samples
+    offset = int(rng.integers(1, frame_len))           # first boundary, in samples (never sample 0)
     n_out = int(round(dur_ms * 1e-3 * native))
     crop = frame_len - offset                          # stream starts one frame early
     n_frames = int(np.ceil((crop + n_out) / frame_len))
@@ -289,7 +291,7 @@ def _cell_native(pci, scs_khz, case, l_max, ssb_sent, period_ms, n_hf, bw_mhz,
         pci=int(pci), nid1=int(pci) // 3, nid2=int(pci) % 3, scs_khz=int(scs_khz), case=str(case).upper(),
         l_max=int(l_max), ssb_sent=ssb_sent, n_hf=int(n_hf), period_ms=int(period_ms),
         ssb_offset_hz=float(ssb_offset_hz), fs=float(native), frame_start_s=offset / native,
-        ssb_times_s=times, ssb_indices=idxs, ssb_half_frames=hfs)
+        bw_mhz=float(bw_mhz), native_fs=float(native), ssb_times_s=times, ssb_indices=idxs, ssb_half_frames=hfs)
     return iq, native, truth, rng
 
 
@@ -326,7 +328,8 @@ def synth_nr_multi(cells, bw_mhz=10, dur_ms=100, snr_db=20.0, fs=40e6, seed=0):
     """Several NR carriers in one capture, summed, then one noise draw.
 
     ``cells``: dicts of ``synth_nr`` keywords plus ``power_db`` and ``carrier_offset_hz``.
-    ``bw_mhz`` is the default carrier width. Returns ``(iq complex64, fs, truths)``.
+    ``bw_mhz`` is the default carrier width. A resampled cell can differ in length by one
+    sample from the capture; the accumulator is truncated to the shortest. Returns ``(iq complex64, fs, truths)``.
     """
     if not cells:
         raise ValueError('cells is empty')
@@ -361,7 +364,14 @@ def _pss_scores(iq, fs, truth):
     """Mean normalised PSS correlation for N_ID2 = 0, 1, 2 at the truth's SSB times."""
     mu = _numerology(truth['scs_khz'])
     scs = truth['scs_khz'] * 1e3
-    nfft = int(round(fs / scs))
+    nfft = _nfft(truth['bw_mhz'], truth['scs_khz'])
+    native = nfft * scs
+    off = truth.get('carrier_offset_hz', 0.0)
+    if off:
+        iq = iq * np.exp(-2j * np.pi * off * np.arange(len(iq)) / fs)
+    if int(round(fs)) != int(round(native)):
+        iq = _resample(iq, fs, native)
+    fs = native
     starts, cps, frame_len = _frame_layout(nfft, mu)
     frame0 = int(round(truth['frame_start_s'] * fs))
     jc = int(round(truth['ssb_offset_hz'] / scs))
@@ -403,9 +413,12 @@ def _main():
         [dict(pci=200, ssb_offset_hz=0.0, power_db=0.0, carrier_offset_hz=-10e6),
          dict(pci=217, ssb_offset_hz=0.0, power_db=-6.0, carrier_offset_hz=8e6)], seed=0)
     ok = len(iq) == 4_000_000 and all(len(t['ssb_times_s']) > 0 for t in truths)
+    scs_ = [_pss_scores(iq, fs, t) for t in truths]
+    ok = ok and all(int(np.argmax(sc)) == t['nid2'] for sc, t in zip(scs_, truths))
     bad += not ok
     print(f"{'ok' if ok else 'FAIL'}  multi: {len(iq)} samples at {fs / 1e6:.0f}M, "
-          f"ssbs {[len(t['ssb_times_s']) for t in truths]}")
+          f"ssbs {[len(t['ssb_times_s']) for t in truths]} nid2 {[t['nid2'] for t in truths]} "
+          f"pss corr {[np.round(sc, 3).tolist() for sc in scs_]}")
     print('self-check', 'passed' if not bad else f'FAILED ({bad})')
     return 1 if bad else 0
 
