@@ -29,6 +29,10 @@ from fm_receiver import iqmeasure, iqlte, iqlte_decode  # noqa: E402
 # Default look, and the longest look. A longer request is cut to the cap.
 DEFAULT_SPAN_S = 0.2
 MAX_SPAN_S = 2.0
+# What --decode reads from t0: SIB24 repeats every 512 frames (5.12 s), so 6 s
+# holds one of every SI message; a longer request is cut to the cap.
+DEFAULT_SI_S = 6.0
+MAX_SI_S = 10.0
 _BW_MHZ = {128: 1.4, 256: 3, 512: 5, 1024: 10, 1536: 15, 2048: 20}
 # Phase advance per chunk while mixing the block down. A full-length ramp is
 # unnecessary; 2**20 stays under the 2**22 read cap the other tools use.
@@ -57,6 +61,8 @@ def _check_options(args):
                         ('--center', args.center), ('--block-center', args.block_center)):
         if value is not None and not math.isfinite(value):
             return _refuse('%s must be a finite number.' % name)
+    if args.si_seconds is not None and (not math.isfinite(args.si_seconds) or args.si_seconds <= 0):
+        return _refuse('--si-seconds must be a positive number.')
     if args.t0 is not None and args.t1 is not None and args.t0 >= args.t1:
         return _refuse('--t0 (%g s) is not before --t1 (%g s).' % (args.t0, args.t1))
     if args.rate is not None and (not math.isfinite(args.rate) or args.rate <= 0):
@@ -240,7 +246,38 @@ def _frame_of(cell):
     return offset, half
 
 
-def _decode(args, sl, fp, sss, cells):
+def _decode_source(args, src, sl, block_hz, t0):
+    """``(iq, rate)`` for ``--decode``: ``--si-seconds`` from ``t0``, centred like ``sl``.
+
+    It starts at the same ``t0`` as the fingerprint, so a frame offset found there
+    holds here. When it is no longer than ``sl``, ``sl`` itself is used. A longer
+    span is a ``SampleSource``: read and mixed piece by piece when the decoder
+    resamples it, never held whole (a few seconds at 20 MS/s is gigabytes once
+    resampled at once).
+    """
+    seconds = DEFAULT_SI_S if args.si_seconds is None else float(args.si_seconds)
+    seconds = min(seconds, MAX_SI_S)
+    rate = float(src.rate)
+    i_start = int(round(t0 * rate))
+    n = min(int(round(seconds * rate)), int(src.samples) - i_start)
+    if n <= sl.iq.size:
+        return sl.iq, sl.rate
+    delta_hz = block_hz - float(src.center_hz)
+
+    def read(i0, i1):
+        # extract at the file rate is a plain slice: pieces join without a seam.
+        part = iqmeasure.extract(
+            args.file, t0=(i_start + i0) / rate, t1=(i_start + i1) / rate, band=None,
+            max_rate=rate, rate=args.rate, center_hz=args.center).iq
+        if abs(delta_hz) >= 1e-3:
+            t = np.arange(i0, i0 + part.size) / rate
+            part = part * np.exp(-2j * np.pi * delta_hz * t)
+        return part
+
+    return iqlte_decode.SampleSource(n, rate, read), rate
+
+
+def _decode(args, data, fp, sss, cells):
     """The top-level ``decode``, or an exit code (2) when the tools are missing.
 
     Each cell dict that has a PCI gains its own ``decode``, read at that
@@ -262,7 +299,7 @@ def _decode(args, sl, fp, sss, cells):
     if runnable:
         try:
             specs = [(pci, offset, half) for _cell, pci, offset, half in runnable]
-            decoded = iqlte_decode.decode_cells(sl.iq, sl.rate, specs, ports, nfft=fp.get('nfft'))
+            decoded = iqlte_decode.decode_cells(data[0], data[1], specs, ports, nfft=fp.get('nfft'))
         except iqlte_decode.ToolsMissing as exc:
             return _missing(exc.name)
         for (cell, _pci, _offset, _half), result in zip(runnable, decoded):
@@ -276,7 +313,7 @@ def _decode(args, sl, fp, sss, cells):
     if isinstance(sss, dict) and sss.get('frame_offset_samples') is not None:
         offset = int(sss['frame_offset_samples'])
     try:
-        return iqlte_decode.decode_cell(sl.iq, sl.rate, int(fp['pci']), offset, ports, nfft=fp.get('nfft'))
+        return iqlte_decode.decode_cell(data[0], data[1], int(fp['pci']), offset, ports, nfft=fp.get('nfft'))
     except iqlte_decode.ToolsMissing as exc:
         return _missing(exc.name)
 
@@ -301,6 +338,10 @@ def main(argv=None):
                          '(cells report half_frame 0), so both boundaries are tried')
     ap.add_argument('--ports', type=int, nargs='+', metavar='N',
                     help='antenna port counts to try, in order (default: 4 2 1)')
+    ap.add_argument('--si-seconds', type=float, metavar='S',
+                    help='seconds from t0 that --decode reads, for the SIBs that repeat '
+                         'slowly (default %g, at most %g; the fingerprint keeps its own span)'
+                         % (DEFAULT_SI_S, MAX_SI_S))
     try:
         args = ap.parse_args(argv)
     except SystemExit as exc:
@@ -332,7 +373,10 @@ def main(argv=None):
     cells = _cells_of(fp)
     decode = None
     if args.decode:
-        decode = _decode(args, sl, fp, sss, cells)
+        try:
+            decode = _decode(args, _decode_source(args, src, sl, block_hz, t0), fp, sss, cells)
+        except (iqmeasure.IQSourceError, OSError) as exc:
+            return _refuse(exc)
         if isinstance(decode, int):
             return decode
     card = _card(args.file, block_hz, sl, fp, sss, decode, cells)

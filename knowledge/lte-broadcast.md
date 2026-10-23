@@ -60,7 +60,7 @@ captures with the same tag hold the same SIBs.
 | SIB9 | home eNB (femto) name | rare | checked (source) |
 | SIB10, SIB11, SIB12 | ETWS primary and secondary warning, CMAS (WEA) alert text; only scheduled while an alert is on | emergency alerts, broadcast to all | checked (source) |
 | SIB13, SIB15 | MBMS (broadcast TV and multicast) control | rare | checked (source) |
-| SIB16 | network time: UTC, GPS time, leap seconds, daylight saving, local time offset | the time and time zone, without attaching | role checked (source); field layout unchecked |
+| SIB16 | network time: UTC, GPS time, leap seconds, daylight saving, local time offset | the time and time zone, without attaching | checked: field names from pycrate's 36.331 module, units from 3GPP RAN2 text (below) |
 | SIB17 to SIB21 | WLAN offload, sidelink, V2X | not an operator path | checked (source) |
 | SIB24 | NR (5G) carrier frequencies and priorities for reselection | where the NR cells are | checked (source) |
 | SIB25 to SIB33 | later releases (access control, NTN) | not an operator path | checked (source) |
@@ -69,7 +69,13 @@ There is no LTE SIB22 or SIB23 (those numbers are NB-IoT's).
 
 ### Network time (SIB16)
 
-SIB16 is the only broadcast time in LTE. If SIB1 does not schedule it, no
+SIB16 is the only broadcast time in LTE. Its `timeInfo-r11` holds
+`timeInfoUTC-r11`, 10 ms units since 00:00:00 UTC on 1 January 1900, valid at
+the frame boundary that ends the SI window that carried it;
+`leapSeconds-r11`, GPS minus UTC in seconds; `localTimeOffset-r11`, in
+15-minute steps, local = UTC + offset; and `dayLightSavingTime-r11`, two bits
+(the hours of daylight saving inside that offset). A change of the time does
+not change `systemInfoValueTag`. `iq-lte --decode` reports it as `si.time`. If SIB1 does not schedule it, no
 length of recording finds it. **Checked** on real air: the one carrier with
 SIB1 at the second location schedules SIB2 to SIB5, SIB15 and SIB24, and no
 SIB16. The time a phone on such a network shows comes from a message sent
@@ -83,6 +89,14 @@ time) on an NR cell that broadcasts SIB1; another operator's LTE cell that
 schedules SIB16; ATSC's system time table.
 
 ## Reading them from a recording
+
+`tools/iq-lte FILE --decode` does all of this (2026-10-22): it reads
+`--si-seconds` (default 6) and reports SIB1's schedule, every SIB heard, and
+the summaries and time described in [lte-verify.md](lte-verify.md#decoding-the-broadcast---decode).
+On the real cell checked, a 6 s capture heard every scheduled message,
+SIB24 once, as the schedule predicts.
+
+By hand:
 
 The chain is the one `--decode` uses (lte-verify.md): resample a centred
 10 MHz block to 15.36 MS/s, run srsRAN 4G's `pdsch_ue` on the file with the
@@ -98,8 +112,9 @@ behaviour unchanged; the originals are kept beside them as `.orig`):
 - `PDSCH_ALL_SF=1`: search every downlink subframe for the SI-RNTI.
 - `PDSCH_FORCE_CFI=1|2|3`: force the control region size, to rule out a bad
   PCFICH read.
-- `PDSCH_DUMP=FILE` (the older change): append every decoded block to FILE as
-  records of 0xA5, subframe, length low, length high, then the bytes.
+- `PDSCH_DUMP=FILE` (the older change): append every decoded block whose CRC
+  passed to FILE as records of 0xA5, subframe, length low, length high, then
+  the bytes.
 
 Run the whole capture (`-n` about the number of subframes in it), split the
 dump into records, keep each distinct payload once, and parse each. Group by
@@ -175,6 +190,12 @@ delivered to a phone); the time message sent to an attached phone.
 - A 1 s capture holds most SIBs but not SIB15 (128 frames) or SIB24
   (512 frames) unless the SFN happens to fall right. Read SIB1's periods
   before choosing a capture length.
+- The dump once kept blocks whatever their CRC, and one corrupt SIB1 copy
+  turned up among hundreds; it is now gated on the CRC.
+- Resampling a 6 s, 20 MS/s capture in one FFT (complex128, several GB) made
+  the system's out-of-memory guard kill the whole terminal, twice. The decode
+  now resamples in pieces; by hand, cap a heavy job with
+  `systemd-run --user --scope -p MemoryMax=3G ...`.
 
 ## Sources
 
@@ -196,3 +217,6 @@ delivered to a phone); the time message sent to an attached phone.
 - NB-IoT: https://docs.srsran.com/en/latest/app_notes/source/nbiot/source/index.html
 - Sni5Gect: https://github.com/asset-group/Sni5Gect-5GNR-sniffing-and-exploitation
 - GSM and UMTS shutdowns: https://www.fierce-network.com/wireless/t-mobile-shut-down-2g-gsm-network-summer
+- SIB16 field meanings (UTC from 1900 in 10 ms, leap seconds as GPS minus UTC, 15-minute local
+  offset, no value-tag change): 3GPP RAN2 #122 discussion drafts on the SIB16 UTC reference point,
+  https://www.3gpp.org/ftp/Email_Discussions/RAN2/%5BRAN2%23122%5D/%5BPost122%5D%5B102%5D%5BIoT%20NTN%5D%20UTC%20reference%20point%20(Mediatek)/

@@ -319,20 +319,19 @@ def pycrate_python():
 
 
 # The encoder for the synthetic SIB1. It runs under PYC_PY, the only place pycrate exists.
-# It is NOT verified against a real pycrate install (none is available where it was
-# written): the field names follow 36.331 and pycrate's generated RRC module.
+# Checked against pycrate 2026-10-22: a BIT STRING is (value, nbits).
 SIB1_ENCODER = r'''
 import sys
 from pycrate_asn1dir import RRCLTE
-sib1 = RRCLTE.SystemInformationBlockType1()
+sib1 = RRCLTE.EUTRA_RRC_Definitions.SystemInformationBlockType1
 sib1.set_val({
     'cellAccessRelatedInfo': {
         'plmn-IdentityList': [{
             'plmn-Identity': {'mcc': [0, 0, 1], 'mnc': [0, 1]},
             'cellReservedForOperatorUse': 'notReserved',
         }],
-        'trackingAreaCode': (16, 0x1234),
-        'cellIdentity': (28, 0x0ABCD01),
+        'trackingAreaCode': (0x1234, 16),
+        'cellIdentity': (0x0ABCD01, 28),
         'cellBarred': 'notBarred',
         'intraFreqReselection': 'allowed',
         'csg-Indication': False,
@@ -481,7 +480,10 @@ def make_stub(name, mode='ok', reject=()):
                    'short_hex': bytes(range(16)).hex()}, fh)
     pyc_bin = os.path.join(folder, 'pyc', 'bin')
     os.makedirs(pyc_bin)
-    os.symlink(PYC_PY or sys.executable, os.path.join(pyc_bin, 'python'))
+    # A wrapper, not a symlink: a venv's Python finds its packages only from its own path.
+    with open(os.path.join(pyc_bin, 'python'), 'w') as fh:
+        fh.write('#!/bin/sh\nexec %s "$@"\n' % shlex.quote(PYC_PY or sys.executable))
+    os.chmod(os.path.join(pyc_bin, 'python'), 0o755)
     return folder
 
 
@@ -787,8 +789,10 @@ def group_decode():
         n_samples = size / 8.0
         if size % 8 != 0:
             return False, f'size {size} is not a multiple of 8 (cf32)'
-        if abs(n_samples / RATE_DEC - 0.2) > 0.01:
-            return False, f'{n_samples:.0f} samples, want 0.2 s at 15.36 MS/s'
+        # --decode reads up to --si-seconds (6 s) from t0: here the whole 0.3 s file,
+        # read in pieces (a SampleSource), not the fingerprint's 0.2 s.
+        if abs(n_samples / RATE_DEC - 0.3) > 0.01:
+            return False, f'{n_samples:.0f} samples, want 0.3 s (the whole file) at 15.36 MS/s'
         if any(x['size'] != size for x in calls):
             return False, 'the same file should go to every attempt'
         if any(x.get('argc') != 5 for x in calls):
@@ -796,7 +800,7 @@ def group_decode():
         if any(x['pci'] != PCI for x in calls):
             return False, 'pci argument is not 123'
         return True, ''
-    expect('E  the file given to run_pdsch.sh: cf32, 0.2 s at 15.36 MS/s, five args, PCI 123',
+    expect('E  the file given to run_pdsch.sh: cf32, the whole 0.3 s at 15.36 MS/s, five args, PCI 123',
            file_given)
 
     def file_content():
