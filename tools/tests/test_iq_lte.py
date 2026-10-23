@@ -813,6 +813,19 @@ def group_decode():
         return ok, f'{x.size} samples, mean power {float(np.mean(np.abs(x) ** 2)):.3g}'
     expect('E  the file given to run_pdsch.sh is finite, non-silent cf32', file_content)
 
+    def file_centred():
+        # The carrier sits OFFSET (300 kHz) above the file centre; --decode mixes the long
+        # span piece by piece at the global sample index. Centred, the occupied band's
+        # power centroid is near 0 Hz; a wrong sign would put it near -2 x OFFSET.
+        r, c, calls, stub = default_decode()
+        x = np.fromfile(os.path.join(stub, 'input.cf32'), dtype='<c8')
+        p = np.abs(np.fft.fftshift(np.fft.fft(x))) ** 2
+        f = np.fft.fftshift(np.fft.fftfreq(x.size, 1.0 / RATE_DEC))
+        keep = np.abs(f) < 4.5e6
+        centroid = float(np.sum(f[keep] * p[keep]) / np.sum(p[keep]))
+        return abs(centroid) < 30e3, f'power centroid {centroid / 1e3:.1f} kHz'
+    expect('E  the decode file is centred on the carrier (300 kHz off in the capture)', file_centred)
+
     def retry():
         r, c, calls, _ = retry_decode()
         if r.timed_out or r.code != 0 or c is None:

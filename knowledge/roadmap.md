@@ -1286,6 +1286,12 @@ and cell IDs stay in `recordings/`, never in the repo or knowledge files.
   decoder, then on real air (2026-10-16, one 10 MHz Band 13 cell): MIB and SIB1
   read, the operator code, tracking area, cell identity and band right. See
   [lte-verify.md](lte-verify.md).
+- [x] Every SIB, not only SIB1 (2026-10-22, branch `lte-sibs`): `--decode` searches every
+  subframe (the outside `PDSCH_ALL_SF` change), reads 6 s (`--si-seconds`) in pieces, and
+  reports `si`: SIB1's schedule, each SIB, SIB5's and SIB24's carriers, SIB16's network time.
+  On real air one cell's whole schedule was heard; that cell sends no SIB16. See
+  [lte-broadcast.md](lte-broadcast.md).
+- [ ] Network time from the air (SIB16, or NR SIB9): needs a cell that sends it; none found yet.
 - [ ] 15 MHz decode (2026-10-19): built (`nfft=1536`, 23.04 MS/s, `PRB` to the
   wrapper), pure functions tested; not ticked until a real 15 MHz carrier decodes.
 - [ ] SIB1 on weak, synchronised cells: MIB decodes, SIB1 never (2026-10-19,
