@@ -26,6 +26,7 @@ TESTS = ['test_sweep.py', 'test_tuning.py', 'test_receive_chain.py', 'test_gui.p
          'test_dvr_hd.py', 'test_dvr_iq.py', 'test_sceptre_library.py',
          'test_spectra.py', 'test_sceptre_spectra.py',
          'test_narrow_files.py', 'test_atsc.py']
+TIMEOUT = 600   # seconds per file
 
 
 def main():
@@ -36,15 +37,23 @@ def main():
     failed = []
     for name in tests:
         t0 = time.time()
-        proc = subprocess.run([sys.executable, os.path.join(HERE, name)], env=env,
-                              capture_output=True, text=True, timeout=600)
-        ok = proc.returncode == 0
-        print(f"{'PASS' if ok else 'FAIL'}  {name}  ({time.time() - t0:.0f} s)")
+        try:
+            proc = subprocess.run([sys.executable, os.path.join(HERE, name)], env=env,
+                                  capture_output=True, text=True, timeout=TIMEOUT)
+            ok, why, output = proc.returncode == 0, '', proc.stdout + proc.stderr
+        except subprocess.TimeoutExpired as e:
+            # A timeout is a failure of that file, not of the run: the output
+            # so far comes back as bytes even with text=True.
+            ok, why = False, f', timed out after {TIMEOUT} s'
+            output = ''.join(o.decode(errors='replace') if isinstance(o, bytes) else o
+                             for o in (e.stdout, e.stderr) if o)
+        print(f"{'PASS' if ok else 'FAIL'}  {name}  ({time.time() - t0:.0f} s{why})",
+              flush=True)
         if not ok:
             failed.append(name)
-            lines = [l for l in (proc.stdout + proc.stderr).splitlines()
-                     if 'propagateSizeHints' not in l]
-            print('\n'.join('    ' + l for l in lines[-25:]))
+            lines = [l for l in output.splitlines() if 'propagateSizeHints' not in l]
+            if lines:
+                print('\n'.join('    ' + l for l in lines[-25:]), flush=True)
     print(f"{len(tests) - len(failed)}/{len(tests)} passed")
     return 1 if failed else 0
 
