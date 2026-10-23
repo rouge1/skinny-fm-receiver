@@ -98,6 +98,10 @@ against the strongest kept cell. The fold is first tried at zero
 frequency offset. When its best peak is still down at the noise, a 2 kHz
 grid from -10 kHz to +10 kHz is tried (a shift of the same block FFT, not
 a new copy of the capture) and the winning offset derotates the SSS.
+The PSS fills only 62 subcarriers, so the match is searched on a grid of
+3.84 MS/s or finer (only the bins around DC go through the inverse FFT),
+and each peak is then refined at the full rate: every height and
+position used is the full-rate fold.
 
 Wrong turns for several cells, kept out of the result:
 
@@ -165,6 +169,7 @@ _CELLS_CFO_HZ = np.arange(-10000.0, 10000.1, 2000.0)
 _CELLS_CFO_SKIP = 0.18
 
 _PSS_SEQ = None  # (3, 62), unit-magnitude Zadoff-Chu, filled on first use
+_PSS_CROP = {}  # (n_fft, n_corr, d) -> cropped root spectra, filled on first use
 _SSS_TEMPL = None  # (3, 168, 2, 62) real ±1, nid2 then N_ID(1) then subframe
 _SSS_MIN_DUR = 0.020
 _N_SSS_HYP = 168 * 2
@@ -1124,42 +1129,137 @@ def _fold_match(mag, m, n, frame):
     return out[:n_frames * frame].reshape(n_frames, frame).mean(axis=0)
 
 
-def _folded_pss(block, rate, n_fft, frame, cfos):
-    """Folded PSS correlation of each root, at the CFO in ``cfos`` with the strongest peak.
+def _pss_decimation(n_fft):
+    """Search grid step for the folded PSS match: a power of two, the grid at 3.84 MS/s or finer.
+
+    The PSS fills 62 subcarriers (0.93 MHz). On a 3.84 MS/s grid a peak is
+    at most half a sample off, a loss of about 2%, and every peak is
+    refined at the full rate before it is used.
+    """
+    d = 1
+    while 2 * d <= n_fft // 256:
+        d *= 2
+    return d
+
+
+def _crop_bins(n_corr, d):
+    """Indices of the ``n_corr // d`` bins around DC, in FFT order."""
+    half = n_corr // d // 2
+    return np.concatenate((np.arange(half), np.arange(n_corr - half, n_corr)))
+
+
+def _cropped_templates(n_fft, n_corr, d):
+    """Conjugate PSS spectra of the three roots on the ``n_corr // d`` bins around DC, cached."""
+    key = (n_fft, n_corr, d)
+    hit = _PSS_CROP.get(key)
+    if hit is None:
+        bins = _crop_bins(n_corr, d)
+        hit = [np.conj(np.fft.fft(_pss_template(n_fft, root), n_corr)[bins]) for root in range(3)]
+        if len(_PSS_CROP) > 8:
+            _PSS_CROP.clear()
+        _PSS_CROP[key] = hit
+    return hit
+
+
+class _PssSearch:
+    """Folded PSS correlation of the three roots, searched on a coarse grid and refined at full rate.
 
     One FFT of the block. A frequency offset of an integer number of those
-    bins is a roll of that spectrum (the same ramp the single-cell search
-    applies in time). Returns ``(cfo_hz, [folded_root0, folded_root1, folded_root2])``.
+    bins is a shift of that spectrum (the same ramp the single-cell search
+    applies in time). Only the bins around the PSS go through the inverse
+    FFT, so the match comes out every ``d`` samples (``_pss_decimation``).
+    Heights and positions handed out are the full-rate fold, the numbers
+    one inverse FFT over every bin gives.
     """
-    n = block.size
-    if n <= n_fft or frame < 4:
-        return 0.0, None
-    m, scale = _pss_window_energy(block, n_fft)
-    n_corr = 1 << int(n + n_fft - 1).bit_length()
-    spectrum = np.fft.fft(block, n_corr)
-    templates = [np.conj(np.fft.fft(_pss_template(n_fft, root), n_corr)) for root in range(3)]
-    bin_hz = float(rate) / float(n_corr)
-    best_cfo = 0.0
-    best_peak = -1.0
-    best_folds = None
-    for f in cfos:
-        shift = int(round(float(f) / bin_hz))
-        # x[n] * exp(-2j pi f n / rate) moves DFT bin k to k-shift.
-        shifted = spectrum if shift == 0 else np.roll(spectrum, -shift)
+
+    def __init__(self, block, rate, n_fft, frame):
+        self.block = block
+        self.n_fft = n_fft
+        self.frame = frame
+        n = block.size
+        self.ok = n > n_fft and frame >= 4
+        if not self.ok:
+            return
+        self.m, self.scale = _pss_window_energy(block, n_fft)
+        self.n_frames = n // frame
+        self.n_corr = 1 << int(n + n_fft - 1).bit_length()
+        d = _pss_decimation(n_fft)
+        while d > 1 and (frame % d or self.n_corr % (2 * d)):
+            d //= 2
+        self.d = d
+        self.bins = _crop_bins(self.n_corr, d)
+        self.spectrum = np.fft.fft(block, self.n_corr)
+        self.templates = _cropped_templates(n_fft, self.n_corr, d)
+        self.bin_hz = float(rate) / float(self.n_corr)
+        self.bodies = [_pss_template(n_fft, root) for root in range(3)]
+        self.m_c = min(-(-self.m // d), n // d)
+        self.scale_c = self.scale[::d][:self.m_c]
+
+    def shift(self, cfo):
+        return int(round(float(cfo) / self.bin_hz))
+
+    def coarse(self, shift):
+        """Folded match of each root every ``d`` samples at ``shift`` bins. None if under a frame."""
+        # x[n] * exp(-2j pi s n / n_corr) moves DFT bin k to k - s.
+        shifted = self.spectrum[(self.bins + shift) % self.n_corr]
         folds = []
-        peak = 0.0
-        for templ in templates:
-            corr = np.fft.ifft(shifted * templ)
-            folded = _fold_match(np.abs(corr[:m]) / scale, m, n, frame)
+        for templ in self.templates:
+            # Over n_corr / d bins the inverse FFT divides by d too few.
+            corr = np.fft.ifft(shifted * templ)[:self.m_c] / self.d
+            folded = _fold_match(np.abs(corr) / self.scale_c, self.m_c,
+                                 self.block.size // self.d, self.frame // self.d)
             if folded is None:
-                continue
+                return None
             folds.append(folded)
-            peak = max(peak, float(folded.max()))
-        if len(folds) == 3 and peak > best_peak:
-            best_peak = peak
-            best_cfo = float(f)
-            best_folds = folds
-    return best_cfo, best_folds
+        return folds
+
+    def refine(self, root, shift, center):
+        """Full-rate fold within ``d`` samples of ``center``: ``(position, height)``."""
+        d = self.d
+        n_fft = self.n_fft
+        # Correlating x * exp(-2j pi s n / n_corr) with t has the magnitude of
+        # correlating x with t * exp(+2j pi s n / n_corr).
+        ramp = np.exp(2j * np.pi * shift * np.arange(n_fft) / self.n_corr)
+        tmpl = np.conj(self.bodies[root] * ramp)
+        k = np.arange(n_fft, dtype=np.int64)
+        starts = np.arange(self.n_frames, dtype=np.int64) * self.frame
+        best = (int(center) % self.frame, -1.0)
+        for lag in range(int(center) - d, int(center) + d + 1):
+            pos = lag % self.frame
+            idx = starts + pos
+            idx = idx[idx < self.m]
+            if idx.size == 0:
+                continue
+            vals = np.abs(self.block[idx[:, None] + k] @ tmpl) / self.scale[idx]
+            # The same mean as _fold_match: lags past the last match count as 0.
+            height = float(vals.sum()) / self.n_frames
+            if height > best[1]:
+                best = (pos, height)
+        return best
+
+    def top(self, folds, shift):
+        """Refined height of the strongest coarse peak over the three roots."""
+        peak = 0.0
+        for root, folded in enumerate(folds):
+            i = int(np.argmax(folded))
+            peak = max(peak, self.refine(root, shift, i * self.d)[1])
+        return peak
+
+    def peaks(self, folds, shift, n_keep, guard, floor):
+        """The strongest full-rate peaks of each root's fold: ``(position, height)``, refined."""
+        d = self.d
+        out = []
+        for root, folded in enumerate(folds):
+            # A few more coarse candidates, a little under the floor, so the
+            # refined heights decide which ones stay.
+            cand = _frame_peaks(folded, n_keep + 4, -(-guard // d), floor * 0.9)
+            refined = {}
+            for i, _h in cand:
+                pos, height = self.refine(root, shift, i * d)
+                if height >= floor and height > refined.get(pos, -1.0):
+                    refined[pos] = height
+            out.extend(sorted(refined.items(), key=lambda item: item[1], reverse=True)[:n_keep])
+        return out
 
 
 def _blank_around(work, center, guard):
@@ -1443,18 +1543,29 @@ def cells(iq, fs, max_cells=4):
     # Below this the folded match is what noise and the non-LTE negatives
     # reach. A cell at 0 dB, and one 10 dB under another root, sit above it.
     floor = 0.10
-    cfo, folds = _folded_pss(block, rate, n_fft, frame, (0.0,))
+    search = _PssSearch(block, rate, n_fft, frame)
+    if not search.ok:
+        return []
+    cfo, shift = 0.0, 0
+    folds = search.coarse(shift)
     if folds is None:
         return []
-    if float(max(fold.max() for fold in folds)) < _CELLS_CFO_SKIP:
-        cfo, folds = _folded_pss(block, rate, n_fft, frame, _CELLS_CFO_HZ)
-        if folds is None:
+    if search.top(folds, shift) < _CELLS_CFO_SKIP:
+        best = None
+        for f in _CELLS_CFO_HZ:
+            s = search.shift(f)
+            trial = search.coarse(s)
+            if trial is None:
+                continue
+            peak = search.top(trial, s)
+            if best is None or peak > best[0]:
+                best = (peak, float(f), s, trial)
+        if best is None:
             return []
-    raw = []
-    for folded in folds:
-        # Enough peaks that a same-root neighbour under the strong cell's
-        # sidelobes is still in the list. The SSS chance drops the sidelobes.
-        raw.extend(_frame_peaks(folded, 8, guard, floor))
+        _peak, cfo, shift, folds = best
+    # Enough peaks that a same-root neighbour under the strong cell's
+    # sidelobes is still in the list. The SSS chance drops the sidelobes.
+    raw = search.peaks(folds, shift, 8, guard, floor)
     found = []
     for pos, _height in _cluster_timings(raw, frame, 6):
         found.extend(_cells_at_timing(block, n_fft, fs_cap, rate, frame, pos, cfo))
