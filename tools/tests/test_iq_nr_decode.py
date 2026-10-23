@@ -57,6 +57,7 @@ import hashlib
 import itertools
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -167,12 +168,11 @@ def check_code(run, want, what):
 
 
 def decode_of(card):
-    """The ``decode`` object of the SSB with PCI 123 (or the first SSB), or None."""
-    ssbs = card.get('ssbs') or []
-    for entry in ssbs:
+    """The ``decode`` object of the SSB with PCI 123, or None (no fallback to another SSB)."""
+    for entry in card.get('ssbs') or []:
         if entry.get('pci') == PCI:
             return entry.get('decode')
-    return ssbs[0].get('decode') if ssbs else None
+    return None
 
 
 def need_decode(run):
@@ -291,7 +291,7 @@ def info(plmns):
             'cellReservedForOperatorUse': 'notReserved'}
 
 
-def scc():
+def scc_full():
     return {'downlinkConfigCommon': {
                 'pcch-Config': {'defaultPagingCycle': 'rf32',
                                 'nAndPagingFrameOffset': ('quarterT', 1), 'ns': 'four'},
@@ -311,6 +311,13 @@ def scc():
             'ss-PBCH-BlockPower': 0}
 
 
+def scc(tdra=True):
+    out = scc_full()
+    if not tdra:
+        del out['downlinkConfigCommon']['initialDownlinkBWP']['pdsch-ConfigCommon']
+    return out
+
+
 def sched(variant):
     sib2 = {'si-Periodicity': 'rf16', 'sib-MappingInfo': [{'type': 'sibType2'}],
             'si-BroadcastStatus': 'broadcasting'}
@@ -327,7 +334,7 @@ def sib1(variant):
     else:
         infos = [info([('001', '01'), ('001', '001')])]
     out = {'cellAccessRelatedInfo': {'plmn-IdentityInfoList': infos},
-           'servingCellConfigCommon': scc()}
+           'servingCellConfigCommon': scc(variant != 'no_tdra')}
     if variant != 'none':
         out['si-SchedulingInfo'] = {'schedulingInfoList': sched(variant), 'si-WindowLength': 's20'}
     return out
@@ -385,6 +392,7 @@ JOBS = [
     ('sib1_not_broadcast', 'sib1', 'not_broadcast'),
     ('sib1_none', 'sib1', 'none'),
     ('sib1_three_plmn', 'sib1', 'three_plmn'),
+    ('sib1_no_tdra', 'sib1', 'no_tdra'),
     ('si_sib2_sib9', 'si', 'sib2_sib9'),
     ('si_sib2_sib9_noref', 'si', 'sib2_sib9_noref'),
     ('si_sib2', 'si', 'sib2'),
@@ -572,8 +580,10 @@ def main():
         reps = int(cfg.get('repeat', 1))
         blocks = []
         if '-a' not in opts and cfg.get('sib1_hex'):
-            blocks += [(0, cfg['sib1_hex'])]
-        if '-a' in opts and '-t' in opts:
+            blocks += [(0, cfg['sib1_hex'])] * int(cfg.get('sib1_repeat', 1))
+            if cfg.get('minor_sib1_hex'):
+                blocks = [(0, cfg['minor_sib1_hex'])] + blocks
+        if '-a' in opts:
             blocks += [(1, hexed) for hexed in cfg.get('si_hex', [])]
         sent = 0
         for sii, hexed in blocks:
@@ -581,7 +591,12 @@ def main():
                 say('NR_SI', {'sfn': k, 'slot': 0, 'sii': sii, 'vrb': 0,
                               'tbs': len(hexed) // 2, 'hex': hexed})
                 sent += 1
-    done = {'slots': 100, 'dci': 1, 'si': sent, 'crc_fail': 0}
+    crc = int(cfg.get('crc_fail', 0))
+    for k in range(crc):
+        say('NR_SI_CRC_FAIL', {'sfn': k, 'slot': 0, 'sii': 1, 'vrb': 0, 'tbs': 0})
+    if crc:
+        say('NR_SI_ERR', {'reason': 'stub: a block the decoder could not parse'})
+    done = {'slots': 100, 'dci': 1, 'si': sent, 'crc_fail': crc}
     if cfg.get('done_reason'):
         done['reason'] = cfg['done_reason']
     say('NR_DONE', done)
@@ -628,14 +643,14 @@ def calls_of(folder):
         return [json.loads(line) for line in fh if line.strip()]
 
 
-def run_decode(key, cfg, args=DECODE_ARGS, pyc=True, tools=None):
+def run_decode(key, cfg, args=DECODE_ARGS, pyc=True, tools=None, cwd=None):
     """``iq-nr nr.cfile <args>`` on the capture, against a stub built from ``cfg`` (memoised)."""
     def make():
         folder = tools if tools is not None else make_tools(key, cfg, pyc)
         tmp = tempfile.mkdtemp(prefix='tmp-%s-' % key, dir=work())
         before = repo_status()
         try:
-            proc = subprocess.run([sys.executable, TOOL, 'nr.cfile'] + list(args), cwd=capture(),
+            proc = subprocess.run([sys.executable, TOOL, 'nr.cfile'] + list(args), cwd=cwd or capture(),
                                   env=clean_env(folder, tmp), capture_output=True, text=True,
                                   timeout=TIMEOUT)
         except subprocess.TimeoutExpired:
@@ -643,7 +658,7 @@ def run_decode(key, cfg, args=DECODE_ARGS, pyc=True, tools=None):
         after = repo_status()
         return Run(proc.returncode, proc.stdout, proc.stderr, calls_of(folder), tmp, folder,
                    (before, after))
-    return memo(('decode', key, tuple(args), pyc, tools), make)
+    return memo(('decode', key, tuple(args), pyc, tools, cwd), make)
 
 
 def case_cfg(name):
@@ -662,13 +677,19 @@ def case_cfg(name):
         'no_mib': dict(sib1=fixture_hex('sib1_full'), si=[fixture_hex('si_sib2_sib9')], mib=None),
         'k_ssb': dict(sib1=None, si=[], done_reason=(
             'k_SSB 5 ... no CORESET 0, the cell sends no SIB1')),
+        'minor': dict(sib1=fixture_hex('sib1_full'), si=[fixture_hex('si_sib2_sib9')], sib1_repeat=3,
+                      minor_sib1=fixture_hex('sib1_three_plmn')),
+        'crc': dict(sib1=fixture_hex('sib1_full'), si=[fixture_hex('si_sib2_sib9')], crc_fail=2),
+        'no_tdra': dict(sib1=fixture_hex('sib1_no_tdra'), si=[fixture_hex('si_sib2_sib9')]),
     }[name]
     cfg = dict(full)
     cfg['sib1_hex'] = cases.get('sib1')
     cfg['si_hex'] = cases.get('si', [])
-    for k in ('repeat', 'junk', 'done_reason', 'mib'):
+    for k in ('repeat', 'junk', 'done_reason', 'mib', 'sib1_repeat', 'crc_fail'):
         if k in cases:
             cfg[k] = cases[k]
+    if 'minor_sib1' in cases:
+        cfg['minor_sib1_hex'] = cases['minor_sib1']
     return cfg
 
 
@@ -948,6 +969,8 @@ def test_e_no_mib_gives_reason():
     dec = need_decode(run)
     assert dec.get('time') is None, 'time should be null'
     assert dec.get('time_reason') == 'no MIB', 'time_reason %r' % dec.get('time_reason')
+    assert dec.get('sib1') is None, 'sib1 should be null without a MIB'
+    assert os.listdir(run.tmp) == [], 'temporary folder not empty: %s' % os.listdir(run.tmp)
 
 
 def test_e_done_with_k_ssb_reason_gives_no_sib1():
@@ -957,13 +980,14 @@ def test_e_done_with_k_ssb_reason_gives_no_sib1():
     dec = need_decode(run)
     assert dec.get('time') is None, 'time should be null'
     assert dec.get('time_reason') == 'no SIB1', 'time_reason %r' % dec.get('time_reason')
+    assert dec.get('sib1') is None, 'sib1 should be null without SIB1'
 
 
 def test_f_no_run_nr_exits_2_naming_it():
     """F: no run_nr.sh under FMRX_LTE_TOOLS: exit 2, stderr names run_nr.sh."""
-    empty = os.path.join(work(), 'empty-tools')
-    os.makedirs(empty, exist_ok=True)
-    run = run_decode('no-run-nr', {}, tools=empty)
+    folder = make_tools('no-run-nr', case_cfg('full'))
+    os.remove(os.path.join(folder, 'run_nr.sh'))
+    run = run_decode('no-run-nr', {}, tools=folder)
     assert run.code == 2, 'want exit 2, got %s (%s)' % (run.code, run.err.strip()[-200:])
     assert 'run_nr.sh' in run.err, 'stderr does not name run_nr.sh: %r' % run.err.strip()[-200:]
 
@@ -974,6 +998,7 @@ def test_f_no_pycrate_gives_sib1_null_with_reason_naming_pycrate():
     check_code(run, 0, 'iq-nr --decode')
     dec = need_decode(run)
     assert dec.get('mib') and dec['mib'].get('pci') == PCI, 'the MIB is not reported'
+    assert os.listdir(run.tmp) == [], 'temporary folder not empty: %s' % os.listdir(run.tmp)
     assert dec.get('sib1') is None, 'sib1 should be null'
     reason = dec.get('reason') or ''
     assert 'pycrate' in reason.lower(), 'reason does not name pycrate: %r' % reason
@@ -1078,6 +1103,8 @@ def test_h_child_peak_rss_under_900_mb():
     card = json.loads(got['out'])
     assert decode_of(card) is not None, 'no decode key in the output'
     assert got['calls'], 'run_nr.sh was never called, so the decode did not run'
+    span = (got['calls'][0]['size'] // 8) / RATE
+    assert abs(span - 2.0) <= 1e-3, 'run_nr.sh was given %.6f s, asked for 2 s' % span
     rss_mb = got['rss'] * RSS_UNIT / 1e6
     assert rss_mb < RSS_LIMIT_MB, 'peak RSS %.0f MB, limit %.0f MB' % (rss_mb, RSS_LIMIT_MB)
 
@@ -1118,6 +1145,125 @@ def test_r4_unknown_lines_and_truncated_last_line():
     assert 'Traceback' not in run.err, 'a traceback on stderr'
     dec = need_decode(run)
     assert (dec.get('mib') or {}).get('pci') == PCI, 'the MIB is not reported'
+
+
+def long_capture():
+    """6 s: the capture's 100 ms block tiled 60 times at 20 MS/s, written in chunks."""
+    def make():
+        folder = os.path.join(work(), 'long')
+        os.makedirs(folder)
+        block, _, _ = nr_synth.synth_nr(pci=PCI, scs_khz=15, case='A', l_max=4, ssb_sent=(0,),
+                                        period_ms=20, n_hf=0, bw_mhz=20, ssb_offset_hz=0.15e6,
+                                        dur_ms=100, fs=20e6, seed=0)
+        block = np.asarray(block, dtype=np.complex64)
+        with open(os.path.join(folder, 'nr.cfile'), 'wb') as fh:
+            for _ in range(60):
+                block.tofile(fh)
+        with open(os.path.join(folder, 'nr.sigmf-meta'), 'w') as fh:
+            json.dump({'global': {'core:datatype': 'cf32_le', 'core:sample_rate': 20e6},
+                       'captures': [{'core:sample_start': 0, 'core:frequency': CENTRE_HZ}],
+                       'annotations': []}, fh)
+        return folder
+    return memo('long', make)
+
+
+def test_a_success_fields_on_the_full_run():
+    """A: the success path gives ran true, seconds 0.25, the block counts, and reason null (uncut)."""
+    dec = need_decode(decode_case('full', args=DECODE_ARGS))
+    assert dec.get('ran') is True, 'ran %r' % dec.get('ran')
+    assert abs(float(dec.get('seconds', -1)) - 0.25) <= 1e-3, 'seconds %r' % dec.get('seconds')
+    blocks = dec.get('blocks') or {}
+    assert set(blocks) >= {'sib1', 'other', 'crc_fail'}, 'blocks %r' % blocks
+    assert dec.get('reason') is None, 'reason %r, want null (the span was not cut)' % dec.get('reason')
+
+
+def test_a_crc_fail_lines_are_counted():
+    """A: NR_SI_CRC_FAIL and NR_SI_ERR lines are counted in blocks.crc_fail, and not decoded."""
+    dec = need_decode(decode_case('crc', args=DECODE_ARGS))
+    assert (dec.get('blocks') or {}).get('crc_fail') == 2, 'blocks %r' % dec.get('blocks')
+
+
+def test_b_minority_sib1_block_loses_to_the_most_common():
+    """B: a sii 0 block sent once does not beat the SIB1 sent three times."""
+    need('sib1_full', 'sib1_three_plmn')
+    dec = need_decode(decode_case('minor', args=DECODE_ARGS))
+    assert (dec.get('sib1') or {}).get('plmns') == PLMNS, 'plmns %r' % (dec.get('sib1') or {}).get('plmns')
+
+
+def test_b_no_tdra_second_call_without_t():
+    """B: SIB1 with no TDRA list: pass 2 has -a and no -t."""
+    need('sib1_no_tdra')
+    run = decode_case('no_tdra', args=DECODE_ARGS)
+    check_code(run, 0, 'iq-nr --decode')
+    assert len(run.calls) == 2, 'want two calls, got %d' % len(run.calls)
+    opts = run.calls[1]['opts']
+    assert '-a' in opts and '-t' not in opts, 'pass 2 options %r' % opts
+
+
+def test_c_si_message_sibs_heard_scheduled_missing():
+    """C: the full SI case: si.sibs_heard and si.sibs name SIB2 and SIB9; nothing is missing."""
+    need('si_sib2_sib9')
+    si = need_decode(decode_case('full', args=DECODE_ARGS)).get('si') or {}
+    heard = si.get('sibs_heard') or {}
+    assert heard.get('sib2') and heard.get('sib9'), 'sibs_heard %r' % heard
+    assert 'sib2' in (si.get('sibs') or {}) and 'sib9' in (si.get('sibs') or {}), 'si.sibs keys'
+    assert 'sib9' in (si.get('scheduled') or []), 'si.scheduled %r' % si.get('scheduled')
+    assert si.get('missing') == [], 'si.missing %r' % si.get('missing')
+
+
+def test_c_carrier_bands_prb_and_scs():
+    """C: carrier bands [78], carrier_prb 106 and scs_khz 15, from the SIB1 fixture."""
+    need('sib1_full')
+    carrier = (need_decode(decode_case('full', args=DECODE_ARGS)).get('sib1') or {}).get('carrier') or {}
+    assert carrier.get('bands') == [78], 'bands %r' % carrier.get('bands')
+    assert carrier.get('carrier_prb') == 106, 'carrier_prb %r' % carrier.get('carrier_prb')
+    assert carrier.get('scs_khz') == 15, 'scs_khz %r' % carrier.get('scs_khz')
+
+
+def test_c_si_schedule_broadcast_status_each_entry():
+    """C: si_schedule: each entry has broadcast_status broadcasting (the full fixture)."""
+    need('sib1_full')
+    sched = (need_decode(decode_case('full', args=DECODE_ARGS)).get('sib1') or {}).get('si_schedule') or []
+    states = [str(e.get('broadcast_status', '')).lower() for e in sched]
+    assert len(states) == 2 and all(st.endswith('broadcasting') and 'notbroadcasting' not in st
+                                    for st in states), 'broadcast_status %r' % states
+
+
+def test_e_not_broadcast_schedule_entry_says_not_broadcasting():
+    """E: the SIB9 schedule entry of the not_broadcast fixture says notBroadcasting."""
+    need('sib1_not_broadcast')
+    sched = (need_decode(decode_case('not_broadcast', args=DECODE_ARGS)).get('sib1') or {}).get('si_schedule') or []
+    sib9 = [e for e in sched if e.get('sibs') == ['sib9']]
+    assert sib9, 'no SIB9 entry in si_schedule %r' % sched
+    assert 'notbroadcasting' in str(sib9[0].get('broadcast_status', '')).lower(), (
+        'broadcast_status %r' % sib9[0].get('broadcast_status'))
+
+
+def test_e_never_sent_names_sib9_missing_and_the_span():
+    """E: SIB9 never sent: si.missing names sib9, and time_reason gives the span in seconds."""
+    need('sib1_full')
+    dec = need_decode(decode_case('never_sent', args=DECODE_ARGS))
+    assert 'sib9' in ((dec.get('si') or {}).get('missing') or []), 'si.missing %r' % (dec.get('si') or {}).get('missing')
+    m = re.search(r'not heard in ([0-9.]+) s', dec.get('time_reason') or '')
+    assert m and abs(float(m.group(1)) - 0.25) <= 0.01, 'time_reason %r' % dec.get('time_reason')
+
+
+def test_g_default_span_is_6_s():
+    """G: with no --decode-seconds the span is 6 s: run_nr.sh is given 6 s and the decode says 6."""
+    run = run_decode('default-span', case_cfg('full'), args=('--decode',), cwd=long_capture())
+    check_code(run, 0, 'iq-nr --decode (default span)')
+    dec = need_decode(run)
+    assert run.calls, 'run_nr.sh was never called'
+    span = (run.calls[0]['size'] // 8) / RATE
+    assert abs(span - 6.0) <= 1e-3, 'run_nr.sh was given %.6f s, want 6 s' % span
+    assert abs(float(dec.get('seconds', -1)) - 6.0) <= 1e-3, 'seconds %r' % dec.get('seconds')
+
+
+def test_g_max_cells_1_lists_at_most_one_ssb():
+    """G: --max-cells 1 lists at most one SSB."""
+    run = run_decode('max-cells-1', case_cfg('full'), args=DECODE_ARGS + ('--max-cells', '1'))
+    check_code(run, 0, 'iq-nr --decode --max-cells 1')
+    assert len(run.card.get('ssbs') or []) <= 1, 'ssbs %d' % len(run.card.get('ssbs') or [])
 
 
 # ---- runner -----------------------------------------------------------------------------------
