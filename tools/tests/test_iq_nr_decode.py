@@ -59,10 +59,12 @@ import json
 import os
 import re
 import shlex
+import concurrent.futures
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import traceback
 
 import numpy as np
@@ -138,20 +140,31 @@ _WORK = None
 def work():
     """The one temporary folder of this run; removed at exit."""
     global _WORK
-    if _WORK is None:
-        _WORK = tempfile.mkdtemp(prefix='n2-tests-')
-        atexit.register(shutil.rmtree, _WORK, True)
+    with _GUARD:
+        if _WORK is None:
+            _WORK = tempfile.mkdtemp(prefix='n2-tests-')
+            atexit.register(shutil.rmtree, _WORK, True)
     return _WORK
 
 
+_LOCKS = {}
+_GUARD = threading.Lock()
+
+
 def memo(key, make):
-    """Run ``make()`` once; a failure (or a skip) is kept and raised again for each check."""
-    if key not in _MEMO:
-        try:
-            _MEMO[key] = (True, make())
-        except Exception as exc:             # noqa: BLE001 - kept and re-raised
-            _MEMO[key] = (False, exc)
-    ok, value = _MEMO[key]
+    """Run ``make()`` once; a failure (or a skip) is kept and raised again for each check.
+
+    Tests run in threads: one lock per key, so a shared decode runs once and the others wait.
+    """
+    with _GUARD:
+        lock = _LOCKS.setdefault(key, threading.RLock())
+    with lock:
+        if key not in _MEMO:
+            try:
+                _MEMO[key] = (True, make())
+            except Exception as exc:         # noqa: BLE001 - kept and re-raised
+                _MEMO[key] = (False, exc)
+        ok, value = _MEMO[key]
     if not ok:
         raise value
     return value
@@ -1169,6 +1182,7 @@ def long_capture():
 
 def test_a_success_fields_on_the_full_run():
     """A: the success path gives ran true, seconds 0.25, the block counts, and reason null (uncut)."""
+    need('sib1_full')
     dec = need_decode(decode_case('full', args=DECODE_ARGS))
     assert dec.get('ran') is True, 'ran %r' % dec.get('ran')
     assert abs(float(dec.get('seconds', -1)) - 0.25) <= 1e-3, 'seconds %r' % dec.get('seconds')
@@ -1268,26 +1282,40 @@ def test_g_max_cells_1_lists_at_most_one_ssb():
 
 # ---- runner -----------------------------------------------------------------------------------
 
+WORKERS = 4                                  # tests run side by side; decodes are subprocesses
+
+
+def _one(name, fn):
+    """``(label, status, detail)`` for one test: status ok, skip or fail."""
+    label = (fn.__doc__ or name).strip().splitlines()[0]
+    try:
+        fn()
+    except SkipTest as exc:
+        return label, 'skip', str(exc)
+    except AssertionError as exc:
+        return label, 'fail', str(exc)
+    except Exception as exc:                 # noqa: BLE001 - reported as a failure
+        tail = traceback.format_exc().strip().splitlines()[-1]
+        return label, 'fail', f'{type(exc).__name__}: {exc}; {tail}'
+    return label, 'ok', ''
+
+
 def _run_all():
+    tests = [(name, fn) for name, fn in globals().items() if name.startswith('test_') and callable(fn)]
     failed = 0
     skipped = 0
-    tests = [(name, fn) for name, fn in globals().items() if name.startswith('test_') and callable(fn)]
-    for name, fn in tests:
-        label = (fn.__doc__ or name).strip().splitlines()[0]
-        try:
-            fn()
-        except SkipTest as exc:
-            skipped += 1
-            print(f'  SKIP {label}  ({exc})', flush=True)
-        except AssertionError as exc:
-            failed += 1
-            print(f'  FAIL {label}  ({exc})', flush=True)
-        except Exception as exc:             # noqa: BLE001 - reported as a failure
-            failed += 1
-            tail = traceback.format_exc().strip().splitlines()[-1]
-            print(f'  FAIL {label}  ({type(exc).__name__}: {exc}; {tail})', flush=True)
-        else:
-            print(f'  ok   {label}', flush=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        futures = [pool.submit(_one, name, fn) for name, fn in tests]
+        for fut in concurrent.futures.as_completed(futures):
+            label, status, detail = fut.result()
+            if status == 'ok':
+                print(f'  ok   {label}', flush=True)
+            elif status == 'skip':
+                skipped += 1
+                print(f'  SKIP {label}  ({detail})', flush=True)
+            else:
+                failed += 1
+                print(f'  FAIL {label}  ({detail})', flush=True)
     print(f'{len(tests) - failed - skipped} ok, {failed} FAIL, {skipped} SKIP of {len(tests)}')
     return 1 if failed else 0
 
