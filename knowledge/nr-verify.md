@@ -305,9 +305,182 @@ The timing and memory checks (I) are the only ones that depend on the
 machine. Their limits are in the spec: raster under 30 s, `ssb_hz` under 5 s,
 the command under 700 MB peak RSS, and both files under 240 s together.
 
+## Decoding a listed SSB (`--decode`)
+
+`tools/iq-nr FILE --decode` goes one step past the search. For each SSB the
+search listed, it hands a block of the recording to an outside program, and
+reads back the MIB, SIB1, the other system information and, where SIB9
+carries it, the network time. The program is `$FMRX_LTE_TOOLS/run_nr.sh`,
+srsRAN 4G's NR library (AGPL). It is not in this repo and is never installed
+here. Nothing of ours decodes: `iqnr_decode.py` cuts the samples, runs that
+program, reads its tagged lines and sends the RRC messages to pycrate.
+
+The program reads only the broadcast channel. It searches the SI-RNTI
+(0xFFFF) and no other RNTI. No other RNTI is named, passed or searched.
+
+The RRC messages are parsed with pycrate in a subprocess, under
+`$FMRX_LTE_TOOLS/pyc/bin/python`. `iqnr_decode.py` never imports pycrate. This
+is the same arrangement `iqlte_decode.py` uses for LTE.
+
+Without `--decode` the output is unchanged: no `decode` key, and the search
+span stays the short one (`--seconds`, 0.1 s by default).
+
+## Decode options and exit codes
+
+| Option | Meaning |
+|---|---|
+| `--decode` | decode each listed SSB (the `decode` key described below) |
+| `--decode-seconds S` | how long from `--t0` the decode reads. Default 6 s. At most 10 s: a longer value is cut to 10 s and `decode.reason` says so. A value of 0 or less is refused: exit 1, with a message on stderr. |
+
+The decode span does not change the SSB search. `--seconds` still sets the
+search, and `--decode-seconds` sets only the decode's read.
+
+Exit codes for `--decode`:
+
+- **Exit 1** for a refused option (for example a `--decode-seconds` of 0 or
+  less). The message on stderr says what was refused, and nothing is written
+  to stdout.
+- **Exit 2** when `run_nr.sh` is missing from the tools folder (or the folder
+  is not there). The tools folder is `$FMRX_LTE_TOOLS`. When `FMRX_LTE_TOOLS`
+  is unset, the tool uses a default folder instead, so exit 2 also comes then
+  if that folder has no `run_nr.sh`. The message on stderr names `run_nr.sh`.
+  Nothing is written to stdout.
+- **Exit 0** otherwise. A missing pycrate interpreter is not an exit code. It
+  is a reason on the decode: `sib1` is null, `reason` names pycrate, and the
+  MIB is still reported.
+
+The other exit codes are those of the search (see the Exit codes table above).
+
+## How the decode works
+
+1. **Cut and resample.** The SSB is mixed so it sits at 0 Hz, band-limited
+   and resampled to 23.04 MS/s. The output is a cf32 file in a private
+   temporary folder. The span is never held whole: 6 s at 40 MS/s is 1.9 GB as
+   complex64. The folder is deleted in every case.
+
+2. **Pass 1.** `run_nr.sh` is run once with the file and the SSB's position
+   (see the contract below). Its MIB, point A, SI blocks and CRC failures are
+   collected. SIB1 is the most common block with `sii` 0.
+
+3. **SIB1.** The SIB1 candidates are parsed with pycrate, most common first.
+   The first that parses as SIB1 is used, so one corrupt block that passed the
+   CRC does not hide the cell.
+
+4. **Pass 2.** When SIB1 schedules other SI and carries `offsetToPointA`, the
+   program is run again with the time allocation list (`-t`) and
+   `offsetToPointA` (`-a`). The `-t` values are SIB1's
+   `pdsch-TimeDomainAllocationList` `startSymbolAndLength` values, in list
+   order. `-t` is left out when SIB1 has no list. The other SI blocks of both
+   passes are parsed, and SIB9's time is read from them.
+
+5. **Clean up.** The temporary folder is deleted, on success and on every
+   failure path.
+
+## The decode output
+
+Each entry of `ssbs` gets a `decode` object. Its keys are these.
+
+| Key | Meaning |
+|---|---|
+| `ran` | true when the decode ran |
+| `mib` | the MIB's fields: `pci`, `sfn`, `ssb_index`, `half_frame`, `scs_common_khz`, `ssb_subcarrier_offset`, `dmrs_typeA_position`, `coreset0_index`, `search_space0_index`, `cell_barred`, `intra_freq_reselection`, `ssb_sample`, `cfo_hz`, `snr_db`, and any other field the program gives. Null when there is no MIB |
+| `sib1` | null when SIB1 was not parsed. Otherwise an object: `plmns` (`"MCC-MNC"` strings, with the MNC's digit count kept, so `"001-01"` and `"001-001"` are different), `tac`, `cell_identity` (36 bits), `cell_barred`, `si_window_slots`, `si_schedule` (a list of `periodicity_rf`, `broadcast_status` and `sibs`), and `carrier` (`point_a_arfcn`, `point_a_mhz`, `bands`, `carrier_prb`, `scs_khz`, `offset_to_point_a`) |
+| `si` | null when SIB1 scheduled no other SI. Otherwise: `sibs_heard` (count of each SIB heard), `sibs` (each SIB's contents), `scheduled` (the SIBs SIB1 schedules), and `missing` (scheduled and on air, but not heard) |
+| `time` | null when there is no network time. Otherwise: `utc` (ISO 8601 with milliseconds), `gps`, `leap_seconds`, `local_offset_minutes`, `dst_hours`, and `reference_time`. Each is present only when SIB9 carries it. `reference_time` holds the raw `referenceTimeInfo-r16` fields and `gps_reading` (ISO 8601 GPS time) |
+| `time_reason` | null when `time` is set. Otherwise one of the values below |
+| `reason` | the reasons that apply, joined with `; `; null when there are none. It can hold the cut from `--decode-seconds`, a `run_nr.sh` error, a pycrate note, the SIBs not heard, and `the other SI were not searched (...)`. When there is no MIB, the reason is the `NR_NO_MIB` reason if the program gave one, else `no MIB decoded`. When there is no SIB1, the reason is the `NR_DONE` reason if the program gave one, else `no SIB1 heard in N s` (when no SIB1 block was heard at all; when blocks were heard but none parsed, the note says so and no stop reason is added) |
+| `blocks` | counts over the passes: `sib1` and `other` (the `NR_SI` lines with `sii` 0 and the rest, summed over both passes), and `crc_fail` (the larger of the two passes' `NR_SI_CRC_FAIL` counts, not the sum, since both passes read the same span) |
+| `seconds` | the length of the span decoded, after any cut |
+
+A missing `time` is a result, not a failure. `time_reason` says why: a
+SIB9 that is not scheduled, a SIB9 that is scheduled on demand, and so on. The
+entry is still listed and the exit is still 0.
+
+The values `time_reason` can take:
+
+- `no MIB`
+- `no SIB1`
+- `SIB1 does not schedule SIB9`
+- `SIB9 is not broadcast (si-BroadcastStatus notBroadcasting: on demand)`
+- `SIB9 was heard but carries no timeInfo`
+- `SIB9 scheduled but not heard in N s`, with ` (the other SI were not searched: ...)` added when pass 2 did not run. The text after the colon is `SIB1 has no offsetToPointA` or `pass 2 did not run`
+
+## The outside program's contract
+
+The argv is fixed. The first pass is:
+
+```
+run_nr.sh FILE 23040000 0 SSB_HZ SCS_KHZ
+```
+
+`FILE` is the cf32 file, `23040000` the sample rate, `0` the SSB's offset in
+Hz (the SSB is at 0 Hz), `SSB_HZ` its absolute frequency and `SCS_KHZ` 15 or
+30. The second pass adds `-t SLIV,...` (when SIB1 has a list) and
+`-a OFFSET_TO_POINT_A`. The full form is:
+
+```
+run_nr.sh FILE SRATE SSB_OFFSET_HZ SSB_ABS_HZ SCS_KHZ [-m MAX_MS] [-t SLIV,...] [-a OFFSET_TO_POINT_A]
+```
+
+The decode never passes `-m`. The program's contract accepts it, and the
+decode code does not use it.
+
+Its stdout is lines of the form `TAG {json}`. Any other line, and any line
+whose JSON does not parse (a truncated last line, say), is ignored. The tags
+are:
+
+- `NR_MIB`: the MIB was decoded.
+- `NR_NO_MIB`: no MIB. It may carry a `reason`.
+- `NR_CORESET0`: CORESET 0 and point A. It carries `pointA_hz`.
+- `NR_SI`: one SI block as hex. `sii` 0 is SIB1, 1 another SI message.
+- `NR_SI_CRC_FAIL`: an SI block that failed its CRC. Counted.
+- `NR_SI_ERR`: a diagnostic. Not counted.
+- `NR_DONE`: the run's end. It carries a `reason` when the run stopped early.
+
+The program exits 0 when it ran. A non-zero exit is a note on `reason`, and
+the lines it printed are still read.
+
+## The outside program's local fixes
+
+The program is built outside the repo from srsRAN 4G 23.11's NR library. For
+SI decoding it does three things. This is the method, not the program itself,
+which is not in this repo.
+
+- The other SI messages' PDSCH DM-RS count from common RB 0 (point A, from
+  SIB1's `offsetToPointA`). Only SIB1's count from CORESET 0 (38.211
+  7.4.1.1.2). The CORESET 0 reference is not used for the other SI-RNTI PDSCH.
+- The other SI use SIB1's time allocation list (38.214 table 5.1.2.1.1-1).
+- The DM-RS position must be copied: for cells with position 3, the MIB's
+  `dmrs-TypeA-Position` goes into the PDSCH DM-RS configuration.
+
+## Decode limits
+
+- **TDD special slots** are not handled.
+- **SSBs above 3 GHz with 30 kHz CORESET 0** are not supported: srsRAN lacks
+  the 30/30 table.
+- **On-demand SIB9** (`notBroadcasting`) gives no time. The reason says so.
+- **The span.** The decode reads only the span given (`--t0` and
+  `--decode-seconds`, at most 10 s). A SIB9 that comes around later than the
+  span is not heard.
+- **The time from SIB9** is SIB9's `timeInfoUTC`, converted as LTE SIB16 is.
+  The decode reports that time as SIB9 carries it and does not check it
+  against the capture's timing. When SIB9 has no `timeInfo`, `time` is null
+  and `time_reason` says so.
+
+## Decode tests
+
+`tools/tests/test_iq_nr_decode.py` tests the decode with a stub
+`run_nr.sh`, a Python script behind an sh wrapper. It prints the contract's
+lines from blocks that the test encodes with pycrate. The stub is never the
+real program, and the real program is never named or run. The checks that
+need pycrate skip when no interpreter imports it. Nothing here is tested on
+air.
+
 ## Status
 
 Built, and tested on the synthetic signal of `nr_synth.py` (the suites above).
+The `--decode` path is built and tested with a stub program (the decode tests
+above), not on air.
 Not yet on real air in this repo: the planner runs the real-air check (G11)
 on its own recordings and keeps the results outside the repo. The capability
 list, the roadmap and the glossary are updated by the planner after the merge;
