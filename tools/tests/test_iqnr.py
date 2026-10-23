@@ -35,9 +35,12 @@ prints the measured count and the threshold):
          +10 and -10 kHz (4 of 4): strongest entry's PCI right
   I  G9  timing, serial: raster ssb_search on 100 ms at 20 MS/s under 30 s; with
          ssb_hz under 5 s. (The command's peak RSS is in test_iq_nr.py.)
-  never  over every case above: no listed entry with a wrong PCI, none at a
-         wrong GSCN, no chance above 1e-3, no (gscn, pci) listed twice; zero
-         tolerance. A case that did not run is a failure of the sweep.
+  never  over every case above, the two "never" sentences of the spec only: a PCI
+         is never guessed (no listed entry with SSS chance above 1e-3, the
+         chance rule of ssb_search) and at most one entry per (gscn, pci). A case
+         that did not run is a failure of the sweep. Wrong PCIs and GSCNs are
+         counted by the gates (G1-G4), not swept.
+  L8     one L_max 8 case (3721.44 MHz): the strongest entry's half_frame is None
   interface  every listed entry has the spec's fields; raster_in_band(600 MHz,
          20 MS/s, 15 kHz) equals the list computed here
   G10    iqnr.py imports only numpy, the standard library and fm_receiver (ast)
@@ -179,6 +182,14 @@ def jobs_b():
     return out
 
 
+def jobs_l8():
+    """One L_max 8 capture: half_frame is None (the interface's rule for L_max 8)."""
+    kw = dict(pci=123, scs_khz=30, case='C', l_max=8, ssb_sent=(0,), period_ms=20, n_hf=0,
+              bw_mhz=20, ssb_offset_hz=0.0, dur_ms=100, snr_db=20.0, seed=0)
+    return [job('L8', 'pci 123 L_max 8 at 3721.44 MHz', ('nr', kw), B_SSB_L8,
+                search=dict(ssb_hz=B_SSB_L8), pairs=[(123, ref_gscn(B_SSB_L8))], want_half=None)]
+
+
 def jobs_c():
     out = []
     for scs, case in ((15, 'A'), (30, 'C')):
@@ -263,7 +274,7 @@ def jobs_h():
 
 
 def all_jobs():
-    return jobs_a() + jobs_b() + jobs_c() + jobs_d() + jobs_e() + jobs_f() + jobs_h()
+    return jobs_a() + jobs_b() + jobs_c() + jobs_d() + jobs_e() + jobs_f() + jobs_h() + jobs_l8()
 
 
 # ---- the worker: synthesise, then search; every failure comes back as text -----------
@@ -449,15 +460,28 @@ def group_f(outs):
     counted('F G6 [] on the 1 ms and 1 MS/s NR captures (no exception)', rows_of(outs, 'S', fn_empty), 2)
 
 
+def fn_l8(j, o):
+    top = _top(o)
+    if top is None:
+        return False, 'nothing listed'
+    return top['half_frame'] is None, f"half_frame {top['half_frame']!r}, want None"
+
+
+def group_l8(outs):
+    counted('L8 half_frame is None at L_max 8', rows_of(outs, 'L8', fn_l8), 1)
+
+
 def group_h(outs):
     counted('H G8 right PCI with CFO', rows_of(outs, 'H', fn_pci), 4)
 
 
 def never(outs):
-    """Zero tolerance over every case. A case that did not run fails the sweep too."""
+    """The two spec "never" sentences over every case (zero tolerance). A case that did
+    not run fails the sweep too. The wrong-PCI and wrong-GSCN counts are gates, not sweeps."""
     ran, entries, bad = sweep(outs)
     total = len(outs)
-    for kind, items in bad.items():
+    for kind in ('chance above 1e-3', 'repeated (gscn, pci)'):
+        items = bad[kind]
         ok = ran == total and not items
         detail = f'{len(items)} bad, first {items[:3]}' if items else ''
         if ran != total:
@@ -554,7 +578,7 @@ def group_imports():
         if isinstance(node, ast.Import):
             mods.update(a.name.split('.')[0] for a in node.names)
         elif isinstance(node, ast.ImportFrom):
-            mods.add(node.module.split('.')[0] if node.module and node.level == 0 else '<relative>')
+            mods.add(('fm_receiver' if node.level else node.module.split('.')[0]))
     bad = sorted(m for m in mods if m not in stdlib | {'numpy', 'fm_receiver'})
     report('G10 iqnr.py imports only numpy, the standard library and fm_receiver', not bad,
            f'imports {bad}')
@@ -571,7 +595,7 @@ def main():
         outs = []
     if outs:
         for name, fn in (('A', group_a), ('B', group_b), ('C', group_c), ('D', group_d),
-                         ('E', group_e), ('F', group_f), ('H', group_h)):
+                         ('E', group_e), ('F', group_f), ('H', group_h), ('L8', group_l8)):
             try:
                 fn(outs)
             except Exception as exc:

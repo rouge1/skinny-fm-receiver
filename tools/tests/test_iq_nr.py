@@ -313,7 +313,7 @@ def group_imports():
         if isinstance(node, ast.Import):
             mods.update(a.name.split('.')[0] for a in node.names)
         elif isinstance(node, ast.ImportFrom):
-            mods.add(node.module.split('.')[0] if node.module and node.level == 0 else '<relative>')
+            mods.add(('fm_receiver' if node.level else node.module.split('.')[0]))
     bad = sorted(m for m in mods if m not in stdlib | {'numpy', 'fm_receiver'})
     report('G10 tools/iq-nr imports only numpy, the standard library and fm_receiver', not bad,
            f'imports {bad}')
