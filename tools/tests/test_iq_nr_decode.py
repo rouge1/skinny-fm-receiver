@@ -32,10 +32,10 @@ Checks (one behaviour each; ok / FAIL / SKIP lines):
   R1-R4 robustness probes (R1-R3 need pycrate, R4 does not)
 
 Decisions where the spec is open (also in the report):
-  - Point A: SIB1 carries offsetToPointA only, so the 600.000 MHz point A (ARFCN 120000) is
-    read from the stub's NR_CORESET0 pointA_hz, the one place the spec gives it. Geometrically
-    600.000 MHz lies above the SSB's lowest subcarrier (598.35 MHz) for an SSB at 600.15 MHz,
-    so no offsetToPointA >= 0 places it from the SSB alone. The planner should confirm.
+  - Point A (spec amendment 2026-10-23 (b)): point_a_hz = ssb_hz - 120*ssb_scs_hz - k_SSB*15e3
+    - offsetToPointA*12*15e3, k_SSB being the MIB's ssb_subcarrier_offset. SIB1 carries
+    offsetToPointA only; the stub's NR_CORESET0 pointA_hz is a stand-in at 600.0 MHz, not the
+    cell's point A, and the decode must not take it as the source (check C fails until it doesn't).
   - A missing pycrate interpreter: the decode still exits 0 and reports the MIB (acceptance F,
     as the brief says); the spec's Command section says exit 2, which is the missing
     run_nr.sh case only.
@@ -95,9 +95,14 @@ DECODE_ARGS = ('--decode', '--decode-seconds', '0.25')
 PCI = 123
 SSB_HZ = 600.15e6
 CENTRE_HZ = 600.0e6
-POINT_A_ARFCN = 120000                       # 600.000 MHz
-POINT_A_HZ = 600.0e6
+POINT_A_ARFCN = 119310                       # 596.550 MHz
+TRUE_POINT_A_HZ = 596.550e6                  # the cell's carrier point A (k_SSB 0)
+STUB_CORESET0_POINT_A_HZ = 600.0e6           # the stub's NR_CORESET0 pointA_hz: a stand-in, not point A
 OFFSET_TO_POINT_A = 10
+K_SSB_K6 = 6                                 # the MIB copy for the k_SSB 6 case
+OFFSET_K6_TO_POINT_A = 13
+POINT_A_K6_ARFCN = 119184                    # 595.920 MHz
+POINT_A_K6_MHZ = 595.920
 TIME_ALLOC = (86, 46)                        # SLIVs in 0..127: 14*(L-1)+S for (S,L)=(2,7),(4,4)
 PLMNS = ['001-01', '001-001']
 TAC = 0x1234                                 # 4660
@@ -304,14 +309,14 @@ def info(plmns):
             'cellReservedForOperatorUse': 'notReserved'}
 
 
-def scc_full():
+def scc_full(offset=10):
     return {'downlinkConfigCommon': {
                 'pcch-Config': {'defaultPagingCycle': 'rf32',
                                 'nAndPagingFrameOffset': ('quarterT', 1), 'ns': 'four'},
                 'bcch-Config': {'modificationPeriodCoeff': 'n2'},
                 'frequencyInfoDL': {
                     'frequencyBandList': [{'freqBandIndicatorNR': 78}],
-                    'offsetToPointA': 10,
+                    'offsetToPointA': offset,
                     'scs-SpecificCarrierList': [{'offsetToCarrier': 0, 'subcarrierSpacing': 'kHz15',
                                                  'carrierBandwidth': 106}]},
                 'initialDownlinkBWP': {
@@ -324,8 +329,8 @@ def scc_full():
             'ss-PBCH-BlockPower': 0}
 
 
-def scc(tdra=True):
-    out = scc_full()
+def scc(tdra=True, offset=10):
+    out = scc_full(offset)
     if not tdra:
         del out['downlinkConfigCommon']['initialDownlinkBWP']['pdsch-ConfigCommon']
     return out
@@ -347,7 +352,7 @@ def sib1(variant):
     else:
         infos = [info([('001', '01'), ('001', '001')])]
     out = {'cellAccessRelatedInfo': {'plmn-IdentityInfoList': infos},
-           'servingCellConfigCommon': scc(variant != 'no_tdra')}
+           'servingCellConfigCommon': scc(variant != 'no_tdra', 13 if variant == 'offset13' else 10)}
     if variant != 'none':
         out['si-SchedulingInfo'] = {'schedulingInfoList': sched(variant), 'si-WindowLength': 's20'}
     return out
@@ -406,6 +411,7 @@ JOBS = [
     ('sib1_none', 'sib1', 'none'),
     ('sib1_three_plmn', 'sib1', 'three_plmn'),
     ('sib1_no_tdra', 'sib1', 'no_tdra'),
+    ('sib1_offset13', 'sib1', 'offset13'),
     ('si_sib2_sib9', 'si', 'sib2_sib9'),
     ('si_sib2_sib9_noref', 'si', 'sib2_sib9_noref'),
     ('si_sib2', 'si', 'sib2'),
@@ -676,7 +682,7 @@ def run_decode(key, cfg, args=DECODE_ARGS, pyc=True, tools=None, cwd=None):
 
 def case_cfg(name):
     """The stub's config for a named case. Fixture blocks, or placeholders without pycrate."""
-    full = {'mib': MIB, 'point_a_hz': POINT_A_HZ, 'repeat': 1}
+    full = {'mib': MIB, 'point_a_hz': STUB_CORESET0_POINT_A_HZ, 'repeat': 1}
     cases = {
         'full': dict(sib1=fixture_hex('sib1_full'), si=[fixture_hex('si_sib2_sib9')]),
         'no_sib9': dict(sib1=fixture_hex('sib1_no_sib9'), si=[]),
@@ -872,15 +878,30 @@ def test_c_cell_barred_copied_from_mib():
     assert sib1.get('cell_barred') is False, 'cell_barred %r, want False' % sib1.get('cell_barred')
 
 
-def test_c_carrier_point_a_120000_600_mhz():
-    """C: carrier point A is ARFCN 120000 (600.000 MHz), with offset_to_point_a 10."""
+def test_c_carrier_point_a_119310_596_550_mhz():
+    """C: carrier point A is ARFCN 119310 (596.550 MHz), with offset_to_point_a 10."""
     need('sib1_full')
     dec = need_decode(decode_case('full', args=DECODE_ARGS))
     carrier = (dec.get('sib1') or {}).get('carrier') or {}
     assert carrier.get('point_a_arfcn') == POINT_A_ARFCN, 'point_a_arfcn %r' % carrier.get('point_a_arfcn')
     mhz = carrier.get('point_a_mhz')
-    assert mhz is not None and abs(float(mhz) - 600.0) <= 1e-3, 'point_a_mhz %r, want 600.000' % mhz
+    assert mhz is not None and abs(float(mhz) - 596.550) <= 1e-3, 'point_a_mhz %r, want 596.550' % mhz
     assert carrier.get('offset_to_point_a') == OFFSET_TO_POINT_A, 'offset_to_point_a %r' % (
+        carrier.get('offset_to_point_a'))
+
+
+def test_c_carrier_point_a_119184_595_920_mhz_k_ssb_6():
+    """C: with k_SSB 6 (a copy of the MIB) and offsetToPointA 13, point A is ARFCN 119184 (595.920 MHz)."""
+    need('sib1_offset13')
+    cfg = case_cfg('full')
+    cfg['mib'] = dict(MIB, ssb_subcarrier_offset=K_SSB_K6)
+    cfg['sib1_hex'] = fixture_hex('sib1_offset13')
+    dec = need_decode(run_decode('full-k6-offset13', cfg, args=DECODE_ARGS))
+    carrier = (dec.get('sib1') or {}).get('carrier') or {}
+    assert carrier.get('point_a_arfcn') == POINT_A_K6_ARFCN, 'point_a_arfcn %r' % carrier.get('point_a_arfcn')
+    mhz = carrier.get('point_a_mhz')
+    assert mhz is not None and abs(float(mhz) - POINT_A_K6_MHZ) <= 1e-3, 'point_a_mhz %r, want 595.920' % mhz
+    assert carrier.get('offset_to_point_a') == OFFSET_K6_TO_POINT_A, 'offset_to_point_a %r' % (
         carrier.get('offset_to_point_a'))
 
 
