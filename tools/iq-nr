@@ -197,15 +197,37 @@ def _attach_decode(args, src, t0, ssbs):
         rate = float(src.rate)
         i_start = int(round(t0 * rate))
         n = max(0, min(int(round(float(seconds) * rate)), int(src.samples) - i_start))
+        # A .cfile is one complex64 per sample. Read that span with seek/read so
+        # the memmap from open_iq is not touched and its pages stay unmapped.
+        # Other kinds stay on src.read.
+        cfile = src.kind == 'cfile'
+        fh = open(src.path, 'rb') if cfile else None
 
         def read(i0, i1):
-            return src.read(i_start + int(i0), int(i1) - int(i0))
+            a = int(i0)
+            b = int(i1)
+            if a < 0:
+                a = 0
+            if b > n:
+                b = n
+            if b <= a:
+                return np.empty(0, dtype=np.complex64)
+            if fh is None:
+                return src.read(i_start + a, b - a)
+            fh.seek((i_start + a) * 8)
+            raw = fh.read((b - a) * 8)
+            count = len(raw) // 8
+            return np.frombuffer(raw, dtype=np.complex64, count=count).copy()
 
-        sample = iqlte_decode.SampleSource(n, rate, read)
-        for ssb in ssbs:
-            if isinstance(ssb, dict):
-                ssb['decode'] = iqnr_decode.decode_ssb(
-                    sample, src.center_hz, ssb, tools=tools, cut_reason=cut_reason)
+        try:
+            sample = iqlte_decode.SampleSource(n, rate, read)
+            for ssb in ssbs:
+                if isinstance(ssb, dict):
+                    ssb['decode'] = iqnr_decode.decode_ssb(
+                        sample, src.center_hz, ssb, tools=tools, cut_reason=cut_reason)
+        finally:
+            if fh is not None:
+                fh.close()
     except iqnr_decode.ToolsMissing as exc:
         return _missing(getattr(exc, 'name', None) or 'run_nr.sh')
     return None
