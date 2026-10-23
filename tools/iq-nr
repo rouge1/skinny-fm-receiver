@@ -3,16 +3,21 @@
 
     tools/iq-nr FILE [--rate HZ --center HZ] [--t0 S] [--seconds S]
                      [--ssb-hz HZ] [--scs 15|30] [--max-cells N]
+                     [--decode] [--decode-seconds S]
 
 Rate and centre come from the ``.sigmf-meta`` beside the file; the options
 override them. Only the span ``[t0, t0 + seconds]`` is read (default 0.1 s,
 at most 2 s; a longer request is cut and ``reason`` says so). Stdout is one
 JSON document: ``file, rate, center_hz, t0, seconds, verdict, reason, ssbs``.
 ``verdict`` is ``nr`` when at least one SSB is listed, otherwise ``none``.
-``ssbs`` is the list from ``iqnr.ssb_search``. Nothing is decoded.
+``ssbs`` is the list from ``iqnr.ssb_search``. ``--decode`` adds a ``decode``
+object to each entry (MIB, SIB1, other SI, SIB9 time) via ``iqnr_decode``;
+the search span stays the short one. ``--decode-seconds`` is how long that
+read is (default 6 s, at most 10 s).
 
 Exit 0 when the run completed, whatever the verdict. Exit 1 for a bad option,
-a file that cannot be read, a sweep file, or no centre frequency.
+a file that cannot be read, a sweep file, or no centre frequency. Exit 2 when
+``--decode`` is asked and ``run_nr.sh`` is missing under ``FMRX_LTE_TOOLS``.
 """
 
 import argparse
@@ -29,6 +34,8 @@ from fm_receiver import iqmeasure, iqnr, sceptre_blue, sceptre_dvr  # noqa: E402
 # Default look, and the longest look. A longer request is cut to the cap.
 DEFAULT_SPAN_S = 0.1
 MAX_SPAN_S = 2.0
+# How long --decode reads. The bridge cuts a longer request to 10 s.
+DEFAULT_DECODE_S = 6.0
 
 
 def _refuse(message):
@@ -37,9 +44,21 @@ def _refuse(message):
     return 1
 
 
+def _tools_dir():
+    """``$FMRX_LTE_TOOLS``, or the usual directory when it is unset."""
+    return os.environ.get('FMRX_LTE_TOOLS') or '/data/python/lte-tools'
+
+
+def _missing(name):
+    """``run_nr.sh`` (or the tools directory) is absent. Exit 2. Stderr names it."""
+    sys.stderr.write('iq-nr: %s is missing under FMRX_LTE_TOOLS (%s).\n' % (name, _tools_dir()))
+    return 2
+
+
 def _check_options(args):
     for name, value in (('--t0', args.t0), ('--seconds', args.seconds),
-                        ('--center', args.center), ('--ssb-hz', args.ssb_hz)):
+                        ('--center', args.center), ('--ssb-hz', args.ssb_hz),
+                        ('--decode-seconds', args.decode_seconds)):
         if value is not None and not math.isfinite(value):
             return _refuse('%s must be a finite number.' % name)
     if args.rate is not None and (not math.isfinite(args.rate) or args.rate <= 0):
@@ -48,6 +67,8 @@ def _check_options(args):
         return _refuse('--t0 must be 0 or later.')
     if args.seconds is not None and args.seconds <= 0:
         return _refuse('--seconds must be above 0.')
+    if args.decode_seconds is not None and args.decode_seconds <= 0:
+        return _refuse('--decode-seconds must be a positive number.')
     if args.max_cells is not None and args.max_cells < 1:
         return _refuse('--max-cells must be 1 or more.')
     return None
@@ -158,6 +179,38 @@ def _json_num(value):
     return x
 
 
+def _attach_decode(args, src, t0, ssbs):
+    """Add ``decode`` to each SSB. Exit 2 when ``run_nr.sh`` is missing.
+
+    ``iqnr_decode`` is imported only here, so a run without ``--decode`` does
+    not load it. A missing pycrate interpreter is a reason on the decode, not
+    an exit code. ``src`` covers ``[t0, t0 + decode seconds]`` of the recording.
+    """
+    tools = _tools_dir()
+    if not os.path.isdir(tools) or not os.path.isfile(os.path.join(tools, 'run_nr.sh')):
+        return _missing('run_nr.sh')
+    from fm_receiver import iqlte_decode, iqnr_decode  # noqa: E402
+
+    requested = DEFAULT_DECODE_S if args.decode_seconds is None else float(args.decode_seconds)
+    try:
+        seconds, cut_reason = iqnr_decode.cap_seconds(requested)
+        rate = float(src.rate)
+        i_start = int(round(t0 * rate))
+        n = max(0, min(int(round(float(seconds) * rate)), int(src.samples) - i_start))
+
+        def read(i0, i1):
+            return src.read(i_start + int(i0), int(i1) - int(i0))
+
+        sample = iqlte_decode.SampleSource(n, rate, read)
+        for ssb in ssbs:
+            if isinstance(ssb, dict):
+                ssb['decode'] = iqnr_decode.decode_ssb(
+                    sample, src.center_hz, ssb, tools=tools, cut_reason=cut_reason)
+    except iqnr_decode.ToolsMissing as exc:
+        return _missing(getattr(exc, 'name', None) or 'run_nr.sh')
+    return None
+
+
 def _json_safe(value):
     """Every float in ``value`` passed through ``_json_num`` (null if non-finite)."""
     if isinstance(value, dict):
@@ -186,6 +239,13 @@ def main(argv=None):
                     help='subcarrier spacing in kHz (default: 15 and 30)')
     ap.add_argument('--max-cells', type=int, metavar='N', dest='max_cells',
                     help='most SSBs to list (default 4)')
+    ap.add_argument('--decode', action='store_true',
+                    help='decode the MIB, SIB1, other SI and SIB9 time of each '
+                         'listed SSB with $FMRX_LTE_TOOLS/run_nr.sh')
+    ap.add_argument('--decode-seconds', type=float, metavar='S', dest='decode_seconds',
+                    help='seconds from t0 that --decode reads (default %g; at most 10 s '
+                         'is read, and the decode reason says so). The SSB search keeps '
+                         'its own span' % DEFAULT_DECODE_S)
     try:
         args = ap.parse_args(argv)
     except SystemExit as exc:
@@ -238,6 +298,10 @@ def main(argv=None):
         iq, src.rate, src.center_hz,
         ssb_hz=args.ssb_hz, scs_khz=args.scs,
         max_cells=4 if args.max_cells is None else args.max_cells)
+    if args.decode:
+        missing = _attach_decode(args, src, t0, ssbs)
+        if missing:
+            return missing
     card = _json_safe({
         'file': args.file,
         'rate': src.rate,
