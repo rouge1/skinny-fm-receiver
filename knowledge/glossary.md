@@ -1,7 +1,7 @@
 # Glossary
 
-The acronyms in the LTE verification work ([lte-verify.md](lte-verify.md)) and in
-the TV and radio tabs. No captured values here: the examples are the standard's
+The acronyms in the LTE and 5G NR verification work ([lte-verify.md](lte-verify.md),
+[nr-verify.md](nr-verify.md)) and in the TV and radio tabs. No captured values here: the examples are the standard's
 own numbers.
 
 ## LTE: the network and its numbers
@@ -74,6 +74,20 @@ FirstNet).
 | ASN.1, UPER | The notation SIB1 is described in, and the bit-packing rule it is sent with. `pycrate` unpacks it. |
 | CRC | Cyclic redundancy check: an error check on a message. A pass means the data is intact. |
 
+## 5G NR: the sync block and the broadcast
+
+| Term | Meaning |
+|---|---|
+| gNB | NR's name for the base station. |
+| SCS | Subcarrier spacing: 15 kHz (as LTE) or 30 kHz below 6 GHz in this work. |
+| PSS, SSS (NR) | NR's sync signals: length-127 m-sequences, three PSS (N_ID2) and 336 SSS (N_ID1) per PSS, so 1008 PCIs (3 N_ID1 + N_ID2). |
+| PBCH DM-RS | The reference signal inside the SSB's broadcast channel. Its sequence gives the SSB index (and, at L_max 4, the half-frame) without decoding the PBCH. |
+| SSB index, L_max | A cell sends up to L_max SSBs per period (4 at or below 3 GHz, 8 above), one per beam; the index says which. |
+| k_SSB, CORESET 0, search space 0 | From the MIB: the SSB's subcarrier offset from the resource-block grid, and where and when to look for SIB1's control channel. |
+| Point A, `offsetToPointA` | The carrier's reference frequency (subcarrier 0 of resource block 0). SIB1 gives it as an offset in resource blocks from the SSB: point A = SSB centre - 120 x SCS - k_SSB x 15 kHz - `offsetToPointA` x 180 kHz (15 kHz case). |
+| SIB9 | NR's network-time SIB: UTC, GPS time, leap seconds, local offset, as LTE SIB16. Optional; sent only when SIB1 schedules it. |
+| Cell barred | A MIB and SIB1 flag: phones may not camp on the cell. |
+
 ## Our tools
 
 | Term | Meaning |
@@ -81,9 +95,10 @@ FirstNet).
 | IQ | The raw complex samples a radio records. |
 | SigMF | The metadata file that sits beside an IQ recording. |
 | BB60D | The Signal Hound spectrum analyser this app uses. |
-| srsRAN | Open-source LTE software (AGPL). Its `pdsch_ue` reads the MIB and SIB1 from a file. Built separately, not part of this repo. |
+| srsRAN | Open-source LTE software (AGPL). Its `pdsch_ue` reads the MIB and SIB1 from a file, and its NR library (behind `run_nr.sh`) an NR cell's MIB and SIBs. Built separately, not part of this repo. |
 | pycrate | A Python library that decodes the SIB1 message. |
 | `iqlte`, `iq-lte` | This repo's LTE fingerprint (cyclic prefix, PSS, SSS) and its command. |
+| `iqnr`, `iq-nr` | This repo's NR sync-block search (PSS, SSS, PBCH DM-RS on the sync raster) and its command; `--decode` hands each block to srsRAN's NR library. |
 
 ## TV and radio
 

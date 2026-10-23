@@ -1291,7 +1291,9 @@ and cell IDs stay in `recordings/`, never in the repo or knowledge files.
   reports `si`: SIB1's schedule, each SIB, SIB5's and SIB24's carriers, SIB16's network time.
   On real air one cell's whole schedule was heard; that cell sends no SIB16. See
   [lte-broadcast.md](lte-broadcast.md).
-- [ ] Network time from the air (SIB16, or NR SIB9): needs a cell that sends it; none found yet.
+- [x] Network time from the air, NR SIB9 (2026-10-23): `iq-nr --decode` read it from
+  a real 850 MHz NR cell, 3 s after the capture's start (Round 26).
+- [ ] Network time from the air, LTE SIB16: needs an LTE cell that sends it; none found yet.
 - [ ] 15 MHz decode (2026-10-19): built (`nfft=1536`, 23.04 MS/s, `PRB` to the
   wrapper), pure functions tested; not ticked until a real 15 MHz carrier decodes.
 - [ ] SIB1 on weak, synchronised cells: MIB decodes, SIB1 never (2026-10-19,
@@ -1305,3 +1307,28 @@ and cell IDs stay in `recordings/`, never in the repo or knowledge files.
   approves installing srsRAN and settles that question first.
 - Order: checks 2 and 3 with the synthetic test; band table and report;
   checks 4-6; stage 5.
+
+## Round 26: 5G NR cells, the sync block and the broadcast (requested 2026-10-22)
+
+The NR counterpart of Round 25: which NR cells are in a recording, and what
+each broadcasts. The search is ours (numpy only); the decode is an outside
+program, as for LTE. SI-RNTI only. Captures, PCIs, PLMNs and cell IDs stay
+outside the repo. Method, output and limits: [nr-verify.md](nr-verify.md).
+
+- [x] Phase n1, the sync finder (2026-10-22): `iqnr.py` and `tools/iq-nr FILE`
+  search the sync raster at 15 and 30 kHz for the PSS, SSS and PBCH DM-RS: the
+  GSCN, PCI, SSB index, half-frame, period and CFO, with a chance. Synthetic
+  gates G0-G10; on real air every SSB found by hand on three 850 MHz captures,
+  none on LTE or ATSC.
+- [x] Phase n2, the decode (2026-10-23): `tools/iq-nr FILE --decode` hands each
+  SSB's block to srsRAN 4G's NR library (`run_nr.sh`, built by the user) and
+  parses the MIB, SIB1, the other SI and SIB9's time with pycrate. Stub-tested
+  (G1-G10); on real air (G11) two cells matched a hand decode, SIB9's time
+  included.
+- [ ] Other SI that SIB1 does not schedule. On one real cell the outside program
+  heard a SIB2 that SIB1 does not list; `--decode` searches other SI only when
+  SIB1 schedules it, so that cell's `si` is null.
+- [ ] TDD special slots, and SSBs above 3 GHz with a 30 kHz CORESET 0 (srsRAN
+  lacks the table): not handled.
+- [ ] An `nr` section on the `iqmeasure` card and a read-only `fmctl` reply, as
+  for LTE's stage 4.

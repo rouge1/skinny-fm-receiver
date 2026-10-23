@@ -1268,3 +1268,39 @@ tools/iq-lte CAPTURE.cfile --decode --si-seconds 2        # decode 2 s instead o
   5.12 s; record at least that long. A 6 s decode takes about half a minute. See
   [lte-verify.md](lte-verify.md) for the wrapper, the local changes and the
   output, and [lte-broadcast.md](lte-broadcast.md) for what each SIB holds.
+
+## Finding and decoding 5G NR cells: iq-nr
+
+For a carrier that may be 5G NR (`iq-lte` can only say "possible" for one),
+`tools/iq-nr` lists the NR cells whose sync block (SSB) is in a recording, and
+with `--decode` reads what each cell broadcasts. The method, every output field
+and the limits are in [nr-verify.md](nr-verify.md).
+
+```sh
+tools/iq-nr CAPTURE.cfile                                  # every raster point in the capture, 15 and 30 kHz
+tools/iq-nr CAPTURE.cfile --ssb-hz 600150000 --scs 15      # one SSB frequency only
+tools/iq-nr CAPTURE.cfile --t0 1.5 --seconds 2 --max-cells 8
+tools/iq-nr CAPTURE.cfile --rate 20000000 --center 600000000    # a bare .cfile, no .sigmf-meta
+tools/iq-nr CAPTURE.cfile --decode --max-cells 1           # also the MIB, SIB1, other SI and SIB9 time
+tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead of 6
+```
+
+- Numpy only, and it classifies: each entry in `ssbs` has the raster point
+  (`gscn`), spacing, PCI, SSB index, period, CFO and a `chance`; a cell is
+  listed only when that chance is at most 1e-3. The verdict is `nr` or `none`.
+  It searches 0.1 s from `--t0` by default (`--seconds`, at most 2 s), about 5 s
+  of work.
+- Exit 0 whatever the verdict; 1 for a bad option or a file it cannot read
+  (the reason on stderr); 2 when `--decode` is asked and `run_nr.sh` is missing
+  from `$FMRX_LTE_TOOLS` (or its default when unset).
+- `--decode` needs srsRAN 4G's NR library behind `run_nr.sh`, built by you
+  (AGPL, not part of this repo), and pycrate under `$FMRX_LTE_TOOLS/pyc`. Only
+  the broadcast (SI-RNTI) is read. Each entry gets a `decode`: the MIB, SIB1
+  (operators, tracking area, cell identity, barring, carrier point A), `si` (the
+  other SIBs, when SIB1 schedules any) and `time` (SIB9's UTC and GPS time), or
+  `time_reason` when there is none. A missing pycrate leaves `sib1` null and
+  still exits 0. It reads 6 s from `--t0` (`--decode-seconds`, at most 10):
+  record at least that long. A 6 s decode takes about a minute.
+- A cell whose SIB1 carries only the operators and cell identity (one barred
+  cell on real air did) schedules no other SI: `si` is null and `time_reason`
+  says "SIB1 does not schedule SIB9". That is a result, not a failure.

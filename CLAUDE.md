@@ -31,12 +31,13 @@ with no launcher.
   - With the window open, drive it with `tools/fmctl` (`control.py`'s
     socket) rather than opening the radio.
   - Nothing of ours decodes: `tools/iq-decode` runs rtl_433 (on PATH);
-    `iqlte_decode.py` hands off to an outside srsRAN 4G `pdsch_ue` via
-    `$FMRX_LTE_TOOLS`, and srsRAN is never installed here
-    (`knowledge/lte-verify.md`).
-  - `sceptre_dvr`, `iqmeasure`, `iqburst`, `iqframes`, `iqcatalog` and
-    `iqlte` stay numpy only, so their tools run anywhere (`iq-picture`
-    needs matplotlib; the LTE test helpers use scipy).
+    `iqlte_decode.py` hands off to an outside srsRAN 4G `pdsch_ue` and
+    `iqnr_decode.py` to its NR library (`run_nr.sh`), both via
+    `$FMRX_LTE_TOOLS`, SI-RNTI only, and srsRAN is never installed here
+    (`knowledge/lte-verify.md`, `knowledge/nr-verify.md`).
+  - `sceptre_dvr`, `iqmeasure`, `iqburst`, `iqframes`, `iqcatalog`,
+    `iqlte` and `iqnr` stay numpy only, so their tools run anywhere
+    (`iq-picture` needs matplotlib; the LTE test helpers use scipy).
   - `knowledge/catalogs.md` is kept equal to `iqcatalog.py` by a test.
 - Knowledge: `knowledge/capabilities.md` is the living capability list.
   Update it (and its status marks) when a feature is added or verified.

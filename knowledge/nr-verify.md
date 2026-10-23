@@ -23,11 +23,12 @@ or in these notes.
 ## What it does and does not do
 
 It lists the SSBs in a capture: the GSCN, SCS, PCI, the SSB index and
-half-frame (where the DM-RS says), the period, the CFO and a chance. Nothing
-is decoded. It reads the PSS, SSS and the PBCH's DM-RS, and never the PBCH
-data bits. There is no MIB, no SIB1 and no SIB9 here. Those are phases n2 and
-n3 of the NR work: they hand the block to an outside decoder, as `--decode`
-does for LTE in [lte-verify.md](lte-verify.md).
+half-frame (where the DM-RS says), the period, the CFO and a chance. The
+search decodes nothing. It reads the PSS, SSS and the PBCH's DM-RS, and never
+the PBCH data bits. The MIB, SIB1, the other SI and SIB9's time come from
+`--decode`, which hands the block to an outside decoder, as `--decode` does
+for LTE in [lte-verify.md](lte-verify.md). See
+[Decoding a listed SSB](#decoding-a-listed-ssb---decode).
 
 NR's sync signals are m-sequences, not LTE's Zadoff-Chu sequences, so
 `iq-lte` can say only that an NR carrier is "possible". Use `iq-nr` on a
@@ -250,8 +251,9 @@ raster run of the same capture.
 - **Synthetic only in the repo.** Every check in the tests uses the signal of
   `tools/tests/nr_synth.py` (the truth is in the signal's dictionary). The real
   air check is the planner's (G11 in the phase spec), run on captures that are
-  not in this repo. Its results are not recorded here.
-- **Nothing is decoded.** The PBCH data, the MIB, SIB1 and SIB9 are not read.
+  not in this repo; what it found is under Status, without the values.
+- **The search decodes nothing.** It never reads the PBCH data; the MIB, SIB1
+  and SIB9 come from `--decode`.
 
 ## Wrong turns
 
@@ -466,6 +468,11 @@ which is not in this repo.
   The decode reports that time as SIB9 carries it and does not check it
   against the capture's timing. When SIB9 has no `timeInfo`, `time` is null
   and `time_reason` says so.
+- **Other SI only when SIB1 schedules it.** Pass 2 runs only then. On real
+  air one barred cell's SIB1 carried only the operators and cell identity
+  (no schedule, no `offsetToPointA`), so its `si` and `carrier` are null,
+  while the outside program, run by hand, heard a SIB2 from it. Reading SI
+  that SIB1 does not list would need pass 2 without SIB1's values.
 
 ## Decode tests
 
@@ -473,15 +480,27 @@ which is not in this repo.
 `run_nr.sh`, a Python script behind an sh wrapper. It prints the contract's
 lines from blocks that the test encodes with pycrate. The stub is never the
 real program, and the real program is never named or run. The checks that
-need pycrate skip when no interpreter imports it. Nothing here is tested on
-air.
+need pycrate skip when no interpreter imports it. Nothing in the tests runs
+on air; the real-air check is below.
 
 ## Status
 
-Built, and tested on the synthetic signal of `nr_synth.py` (the suites above).
-The `--decode` path is built and tested with a stub program (the decode tests
-above), not on air.
-Not yet on real air in this repo: the planner runs the real-air check (G11)
-on its own recordings and keeps the results outside the repo. The capability
-list, the roadmap and the glossary are updated by the planner after the merge;
-see [capabilities.md](capabilities.md).
+Built, and tested on the synthetic signal of `nr_synth.py` (the suites above)
+and, for `--decode`, with a stub program (the decode tests above).
+
+On real air (the planner's check, G11; BB60D recordings at 20 MS/s, values
+kept outside the repo):
+
+- **Search (2026-10-22).** Three 850 MHz NR captures: every SSB found by hand
+  was listed, plus two weaker sectors of the same sites. Two LTE carriers and
+  an ATSC channel gave `none`. About 5 s for the default span.
+- **Decode (2026-10-23).** Two cells, 6 s each, compared field by field with
+  the outside program run by hand. The MIB matched on every field on both.
+  The first cell (not barred, one operator): SIB1's operator, tracking area
+  and cell identity matched, the carrier point A matched the formula in the
+  glossary, SIB2, 3, 4, 5 and 9 were heard, and SIB9's UTC was 3 s after the
+  capture's start. The second (barred, two operators): the operators and cell
+  identity matched; `time` null with "SIB1 does not schedule SIB9". Each
+  decode took about a minute.
+
+See [capabilities.md](capabilities.md) and Round 26 of [roadmap.md](roadmap.md).
