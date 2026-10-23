@@ -388,6 +388,7 @@ def _sib9_time(sib9):
     if out is None:
         return None
     out.pop('utc_10ms', None)
+    out.pop('local', None)
     ref = _find_key(sib9, 'referenceTimeInfo-r16')
     if isinstance(ref, dict):
         raw = dict(ref.get('time-r16') or {})
