@@ -384,14 +384,16 @@ Each entry gains `pdcch` (see usage.md). Only the SI-RNTI is tried, and only
 in SIB1's occasions: the DCIs for other SI, which come in their own windows,
 are not searched. 15 kHz SSB and common spacing only.
 
-On real air (2026-10-24, two 6 s recordings, the outside program's DCIs
-logged as the referee):
+On real air (2026-10-24, two 6 s recordings). The referee was the outside
+program with one line added to print every DCI it finds (an `NR_DCI` tag,
+which `iqnr_decode` ignores; the change is kept outside the repo with the
+others):
 - The strongest sector of one site: every one of the 52 DCIs the outside
   program found was found, with the same aggregation level, CCE and fields,
   and 91 more: 143, one every 40 ms through the file, always AL4 at CCE 0,
   the same RBs (0 to 33 of 48) and redundancy version 0.
 - A barred cell with a one-symbol CORESET: all 74 found, same fields, and
-  113 more: 187, eight per 160 ms, redundancy versions 0, 2, 3, 1, 0, AL4 at
+  113 more: 187, five per 160 ms, redundancy versions 0, 2, 3, 1, 0, AL4 at
   CCE 0 or 4, the RBs moving each time.
 - No decode disagreed with the referee or with the cell's own pattern.
 - The site's second sector (SSB 7 dB under the strongest): no SIB1 DCI. Its
@@ -403,6 +405,14 @@ logged as the referee):
 - The third sector (12 dB under): nothing.
 
 About 50 ms an occasion, 30 s for a 6 s recording.
+
+Every DCI on air was AL4, in 48-RB CORESETs of 1 and 2 symbols. Never on air:
+AL8 and AL16 (the DCI's repetition path), 3-symbol CORESETs, 24- and 96-RB
+CORESETs, the odd-SSB-index rows of table 13-11 (first symbol N_symb),
+interleaved VRB-to-PRB and nonzero reserved bits. Shortening cannot happen
+in a Type0 search space at all (E is at least 432), so only the synthetic
+test reaches it. These are checked only by the round trip, which an encoder
+and decoder written together could both get wrong in the same way.
 
 ## Decoding a listed SSB (`--decode`)
 

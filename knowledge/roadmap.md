@@ -1386,9 +1386,13 @@ in the same slot as the stronger sector's, under it. On the first real case
 per RE after cancelling the stronger cell. SIB1 is one block for 160 ms and
 the same across a 6 s capture (about 37 periods). Our own PDCCH decoder
 (28.2) showed how often it is sent: on that site's strongest sector every
-40 ms, always redundancy version 0, on the same RBs; on another cell eight
-times per 160 ms, versions 0, 2, 3, 1, 0, on RBs that move each time. Adding the soft bits of those copies gains about
-9 to 15 dB, and only a decoder that keeps soft bits can do it.
+40 ms (four per 160 ms), always redundancy version 0, on the same RBs; on
+another cell five times per 160 ms, versions 0, 2, 3, 1, 0, on RBs that move
+each time. Adding the soft bits of those copies gains about 6 dB within one
+160 ms period at four copies, and up to about 21 dB over the 140 or so copies
+of a 6 s capture while the block stays the same (the 9 to 15 dB first
+estimated assumed eight copies a period). Only a decoder that keeps soft bits
+can do it.
 
 Rules:
 - `iqnr_phy.py` is numpy only, like `iqnr`, and written from the specs
@@ -1425,10 +1429,14 @@ Phases, each one checked before the next:
   20 checks in `test_iqnr_phy.py`. On two real 6 s recordings every SIB1 DCI
   `nr_si` found (52 and 74) was found with the same level, CCE and fields,
   with 91 and 113 more that it missed: every SIB1 transmission in the files
-  (one every 40 ms on one cell, eight per 160 ms on the other), no stray
+  (one every 40 ms on one cell, five per 160 ms on the other), no stray
   decodes. The second sector's other-SI DCIs decoded at about -4 dB per RE
   (10, in the strongest sector's SI windows), but not its SIB1 DCI, which
   lies half under the strongest sector's. Only 15 kHz SSB and common spacing.
+  Every DCI on air was AL4 in a 48-RB CORESET of 1 or 2 symbols; AL8 and
+  AL16 (the repetition path), 3-symbol, 24- and 96-RB CORESETs, the
+  odd-SSB-index rows of table 13-11, interleaved VRB-to-PRB and nonzero
+  reserved bits are checked only by the synthetic round trip.
 - [ ] 28.3 PDSCH for SIB1 and other SI: time and frequency allocation, PDSCH
   DM-RS (type 1, CORESET 0 reference for SIB1 and CRB 0 for other SI),
   descrambling, LDPC base graph choice and segmentation, rate recovery, the
