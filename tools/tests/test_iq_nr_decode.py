@@ -30,6 +30,8 @@ Checks (one behaviour each; ok / FAIL / SKIP lines):
       without --decode equals a fixed baseline (sha256 and length hardcoded below)
   H   child peak RSS on a 2 s, 40 MS/s file under 900 MB
   R1-R4 robustness probes (R1-R3 need pycrate, R4 does not)
+  P   the program read another PCI than the SSB entry's (a stronger cell on the same SSB
+      frequency): mib and sib1 null, decoded_pci and a reason naming both, no pass 2
   U   other SI that SIB1 does not schedule, sent in SIB1's slots with sii 0 (as one cell did
       on air): heard, listed in si.unscheduled, its SIB9 gives the time, no second call
 
@@ -704,6 +706,8 @@ def case_cfg(name):
                       minor_sib1=fixture_hex('sib1_three_plmn')),
         'crc': dict(sib1=fixture_hex('sib1_full'), si=[fixture_hex('si_sib2_sib9')], crc_fail=2),
         'no_tdra': dict(sib1=fixture_hex('sib1_no_tdra'), si=[fixture_hex('si_sib2_sib9')]),
+        'other_cell': dict(sib1=fixture_hex('sib1_full'), si=[fixture_hex('si_sib2_sib9')],
+                           mib=dict(MIB, pci=PCI + 3)),
         'unscheduled': dict(sib1=fixture_hex('sib1_none'), si=[],
                             sii0_si=[fixture_hex('si_sib2_sib9')]),
         'sii0_scheduled': dict(sib1=fixture_hex('sib1_full'), si=[],
@@ -971,6 +975,19 @@ def test_d_reference_time_gps_reading_equals_gps():
     got = datetime.datetime.fromisoformat(ref['gps_reading'])
     want = datetime.datetime.fromisoformat(GPS_ISO)
     assert abs((got - want).total_seconds()) <= 1e-3, 'gps_reading %s, time.gps %s' % (got, want)
+
+
+def test_p_another_cells_mib_is_not_reported_as_this_one():
+    """P: the MIB's PCI is not the SSB's: mib and sib1 null, decoded_pci and reason say so."""
+    run = decode_case('other_cell', args=DECODE_ARGS)
+    check_code(run, 0, 'iq-nr --decode')
+    assert len(run.calls) == 1, 'want one call (no pass 2 for another cell), got %d' % len(run.calls)
+    dec = need_decode(run)
+    assert dec.get('mib') is None and dec.get('sib1') is None, 'another cell reported as this one'
+    assert dec.get('decoded_pci') == PCI + 3, 'decoded_pci %r' % dec.get('decoded_pci')
+    reason = dec.get('reason') or ''
+    assert 'PCI %d' % (PCI + 3) in reason and 'PCI %d' % PCI in reason, 'reason %r' % reason
+    assert dec.get('time') is None and dec.get('time_reason') == 'another cell was decoded', dec
 
 
 def test_u_unscheduled_si_in_sib1_slots_is_heard():

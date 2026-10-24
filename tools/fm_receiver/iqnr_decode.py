@@ -53,6 +53,11 @@ Wrong turns:
   ``NR_SI_ERR`` lines are diagnostic and not counted.
 - The pycrate interpreter comes from the tools folder only. An environment override
   would let a test's "no pycrate" folder still find one.
+- The outside program decodes the strongest cell on the SSB's frequency, whatever PCI the
+  entry has. A weaker sector there (another PCI, same SSB frequency) came back with the
+  strongest cell's MIB and SIB1 under its own PCI. When the MIB's PCI is not the entry's,
+  the decode now stops after pass 1 with ``decoded_pci`` (the PCI it read), MIB and SIB1
+  null, and a ``reason`` naming both PCIs.
 - A SIB1 that fails to parse is not the end: the next most common ``sii`` 0 block is
   tried, so one corrupt block that passed the CRC does not hide the cell.
 """
@@ -508,6 +513,13 @@ def decode_ssb(src, centre_hz, ssb, tools=None, cut_reason=None):
         if first.mib is None:
             out['time_reason'] = 'no MIB'
             return finish((first.no_mib or {}).get('reason') or 'no MIB decoded')
+        mib_pci, want_pci = first.mib.get('pci'), ssb.get('pci')
+        if mib_pci is not None and want_pci is not None and int(mib_pci) != int(want_pci):
+            # Another, stronger cell on this SSB frequency: its broadcast is not this one's.
+            out['decoded_pci'] = int(mib_pci)
+            out['time_reason'] = 'another cell was decoded'
+            return finish('the decoder read PCI %d, a stronger cell on this SSB frequency, '
+                          'not PCI %d' % (int(mib_pci), int(want_pci)))
         out['mib'] = {k: first.mib.get(k) for k in _MIB_KEYS}
         out['mib'].update({k: v for k, v in first.mib.items() if k not in out['mib']})
         done_reason = (first.done or {}).get('reason')

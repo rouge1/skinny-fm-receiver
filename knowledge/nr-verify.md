@@ -390,6 +390,7 @@ Each entry of `ssbs` gets a `decode` object. Its keys are these.
 | Key | Meaning |
 |---|---|
 | `ran` | true when the decode ran |
+| `decoded_pci` | only when the outside program read another cell than this entry (a stronger cell on the same SSB frequency, such as another sector): the PCI it read. `mib` and `sib1` are then null, and `reason` names both PCIs |
 | `mib` | the MIB's fields: `pci`, `sfn`, `ssb_index`, `half_frame`, `scs_common_khz`, `ssb_subcarrier_offset`, `dmrs_typeA_position`, `coreset0_index`, `search_space0_index`, `cell_barred`, `intra_freq_reselection`, `ssb_sample`, `cfo_hz`, `snr_db`, and any other field the program gives. Null when there is no MIB |
 | `sib1` | null when SIB1 was not parsed. Otherwise an object: `plmns` (`"MCC-MNC"` strings, with the MNC's digit count kept, so `"001-01"` and `"001-001"` are different), `tac`, `cell_identity` (36 bits), `cell_barred`, `si_window_slots`, `si_schedule` (a list of `periodicity_rf`, `broadcast_status` and `sibs`), and `carrier` (`point_a_arfcn`, `point_a_mhz`, `bands`, `carrier_prb`, `scs_khz`, `offset_to_point_a`) |
 | `si` | null when SIB1 scheduled no other SI and none was heard. Otherwise: `sibs_heard` (count of each SIB heard), `sibs` (each SIB's contents), `scheduled` (the SIBs SIB1 schedules), `missing` (scheduled and on air, but not heard) and `unscheduled` (heard, but not scheduled by SIB1; `reason` names them too) |
@@ -473,6 +474,11 @@ which is not in this repo.
   The decode reports that time as SIB9 carries it and does not check it
   against the capture's timing. When SIB9 has no `timeInfo`, `time` is null
   and `time_reason` says so.
+- **Only the strongest cell on an SSB frequency is decoded.** The outside
+  program locks to the strongest cell, so a weaker sector on the same SSB
+  frequency (another PCI) gets no MIB or SIB1 of its own: its `decode` has
+  `decoded_pci` and a reason instead. On air, one site's three sectors shared
+  one SSB frequency; only the strongest was decoded.
 - **Unscheduled SI is heard only in pass 1's slots, or when pass 2 runs.**
   Pass 2 runs only when SIB1 schedules other SI and gives `offsetToPointA`.
   SI that SIB1 does not schedule is found when it comes in the slots pass 1
