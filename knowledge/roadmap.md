@@ -1340,8 +1340,12 @@ outside the repo. Method, output and limits: [nr-verify.md](nr-verify.md).
   Three sectors of one site share one SSB frequency, and the outside program
   decodes the strongest; the other two came back with its MIB and SIB1 under
   their own PCIs. Now their `decode` has `decoded_pci` and a reason instead.
-- [ ] A weaker sector's own MIB and SIB1: the outside program would have to
-  decode a given PCI, not the strongest on the frequency.
+- [x] A weaker sector's own MIB (2026-10-24): the outside program takes
+  `-P PCI`, and the decode retries with it when pass 1 reads another PCI. On
+  air the second sector's MIB came; the third gave none.
+- [ ] A weaker sector's SIB1: it shares CORESET 0 and SIB1's slots with the
+  stronger cell, whose PDCCH covers it. It would need the stronger cell's
+  signal subtracted first, or a place where the weaker sector is the stronger.
 
 ## Round 27: fixes from the first cell survey (2026-10-23)
 

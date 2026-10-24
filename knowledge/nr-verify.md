@@ -390,7 +390,7 @@ Each entry of `ssbs` gets a `decode` object. Its keys are these.
 | Key | Meaning |
 |---|---|
 | `ran` | true when the decode ran |
-| `decoded_pci` | only when the outside program read another cell than this entry (a stronger cell on the same SSB frequency, such as another sector): the PCI it read. `mib` and `sib1` are then null, and `reason` names both PCIs |
+| `decoded_pci` | only when the outside program read another cell than this entry (a stronger cell on the same SSB frequency, such as another sector), and the retry aimed at this entry's PCI read no MIB of it (or the program has no `-P`): the PCI it read. `mib` and `sib1` are then null, and `reason` names both PCIs and what the retry said. When the retry reads this cell's MIB, there is no `decoded_pci`: the decode is this cell's, `mib.targeted` is true and `reason` names the stronger cell |
 | `mib` | the MIB's fields: `pci`, `sfn`, `ssb_index`, `half_frame`, `scs_common_khz`, `ssb_subcarrier_offset`, `dmrs_typeA_position`, `coreset0_index`, `search_space0_index`, `cell_barred`, `intra_freq_reselection`, `ssb_sample`, `cfo_hz`, `snr_db`, and any other field the program gives. Null when there is no MIB |
 | `sib1` | null when SIB1 was not parsed. Otherwise an object: `plmns` (`"MCC-MNC"` strings, with the MNC's digit count kept, so `"001-01"` and `"001-001"` are different), `tac`, `cell_identity` (36 bits), `cell_barred`, `si_window_slots`, `si_schedule` (a list of `periodicity_rf`, `broadcast_status` and `sibs`), and `carrier` (`point_a_arfcn`, `point_a_mhz`, `bands`, `carrier_prb`, `scs_khz`, `offset_to_point_a`) |
 | `si` | null when SIB1 scheduled no other SI and none was heard. Otherwise: `sibs_heard` (count of each SIB heard), `sibs` (each SIB's contents), `scheduled` (the SIBs SIB1 schedules), `missing` (scheduled and on air, but not heard) and `unscheduled` (heard, but not scheduled by SIB1; `reason` names them too) |
@@ -424,11 +424,21 @@ run_nr.sh FILE 23040000 0 SSB_HZ SCS_KHZ
 `FILE` is the cf32 file, `23040000` the sample rate, `0` the SSB's offset in
 Hz (the SSB is at 0 Hz), `SSB_HZ` its absolute frequency and `SCS_KHZ` 15 or
 30. The second pass adds `-t SLIV,...` (when SIB1 has a list) and
-`-a OFFSET_TO_POINT_A`. The full form is:
+`-a OFFSET_TO_POINT_A`. When the first pass's MIB has another PCI than the
+entry's, the first pass runs again with `-P PCI` (the entry's), and the
+second pass keeps it. The full form is:
 
 ```
-run_nr.sh FILE SRATE SSB_OFFSET_HZ SSB_ABS_HZ SCS_KHZ [-m MAX_MS] [-t SLIV,...] [-a OFFSET_TO_POINT_A]
+run_nr.sh FILE SRATE SSB_OFFSET_HZ SSB_ABS_HZ SCS_KHZ [-m MAX_MS] [-t SLIV,...] [-a OFFSET_TO_POINT_A] [-P PCI]
 ```
+
+With `-P` the program still runs its blind search first, for the carrier
+offset. Then it searches every 1 ms subframe from the file's start for that
+PCI's PSS and a PBCH with a good CRC. `NR_MIB` then has `targeted` true,
+`strongest_pci` and `strongest_ssb_sample`. Aimed at the strongest cell
+itself on air, this path gave the same MIB and SIB1, the SSB 3 samples from
+the blind search's. A program without `-P` exits non-zero, and the decode
+then ends as for another cell (below).
 
 The decode never passes `-m`. The program's contract accepts it, and the
 decode code does not use it.
@@ -474,11 +484,15 @@ which is not in this repo.
   The decode reports that time as SIB9 carries it and does not check it
   against the capture's timing. When SIB9 has no `timeInfo`, `time` is null
   and `time_reason` says so.
-- **Only the strongest cell on an SSB frequency is decoded.** The outside
-  program locks to the strongest cell, so a weaker sector on the same SSB
-  frequency (another PCI) gets no MIB or SIB1 of its own: its `decode` has
-  `decoded_pci` and a reason instead. On air, one site's three sectors shared
-  one SSB frequency; only the strongest was decoded.
+- **A weaker sector gives its MIB, not yet its SIB1.** The outside program
+  locks to the strongest cell on an SSB frequency, so a weaker sector there
+  (another PCI) is decoded by aiming at its PCI (`-P`). On air, one site's
+  three sectors shared one SSB frequency (2026-10-24). The second, about
+  28 dB under the strongest by the program's SNR, gave its own MIB that way,
+  with the same SFN as the strongest and its SSB one SSB slot later. It gave
+  no SIB1: it uses the same CORESET 0 and search space as the strongest, so
+  its PDCCH lands on the stronger cell's. The third gave no MIB, so it kept
+  `decoded_pci`.
 - **Unscheduled SI is heard only in pass 1's slots, or when pass 2 runs.**
   Pass 2 runs only when SIB1 schedules other SI and gives `offsetToPointA`.
   SI that SIB1 does not schedule is found when it comes in the slots pass 1

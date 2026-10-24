@@ -1315,6 +1315,9 @@ tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead o
   cell on real air did) schedules no other SI, and `time_reason` says "SIB1 does
   not schedule SIB9". That is a result, not a failure. Such a cell may still send
   SI in SIB1's own slots (that one sent SIB2): then `si` lists it as unscheduled.
-- Only the strongest cell on an SSB frequency is decoded. Sectors of one site
-  often share one: the weaker ones' `decode` has `decoded_pci` (the PCI that
-  was read) and a reason, and no MIB or SIB1 of their own.
+- Sectors of one site often share one SSB frequency, and the outside program
+  reads the strongest. For a weaker one the decode aims at its PCI: its MIB
+  then comes with `targeted` true and a reason naming the stronger cell. Its
+  SIB1 usually does not come, because it shares slots and RBs with the
+  stronger cell's. When even the MIB does not come, the `decode` has
+  `decoded_pci` (the PCI read) and a reason, and no MIB or SIB1.

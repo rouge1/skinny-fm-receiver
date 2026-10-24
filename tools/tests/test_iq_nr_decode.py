@@ -31,7 +31,10 @@ Checks (one behaviour each; ok / FAIL / SKIP lines):
   H   child peak RSS on a 2 s, 40 MS/s file under 900 MB
   R1-R4 robustness probes (R1-R3 need pycrate, R4 does not)
   P   the program read another PCI than the SSB entry's (a stronger cell on the same SSB
-      frequency): mib and sib1 null, decoded_pci and a reason naming both, no pass 2
+      frequency) and refuses -P (an older program): mib and sib1 null, decoded_pci and a
+      reason naming both, no pass 2
+  T   the same, with a program that takes -P PCI: the retry aimed at the PCI is this cell's
+      decode (pass 2 keeps -P); a retry without a MIB ends as P
   U   other SI that SIB1 does not schedule, sent in SIB1's slots with sii 0 (as one cell did
       on air): heard, listed in si.unscheduled, its SIB9 gives the time, no second call
 
@@ -535,7 +538,9 @@ def plmn_strings(plain_sib1):
 
 # ---- the stub outside program -----------------------------------------------------------------
 
-# Stub for run_nr.sh. Args: FILE SRATE SSB_OFFSET_HZ SSB_ABS_HZ SCS_KHZ [-m MS] [-t LIST] [-a N].
+# Stub for run_nr.sh. Args: FILE SRATE SSB_OFFSET_HZ SSB_ABS_HZ SCS_KHZ [-m MS] [-t LIST] [-a N]
+# [-P PCI]. -P is refused (exit 2, as an older program does) unless the config has target_mib:
+# then a call with -P says that MIB (null: NR_NO_MIB) and sends the same blocks.
 # Logs one JSON line per call to calls.jsonl beside itself: argv, file, its size, and the first
 # 20 ms (head-N.cf32). Config (config.json): mib (null: NR_NO_MIB), point_a_hz, sib1_hex (SIB1
 # sent on calls without -a), si_hex (other SI sent when -t and -a are both given), repeat (each
@@ -572,10 +577,11 @@ def main():
     n = logged()
     ok = len(argv) >= 5 and (len(argv) - 5) % 2 == 0
     opts = {}
+    flags = FLAGS + (('-P',) if 'target_mib' in cfg else ())
     if ok:
         rest = argv[5:]
         for i in range(0, len(rest), 2):
-            if rest[i] not in FLAGS:
+            if rest[i] not in flags:
                 ok = False
                 break
             opts[rest[i]] = rest[i + 1]
@@ -596,11 +602,12 @@ def main():
     if cfg.get('junk'):
         sys.stdout.write('stub: an unknown line\n')
         sys.stdout.write('NR_XYZ {"unexpected": true}\n')
-    if cfg.get('mib') is None:
+    mib = cfg['target_mib'] if '-P' in opts else cfg.get('mib')
+    if mib is None:
         say('NR_NO_MIB', {'tries': 3, 'reason': 'no PBCH decoded'})
         sent = 0
     else:
-        say('NR_MIB', cfg['mib'])
+        say('NR_MIB', mib)
         say('NR_CORESET0', {'offset_rb': 0, 'n_rb': 48, 'symbols': 2, 'grid_prb': 0,
                             'pointA_hz': cfg['point_a_hz'], 'f0_hz': 599900000.0})
         reps = int(cfg.get('repeat', 1))
@@ -711,6 +718,11 @@ def case_cfg(name):
         'no_tdra': dict(sib1=fixture_hex('sib1_no_tdra'), si=[fixture_hex('si_sib2_sib9')]),
         'other_cell': dict(sib1=fixture_hex('sib1_full'), si=[fixture_hex('si_sib2_sib9')],
                            mib=dict(MIB, pci=PCI + 3)),
+        'targeted': dict(sib1=fixture_hex('sib1_full'), si=[fixture_hex('si_sib2_sib9')],
+                         mib=dict(MIB, pci=PCI + 3),
+                         target_mib=dict(MIB, targeted=True, strongest_pci=PCI + 3)),
+        'targeted_no_mib': dict(sib1=fixture_hex('sib1_full'), si=[fixture_hex('si_sib2_sib9')],
+                                mib=dict(MIB, pci=PCI + 3), target_mib=None),
         'unscheduled': dict(sib1=fixture_hex('sib1_none'), si=[],
                             sii0_si=[fixture_hex('si_sib2_sib9')]),
         'sii0_scheduled': dict(sib1=fixture_hex('sib1_full'), si=[],
@@ -719,7 +731,7 @@ def case_cfg(name):
     cfg = dict(full)
     cfg['sib1_hex'] = cases.get('sib1')
     cfg['si_hex'] = cases.get('si', [])
-    for k in ('repeat', 'junk', 'done_reason', 'mib', 'sib1_repeat', 'crc_fail'):
+    for k in ('repeat', 'junk', 'done_reason', 'mib', 'sib1_repeat', 'crc_fail', 'target_mib'):
         if k in cases:
             cfg[k] = cases[k]
     if 'minor_sib1' in cases:
@@ -984,13 +996,44 @@ def test_p_another_cells_mib_is_not_reported_as_this_one():
     """P: the MIB's PCI is not the SSB's: mib and sib1 null, decoded_pci and reason say so."""
     run = decode_case('other_cell', args=DECODE_ARGS)
     check_code(run, 0, 'iq-nr --decode')
-    assert len(run.calls) == 1, 'want one call (no pass 2 for another cell), got %d' % len(run.calls)
+    # the retry aimed at the PCI is refused (an older program), and there is no pass 2
+    assert len(run.calls) == 2, 'want two calls (pass 1 and the -P retry), got %d' % len(run.calls)
+    assert run.calls[1].get('bad') and run.calls[1]['argv'][-2:] == ['-P', str(PCI)], run.calls[1]
     dec = need_decode(run)
     assert dec.get('mib') is None and dec.get('sib1') is None, 'another cell reported as this one'
     assert dec.get('decoded_pci') == PCI + 3, 'decoded_pci %r' % dec.get('decoded_pci')
     reason = dec.get('reason') or ''
     assert 'PCI %d' % (PCI + 3) in reason and 'PCI %d' % PCI in reason, 'reason %r' % reason
     assert dec.get('time') is None and dec.get('time_reason') == 'another cell was decoded', dec
+
+
+def test_t_weaker_sector_decoded_by_aiming_at_its_pci():
+    """T: pass 1 reads a stronger cell; the retry with -P PCI reads this one, and pass 2 keeps -P."""
+    need('sib1_full', 'si_sib2_sib9')
+    run = decode_case('targeted', args=DECODE_ARGS)
+    check_code(run, 0, 'iq-nr --decode')
+    assert len(run.calls) == 3, 'want pass 1, the -P retry and pass 2, got %d' % len(run.calls)
+    assert all(c.get('opts', {}).get('-P') == str(PCI) for c in run.calls[1:]), run.calls
+    dec = need_decode(run)
+    assert (dec.get('mib') or {}).get('pci') == PCI and dec['mib'].get('targeted') is True, dec.get('mib')
+    assert 'decoded_pci' not in dec, 'decoded_pci %r' % dec.get('decoded_pci')
+    assert (dec.get('sib1') or {}).get('tac') == TAC, 'sib1 %r' % dec.get('sib1')
+    assert sorted((dec.get('si') or {}).get('sibs_heard') or {}) == ['sib2', 'sib9'], dec.get('si')
+    reason = dec.get('reason') or ''
+    assert 'PCI %d' % (PCI + 3) in reason and 'aiming' in reason, 'reason %r' % reason
+
+
+def test_t_weaker_sector_without_a_mib_keeps_decoded_pci():
+    """T: the -P retry finds no MIB: as P (mib and sib1 null, decoded_pci), the reason says so."""
+    run = decode_case('targeted_no_mib', args=DECODE_ARGS)
+    check_code(run, 0, 'iq-nr --decode')
+    assert len(run.calls) == 2, 'want pass 1 and the -P retry, got %d' % len(run.calls)
+    dec = need_decode(run)
+    assert dec.get('mib') is None and dec.get('sib1') is None, 'another cell reported as this one'
+    assert dec.get('decoded_pci') == PCI + 3, 'decoded_pci %r' % dec.get('decoded_pci')
+    reason = dec.get('reason') or ''
+    assert 'PCI %d' % (PCI + 3) in reason and 'no MIB' in reason, 'reason %r' % reason
+    assert dec.get('time_reason') == 'another cell was decoded', dec
 
 
 def test_u_unscheduled_si_in_sib1_slots_is_heard():

@@ -53,11 +53,15 @@ Wrong turns:
   ``NR_SI_ERR`` lines are diagnostic and not counted.
 - The pycrate interpreter comes from the tools folder only. An environment override
   would let a test's "no pycrate" folder still find one.
-- The outside program decodes the strongest cell on the SSB's frequency, whatever PCI the
-  entry has. A weaker sector there (another PCI, same SSB frequency) came back with the
+- The outside program decodes the strongest cell on the SSB's frequency unless given
+  ``-P PCI``. A weaker sector there (another PCI, same SSB frequency) came back with the
   strongest cell's MIB and SIB1 under its own PCI. When the MIB's PCI is not the entry's,
-  the decode now stops after pass 1 with ``decoded_pci`` (the PCI it read), MIB and SIB1
-  null, and a ``reason`` naming both PCIs.
+  pass 1 is run again with ``-P`` and the entry's PCI, and that run (and pass 2, with
+  ``-P`` too) is the decode; its MIB has ``targeted`` true and the strongest cell's PCI.
+  When the retry reads no MIB of that PCI, or the program refuses ``-P`` (an older one),
+  the decode stops with ``decoded_pci`` (the PCI pass 1 read), MIB and SIB1 null, and a
+  ``reason`` naming both PCIs. On air a sector 28 dB under the strongest gave its MIB this
+  way but no SIB1: its SIB1 comes in the same slots and RBs as the stronger cell's.
 - A SIB1 that fails to parse is not the end: the next most common ``sii`` 0 block is
   tried, so one corrupt block that passed the CRC does not hide the cell.
 """
@@ -515,11 +519,20 @@ def decode_ssb(src, centre_hz, ssb, tools=None, cut_reason=None):
             return finish((first.no_mib or {}).get('reason') or 'no MIB decoded')
         mib_pci, want_pci = first.mib.get('pci'), ssb.get('pci')
         if mib_pci is not None and want_pci is not None and int(mib_pci) != int(want_pci):
-            # Another, stronger cell on this SSB frequency: its broadcast is not this one's.
-            out['decoded_pci'] = int(mib_pci)
-            out['time_reason'] = 'another cell was decoded'
-            return finish('the decoder read PCI %d, a stronger cell on this SSB frequency, '
-                          'not PCI %d' % (int(mib_pci), int(want_pci)))
+            # Another, stronger cell on this SSB frequency: aim at this one's PCI.
+            base += ['-P', int(want_pci)]
+            aimed = _Pass(*_run(script, base, timeout))
+            if aimed.mib is None or aimed.mib.get('pci') is None or int(aimed.mib['pci']) != int(want_pci):
+                out['decoded_pci'] = int(mib_pci)
+                out['time_reason'] = 'another cell was decoded'
+                why = aimed.error or 'no MIB (%s)' % ((aimed.no_mib or {}).get('reason') or 'none read')
+                return finish('the decoder read PCI %d, a stronger cell on this SSB frequency, '
+                              'not PCI %d; aimed at PCI %d: %s'
+                              % (int(mib_pci), int(want_pci), int(want_pci), why))
+            notes.append('PCI %d, a stronger cell, shares this SSB frequency: decoded by aiming at PCI %d'
+                         % (int(mib_pci), int(want_pci)))
+            first = aimed
+            passes = [first]
         out['mib'] = {k: first.mib.get(k) for k in _MIB_KEYS}
         out['mib'].update({k: v for k, v in first.mib.items() if k not in out['mib']})
         done_reason = (first.done or {}).get('reason')
