@@ -497,12 +497,16 @@ which is not in this repo.
 - **A weaker sector gives its MIB, not yet its SIB1.** The outside program
   locks to the strongest cell on an SSB frequency, so a weaker sector there
   (another PCI) is decoded by aiming at its PCI (`-P`). On air, one site's
-  three sectors shared one SSB frequency (2026-10-24). The second, about
-  28 dB under the strongest by the program's SNR, gave its own MIB that way,
+  three sectors shared one SSB frequency (2026-10-24). The second, 7 dB
+  under the strongest by `iq-nr`'s `relative_power_db`, gave its own MIB that way,
   with the same SFN as the strongest and its SSB one SSB slot later. It gave
   no SIB1: it uses the same CORESET 0 and search space as the strongest, so
   its PDCCH lands on the stronger cell's. The third gave no MIB, so it kept
-  `decoded_pci`.
+  `decoded_pci`. The program's `snr_db` and `cfo_hz` for an aimed cell are
+  not to be trusted: for that sector it said -21 dB and -552 Hz, where
+  `iq-nr` measured 7 dB under the strongest and +252 Hz (the strongest:
+  +332 Hz, and the program's own +338 Hz). Its SSB timing agreed with
+  `iq-nr`'s to a microsecond.
 - **Unscheduled SI is searched in every slot, but only in CORESET 0.** Pass 1
   reads every slot. Pass 2 runs when SIB1 schedules other SI, or when pass 1
   saw `sii` 1 blocks fail, and needs `offsetToPointA`. SI under another

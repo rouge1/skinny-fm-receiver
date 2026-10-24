@@ -67,7 +67,7 @@ Wrong turns:
   ``-P`` too) is the decode; its MIB has ``targeted`` true and the strongest cell's PCI.
   When the retry reads no MIB of that PCI, or the program refuses ``-P`` (an older one),
   the decode stops with ``decoded_pci`` (the PCI pass 1 read), MIB and SIB1 null, and a
-  ``reason`` naming both PCIs. On air a sector 28 dB under the strongest gave its MIB this
+  ``reason`` naming both PCIs. On air a sector 7 dB under the strongest gave its MIB this
   way but no SIB1: its SIB1 comes in the same slots and RBs as the stronger cell's.
 - A SIB1 that fails to parse is not the end: the next most common ``sii`` 0 block is
   tried, so one corrupt block that passed the CRC does not hide the cell.
