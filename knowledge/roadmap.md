@@ -1329,8 +1329,12 @@ outside the repo. Method, output and limits: [nr-verify.md](nr-verify.md).
 - [x] Other SI that SIB1 does not schedule (2026-10-23). On one real cell the
   outside program heard a SIB2 that SIB1 does not list. It came in SIB1's own
   slots with `sii` 0, so `--decode` now parses every block of both passes and
-  lists such SIBs in `si.unscheduled`; that cell's SIB2 is heard. Not searched:
-  unscheduled SI in its own slots on a cell whose SIB1 schedules nothing.
+  lists such SIBs in `si.unscheduled`; that cell's SIB2 is heard.
+- [x] Unscheduled SI in its own slots (2026-10-24). Pass 1 already reads
+  every slot; such SI fails there (`sii` 1, DM-RS from CRB 0), so pass 2 now
+  also runs when pass 1 saw that, even if SIB1 schedules nothing. On the
+  barred cell every SI-RNTI grant in 6 s was accounted for: SIB1 (version 0),
+  its repeats (versions 2 and 3, which do not decode alone) and the SIB2.
 - [ ] TDD special slots, and SSBs above 3 GHz with a 30 kHz CORESET 0 (srsRAN
   lacks the table): not handled.
 - [x] A read-only `fmctl` reply: `fmctl cells nr [decode] [PATH]` (2026-10-23,

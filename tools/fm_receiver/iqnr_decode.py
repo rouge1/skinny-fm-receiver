@@ -31,6 +31,12 @@ Method, for one SSB entry of ``iqnr.ssb_search`` (``decode_ssb``):
    message is other SI wherever it came. A cell may send one that SIB1 does not schedule, in
    SIB1's own slots with ``sii`` 0 (one did on air: SIB2, with SIB1 scheduling nothing).
    ``si.unscheduled`` lists the SIBs heard that SIB1 does not schedule.
+6. Pass 1 reads every slot's CORESET 0 for SI-RNTI DCIs, so it sees other SI in its own
+   slots too, but cannot decode it (its DM-RS counts from CRB 0, so it needs ``-a``): those
+   blocks are ``NR_SI_CRC_FAIL`` / ``NR_SI_ERR`` with ``sii`` 1. When pass 1 had any and
+   SIB1 schedules nothing, pass 2 runs all the same (``-a``, and ``-t`` when SIB1 has a
+   list). Pass 1's other ``sii`` 0 failures are SIB1's repeats with redundancy versions 2
+   and 3, which do not decode alone (on air, every one of them), not another message.
 
 Time (SIB9 ``timeInfo``): ``timeInfoUTC`` counts 10 ms units from 1900-01-01 00:00:00
 UTC, exactly as LTE SIB16, so ``iqlte_decode.sib16_time`` does the arithmetic.
@@ -206,6 +212,7 @@ class _Pass:
         self.done = None
         self.blocks = []                       # (sii, hex)
         self.crc_fail = 0
+        self.osi_failed = 0                    # sii 1 blocks that did not decode
         for tag, obj in _tagged(lines):
             if tag == 'NR_MIB':
                 self.mib = obj
@@ -217,6 +224,9 @@ class _Pass:
                 self.blocks.append((1 if obj.get('sii') else 0, obj['hex'].strip().lower()))
             elif tag == 'NR_SI_CRC_FAIL':
                 self.crc_fail += 1
+                self.osi_failed += 1 if obj.get('sii') == 1 else 0
+            elif tag == 'NR_SI_ERR':
+                self.osi_failed += 1 if obj.get('sii') == 1 else 0
             elif tag == 'NR_DONE':
                 self.done = obj
 
@@ -564,7 +574,10 @@ def decode_ssb(src, centre_hz, ssb, tools=None, cut_reason=None):
 
         _window, entries = _schedule(sib1)
         searched = False
-        if entries and offset is not None:
+        if not entries and first.osi_failed and offset is not None:
+            notes.append('pass 1 saw %d other SI block%s that SIB1 does not schedule: searched with '
+                         'offsetToPointA' % (first.osi_failed, '' if first.osi_failed == 1 else 's'))
+        if (entries or first.osi_failed) and offset is not None:
             args = list(base)
             slivs = _tdra(sib1)
             if slivs:

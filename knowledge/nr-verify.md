@@ -380,6 +380,16 @@ The other exit codes are those of the search (see the Exit codes table above).
    with `sii` 0: one barred cell on air sent SIB2 that way, with SIB1
    scheduling nothing. SIB9's time is read from these blocks, scheduled or not.
 
+   Pass 1 reads CORESET 0 in every slot, so it also sees other SI sent in
+   its own slots. It cannot decode it, because that SI's DM-RS counts from
+   CRB 0 and needs `-a`. Those blocks come back as `NR_SI_CRC_FAIL` or
+   `NR_SI_ERR` with `sii` 1. When pass 1 had any and SIB1 schedules nothing,
+   pass 2 runs all the same, and `reason` says so. Pass 1's other `sii` 0
+   failures are SIB1's repeats. On the barred cell, SIB1 came every 80 ms
+   with redundancy version 0, which decodes. Its repeats 20 and 40 ms later
+   used versions 2 and 3, which do not decode alone, and every failure was
+   one of those.
+
 5. **Clean up.** The temporary folder is deleted, on success and on every
    failure path.
 
@@ -493,12 +503,12 @@ which is not in this repo.
   no SIB1: it uses the same CORESET 0 and search space as the strongest, so
   its PDCCH lands on the stronger cell's. The third gave no MIB, so it kept
   `decoded_pci`.
-- **Unscheduled SI is heard only in pass 1's slots, or when pass 2 runs.**
-  Pass 2 runs only when SIB1 schedules other SI and gives `offsetToPointA`.
-  SI that SIB1 does not schedule is found when it comes in the slots pass 1
-  reads (as on the barred cell above, whose SIB2 came in SIB1's slots), or
-  when pass 2 runs for the scheduled SI. Unscheduled SI in its own slots, on a
-  cell whose SIB1 schedules nothing, is not searched for.
+- **Unscheduled SI is searched in every slot, but only in CORESET 0.** Pass 1
+  reads every slot. Pass 2 runs when SIB1 schedules other SI, or when pass 1
+  saw `sii` 1 blocks fail, and needs `offsetToPointA`. SI under another
+  CORESET or search space is not looked for. On the barred cell (SIB1
+  scheduling nothing), every SI-RNTI grant in 6 s was SIB1, one of its
+  repeats, or the SIB2 in SIB1's slots: nothing came in its own slots.
 
 ## Decode tests
 

@@ -36,7 +36,8 @@ Checks (one behaviour each; ok / FAIL / SKIP lines):
   T   the same, with a program that takes -P PCI: the retry aimed at the PCI is this cell's
       decode (pass 2 keeps -P); a retry without a MIB ends as P
   U   other SI that SIB1 does not schedule, sent in SIB1's slots with sii 0 (as one cell did
-      on air): heard, listed in si.unscheduled, its SIB9 gives the time, no second call
+      on air): heard, listed in si.unscheduled, its SIB9 gives the time, no second call;
+      sent in its own slots (sii 1 blocks failing in pass 1): pass 2 runs and hears it
 
 Decisions where the spec is open (also in the report):
   - Point A (spec amendment 2026-10-23 (b)): point_a_hz = ssb_hz - 120*ssb_scs_hz - k_SSB*15e3
@@ -626,7 +627,7 @@ def main():
                 say('NR_SI', {'sfn': k, 'slot': 0, 'sii': sii, 'vrb': 0,
                               'tbs': len(hexed) // 2, 'hex': hexed})
                 sent += 1
-    crc = int(cfg.get('crc_fail', 0))
+    crc = int(cfg.get('crc_fail', 0)) if '-a' not in opts or not cfg.get('crc_pass1_only') else 0
     for k in range(crc):
         say('NR_SI_CRC_FAIL', {'sfn': k, 'slot': 0, 'sii': 1, 'vrb': 0, 'tbs': 0})
     if crc:
@@ -725,13 +726,16 @@ def case_cfg(name):
                                 mib=dict(MIB, pci=PCI + 3), target_mib=None),
         'unscheduled': dict(sib1=fixture_hex('sib1_none'), si=[],
                             sii0_si=[fixture_hex('si_sib2_sib9')]),
+        'osi_own_slots': dict(sib1=fixture_hex('sib1_none'), si=[fixture_hex('si_sib2_sib9')],
+                              crc_fail=2, crc_pass1_only=True),
         'sii0_scheduled': dict(sib1=fixture_hex('sib1_full'), si=[],
                                sii0_si=[fixture_hex('si_sib2_sib9')]),
     }[name]
     cfg = dict(full)
     cfg['sib1_hex'] = cases.get('sib1')
     cfg['si_hex'] = cases.get('si', [])
-    for k in ('repeat', 'junk', 'done_reason', 'mib', 'sib1_repeat', 'crc_fail', 'target_mib'):
+    for k in ('repeat', 'junk', 'done_reason', 'mib', 'sib1_repeat', 'crc_fail', 'target_mib',
+              'crc_pass1_only'):
         if k in cases:
             cfg[k] = cases[k]
     if 'minor_sib1' in cases:
@@ -1068,6 +1072,20 @@ def test_u_scheduled_si_with_sii_0_is_not_unscheduled():
     si_out = dec.get('si') or {}
     assert sorted(si_out.get('sibs_heard') or {}) == ['sib2', 'sib9'], 'heard %r' % si_out.get('sibs_heard')
     assert si_out.get('unscheduled') == [] and si_out.get('missing') == [], si_out
+
+
+def test_u_unscheduled_si_in_its_own_slots_is_searched():
+    """U: SIB1 schedules nothing, pass 1 sees sii 1 blocks fail: pass 2 runs and hears them."""
+    need('sib1_none', 'si_sib2_sib9')
+    run = decode_case('osi_own_slots', args=DECODE_ARGS)
+    check_code(run, 0, 'iq-nr --decode')
+    assert len(run.calls) == 2, 'want pass 1 and pass 2, got %d' % len(run.calls)
+    assert '-a' in run.calls[1].get('opts', {}), run.calls[1]
+    dec = need_decode(run)
+    si_out = dec.get('si') or {}
+    assert sorted(si_out.get('unscheduled') or []) == ['sib2', 'sib9'], si_out
+    assert 'pass 1 saw 2 other SI blocks' in (dec.get('reason') or ''), 'reason %r' % dec.get('reason')
+    assert dec.get('time') is not None, 'no time from the unscheduled SIB9'
 
 
 def test_e_no_sib9_scheduled_gives_reason():
