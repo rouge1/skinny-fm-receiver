@@ -156,8 +156,9 @@ def _frame_layout(nfft, mu):
     return starts, cps, int(lens.sum())
 
 
-def _ssb_re(pci, i_bar, load, rng):
-    """The 4 x 240 grid of one SSB (zeros in the gaps); data REs present with prob ``load``."""
+def _ssb_re(pci, i_bar, load, rng, pbch_syms=None):
+    """The 4 x 240 grid of one SSB (zeros in the gaps); data REs present with prob ``load``.
+    ``pbch_syms`` (432 values) fills the PBCH data REs, k first then l, instead of random QPSK."""
     nid1, nid2 = pci // 3, pci % 3
     g = np.zeros((4, _SSB_SC), dtype=np.complex128)
     pbch = np.zeros((4, _SSB_SC), dtype=bool)
@@ -178,7 +179,7 @@ def _ssb_re(pci, i_bar, load, rng):
     dm[1, k1] = dm[2, k2] = dm[3, k1] = True
     data = pbch & ~dm
     vals = _qpsk(rng, (4, _SSB_SC)) * (rng.random((4, _SSB_SC)) < load)
-    g[data] = vals[data]
+    g[data] = vals[data] if pbch_syms is None else np.asarray(pbch_syms)
     return g * np.sqrt(load)
 
 
@@ -201,7 +202,7 @@ def _resample(iq, native, fs):
 # ----- the cell -----------------------------------------------------------------------
 
 def _cell_native(pci, scs_khz, case, l_max, ssb_sent, period_ms, n_hf, bw_mhz,
-                 ssb_offset_hz, dur_ms, seed, load):
+                 ssb_offset_hz, dur_ms, seed, load, pbch=None):
     """One cell at the native rate. Returns (iq, native, truth, rng); unit mean power."""
     if not 0 <= int(pci) <= 1007:
         raise ValueError('pci must be 0..1007')
@@ -256,12 +257,13 @@ def _cell_native(pci, scs_khz, case, l_max, ssb_sent, period_ms, n_hf, bw_mhz,
                     i_bar = idx + 4 * use_hf
                 else:
                     i_bar = idx % 8
-                g = _ssb_re(int(pci), i_bar, load, rng)
+                g = _ssb_re(int(pci), i_bar, load, rng,
+                            None if pbch is None else pbch(frame_no, use_hf, idx))
                 for sy in range(4):
                     row = grid[s0 + sy]
                     row[cols] = g[sy]
                 t0 = f * frame_len + int(starts[s0 % syms_per_frame])
-                sent.append((t0, idx, use_hf, s0))
+                sent.append((t0, idx, use_hf, s0, frame_no))
 
     td = np.fft.ifft(grid, axis=1) * (nfft / np.sqrt(n_sc))
     out = np.empty(n_frames * frame_len, dtype=np.complex128)
@@ -278,20 +280,22 @@ def _cell_native(pci, scs_khz, case, l_max, ssb_sent, period_ms, n_hf, bw_mhz,
         iq = iq * np.exp(2j * np.pi * delta * np.arange(crop, crop + n_out) / native)
     iq = iq / np.sqrt(np.mean(np.abs(iq) ** 2))
 
-    times, idxs, hfs = [], [], []
+    times, idxs, hfs, frames = [], [], [], []
     sym_len = nfft + cps
-    for t0, idx, use_hf, s0 in sent:
+    for t0, idx, use_hf, s0, frame_no in sent:
         local = s0 % syms_per_frame
         end = t0 + int(np.sum(sym_len[local:local + 4]))
         if t0 >= crop and end <= crop + n_out:
             times.append((t0 - crop) / native)
             idxs.append(idx)
             hfs.append(use_hf)
+            frames.append(frame_no)
     truth = dict(
         pci=int(pci), nid1=int(pci) // 3, nid2=int(pci) % 3, scs_khz=int(scs_khz), case=str(case).upper(),
         l_max=int(l_max), ssb_sent=ssb_sent, n_hf=int(n_hf), period_ms=int(period_ms),
         ssb_offset_hz=float(ssb_offset_hz), fs=float(native), frame_start_s=offset / native,
-        bw_mhz=float(bw_mhz), native_fs=float(native), ssb_times_s=times, ssb_indices=idxs, ssb_half_frames=hfs)
+        bw_mhz=float(bw_mhz), native_fs=float(native), ssb_times_s=times, ssb_indices=idxs, ssb_half_frames=hfs,
+        ssb_frames=frames)
     return iq, native, truth, rng
 
 
@@ -307,15 +311,19 @@ def _finish(iq, rate, snr_db, cfo_hz, rng):
 
 
 def synth_nr(pci=123, scs_khz=15, case='A', l_max=4, ssb_sent=(0,), period_ms=20, n_hf=0, bw_mhz=10,
-             ssb_offset_hz=0.0, dur_ms=100, snr_db=20.0, cfo_hz=0.0, fs=None, seed=0, load=1.0):
+             ssb_offset_hz=0.0, dur_ms=100, snr_db=20.0, cfo_hz=0.0, fs=None, seed=0, load=1.0, pbch=None):
     """One NR cell with SSBs. Returns ``(iq complex64, fs, truth)``; see the module docstring.
+
+    ``pbch`` (frame_no, half_frame, ssb_idx) -> 432 symbols gives each SSB's PBCH data, for a
+    real PBCH (frame_no counts from 0 at the first frame of the output, -1 before it);
+    ``truth['ssb_frames']`` holds each listed SSB's frame_no.
 
     ``fs`` None keeps the native rate nfft x scs. Signal power over noise power is
     ``snr_db`` at the output rate (non-finite adds none).
     """
     iq, native, truth, rng = _cell_native(
         pci, scs_khz, case, l_max, ssb_sent, period_ms, n_hf, bw_mhz, ssb_offset_hz,
-        dur_ms, seed, load)
+        dur_ms, seed, load, pbch)
     rate = native if fs is None else float(fs)
     if int(round(rate)) != int(round(native)):
         iq = _resample(iq, native, rate)

@@ -307,6 +307,39 @@ The timing and memory checks (I) are the only ones that depend on the
 machine. Their limits are in the spec: raster under 30 s, `ssb_hz` under 5 s,
 the command under 700 MB peak RSS, and both files under 240 s together.
 
+## Our own MIB decoder (`--mib`, roadmap Round 28.1)
+
+`tools/iq-nr FILE --mib` decodes each listed cell's PBCH with
+`fm_receiver/iqnr_phy.py` (numpy only, written from 38.211 and 38.212; the
+polar sequence, the input and sub-block interleavers and the PBCH payload
+interleaver are copied from 38.212 V19.4.0, and a test pins them). It takes
+every sync block the search kept, each with its own DM-RS `i_bar`. For each
+block it:
+1. estimates the channel per symbol from the PBCH DM-RS (least squares, a
+   moving average over 5 DM-RS, linear between);
+2. takes QPSK soft bits and undoes the PBCH scrambling;
+3. sums the repeated bits and undoes the sub-block interleaving;
+4. decodes the polar code with a successive-cancellation list of 8, the
+   CRC 24C choosing the path;
+5. undoes the payload scrambling and interleaving.
+
+Each entry gains `mib` (the first block's MIB whose CRC checked, with
+`ssb_s`, that block's time, `snr_db` per PBCH RE and the path `metric`) and
+`mib_bursts` (`[decoded, blocks]`). `intra_freq_reselection` is
+`allowed` or `notAllowed`, where the outside program gives `true` for
+allowed. L_max 4 only (SSBs at or under 3 GHz). Without `--mib` the output
+is unchanged.
+
+On real air (2026-10-24, the four saved NR recordings), every MIB field
+equalled the outside program's on every cell it decoded. The SFNs agreed
+once moved to the same block. Every block of every cell decoded, 5 of 5,
+including a sector 12 dB under the strongest (PBCH SNR -2 dB) that the
+outside program never read. Its MIB names another search space 0, so its
+SIB1 control channel is in other slots than the strongest sector's.
+
+Tests: `tools/tests/test_iqnr_phy.py` (synthetic; `nr_synth` can now carry
+a real PBCH).
+
 ## Decoding a listed SSB (`--decode`)
 
 `tools/iq-nr FILE --decode` goes one step past the search. For each SSB the

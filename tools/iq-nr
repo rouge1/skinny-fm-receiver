@@ -3,14 +3,16 @@
 
     tools/iq-nr FILE [--rate HZ --center HZ] [--t0 S] [--seconds S]
                      [--ssb-hz HZ] [--scs 15|30] [--max-cells N]
-                     [--decode] [--decode-seconds S]
+                     [--mib] [--decode] [--decode-seconds S]
 
 Rate and centre come from the ``.sigmf-meta`` beside the file; the options
 override them. Only the span ``[t0, t0 + seconds]`` is read (default 0.1 s,
 at most 2 s; a longer request is cut and ``reason`` says so). Stdout is one
 JSON document: ``file, rate, center_hz, t0, seconds, verdict, reason, ssbs``.
 ``verdict`` is ``nr`` when at least one SSB is listed, otherwise ``none``.
-``ssbs`` is the list from ``iqnr.ssb_search``. ``--decode`` adds a ``decode``
+``ssbs`` is the list from ``iqnr.ssb_search``. ``--mib`` decodes each cell's
+PBCH ourselves (``iqnr_phy``, numpy, every burst in the span) and adds
+``mib`` and ``mib_bursts`` to each entry; it needs no outside program. ``--decode`` adds a ``decode``
 object to each entry (MIB, SIB1, other SI, SIB9 time) via ``iqnr_decode``;
 the search span stays the short one. ``--decode-seconds`` is how long that
 read is (default 6 s, at most 10 s).
@@ -261,6 +263,8 @@ def main(argv=None):
                     help='subcarrier spacing in kHz (default: 15 and 30)')
     ap.add_argument('--max-cells', type=int, metavar='N', dest='max_cells',
                     help='most SSBs to list (default 4)')
+    ap.add_argument('--mib', action='store_true',
+                    help="decode each cell's MIB from its PBCH (our own decoder, no outside program)")
     ap.add_argument('--decode', action='store_true',
                     help='decode the MIB, SIB1, other SI and SIB9 time of each '
                          'listed SSB with $FMRX_LTE_TOOLS/run_nr.sh')
@@ -319,7 +323,7 @@ def main(argv=None):
     ssbs = iqnr.ssb_search(
         iq, src.rate, src.center_hz,
         ssb_hz=args.ssb_hz, scs_khz=args.scs,
-        max_cells=4 if args.max_cells is None else args.max_cells)
+        max_cells=4 if args.max_cells is None else args.max_cells, mib=args.mib)
     if args.decode:
         missing = _attach_decode(args, src, t0, ssbs)
         if missing:

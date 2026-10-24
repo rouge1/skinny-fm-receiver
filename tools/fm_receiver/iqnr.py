@@ -518,7 +518,25 @@ def _period_ms(times, keys):
     return best if abs(best - g) <= 0.15 * best else None
 
 
-def _search_candidate(cap, ssb_hz, center_hz, scs_khz, n_trials):
+def _mibs(grp, times, pci, l_max):
+    """``iqnr_phy.decode_pbch`` on each burst of one cell, each with its own DM-RS i_bar:
+    (the first MIB decoded, with ``ssb_s`` its burst's time; [decoded, tried])."""
+    if l_max != 4:
+        return None, [0, 0]
+    from . import iqnr_phy
+    first, done = None, 0
+    for b, t in zip(grp, times):
+        if b.get('i_bar') is None:
+            continue
+        mib = iqnr_phy.decode_pbch(b['xc'], pci, b['i_bar'])
+        if mib is not None:
+            done += 1
+            if first is None:
+                first = dict(mib, ssb_s=float(t))
+    return first, [done, len(grp)]
+
+
+def _search_candidate(cap, ssb_hz, center_hz, scs_khz, n_trials, mib=False):
     """Cells found at one candidate frequency and spacing (unsorted, chance not yet floored by raster)."""
     got = cap.band(ssb_hz - center_hz, scs_khz)
     if got is None:
@@ -578,6 +596,9 @@ def _search_candidate(cap, ssb_hz, center_hz, scs_khz, n_trials):
             index = win % 4 if l_max == 4 else win
             half = win // 4 if l_max == 4 else None
         power = float(np.mean([b['power'] for b in grp]))
+        extra = {}
+        if mib:
+            extra['mib'], extra['mib_bursts'] = _mibs(grp, times, pci, l_max)
         out.append(dict(
             ssb_hz=float(ssb_hz), gscn=hz_to_gscn(ssb_hz), scs_khz=int(scs_khz), pci=int(pci),
             nid1=int(nid1), nid2=int(nid2), ssb_index=index, half_frame=half, l_max=l_max,
@@ -589,12 +610,16 @@ def _search_candidate(cap, ssb_hz, center_hz, scs_khz, n_trials):
             dmrs_chance=float(dm_chance), relative_power_db=0.0,
             detail=(f'PCI {pci} (N_ID1 {nid1}, N_ID2 {nid2}), {len(grp)} bursts, SSS score '
                     f'{np.mean([b["s"] for b in grp]):.3f}, chance {chance:.1e}, CFO {cfo:.0f} Hz'),
-            _power=power))
+            _power=power, **extra))
     return out
 
 
-def ssb_search(iq, fs, center_hz, ssb_hz=None, scs_khz=None, max_cells=4):
+def ssb_search(iq, fs, center_hz, ssb_hz=None, scs_khz=None, max_cells=4, mib=False):
     """NR SSBs in a capture, strongest first (see the module docstring).
+
+    ``mib`` True also decodes each cell's PBCH, burst by burst (``iqnr_phy``, L_max 4 only):
+    each entry gains ``mib`` (the first MIB whose CRC checked, with ``ssb_s``, its burst's
+    time, or None) and ``mib_bursts`` ([bursts decoded, bursts of the cell]).
 
     ``ssb_hz`` given: only that frequency. None: every raster point inside the capture
     for 15 and 30 kHz (or only ``scs_khz``). Only cells whose SSS chance is at most 1e-3
@@ -625,7 +650,7 @@ def ssb_search(iq, fs, center_hz, ssb_hz=None, scs_khz=None, max_cells=4):
     cap = _Capture(x, fs)
     found = {}
     for hz, s in cands:
-        for e in _search_candidate(cap, hz, center_hz, s, len(cands)):
+        for e in _search_candidate(cap, hz, center_hz, s, len(cands), mib=mib):
             key = (e['gscn'] if e['gscn'] is not None else e['ssb_hz'], e['pci'])
             if key not in found or e['chance'] < found[key]['chance']:
                 found[key] = e

@@ -1400,11 +1400,17 @@ Rules:
 - `nr_si` stays as the referee and the fallback; `iq-nr --decode` chooses.
 
 Phases, each one checked before the next:
-- [ ] 28.1 PBCH: SSB grid at the time and offset `iqnr` gives, PBCH DM-RS
+- [x] 28.1 PBCH: SSB grid at the time and offset `iqnr` gives, PBCH DM-RS
   channel estimate, QPSK, descrambling (38.211 7.3.3.1), rate recovery and
   the polar decoder (38.212 5.3.1, 7.1: list decoding with CRC 24C), and the
   MIB. Done when the MIB matches `nr_si`'s on every real NR recording, and a
   synthetic MIB round-trips to 0 dB.
+  Shipped 2026-10-24: `iqnr_phy.py`, `iq-nr --mib`, `test_iqnr_phy.py`
+  (round trip to -2 dB per RE). On the four real NR recordings every field
+  matched `nr_si` on every cell it decoded, and the third sector, 12 dB
+  under the strongest, which `nr_si` never read, decoded in every block. Its
+  MIB names search space 0 index 0, not the others' 2: its SIB1 control
+  channel is in other slots, so 28.2 may read its SIB1 without combining.
 - [ ] 28.2 CORESET 0 and Type0-PDCCH: CORESET 0 and search space 0 from the
   MIB (38.213 13, tables 13-1 to 13-11), the REG-bundle interleaver with
   the PCI shift, PDCCH DM-RS, the polar decoder for DCI 1_0 with the

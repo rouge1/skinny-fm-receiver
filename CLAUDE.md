@@ -42,7 +42,7 @@ with no launcher.
     Cellular decoding stays broadcast only (MIB, SIB1, other SI on the
     SI-RNTI): no paging, random access or user traffic, and nothing sent.
   - `sceptre_dvr`, `iqmeasure`, `iqburst`, `iqframes`, `iqcatalog`,
-    `iqlte` and `iqnr` stay numpy only, so their tools run anywhere
+    `iqlte`, `iqnr` and `iqnr_phy` stay numpy only, so their tools run anywhere
     (`iq-picture` needs matplotlib; the LTE test helpers use scipy).
   - `knowledge/catalogs.md` is kept equal to `iqcatalog.py` by a test.
 - Knowledge: `knowledge/capabilities.md` is the living capability list.

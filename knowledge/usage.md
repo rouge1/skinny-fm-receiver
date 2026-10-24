@@ -1321,6 +1321,7 @@ tools/iq-nr CAPTURE.cfile                                  # every raster point 
 tools/iq-nr CAPTURE.cfile --ssb-hz 600150000 --scs 15      # one SSB frequency only
 tools/iq-nr CAPTURE.cfile --t0 1.5 --seconds 2 --max-cells 8
 tools/iq-nr CAPTURE.cfile --rate 20000000 --center 600000000    # a bare .cfile, no .sigmf-meta
+tools/iq-nr CAPTURE.cfile --mib                            # also each cell's MIB, by our own decoder
 tools/iq-nr CAPTURE.cfile --decode --max-cells 1           # also the MIB, SIB1, other SI and SIB9 time
 tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead of 6
 ```
@@ -1333,6 +1334,15 @@ tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead o
 - Exit 0 whatever the verdict; 1 for a bad option or a file it cannot read
   (the reason on stderr); 2 when `--decode` is asked and `run_nr.sh` is missing
   from `$FMRX_LTE_TOOLS` (or its default when unset).
+- `--mib` decodes each cell's MIB from its PBCH with our own decoder
+  (`iqnr_phy`, numpy only, no outside program), on every sync block in the
+  span. Each entry gets `mib` and `mib_bursts`:
+  - `mib` holds the first MIB whose CRC checked, with `ssb_s`, its block's
+    time in seconds.
+  - `mib_bursts` is `[decoded, blocks]`.
+
+  It reads weaker sectors too: on real air it read a sector 12 dB under the
+  strongest, which the outside decoder never could. It adds about a second.
 - `--decode` needs srsRAN 4G's NR library behind `run_nr.sh`, built by you
   (AGPL, not part of this repo), and pycrate under `$FMRX_LTE_TOOLS/pyc`. Only
   the broadcast (SI-RNTI) is read. Each entry gets a `decode`: the MIB, SIB1
