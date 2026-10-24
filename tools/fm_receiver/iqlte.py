@@ -1970,6 +1970,32 @@ def _cells_crs(iq, fs, found, nfft):
     return found
 
 
+#: The carrier's bandwidth in MHz for each FFT size.
+BANDWIDTH_MHZ = {128: 1.4, 256: 3, 512: 5, 1024: 10, 1536: 15, 2048: 20}
+#: Samples mixed at a time by ``mix_to_dc``: a full-length ramp is unnecessary, and
+#: 2**20 stays under the 2**22 read cap the other tools use.
+_MIX_CHUNK = 1 << 20
+
+
+def mix_to_dc(iq, rate, delta_hz):
+    """Move a carrier at ``delta_hz`` (relative to the capture's centre) onto 0 Hz.
+
+    The whole capture bandwidth is kept. A brick-wall narrower than the capture
+    digs a hole in the guard band; the occupied-width check then walks that
+    hole and reports a wider class (a 15 MHz carrier comes back as 20).
+    """
+    if abs(delta_hz) < 1e-3:
+        return iq
+    out = np.empty_like(iq)
+    rate = float(rate)
+    n = iq.shape[0]
+    for i in range(0, n, _MIX_CHUNK):
+        m = min(_MIX_CHUNK, n - i)
+        t = np.arange(i, i + m) / rate
+        out[i:i + m] = iq[i:i + m] * np.exp(-2j * np.pi * delta_hz * t)
+    return out
+
+
 def fingerprint(iq, fs):
     """Structural fingerprint. See the module docstring for the method.
 

@@ -134,11 +134,11 @@ Things that bit before:
 `tools/iq-measure FILE` prints the card of a recording as JSON: the level
 (in dBm only where the file has a calibration: a `.sdvr`, or a `.cdif` with
 `DATA_GAIN`), the occupied bandwidth, tones, bursts, envelope and frequency,
-and a class (noise, carrier, ook, ask, fsk, fm, am or unknown) with the
+the LTE and NR cells in the first 50 ms of a wideband span (`lte`, `nr`), and a class (lte, nr, lte+nr, noise, carrier, ook, ask, fsk, fm, am or unknown) with the
 evidence for it. Options: `--t0`, `--t1`, `--band LO HI` (absolute Hz),
 `--rate` and `--center` for a bare `.cfile`, and `--card`, which writes
 `<base>.card.json` beside a `.cfile` only. `tools/iq-picture FILE OUT.png`
-draws the spectrum and waterfall (it needs matplotlib). Neither decodes. Read
+draws the spectrum and waterfall (it needs matplotlib); `--cells` draws 20 ms with a box on each LTE and NR cell's sync signals. Neither decodes. Read
 the card before writing any decoder. Built and tested on synthetic signals; not
 yet run on a real file (see capabilities.md).
 

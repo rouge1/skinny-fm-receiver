@@ -53,7 +53,7 @@ MIN_W, MIN_H = 800, 500
 CLASS_OF = {'cw': 'carrier', 'ook': 'ook', 'ask': 'ask', 'fsk': 'fsk', 'fm': 'fm', 'am': 'am',
             'noise': 'noise', 'two_tone': 'unknown'}
 TOP_KEYS = ('schema', 'source', 'level', 'occupied', 'tones', 'bursts', 'envelope',
-            'frequency', 'symbol_rate_baud', 'class', 'evidence')
+            'frequency', 'symbol_rate_baud', 'lte', 'nr', 'class', 'evidence')
 SOURCE_KEYS = ('path', 'kind', 'rate_sps', 'center_hz', 't0_s', 't1_s', 'samples')
 BANNED = ['gnuradio', 'PyQt5', 'library', 'radios']
 FOLDER = None
@@ -553,10 +553,10 @@ def check_measure_card_form():
     def test():
         r = measure_run('cw', [sig('cw')])
         return printed(r, lambda c: (
-            not [k for k in TOP_KEYS if k not in c] and c.get('schema') == 1
+            not [k for k in TOP_KEYS if k not in c] and c.get('schema') == 2
             and not [k for k in SOURCE_KEYS if k not in c.get('source', {})],
             f"keys {sorted(c)}, schema {c.get('schema')}"))
-    expect('iq-measure: the printed card has the spec keys and schema 1', test)
+    expect('iq-measure: the printed card has the spec keys and schema 2', test)
 
 
 def check_measure_options():

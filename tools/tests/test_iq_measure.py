@@ -15,7 +15,8 @@ SNR as the noise power against the signal's mean power. What the checks pin:
 - symbol rate within 5 %; burst duration within 5 %; repeat interval within 2 %
   and None under three bursts;
 - power_dbm = power_dbfs + full_scale_dbm within 0.1 dB;
-- the card's form: schema 1, its keys, six significant digits, JSON-safe;
+- the card's form: schema 2, its keys, six significant digits, JSON-safe (the lte and nr
+  sections, and their classes, are tested in test_iq_measure_cells.py);
 - the readers (a .cfile with and without its .sigmf-meta, .sdvr, .cdif) and the
   refusals (sweep .sdvr, .fft, a missing, short, unknown or junk file);
 - write_card: beside a .cfile only, never over a file that is not a card;
@@ -52,7 +53,7 @@ except ImportError as exc:       # reported as failing checks, not a crash
 
 RATE = 1e6
 CENTRE = 100e6
-CLASSES = {'noise', 'carrier', 'ook', 'ask', 'fsk', 'fm', 'am', 'unknown'}
+CLASSES = {'noise', 'lte', 'nr', 'lte+nr', 'carrier', 'ook', 'ask', 'fsk', 'fm', 'am', 'unknown'}
 BANNED = ['gnuradio', 'PyQt5', 'scipy', 'library', 'radios', 'dsp']
 FOLDER = None
 RESULTS = []
@@ -301,7 +302,7 @@ def am_reference(depth=0.8):
 # ---- the card's form ---------------------------------------------------------
 
 TOP_KEYS = ('schema', 'source', 'level', 'occupied', 'tones', 'bursts', 'envelope',
-            'frequency', 'symbol_rate_baud', 'class', 'evidence')
+            'frequency', 'symbol_rate_baud', 'lte', 'nr', 'class', 'evidence')
 SECTION_KEYS = {
     'source': ('path', 'kind', 'rate_sps', 'center_hz', 't0_s', 't1_s', 'samples'),
     'level': ('power_dbfs', 'power_dbm', 'noise_floor_dbfs', 'snr_db'),
@@ -310,6 +311,8 @@ SECTION_KEYS = {
                'repeat_interval_s', 'duty'),
     'envelope': ('levels', 'depth', 'keyed'),
     'frequency': ('levels_hz', 'deviation_hz', 'keyed'),
+    'lte': ('searched', 'reason'),
+    'nr': ('searched', 'reason'),
 }
 
 
@@ -337,10 +340,10 @@ def shape_problems(card_):
             bad.append(f'{sec} is not a dict')
             continue
         bad += [f'missing {sec}.{k}' for k in keys if k not in part]
-    if card_.get('schema') != 1:
-        bad.append('schema is not 1')
+    if card_.get('schema') != 2:
+        bad.append('schema is not 2')
     if card_.get('class') not in CLASSES:
-        bad.append(f"class {card_.get('class')!r} is not one of the eight")
+        bad.append(f"class {card_.get('class')!r} is not one of the eleven")
     ev = card_.get('evidence')
     if not (isinstance(ev, list) and ev and all(
             isinstance(e, str) and e.strip() and len(e) <= 200 for e in ev)):
@@ -775,7 +778,7 @@ def check_write_card():
             loaded = json.load(fh)
         same = json.loads(json.dumps(card('cw'), allow_nan=False))
         return (os.path.abspath(written) == os.path.abspath(api().card_path(cfile))
-                and loaded == same and loaded.get('schema') == 1,
+                and loaded == same and loaded.get('schema') == 2,
                 'the file read back is not the card')
     expect('write_card beside a .cfile: the file read back equals the card', read_back)
 

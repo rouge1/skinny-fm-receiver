@@ -1273,13 +1273,15 @@ and cell IDs stay in `recordings/`, never in the repo or knowledge files.
   the planner's; the `iq-lte` JSON step (`cells`, and a per-cell `decode` with
   `--decode`) is built on the tool branch. See
   [lte-verify.md](lte-verify.md#several-cells-on-one-carrier-cells).
-- [ ] Stage 4, report: an `lte` section on the `iqmeasure` card and class,
+- [x] Stage 4, report: an `lte` section on the `iqmeasure` card and class,
   `tools/iq-lte FILE`, a read-only `fmctl` reply, a PNG from `iq-picture`.
   Tests: a synthetic LTE downlink with a known PCI and width, negatives
   (noise, the recorded ATSC file, a non-LTE wideband OFDM).
   Shipped: `tools/iq-lte FILE` (2026-10-16; `test_iq_lte.py`, with synthetic
   negatives). The `fmctl` reply: `fmctl cells lte [decode] [PATH]` (2026-10-23,
-  `test_control_more.py`). Not yet: the card section and class, the PNG.
+  `test_control_more.py`). The card section and class, and the PNG
+  (`iq-picture --cells`), 2026-10-24 (`test_iq_measure_cells.py`; card schema
+  2): nine real recordings classed as the cell tools say.
 - [x] Stage 5, decode: `tools/iq-lte FILE --decode` (`iqlte_decode.py`,
   2026-10-16). It writes the block at 15.36 MS/s and runs
   `$FMRX_LTE_TOOLS/run_pdsch.sh` (srsRAN 4G's `pdsch_ue`, built by the user),
@@ -1339,7 +1341,9 @@ outside the repo. Method, output and limits: [nr-verify.md](nr-verify.md).
   lacks the table): not handled.
 - [x] A read-only `fmctl` reply: `fmctl cells nr [decode] [PATH]` (2026-10-23,
   `test_control_more.py`), which runs `iq-nr` and replies with its JSON.
-- [ ] An `nr` section on the `iqmeasure` card, as for LTE's stage 4.
+- [x] An `nr` section on the `iqmeasure` card, as for LTE's stage 4
+  (2026-10-24, with LTE's; class `nr`, or `lte+nr` with an LTE cell), and its
+  sync blocks boxed by `iq-picture --cells`.
 - [x] A weaker sector is not given the strongest cell's broadcast (2026-10-24).
   Three sectors of one site share one SSB frequency, and the outside program
   decodes the strongest; the other two came back with its MIB and SIB1 under

@@ -33,10 +33,6 @@ MAX_SPAN_S = 2.0
 # holds one of every SI message; a longer request is cut to the cap.
 DEFAULT_SI_S = 6.0
 MAX_SI_S = 10.0
-_BW_MHZ = {128: 1.4, 256: 3, 512: 5, 1024: 10, 1536: 15, 2048: 20}
-# Phase advance per chunk while mixing the block down. A full-length ramp is
-# unnecessary; 2**20 stays under the 2**22 read cap the other tools use.
-_MIX_CHUNK = 1 << 20
 _DEFAULT_PORTS = (4, 2, 1)
 
 
@@ -91,25 +87,6 @@ def _json_num(value):
     if abs(x - rounded) <= 1e-6 * max(1.0, abs(rounded)):
         return int(rounded)
     return x
-
-
-def _mix_to_dc(iq, rate, delta_hz):
-    """Move a tone at ``delta_hz`` (relative to the file centre) onto 0 Hz.
-
-    The whole capture bandwidth is kept. A brick-wall narrower than the file
-    digs a hole in the guard band; the occupied-width check then walks that
-    hole and reports a wider class (a 15 MHz carrier comes back as 20).
-    """
-    if abs(delta_hz) < 1e-3:
-        return iq
-    out = np.empty_like(iq)
-    rate = float(rate)
-    n = iq.shape[0]
-    for i in range(0, n, _MIX_CHUNK):
-        m = min(_MIX_CHUNK, n - i)
-        t = np.arange(i, i + m) / rate
-        out[i:i + m] = iq[i:i + m] * np.exp(-2j * np.pi * delta_hz * t)
-    return out
 
 
 def _span(args):
@@ -190,7 +167,7 @@ def _card(path, block_hz, sl, fp, sss, decode, cells):
         nid1 = pci // 3
     if nid2 is None and pci is not None:
         nid2 = pci % 3
-    bw = _BW_MHZ.get(nfft)
+    bw = iqlte.BANDWIDTH_MHZ.get(nfft)
     return {
         'file': path,
         'block_center_hz': _json_num(block_hz),
@@ -363,7 +340,7 @@ def main(argv=None):
             args.file, t0=t0, t1=t1, band=None,
             max_rate=float(src.rate),
             rate=args.rate, center_hz=args.center)
-        sl = sl._replace(iq=_mix_to_dc(sl.iq, sl.rate, block_hz - float(src.center_hz)))
+        sl = sl._replace(iq=iqlte.mix_to_dc(sl.iq, sl.rate, block_hz - float(src.center_hz)))
     except iqmeasure.IQSourceError as exc:
         return _refuse(exc)
     except OSError as exc:

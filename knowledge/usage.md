@@ -1025,7 +1025,8 @@ set `FMRX_CONTROL=/path/to.sock` for both the window and `fmctl`.
 ## Measuring a recording: iq-measure and iq-picture
 
 These tools say what a signal *is*: its level, its bandwidth, its tones, its
-bursts, its envelope and frequency behaviour, and a class (`noise`,
+bursts, its envelope and frequency behaviour, the LTE cells and 5G NR sync
+blocks in a wideband span, and a class (`noise`, `lte`, `nr`, `lte+nr`,
 `carrier`, `ook`, `ask`, `fsk`, `fm`, `am` or `unknown`) with the evidence
 for it. They do not decode: a class is the most a recording gets from these
 two (`iq-demod` and `iq-frames`, below, take a wide capture to bits and
@@ -1058,6 +1059,7 @@ exits 1.
 ```sh
 tools/iq-picture FILE OUT.png
 tools/iq-picture FILE OUT.png --t0 2 --t1 5 --band 98.5e6 99.1e6 --nfft 8192
+tools/iq-picture FILE OUT.png --cells               # 20 ms, boxes on the cells' sync signals
 ```
 
 The picture is a spectrum panel (mean and peak) above a waterfall of the span.
@@ -1072,11 +1074,23 @@ Both are dBm for a calibrated file. The title names the file, centre, rate and s
 chunk at a time. It draws with matplotlib, which `environment.yml` does not
 list, so it needs that installed in the Python you run it with.
 
+`--cells` looks for LTE and NR cells in the 50 ms from `--t0`, as the card
+does, and boxes where their sync signals sit on the waterfall:
+- **LTE (white):** each cell's PSS and SSS, the 72 subcarriers around the
+  carrier's centre, every 5 ms.
+- **NR (red):** each cell's sync block, 240 subcarriers by 4 symbols, every
+  burst period.
+
+Each box is labelled with the PCI, and cells that share boxes share a label.
+The span is then 20 ms and the FFT 256 long unless you give them, so a row of
+the waterfall is shorter than an OFDM symbol. Over 30 s, with 4096-point
+rows, the sync signals would not show.
+
 ### The card
 
 The card is a JSON object. A value that cannot be measured is `null`. Its keys:
 
-- `schema`: 1.
+- `schema`: 2 (1 before the `lte` and `nr` sections, 2026-10-24).
 - `source`: `path`, `kind` (`cfile`, `sdvr` or `cdif`), `rate_sps`,
   `center_hz`, `t0_s`, `t1_s`, `samples`.
 - `level`: `power_dbfs`, `power_dbm`, `noise_floor_dbfs`, `snr_db`.
@@ -1089,7 +1103,23 @@ The card is a JSON object. A value that cannot be measured is `null`. Its keys:
 - `envelope`: `levels` (one or two amplitudes), `depth`, `keyed`.
 - `frequency`: `levels_hz` (offsets from the centre), `deviation_hz`, `keyed`.
 - `symbol_rate_baud`.
-- `class`, and `evidence`: one sentence for each rule that fired.
+- `lte` and `nr`: the cells in the span's first 50 ms. Each has `searched`
+  and `reason`. A span under 1.92 MS/s, or narrower than 1 MHz, is not
+  searched, and `reason` says which. When searched:
+  - `lte` has `block_center_hz`, `verdict`, `pci`, `bandwidth_mhz`, `duplex`
+    and `cells`: each with `pci`, `relative_power_db`, `chance`, `duplex`
+    and `frame_offset_s`.
+  - `nr` has `ssbs`: each with `ssb_hz`, `gscn`, `scs_khz`, `pci`,
+    `ssb_index`, `period_ms`, `first_ssb_s`, `relative_power_db` and `chance`.
+
+  LTE is looked for at the station the recording was tuned to (a Receive-tab
+  recording is centred 300 kHz off it), otherwise at the occupied centre on
+  the 100 kHz raster. A cell is listed only when its reference signals
+  confirm its PCI. To read a cell's broadcast, use `fmctl cells lte|nr
+  decode`. The card does not decode.
+- `class`, and `evidence`: one sentence for each rule that fired. A cell
+  found makes the class `lte`, `nr` or `lte+nr`, ahead of every other rule,
+  even `noise`: a band full of carriers leaves no noise floor to measure.
 
 **Levels in dBm.** A `.cfile` has no calibration, so its level is relative and
 `power_dbm` is `null`. A `.sdvr` is in dBm, from the scale its header gives.

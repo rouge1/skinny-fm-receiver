@@ -2,7 +2,7 @@
 """iq-picture: a spectrum (mean and peak) over a waterfall of an IQ recording.
 
     tools/iq-picture FILE OUT.png [--t0 S --t1 S] [--band LO HI]
-                                  [--rate R --center HZ] [--nfft N]
+                                  [--rate R --center HZ] [--nfft N] [--cells]
 
 The span is the whole file, or ``--t0``/``--t1`` in seconds, and at most the
 first 30 s when ``--t1`` is left out. ``--band`` is absolute Hz. Levels are
@@ -10,8 +10,17 @@ dBm when the file carries a calibration, otherwise dBFS. The file is read a
 chunk at a time; the waterfall is binned to a few hundred rows before it is
 drawn, so a long recording is never held whole.
 
+``--cells`` draws where the LTE cells' and 5G NR cells' sync signals sit, as
+the measurement card finds them in 50 ms from ``--t0``
+(``iqmeasure.cells_file``): a box over each LTE cell's PSS and SSS (72
+subcarriers, every 5 ms) and over each NR cell's sync block (240 subcarriers,
+4 symbols, every burst period), labelled with the PCI. The span is then 20 ms
+by default, and the FFT 256 long, so a row of the waterfall is shorter than an
+OFDM symbol (about 71 us at 15 kHz); 30 s and 4096 would hide them.
+
 ``peak_panel`` returns the frequency axis and the peak-hold trace the top
-panel plots. Importing this file does not draw anything.
+panel plots, and ``cell_boxes`` the boxes ``--cells`` draws. Importing this
+file does not draw anything.
 """
 
 import argparse
@@ -37,6 +46,19 @@ MAX_NFFT = 1 << 20
 #: The waterfall is reduced to this before it is drawn.
 MAX_ROWS = 400
 MAX_COLS = 2000
+#: With --cells: the span left open, and the FFT length when none is asked for.
+CELLS_SPAN_S = 0.02
+CELLS_NFFT = 256
+#: LTE (36.211 6.11, normal prefix): the PSS and SSS take the 72 subcarriers around the
+#: centre; FDD puts the SSS and PSS in the last two symbols of slots 0 and 10, TDD the SSS
+#: in the last symbol of slot 1 and the PSS in the third of subframe 1 (and 5 ms later).
+#: Times from the frame's start, in units of 1/30.72 MHz.
+LTE_TS = 1 / 30.72e6
+LTE_SYNC_HALF_HZ = 36 * 15e3
+LTE_SYNC_TIMES = {'FDD': [(10976, 15360)], 'TDD': [(28528, 30720), (30720 + 4400, 30720 + 6592)]}
+LTE_HALF_FRAME_S = 5e-3
+#: NR (38.211 7.4.3.1): an SSB is 240 subcarriers by 4 symbols, SS_REF at subcarrier 120.
+NR_SSB_SYMBOL_TS = 2048 + 144
 
 
 def _fail(message):
@@ -225,6 +247,53 @@ def _freq_unit(freq):
     return freq, 'Hz'
 
 
+def cell_boxes(lte, nr, t_lo, t_hi, offset_s=0.0):
+    """Boxes over the cells' sync signals between ``t_lo`` and ``t_hi`` seconds.
+
+    ``lte`` and ``nr`` are the card's sections (``iqmeasure.cells_file``); their times
+    count from ``offset_s`` seconds into the file. Each box is a dict: ``kind`` ('lte' or
+    'nr'), ``pci``, ``label``, ``t0``, ``t1`` (seconds into the file), ``f_lo``, ``f_hi``
+    (absolute Hz). An LTE frame offset is known modulo 5 ms here (both half-frames carry
+    the PSS and SSS), so its boxes repeat every 5 ms; an NR cell's repeat every burst
+    period (20 ms when it was not measured).
+    """
+    boxes = []
+    if isinstance(lte, dict) and lte.get('verdict') == 'lte':
+        block = float(lte['block_center_hz'])
+        for cell in lte.get('cells') or []:
+            if cell.get('frame_offset_s') is None:
+                continue
+            times = LTE_SYNC_TIMES.get(cell.get('duplex') or 'FDD', LTE_SYNC_TIMES['FDD'])
+            base = offset_s + float(cell['frame_offset_s']) % LTE_HALF_FRAME_S
+            k = math.floor((t_lo - base) / LTE_HALF_FRAME_S) - 1
+            while base + k * LTE_HALF_FRAME_S <= t_hi:
+                start = base + k * LTE_HALF_FRAME_S
+                for a, b in times:
+                    if start + b * LTE_TS > t_lo and start + a * LTE_TS < t_hi:
+                        boxes.append({'kind': 'lte', 'pci': cell['pci'], 'label': f"LTE PCI {cell['pci']}",
+                                      't0': start + a * LTE_TS, 't1': start + b * LTE_TS,
+                                      'f_lo': block - LTE_SYNC_HALF_HZ, 'f_hi': block + LTE_SYNC_HALF_HZ})
+                k += 1
+    if isinstance(nr, dict):
+        for e in nr.get('ssbs') or []:
+            if e.get('first_ssb_s') is None:
+                continue
+            scs = float(e['scs_khz']) * 1e3
+            length = 4 * NR_SSB_SYMBOL_TS / (2048 * scs)
+            period = (e.get('period_ms') or 20) * 1e-3
+            first = offset_s + float(e['first_ssb_s'])
+            k = math.floor((t_lo - first) / period) - 1
+            while first + k * period <= t_hi:
+                start = first + k * period
+                if start + length > t_lo and start < t_hi:
+                    boxes.append({'kind': 'nr', 'pci': e['pci'], 'label': f"NR PCI {e['pci']}",
+                                  't0': start, 't1': start + length,
+                                  'f_lo': float(e['ssb_hz']) - 120 * scs,
+                                  'f_hi': float(e['ssb_hz']) + 120 * scs})
+                k += 1
+    return boxes
+
+
 def peak_panel(path, t0=None, t1=None, band=None, rate=None, center_hz=None, nfft=None):
     """Absolute frequency axis and the peak-hold level the top panel plots.
 
@@ -239,10 +308,20 @@ def peak_panel(path, t0=None, t1=None, band=None, rate=None, center_hz=None, nff
     return np.asarray(freq, dtype=np.float64), np.asarray(peak_db, dtype=np.float64)
 
 
-def render(path, out, t0=None, t1=None, band=None, rate=None, center_hz=None, nfft=None):
-    """Write the PNG of ``path`` to ``out``. Nothing is written if reading fails."""
+def render(path, out, t0=None, t1=None, band=None, rate=None, center_hz=None, nfft=None,
+           cells=False):
+    """Write the PNG of ``path`` to ``out``. Nothing is written if reading fails.
+    ``cells`` boxes the LTE and NR cells' sync signals (see the module docstring)."""
     src = _open(path, rate, center_hz)
+    if cells:
+        if t1 is None:
+            t1 = min(src.seconds, (0.0 if t0 is None else _finite("--t0", t0)) + CELLS_SPAN_S)
+        nfft = CELLS_NFFT if nfft is None else nfft
     i0, i1 = _indexes(src, t0, t1)
+    found = None
+    if cells:
+        lte, nr = iqmeasure.cells_file(path, t0=i0 / src.rate, rate=rate, center_hz=center_hz)
+        found = (lte, nr)
     freq, mean, peak, waterfall = spectra(src, i0, i1, nfft, band)
     mean_db, unit = _db(mean, src.full_scale_dbm)
     peak_db, _unit = _db(peak, src.full_scale_dbm)
@@ -270,6 +349,8 @@ def render(path, out, t0=None, t1=None, band=None, rate=None, center_hz=None, nf
                     extent=[fx[0], fx[-1], t_lo, t_hi],
                     vmin=float(wf_db.min()), vmax=float(wf_db.max()))
     fig.colorbar(img, ax=[top, wf], label=unit, pad=0.01)
+    if found is not None:
+        _draw_cells(wf, found, t_lo, t_hi, funit)
     wf.set_xlabel(funit)
     wf.set_ylabel('seconds')
     # The full level range is on the colour bar, and the layout keeps the labels.
@@ -285,6 +366,30 @@ def render(path, out, t0=None, t1=None, band=None, rate=None, center_hz=None, nf
     plt.close(fig)
 
 
+def _draw_cells(ax, found, t_lo, t_hi, funit):
+    """The ``cell_boxes`` on the waterfall ``ax`` (frequency in ``funit``), and a note of them."""
+    from matplotlib.patches import Rectangle
+    scale = {'MHz': 1e6, 'kHz': 1e3}.get(funit, 1.0)
+    lte, nr = found
+    boxes = cell_boxes(lte, nr, t_lo, t_hi, offset_s=t_lo)
+    colours = {'lte': 'white', 'nr': 'red'}
+    # One label per place: synchronised cells share their boxes, so their PCIs share a label.
+    places = {}
+    for b in boxes:
+        ax.add_patch(Rectangle((b['f_lo'] / scale, b['t0']), (b['f_hi'] - b['f_lo']) / scale,
+                               b['t1'] - b['t0'], fill=False, lw=1.0, ec=colours[b['kind']]))
+        if not any(b['pci'] in pcis for (kind, _t, _f), pcis in places.items() if kind == b['kind']):
+            places.setdefault((b['kind'], round(b['t1'], 6), b['f_hi']), []).append(b['pci'])
+    for (kind, t1, f_hi), pcis in places.items():
+        ax.text(f_hi / scale, t1, f" {kind.upper()} PCI {', '.join(str(p) for p in pcis)}",
+                color=colours[kind], fontsize=8, va='bottom', ha='left')
+    names = sorted({b['label'] for b in boxes})
+    why = [s.get('reason') for s in (lte, nr) if isinstance(s, dict) and not s.get('searched')]
+    note = ', '.join(names) if names else 'no LTE or NR cell found in 50 ms' + (
+        f" ({why[0]})" if why else '')
+    ax.set_title(f"cells: {note}", fontsize=9)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -298,11 +403,13 @@ def main(argv=None):
     ap.add_argument('--center', type=float, dest='center_hz', metavar='HZ',
                     help="centre frequency, Hz")
     ap.add_argument('--nfft', type=int, metavar='N',
-                    help="FFT length (default 4096; powers of two are fastest)")
+                    help="FFT length (default 4096, or 256 with --cells; powers of two are fastest)")
+    ap.add_argument('--cells', action='store_true',
+                    help="box the LTE and NR cells' sync signals (default span 20 ms)")
     args = ap.parse_args(argv)
     try:
         render(args.file, args.out, t0=args.t0, t1=args.t1, band=args.band,
-               rate=args.rate, center_hz=args.center_hz, nfft=args.nfft)
+               rate=args.rate, center_hz=args.center_hz, nfft=args.nfft, cells=args.cells)
     except iqmeasure.IQSourceError as exc:
         print(exc, file=sys.stderr)
         return 1

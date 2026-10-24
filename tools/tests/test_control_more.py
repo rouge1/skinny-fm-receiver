@@ -807,7 +807,8 @@ def main():
                 assert pump(10, lambda: w.engine.running), 'radio did not come back'
 
         measured = {}
-        measure_classes = ('noise', 'carrier', 'ook', 'ask', 'fsk', 'fm', 'am', 'unknown')
+        measure_classes = ('noise', 'lte', 'nr', 'lte+nr', 'carrier', 'ook', 'ask', 'fsk', 'fm', 'am',
+                           'unknown')
 
         def t_measure_refused_without_capture():
             ensure_receive(c, w)
@@ -826,7 +827,7 @@ def main():
             r = c.ask('measure', timeout=90)
             assert r['ok'], r
             card = r['result']
-            assert card['schema'] == 1 and card['class'] in measure_classes, card
+            assert card['schema'] == 2 and card['class'] in measure_classes, card
             assert 'card_file' not in card, card
             assert 'source' in card and 'path' in card['source'], card
             assert os.path.abspath(card['source']['path']) == os.path.abspath(cfile), \
@@ -837,7 +838,7 @@ def main():
             assert r['ok'], r
             src = r['result']['source']
             assert abs(src['t1_s'] - 1.0) < 0.05 and src['t0_s'] == 0.0, src
-            assert r['result']['schema'] == 1 and r['result']['class'] in measure_classes, r
+            assert r['result']['schema'] == 2 and r['result']['class'] in measure_classes, r
 
         def t_measure_card_writes_file():
             r = c.ask('measure card', timeout=90)

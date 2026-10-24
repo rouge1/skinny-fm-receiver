@@ -5,7 +5,8 @@ Behind ``tools/iq-measure`` and ``fmctl measure``. It reads a recording of IQ
 Sceptre DVR's IQ ``.sdvr``, or a BLUE ``.cdif``) a span at a time, never
 whole, and returns a card: a JSON-safe dict of the level, the occupied
 bandwidth, the tones, the bursts, the envelope and frequency behaviour, the
-symbol rate, and a class ('noise', 'carrier', 'ook', 'ask', 'fsk', 'fm',
+symbol rate, the LTE cells and 5G NR sync blocks in a wideband span, and a
+class ('noise', 'lte', 'nr', 'lte+nr', 'carrier', 'ook', 'ask', 'fsk', 'fm',
 'am' or 'unknown') with the evidence for it. The class rules are fixed
 (CONTRACTS-measure.md), so the same recording always gives the same card.
 Numpy only, so it runs anywhere; it writes nothing but the card, when asked.
@@ -18,6 +19,15 @@ widened to a whole bin. The envelope and the frequency are tracked in blocks
 of 16 samples, from the phase advance summed over each block, so the noise
 averages down; the 64-sample track gives the frequency's spread without the
 block-to-block noise.
+
+The cells are looked for only in a span sampled at 1.92 MS/s or more whose
+occupied width is 1 MHz or more, and only in its first 50 ms (``iqlte`` and
+``iqnr``, both numpy only): every LTE and NR cell found in recordings so far
+was found in 50 ms as in 200 ms, at a third of the memory. An LTE cell is
+listed only when its reference signals (CRS) confirm its PCI. LTE is looked for
+at the station the recording was tuned to (the Receive tab records the band
+300 kHz off it), else at the occupied centre on the 100 kHz raster; NR's
+search walks the sync raster itself.
 """
 
 import json
@@ -29,7 +39,7 @@ import numpy as np
 
 from . import sceptre_blue, sceptre_dvr
 
-SCHEMA = 1
+SCHEMA = 2
 MIN_SAMPLES = 1024
 MAX_SPAN_S = 30.0
 CARD_SUFFIX = '.card.json'
@@ -78,6 +88,12 @@ KEYED_SIGMA = 3.0
 MIDDLE_MAX = 0.12
 MIN_CLUSTER = 0.005
 STEADY_HZ = 500.0
+#: The cells are looked for only at this rate and occupied width or more, in this much of the span.
+CELLS_MIN_RATE = 1.92e6
+CELLS_MIN_WIDTH_HZ = 1e6
+CELLS_SPAN_S = 0.05
+#: LTE's channel raster: a carrier centre is a multiple of this.
+LTE_RASTER_HZ = 100e3
 
 
 class IQSourceError(Exception):
@@ -88,7 +104,8 @@ class IQSourceError(Exception):
 class IQSource:
     """A recording of IQ, read a span at a time. ``read`` never writes."""
 
-    def __init__(self, path, kind, rate, center_hz, samples, full_scale_dbm, fetch):
+    def __init__(self, path, kind, rate, center_hz, samples, full_scale_dbm, fetch,
+                 station_hz=None):
         self.path = path
         self.kind = kind
         self.rate = float(rate)
@@ -96,6 +113,8 @@ class IQSource:
         self.samples = int(samples)
         self.full_scale_dbm = None if full_scale_dbm is None else float(full_scale_dbm)
         self._fetch = fetch
+        #: The station a recording of this app was tuned to (its ``.sigmf-meta``), or None.
+        self.station_hz = None if not station_hz else float(station_hz)
 
     @property
     def seconds(self):
@@ -140,7 +159,8 @@ def _open_cfile(path, rate, center_hz):
     centre = center_hz if center_hz is not None else (meta_centre or 0.0)
     data = np.memmap(path, dtype=np.complex64, mode='r', shape=(samples,))
     return IQSource(path, 'cfile', rate, centre, samples, None,
-                    lambda a, b: data[a:b])
+                    lambda a, b: data[a:b],
+                    station_hz=meta.get('global', {}).get('fmrx:station_frequency'))
 
 
 def _open_sdvr(path, rate, center_hz):
@@ -565,7 +585,56 @@ def _decimated(read, n, rate, lo, hi, min_rate=0.0):
     return dec, _banded(read, n, rate, lo, hi, dec)
 
 
-def _analyse(read, n, rate, center_hz, full_scale_dbm, band):
+def _crs_confirms(cell):
+    """True when an ``iqlte`` cell's reference signals (CRS) confirm its PCI at 1e-3.
+
+    In 50 ms a synthetic 5 MHz cell also gave a second "cell" at the TDD position, 17 dB
+    down, whose SSS cleared 1e-3 (2.5e-4) and whose CRS did not (chance 1, score 0.01);
+    every real cell so far had a CRS chance of 1e-300.
+    """
+    crs = cell.get('crs') if isinstance(cell, dict) else None
+    return (isinstance(crs, dict) and crs.get('pci') == cell.get('pci')
+            and crs.get('chance') is not None and crs['chance'] <= 1e-3)
+
+
+def _cells(read, n, rate, center_hz, centre, bw99, station_hz):
+    """The card's ``lte`` and ``nr`` sections: the cells in the span's first 50 ms.
+
+    ``bw99`` None skips the width gate (``cells_file``: no occupied width is measured)."""
+    def skipped(why):
+        return {'searched': False, 'reason': why}
+
+    if rate < CELLS_MIN_RATE:
+        why = f"sampled at {rate / 1e6:.3g} MS/s, under {CELLS_MIN_RATE / 1e6:.3g} MS/s"
+        return skipped(why), skipped(why)
+    if bw99 is not None and bw99 < CELLS_MIN_WIDTH_HZ:
+        why = "the occupied width is under 1 MHz"
+        return skipped(why), skipped(why)
+    from . import iqlte, iqnr
+    iq = read(0, min(n, int(round(CELLS_SPAN_S * rate))))
+    span_s = len(iq) / rate
+    if station_hz is not None and abs(station_hz - center_hz) < rate / 2:
+        block = float(station_hz)
+    else:
+        block = round(centre / LTE_RASTER_HZ) * LTE_RASTER_HZ
+    fp = iqlte.fingerprint(iqlte.mix_to_dc(iq, rate, block - center_hz), rate)
+    lte = {'searched': True, 'reason': None, 'span_s': span_s,
+           'block_center_hz': block, 'verdict': fp.get('verdict'), 'pci': fp.get('pci'),
+           'bandwidth_mhz': iqlte.BANDWIDTH_MHZ.get(fp.get('nfft')), 'duplex': fp.get('duplex'),
+           'cells': [{'pci': c.get('pci'), 'relative_power_db': c.get('relative_power_db'),
+                      'chance': c.get('chance'), 'duplex': c.get('duplex'),
+                      'frame_offset_s': None if c.get('frame_offset_samples') is None
+                      else c['frame_offset_samples'] / rate}
+                     for c in fp.get('cells') or [] if _crs_confirms(c)]}
+    ssbs = iqnr.ssb_search(iq, rate, center_hz)
+    nr = {'searched': True, 'reason': None, 'span_s': span_s,
+          'ssbs': [{k: e.get(k) for k in ('ssb_hz', 'gscn', 'scs_khz', 'pci', 'ssb_index',
+                                          'period_ms', 'first_ssb_s', 'relative_power_db',
+                                          'chance')} for e in ssbs]}
+    return lte, nr
+
+
+def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
     """The card's sections for ``n`` samples from ``read(start, count)``.
 
     Two passes. The first, over the band (or the whole span), gives the level,
@@ -678,8 +747,27 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band):
         freq_levels = [float(np.median(f16)) + base_s] if f16.size else []
         deviation = float((np.percentile(f64, 99.5) - np.percentile(f64, 0.5)) / 2) if f64.size else 0.0
 
+    lte, nr = _cells(read, n, rate, center_hz, centre, bw99, station_hz)
+    lte_pcis = []
+    if lte.get('verdict') == 'lte':
+        # Confirmed: CP, PSS and SSS agree, and the SSS gives a PCI.
+        lte_pcis = [c['pci'] for c in lte['cells']] or ([lte['pci']] if lte['pci'] is not None else [])
+    nr_pcis = [e['pci'] for e in nr.get('ssbs') or []]
     tone_n = len(tones)
-    if snr < 6:
+    # A cell found is a detection at a chance of 1e-3 or less. It comes before the noise
+    # rule, because a band full of carriers leaves no floor: the floor is the signal.
+    if lte_pcis or nr_pcis:
+        cls = 'lte+nr' if lte_pcis and nr_pcis else 'lte' if lte_pcis else 'nr'
+        parts = []
+        if lte_pcis:
+            parts.append(f"an LTE downlink (cyclic prefix, PSS and SSS) at "
+                         f"{lte['block_center_hz'] / 1e6:.6g} MHz, PCI "
+                         + ', '.join(str(p) for p in lte_pcis))
+        if nr_pcis:
+            parts.append(f"{len(nr_pcis)} 5G NR sync block{'s' if len(nr_pcis) > 1 else ''} "
+                         "(PSS, SSS and PBCH DM-RS), PCI " + ', '.join(str(p) for p in nr_pcis))
+        ev = "In the first 50 ms: " + '; '.join(parts) + "."
+    elif snr < 6:
         cls = 'noise'
         ev = f"The signal is {snr:.1f} dB over the noise floor, under 6 dB."
     elif keyed_env:
@@ -727,6 +815,8 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band):
         'frequency': {'levels_hz': freq_levels, 'deviation_hz': deviation,
                       'keyed': bool(keyed_f)},
         'symbol_rate_baud': sym,
+        'lte': lte,
+        'nr': nr,
         'class': cls,
         'evidence': [ev],
     }
@@ -751,6 +841,29 @@ def measure(iq, rate, center_hz=0.0, full_scale_dbm=None, t0=0.0, band=None):
     return _clean(_ordered(card))
 
 
+def cells_file(path, t0=None, rate=None, center_hz=None):
+    """``(lte, nr)``: the card's cell sections for the 50 ms of ``path`` from ``t0`` seconds,
+    without measuring the rest of a card (``iq-picture --cells``). There is no width gate,
+    and the LTE carrier is looked for at the station, else at the power centroid of those
+    50 ms on the 100 kHz raster. Times in the sections count from ``t0``."""
+    src = open_iq(path, rate=rate, center_hz=center_hz)
+    i0 = max(0, int(round((0.0 if t0 is None else float(t0)) * src.rate)))
+    n = max(0, min(src.samples - i0, int(round(CELLS_SPAN_S * src.rate))))
+    if n < MIN_SAMPLES:
+        raise IQSourceError(f"{os.path.basename(str(path))}: fewer than {MIN_SAMPLES} samples from t0.")
+
+    def read(start, count):
+        return src.read(i0 + start, count)
+
+    x = read(0, n)
+    seg = min(COARSE_NFFT, n)
+    blocks = x[:(n // seg) * seg].reshape(-1, seg)
+    P = np.fft.fftshift((np.abs(np.fft.fft(blocks, axis=1)) ** 2).mean(axis=0))
+    f = (np.arange(seg) - seg // 2) * src.rate / seg
+    centre = src.center_hz + (float(np.sum(f * P) / np.sum(P)) if np.sum(P) > 0 else 0.0)
+    return _cells(read, n, src.rate, src.center_hz, centre, None, src.station_hz)
+
+
 def measure_file(path, t0=None, t1=None, band=None, rate=None, center_hz=None):
     """The card of a recording (see :func:`open_iq`). ``t0`` and ``t1`` are
     seconds into the file; by default the first 30 s."""
@@ -767,7 +880,7 @@ def measure_file(path, t0=None, t1=None, band=None, rate=None, center_hz=None):
         'path': str(path), 'kind': src.kind, 'rate_sps': src.rate, 'center_hz': src.center_hz,
         't0_s': i0 / src.rate, 't1_s': i1 / src.rate, 'samples': n}}
     card.update(_analyse(lambda a, c: src.read(i0 + a, c), n, src.rate, src.center_hz,
-                         src.full_scale_dbm, band))
+                         src.full_scale_dbm, band, src.station_hz))
     return _clean(_ordered(card))
 
 
@@ -864,7 +977,7 @@ def extract(path, t0=None, t1=None, band=None, max_rate=1e6, rate=None, center_h
 
 def _ordered(card):
     keys = ['schema', 'source', 'level', 'occupied', 'tones', 'bursts', 'envelope',
-            'frequency', 'symbol_rate_baud', 'class', 'evidence']
+            'frequency', 'symbol_rate_baud', 'lte', 'nr', 'class', 'evidence']
     return {k: card[k] for k in keys}
 
 

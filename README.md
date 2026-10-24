@@ -27,7 +27,8 @@ sweeps, the view's dials (`view`), the signals on the spectrum as numbers
 Tools for what a recording holds, each run on a file:
 
 - `tools/iq-measure` and `tools/iq-picture`: a signal's card (level,
-  bandwidth, bursts, modulation class) and a waterfall picture.
+  bandwidth, bursts, modulation class, LTE and 5G NR cells) and a waterfall
+  picture (`--cells` boxes the cells' sync signals).
 - `tools/iq-demod`, `tools/iq-frames`, `tools/iq-decode`: bursts to bits,
   frames, a scrambler and CRC search, and rtl_433 on a span.
 - `tools/iq-lte` and `tools/iq-nr`: the LTE and 5G NR cells in a capture

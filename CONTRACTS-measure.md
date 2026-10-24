@@ -54,6 +54,7 @@ envelope: levels (1 or 2 amplitude levels, low first), depth (0..1), keyed (bool
 frequency: levels_hz (offsets from the centre, 1 or 2, low first), deviation_hz, keyed (bool)
 symbol_rate_baud: float | None
 class:   'noise' | 'carrier' | 'ook' | 'ask' | 'fsk' | 'fm' | 'am' | 'unknown'
+         (schema 2 adds 'lte' | 'nr' | 'lte+nr', and the lte and nr sections: amendment 2026-10-24)
 evidence: [str, ...]        # one short sentence per rule that fired
 ```
 
@@ -186,3 +187,38 @@ crc(), crc_update(), crc_final(), keystream(), descramble()
   0.5), padded with 4 ms of silence and written in turn at the rate `rtl_433 -R help` gives for
   protocol N as `(-s RATE)` (else `--out-rate`, default 250000). The output gains `bursts`. The
   tool makes no claim that a decoder emits a packet.
+
+## Cells on the card (amendment, 2026-10-24; schema 2)
+
+Roadmap stage 4 (LTE) and its NR counterpart: the card says when a span holds an LTE downlink or 5G NR
+sync blocks. `iqmeasure` imports `iqlte` and `iqnr` (both numpy only) when it looks; the import rule above
+still holds after a cell search.
+
+```
+schema: 2
+lte:  searched (bool), reason (why not searched, else None); when searched also span_s, block_center_hz,
+      verdict (iqlte.fingerprint's), pci, bandwidth_mhz, duplex, cells: [{pci, relative_power_db, chance,
+      duplex, frame_offset_s (from the span's start, modulo 10 ms)}]
+nr:   searched, reason; when searched also span_s, ssbs: [{ssb_hz, gscn, scs_khz, pci, ssb_index, period_ms,
+      first_ssb_s (from the span's start), relative_power_db, chance}]
+```
+
+- Looked for only when the rate is 1.92 MS/s or more and `occupied.bandwidth_hz` is 1 MHz or more
+  (otherwise `searched` false and `reason` says which), and only in the span's first 50 ms (`span_s`), so a
+  long recording costs no more than a short one: about 2.5 s and well under the card's own peak memory.
+- LTE is looked for at the recording's station (`fmrx:station_frequency` in the `.sigmf-meta`, when it is
+  inside the span), else at `occupied.centre_hz` on the 100 kHz raster; the span is mixed there over its
+  whole bandwidth (`iqlte.mix_to_dc`). An LTE cell is listed only when its CRS confirms its PCI (chance at
+  most 1e-3): in 50 ms the SSS alone let through a TDD-position ghost of a synthetic cell. NR's search walks
+  the sync raster inside the span itself.
+- Class rule 0, before `noise`: `lte` when the LTE verdict is `lte` with a listed cell (or a PCI), `nr`
+  when an SSB is listed, `lte+nr` when both. A found cell is a detection at a chance of 1e-3 or less; a
+  band full of carriers leaves no noise floor, so its SNR reads under 6 dB (two real NR recordings did).
+- `iqmeasure.cells_file(path, t0=None, rate=None, center_hz=None) -> (lte, nr)`: the two sections for the
+  50 ms from `t0`, no width gate, LTE at the station else the 50 ms power centroid on the raster.
+- `tools/iq-picture FILE OUT.png --cells`: the span defaults to 20 ms and the FFT to 256, and a box is
+  drawn over each LTE cell's PSS and SSS (72 subcarriers, every 5 ms: the frame offset is used modulo a
+  half-frame) and each NR cell's SSB (240 subcarriers by 4 symbols, every burst period), labelled with the
+  PCI. `cell_boxes(lte, nr, t_lo, t_hi, offset_s=0.0)` returns them, and is what the tests check.
+- Tests: `tools/tests/test_iq_measure_cells.py` (synthetic LTE, NR, both, noise, ATSC-like; the gates; the
+  centring; box timing against the synthesisers' own timing).
