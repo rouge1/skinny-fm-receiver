@@ -1302,8 +1302,23 @@ CELLS_TOOLS = {kind: os.path.join(os.path.dirname(MEASURE_TOOL), f'iq-{kind}')
                for kind in ('lte', 'nr')}
 
 
+def _station_hz(path):
+    """The station a recording of this app was tuned to, when it is not the file's
+    centre (the Receive tab records the band 300 kHz off the station); else None."""
+    from .radios import RadioError, read_iq_metadata
+    try:
+        meta = read_iq_metadata(path)
+    except (RadioError, OSError, ValueError, KeyError):
+        return None
+    station = meta.get('station_hz')
+    if not station or abs(station - (meta.get('center_hz') or 0.0)) < 1.0:
+        return None
+    return float(station)
+
+
 @command('cells', CELLS_USAGE, "The LTE or 5G NR cells in PATH (default the last "
-         "capture), with tools/iq-lte or tools/iq-nr: their reply as it is. decode also "
+         "capture), with tools/iq-lte or tools/iq-nr: their reply as it is. For lte the "
+         "carrier is taken to be at the station the recording was tuned to. decode also "
          "reads each cell's broadcast (MIB, SIB1, other SI, the network time) through "
          f"$FMRX_LTE_TOOLS. Read only. At most {CELLS_LIMIT_S:.0f} s, or "
          f"{CELLS_DECODE_LIMIT_S:.0f} s with decode; the window runs meanwhile.")
@@ -1324,6 +1339,9 @@ def cmd_cells(w, args):
     if not os.path.isfile(path):
         raise CommandError(f"cells: the file {os.path.basename(path)} is missing")
     argv = [sys.executable, CELLS_TOOLS[kind], path]
+    station = _station_hz(path) if kind == 'lte' else None
+    if station is not None:
+        argv += ['--block-center', repr(station)]
     if decode:
         argv.append('--decode')
     limit = CELLS_DECODE_LIMIT_S if decode else CELLS_LIMIT_S

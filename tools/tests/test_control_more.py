@@ -979,6 +979,26 @@ def main():
                     cells_files[kind] = write_cells_file('nr', iq, 20e6, 600.0e6)
             return cells_files[kind]
 
+        def t_cells_lte_at_the_tuned_station():
+            # As the Receive tab records: the band centred 300 kHz below the
+            # station, the carrier on the station. iq-lte alone looks at the centre.
+            iq, _ = lte_synth.synth_lte(bw_mhz=10, n_frames=20, pci=123, snr_db=20.0,
+                                        seed=0, fs=20e6)
+            iq = iq * np.exp(2j * np.pi * 300e3 * np.arange(len(iq)) / 20e6)
+            path = write_cells_file('lte-offset', iq, 20e6, 599.7e6)
+            meta_path = path[:-len('.cfile')] + '.sigmf-meta'
+            with open(meta_path) as fh:
+                meta = json.load(fh)
+            meta['global']['fmrx:station_frequency'] = 600.0e6
+            with open(meta_path, 'w') as fh:
+                json.dump(meta, fh)
+            r = c.ask(f'cells lte {path}', timeout=90)
+            assert r['ok'], r
+            got = r['result']
+            assert got['block_center_hz'] == 600.0e6, got['block_center_hz']
+            assert got['verdict'] == 'lte' and got['pci'] == 123, \
+                {k: got.get(k) for k in ('verdict', 'pci')}
+
         def t_cells_refused_without_capture():
             assert not getattr(w, '_last_capture', None), 'a capture was made before this check'
             err = c.refused('cells nr', 'capture')
@@ -1116,6 +1136,7 @@ def main():
             ('measure refused for a missing capture file', t_measure_refused_missing_file),
             ('cells lte PATH finds the synthetic cell', t_cells_lte_path),
             ('cells nr PATH finds the synthetic SSB', t_cells_nr_path),
+            ('cells lte looks at the station a recording was tuned to', t_cells_lte_at_the_tuned_station),
             ('fmctl cells of a relative path', t_fmctl_cells_relative),
             ('cells refused for bad usage and a missing file', t_cells_refused_bad_usage),
             ('cells decode: the missing decoder is refused', t_cells_decode_reports_missing_tools),
