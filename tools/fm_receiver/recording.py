@@ -195,9 +195,11 @@ class RecordingInfo:
 
 
 def write_iq_metadata(base, rate, center_hz, station_hz, kind, radio_name,
-                      samples=None):
-    """The ``.sigmf-meta`` and ``.json`` descriptions of ``base.cfile``."""
-    now = _utc_now()
+                      samples=None, started=None):
+    """The ``.sigmf-meta`` and ``.json`` descriptions of ``base.cfile``.
+    ``started`` is when the file's first sample came (now by default): SigMF's
+    ``core:datetime`` is the time of the capture's first sample, not its end."""
+    now = started or _utc_now()
     what = ('the tuned FM channel, station at 0 Hz' if kind == 'channel'
             else 'the whole band the radio received')
     description = f"FM receiver IQ recording: {what}."
@@ -248,6 +250,7 @@ class IqRecording:
         self.radio_name = radio_name
         self.paths = []
         self.base = None
+        self._started = None
         self._part = 1
         self._first = base
 
@@ -259,8 +262,10 @@ class IqRecording:
             self.base = self._first
         else:
             self.base = f"{self._first}-part{self._part}"
+        self._started = _utc_now()
         write_iq_metadata(self.base, self.rate, self.center_hz,
-                          self.station_hz, self.kind, self.radio_name)
+                          self.station_hz, self.kind, self.radio_name,
+                          started=self._started)
         if not self.sink.open(self.base + '.cfile'):
             raise OSError(f"could not open {self.base}.cfile for writing")
         self.paths.append(self.base + '.cfile')
@@ -273,7 +278,8 @@ class IqRecording:
         except OSError:
             samples = None
         write_iq_metadata(self.base, self.rate, self.center_hz,
-                          self.station_hz, self.kind, self.radio_name, samples)
+                          self.station_hz, self.kind, self.radio_name, samples,
+                          started=self._started)
 
     def retuned(self, center_hz, station_hz):
         """The radio or the channel moved: finish this file, start the next.

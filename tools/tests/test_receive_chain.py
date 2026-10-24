@@ -19,6 +19,7 @@ read a higher 19 kHz level than a real pilot does.
 Run:  python tools/tests/test_receive_chain.py [--keep]     (about 30 s)
 """
 
+import datetime
 import json
 import math
 import os
@@ -60,6 +61,7 @@ def run_station(folder, convention):
                        tb.station_hz, 'test')
     channel = IqRecording(rx.channel_sink, 'channel', folder, rx.channel_rate,
                           tb.station_hz, tb.station_hz, 'test')
+    band_began = time.time()
     band.start()
     channel.start()
 
@@ -75,6 +77,7 @@ def run_station(folder, convention):
     poller.start()
     time.sleep(1.0)
     band.stop()                     # one second of band IQ is plenty
+    band_ended = time.time()
     time.sleep(1.0)
     # Muted for a second: the output gain is zero, and the tap - which is
     # before the volume stage - still hears the station, so the WAV runs on.
@@ -96,7 +99,8 @@ def run_station(folder, convention):
               'wav': wav.path, 'band': band.paths, 'channel': channel.paths,
               'pilot': rx.pilot_level(), 'power_db': rx.channel_power_db(),
               'rf': rx.rf_probe.snapshot(), 'mpx': rx.mpx_probe.snapshot(),
-              'muted_peak': muted_peak, 'muted_gain': muted_gain}
+              'muted_peak': muted_peak, 'muted_gain': muted_gain,
+              'band_began': band_began, 'band_ended': band_ended}
     tb.close()
     return result
 
@@ -158,6 +162,11 @@ def check(convention, expect_phase):
     assert 0.5 * 2.5e6 < n < 1.6 * 2.5e6, n
     sig = json.load(open(band[:-len('.cfile')] + '.sigmf-meta'))
     assert sig['global']['core:datatype'] == 'cf32_le'
+    # SigMF's core:datetime is the first sample's time: the start, not the stop.
+    when = datetime.datetime.fromisoformat(
+        sig['captures'][0]['core:datetime'].replace('Z', '+00:00')).timestamp()
+    assert r['band_began'] - 0.5 <= when <= r['band_began'] + 0.5, \
+        (when - r['band_began'], r['band_ended'] - r['band_began'])
     chan = r['channel'][0]
     cmeta = read_iq_metadata(chan[:-len('.cfile')] + '.json')
     assert cmeta['rate'] == CHANNEL_RATE and abs(cmeta['center_hz'] - 98.7e6) < 1
