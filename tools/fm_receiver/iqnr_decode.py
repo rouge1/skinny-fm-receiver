@@ -27,6 +27,10 @@ Method, for one SSB entry of ``iqnr.ssb_search`` (``decode_ssb``):
    offset) and ``-t`` (the ``pdsch-TimeDomainAllocationList`` ``startSymbolAndLength``
    values in list order; left out when SIB1 has none). Both passes' distinct blocks
    are parsed and summarised.
+5. Every distinct block of both passes is parsed, whatever its ``sii``: a SystemInformation
+   message is other SI wherever it came. A cell may send one that SIB1 does not schedule, in
+   SIB1's own slots with ``sii`` 0 (one did on air: SIB2, with SIB1 scheduling nothing).
+   ``si.unscheduled`` lists the SIBs heard that SIB1 does not schedule.
 
 Time (SIB9 ``timeInfo``): ``timeInfoUTC`` counts 10 ms units from 1900-01-01 00:00:00
 UTC, exactly as LTE SIB16, so ``iqlte_decode.sib16_time`` does the arithmetic.
@@ -435,10 +439,12 @@ def searched_why(sib1_out):
 
 # ---- the decode -------------------------------------------------------------------------------
 
-def _common(blocks, sii):
-    """Distinct hex blocks of one ``sii`` as ``[(count, hex)]``, most common first (first seen on ties)."""
-    count = collections.Counter(h for s, h in blocks if s == sii)
-    order = list(dict.fromkeys(h for s, h in blocks if s == sii))
+def _common(blocks, sii=None):
+    """Distinct hex blocks of one ``sii`` (of every ``sii`` when None) as ``[(count, hex)]``,
+    most common first (first seen on ties)."""
+    hexes = [h for s, h in blocks if sii is None or s == sii]
+    count = collections.Counter(hexes)
+    order = list(dict.fromkeys(hexes))
     return sorted(((count[h], h) for h in order), key=lambda ch: -ch[0])
 
 
@@ -544,32 +550,38 @@ def decode_ssb(src, centre_hz, ssb, tools=None, cut_reason=None):
             searched = True
             notes.append(second.error)
 
-        if entries:
-            si_blocks = _common([b for p in passes for b in p.blocks], 1)
-            heard, sibs = {}, {}
-            if si_blocks:
-                results, why = _parse_blocks([h for _c, h in si_blocks], tools)
-                if results is None:
-                    notes.append(why)
-                else:
-                    for (count, _h), res in zip(si_blocks, results):
-                        kind, value = _body(res)
-                        if kind != 'systemInformation':
-                            continue
-                        ext = value.get('criticalExtensions') if isinstance(value, dict) else None
-                        ies = ext[1] if isinstance(ext, list) and len(ext) == 2 else {}
-                        for item in (ies.get('sib-TypeAndInfo') or []) if isinstance(ies, dict) else []:
-                            if isinstance(item, list) and len(item) == 2:
-                                name = _sib_name(item[0])
-                                heard[name] = heard.get(name, 0) + count
-                                sibs.setdefault(name, item[1])
+        # Every block, both indicators: other SI may come in SIB1's slots (step 5).
+        si_blocks = _common([b for p in passes for b in p.blocks])
+        heard, sibs = {}, {}
+        if si_blocks:
+            results, why = _parse_blocks([h for _c, h in si_blocks], tools)
+            if results is None:
+                notes.append(why)
+            else:
+                for (count, _h), res in zip(si_blocks, results):
+                    kind, value = _body(res)
+                    if kind != 'systemInformation':
+                        continue
+                    ext = value.get('criticalExtensions') if isinstance(value, dict) else None
+                    ies = ext[1] if isinstance(ext, list) and len(ext) == 2 else {}
+                    for item in (ies.get('sib-TypeAndInfo') or []) if isinstance(ies, dict) else []:
+                        if isinstance(item, list) and len(item) == 2:
+                            name = _sib_name(item[0])
+                            heard[name] = heard.get(name, 0) + count
+                            sibs.setdefault(name, item[1])
+
+        if entries or heard:
             scheduled = []
             for entry in out['sib1']['si_schedule']:
                 scheduled += [n for n in entry['sibs'] if n not in scheduled]
             on_air = [n for e in out['sib1']['si_schedule']
                       if str(e.get('broadcast_status')).lower() != 'notbroadcasting' for n in e['sibs']]
             out['si'] = {'sibs_heard': heard, 'sibs': sibs, 'scheduled': scheduled,
-                         'missing': [n for n in dict.fromkeys(on_air) if n not in heard]}
+                         'missing': [n for n in dict.fromkeys(on_air) if n not in heard],
+                         'unscheduled': [n for n in heard if n not in scheduled]}
+            if out['si']['unscheduled']:
+                notes.append('heard SIBs that SIB1 does not schedule: %s'
+                             % ', '.join(out['si']['unscheduled']))
             if out['si']['missing'] and not searched:
                 notes.append('the other SI were not searched (%s)' % searched_why(out['sib1']))
             elif out['si']['missing']:
