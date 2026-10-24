@@ -721,7 +721,8 @@ def case_cfg(name):
                            mib=dict(MIB, pci=PCI + 3)),
         'targeted': dict(sib1=fixture_hex('sib1_full'), si=[fixture_hex('si_sib2_sib9')],
                          mib=dict(MIB, pci=PCI + 3),
-                         target_mib=dict(MIB, targeted=True, strongest_pci=PCI + 3)),
+                         target_mib=dict(MIB, targeted=True, strongest_pci=PCI + 3,
+                                         snr_db=-21.0, cfo_hz=-552.0)),
         'targeted_no_mib': dict(sib1=fixture_hex('sib1_full'), si=[fixture_hex('si_sib2_sib9')],
                                 mib=dict(MIB, pci=PCI + 3), target_mib=None),
         'unscheduled': dict(sib1=fixture_hex('sib1_none'), si=[],
@@ -1025,6 +1026,9 @@ def test_t_weaker_sector_decoded_by_aiming_at_its_pci():
     assert sorted((dec.get('si') or {}).get('sibs_heard') or {}) == ['sib2', 'sib9'], dec.get('si')
     reason = dec.get('reason') or ''
     assert 'PCI %d' % (PCI + 3) in reason and 'aiming' in reason, 'reason %r' % reason
+    assert dec['mib'].get('snr_db') is None and dec['mib'].get('cfo_hz') is None, (
+        "the program's level and offset for an aimed cell kept: %r" % dec['mib'])
+    assert "iq-nr's" in reason, 'reason %r' % reason
 
 
 def test_t_weaker_sector_without_a_mib_keeps_decoded_pci():

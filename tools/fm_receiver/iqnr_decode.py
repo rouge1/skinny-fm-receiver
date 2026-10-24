@@ -68,7 +68,9 @@ Wrong turns:
   When the retry reads no MIB of that PCI, or the program refuses ``-P`` (an older one),
   the decode stops with ``decoded_pci`` (the PCI pass 1 read), MIB and SIB1 null, and a
   ``reason`` naming both PCIs. On air a sector 7 dB under the strongest gave its MIB this
-  way but no SIB1: its SIB1 comes in the same slots and RBs as the stronger cell's.
+  way but no SIB1: its SIB1 comes in the same slots and RBs as the stronger cell's. The
+  program's ``snr_db`` and ``cfo_hz`` for an aimed cell were wrong (-21 dB, -552 Hz), so
+  they are null in its ``mib``; the SSB entry's ``relative_power_db`` and ``cfo_hz`` stand.
 - A SIB1 that fails to parse is not the end: the next most common ``sii`` 0 block is
   tried, so one corrupt block that passed the CRC does not hide the cell.
 """
@@ -547,6 +549,12 @@ def decode_ssb(src, centre_hz, ssb, tools=None, cut_reason=None):
             passes = [first]
         out['mib'] = {k: first.mib.get(k) for k in _MIB_KEYS}
         out['mib'].update({k: v for k, v in first.mib.items() if k not in out['mib']})
+        if out['mib'].get('targeted'):
+            # The program's level and offset for an aimed cell are its own search's, made
+            # under the stronger cell (on air -21 dB and -552 Hz where iq-nr measured 7 dB
+            # under the strongest and +252 Hz): the SSB entry's own values stand.
+            out['mib']['snr_db'] = out['mib']['cfo_hz'] = None
+            notes.append("the level and offset of an aimed cell are iq-nr's, in the SSB entry")
         done_reason = (first.done or {}).get('reason')
 
         sib1 = None

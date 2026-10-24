@@ -401,7 +401,7 @@ Each entry of `ssbs` gets a `decode` object. Its keys are these.
 |---|---|
 | `ran` | true when the decode ran |
 | `decoded_pci` | only when the outside program read another cell than this entry (a stronger cell on the same SSB frequency, such as another sector), and the retry aimed at this entry's PCI read no MIB of it (or the program has no `-P`): the PCI it read. `mib` and `sib1` are then null, and `reason` names both PCIs and what the retry said. When the retry reads this cell's MIB, there is no `decoded_pci`: the decode is this cell's, `mib.targeted` is true and `reason` names the stronger cell |
-| `mib` | the MIB's fields: `pci`, `sfn`, `ssb_index`, `half_frame`, `scs_common_khz`, `ssb_subcarrier_offset`, `dmrs_typeA_position`, `coreset0_index`, `search_space0_index`, `cell_barred`, `intra_freq_reselection`, `ssb_sample`, `cfo_hz`, `snr_db`, and any other field the program gives. Null when there is no MIB |
+| `mib` | the MIB's fields: `pci`, `sfn`, `ssb_index`, `half_frame`, `scs_common_khz`, `ssb_subcarrier_offset`, `dmrs_typeA_position`, `coreset0_index`, `search_space0_index`, `cell_barred`, `intra_freq_reselection`, `ssb_sample`, `cfo_hz`, `snr_db`, and any other field the program gives. Null when there is no MIB. For a weaker sector decoded by aiming at its PCI, `targeted` is true, `strongest_pci` and `strongest_ssb_sample` name the stronger cell, and `cfo_hz` and `snr_db` are null (the SSB entry's own values stand) |
 | `sib1` | null when SIB1 was not parsed. Otherwise an object: `plmns` (`"MCC-MNC"` strings, with the MNC's digit count kept, so `"001-01"` and `"001-001"` are different), `tac`, `cell_identity` (36 bits), `cell_barred`, `si_window_slots`, `si_schedule` (a list of `periodicity_rf`, `broadcast_status` and `sibs`), and `carrier` (`point_a_arfcn`, `point_a_mhz`, `bands`, `carrier_prb`, `scs_khz`, `offset_to_point_a`) |
 | `si` | null when SIB1 scheduled no other SI and none was heard. Otherwise: `sibs_heard` (count of each SIB heard), `sibs` (each SIB's contents), `scheduled` (the SIBs SIB1 schedules), `missing` (scheduled and on air, but not heard) and `unscheduled` (heard, but not scheduled by SIB1; `reason` names them too) |
 | `time` | null when there is no network time. Otherwise: `utc` (ISO 8601 with milliseconds), `gps`, `leap_seconds`, `local_offset_minutes`, `dst_hours`, and `reference_time`. Each is present only when SIB9 carries it. `reference_time` holds the raw `referenceTimeInfo-r16` fields and `gps_reading` (ISO 8601 GPS time) |
@@ -503,7 +503,8 @@ which is not in this repo.
   no SIB1: it uses the same CORESET 0 and search space as the strongest, so
   its PDCCH lands on the stronger cell's. The third gave no MIB, so it kept
   `decoded_pci`. The program's `snr_db` and `cfo_hz` for an aimed cell are
-  not to be trusted: for that sector it said -21 dB and -552 Hz, where
+  not to be trusted, so the decode sets them to null in `mib` (and `reason`
+  says so); the SSB entry's `relative_power_db` and `cfo_hz` stand: for that sector it said -21 dB and -552 Hz, where
   `iq-nr` measured 7 dB under the strongest and +252 Hz (the strongest:
   +332 Hz, and the program's own +338 Hz). Its SSB timing agreed with
   `iq-nr`'s to a microsecond.
