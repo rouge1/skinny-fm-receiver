@@ -1322,6 +1322,7 @@ tools/iq-nr CAPTURE.cfile --ssb-hz 600150000 --scs 15      # one SSB frequency o
 tools/iq-nr CAPTURE.cfile --t0 1.5 --seconds 2 --max-cells 8
 tools/iq-nr CAPTURE.cfile --rate 20000000 --center 600000000    # a bare .cfile, no .sigmf-meta
 tools/iq-nr CAPTURE.cfile --mib                            # also each cell's MIB, by our own decoder
+tools/iq-nr CAPTURE.cfile --pdcch --seconds 2              # and the DCIs that schedule SIB1, ours too
 tools/iq-nr CAPTURE.cfile --decode --max-cells 1           # also the MIB, SIB1, other SI and SIB9 time
 tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead of 6
 ```
@@ -1344,6 +1345,16 @@ tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead o
   It reads weaker sectors too: on real air it read a sector 12 dB under the
   strongest, which the outside decoder never could. It adds about 6 ms a
   block.
+- `--pdcch` (implies `--mib`) also decodes, with our own decoder, the DCIs
+  that schedule each cell's SIB1, in every SIB1 control-channel occasion of
+  the span. Each entry gets `pdcch`: `coreset0` (RBs, symbols, offset, its
+  lowest subcarrier `f0_hz`), `occasion` (slot n0, SFN parity, first symbol),
+  `slots` tried and `dcis`, one per DCI: `sfn`, `slot`, `t_s` (from the
+  span's start), aggregation `level`, first `cce`, the payload `bits`, the
+  fields (`fda` with `rb_start` and `n_rbs`, `tdra`, `vrb_to_prb`, `mcs`,
+  `rv`, `sii`, `reserved`) and `snr_db` per RE. It is null without a MIB
+  and for a 30 kHz cell. A cell sends SIB1 every 20 to 40 ms, so the default
+  0.1 s span holds two to five; about 50 ms an occasion.
 - `--decode` needs srsRAN 4G's NR library behind `run_nr.sh`, built by you
   (AGPL, not part of this repo), and pycrate under `$FMRX_LTE_TOOLS/pyc`. Only
   the broadcast (SI-RNTI) is read. Each entry gets a `decode`: the MIB, SIB1

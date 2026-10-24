@@ -202,7 +202,7 @@ def _resample(iq, native, fs):
 # ----- the cell -----------------------------------------------------------------------
 
 def _cell_native(pci, scs_khz, case, l_max, ssb_sent, period_ms, n_hf, bw_mhz,
-                 ssb_offset_hz, dur_ms, seed, load, pbch=None):
+                 ssb_offset_hz, dur_ms, seed, load, pbch=None, res=None):
     """One cell at the native rate. Returns (iq, native, truth, rng); unit mean power."""
     if not 0 <= int(pci) <= 1007:
         raise ValueError('pci must be 0..1007')
@@ -239,6 +239,17 @@ def _cell_native(pci, scs_khz, case, l_max, ssb_sent, period_ms, n_hf, bw_mhz,
     used = (np.arange(lo, lo + n_sc)) % nfft
     grid = np.zeros((n_sym, nfft), dtype=np.complex128)
     grid[:, used] = _qpsk(rng, (n_sym, n_sc)) * (rng.random((n_sym, n_sc)) < load)
+
+    if res is not None:
+        per_slot = 14
+        for f in range(n_frames):
+            for slot in range(syms_per_frame // per_slot):
+                for l, k_ssb, vals in res(f - 1, slot) or ():
+                    vals = np.asarray(vals)
+                    k = first_bin + int(k_ssb) + np.arange(len(vals))
+                    if k[0] < lo or k[-1] >= lo + n_sc:
+                        raise ValueError('res REs fall outside the carrier')
+                    grid[f * syms_per_frame + slot * per_slot + int(l), k % nfft] = vals
 
     cols = (np.arange(first_bin, first_bin + _SSB_SC)) % nfft
     sent = []
@@ -311,19 +322,24 @@ def _finish(iq, rate, snr_db, cfo_hz, rng):
 
 
 def synth_nr(pci=123, scs_khz=15, case='A', l_max=4, ssb_sent=(0,), period_ms=20, n_hf=0, bw_mhz=10,
-             ssb_offset_hz=0.0, dur_ms=100, snr_db=20.0, cfo_hz=0.0, fs=None, seed=0, load=1.0, pbch=None):
+             ssb_offset_hz=0.0, dur_ms=100, snr_db=20.0, cfo_hz=0.0, fs=None, seed=0, load=1.0, pbch=None,
+             res=None):
     """One NR cell with SSBs. Returns ``(iq complex64, fs, truth)``; see the module docstring.
 
     ``pbch`` (frame_no, half_frame, ssb_idx) -> 432 symbols gives each SSB's PBCH data, for a
     real PBCH (frame_no counts from 0 at the first frame of the output, -1 before it);
     ``truth['ssb_frames']`` holds each listed SSB's frame_no.
 
+    ``res`` (frame_no, slot) -> [(symbol, k, values)] overwrites resource elements outside the
+    SSBs: ``values`` on symbol ``symbol`` of that slot (14 symbols, normal CP), from subcarrier
+    ``k`` counted from SSB subcarrier 0 (negative below it), for a CORESET or a PDSCH.
+
     ``fs`` None keeps the native rate nfft x scs. Signal power over noise power is
     ``snr_db`` at the output rate (non-finite adds none).
     """
     iq, native, truth, rng = _cell_native(
         pci, scs_khz, case, l_max, ssb_sent, period_ms, n_hf, bw_mhz, ssb_offset_hz,
-        dur_ms, seed, load, pbch)
+        dur_ms, seed, load, pbch, res)
     rate = native if fs is None else float(fs)
     if int(round(rate)) != int(round(native)):
         iq = _resample(iq, native, rate)

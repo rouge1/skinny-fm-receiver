@@ -1383,9 +1383,11 @@ identity, the SIBs a cell sends), and the outside decoder (`nr_si`, srsRAN)
 reads one transmission at a time. A weaker sector of a site sends its SIB1
 in the same slot as the stronger sector's, under it. On the first real case
 (2026-10-24), the SSB SNR was 2.4 dB and the SIB1 data was about -4 to -10 dB
-per RE after cancelling the stronger cell. SIB1 is one block for 160 ms (8
-transmissions, redundancy versions 0, 2, 3, 1) and the same across a 6 s
-capture (about 37 periods). Adding the soft bits of those copies gains about
+per RE after cancelling the stronger cell. SIB1 is one block for 160 ms and
+the same across a 6 s capture (about 37 periods). Our own PDCCH decoder
+(28.2) showed how often it is sent: on that site's strongest sector every
+40 ms, always redundancy version 0, on the same RBs; on another cell eight
+times per 160 ms, versions 0, 2, 3, 1, 0, on RBs that move each time. Adding the soft bits of those copies gains about
 9 to 15 dB, and only a decoder that keeps soft bits can do it.
 
 Rules:
@@ -1413,11 +1415,20 @@ Phases, each one checked before the next:
   others' 2, but with its SSB index 2 that still puts its SIB1 control
   channel in the strongest sector's slots (38.213 table 13-11, which also
   gives the slots measured on the other cells).
-- [ ] 28.2 CORESET 0 and Type0-PDCCH: CORESET 0 and search space 0 from the
+- [x] 28.2 CORESET 0 and Type0-PDCCH: CORESET 0 and search space 0 from the
   MIB (38.213 13, tables 13-1 to 13-11), the REG-bundle interleaver with
   the PCI shift, PDCCH DM-RS, the polar decoder for DCI 1_0 with the
   SI-RNTI mask, and the DCI's fields. Done when every SIB1 DCI `nr_si` finds
   on a real recording is found with the same fields.
+  Shipped 2026-10-24: `iqnr_phy` (CORESET 0, candidates, PDCCH, polar
+  puncturing and shortening, DCI 1_0), `iqnr.type0_pdcch`, `iq-nr --pdcch`,
+  20 checks in `test_iqnr_phy.py`. On two real 6 s recordings every SIB1 DCI
+  `nr_si` found (52 and 74) was found with the same level, CCE and fields,
+  with 91 and 113 more that it missed: every SIB1 transmission in the files
+  (one every 40 ms on one cell, eight per 160 ms on the other), no stray
+  decodes. The second sector's other-SI DCIs decoded at about -4 dB per RE
+  (10, in the strongest sector's SI windows), but not its SIB1 DCI, which
+  lies half under the strongest sector's. Only 15 kHz SSB and common spacing.
 - [ ] 28.3 PDSCH for SIB1 and other SI: time and frequency allocation, PDSCH
   DM-RS (type 1, CORESET 0 reference for SIB1 and CRB 0 for other SI),
   descrambling, LDPC base graph choice and segmentation, rate recovery, the

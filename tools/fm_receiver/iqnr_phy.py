@@ -1,9 +1,10 @@
-"""5G NR broadcast decoding, numpy only: the PBCH and its MIB (roadmap Round 28.1).
+"""5G NR broadcast decoding, numpy only: the PBCH and its MIB, and the PDCCH that schedules
+SIB1 (roadmap Rounds 28.1 and 28.2).
 
-Written from the 3GPP specifications (TS 38.211 V19, 38.212 V19.4.0); the four
-tables below are copied from 38.212. No srsRAN code is used: srsRAN is AGPL and
-stays outside this repo, as the referee (``nr_si``) the results are checked
-against. Broadcast only: this decodes what every phone in range is sent.
+Written from the 3GPP specifications (TS 38.211 V19, 38.212 V19.4.0, 38.213 V19.5.0,
+38.214); the tables below are copied from 38.212 and 38.213. No srsRAN code is used: srsRAN
+is AGPL and stays outside this repo, as the referee (``nr_si``) the results are checked
+against. Broadcast only: this decodes what every phone in range is sent, and only the SI-RNTI.
 
 The PBCH (38.212 7.1, 38.211 7.3.3) carries 32 bits: the 24-bit BCCH-BCH
 message (the MIB) and 8 bits of timing (the SFN's four LSBs, the half-frame
@@ -28,6 +29,41 @@ a per-symbol channel estimate from the PBCH DM-RS, QPSK soft bits, PBCH
 descrambling, the repeated bits summed, the sub-block interleaving undone, a
 successive-cancellation list decoder (list 8) with the CRC choosing the path,
 then steps 2 and 1 undone. ``encode_pbch`` is the transmitter, for the tests.
+
+SIB1's PDCCH (Round 28.2). The MIB names CORESET 0 and search space 0:
+
+- ``coreset0``: 38.213 table 13-1 ({15, 15} kHz) gives N_RB, N_symb and the
+  offset in RBs from the CORESET's lowest RB to the common RB holding the
+  SSB's first subcarrier, which is k_SSB above that RB's start.
+- ``type0_occasion``: table 13-11 gives O, M and the first symbol; slots
+  n0 = (O 2^mu + floor(i M)) mod 10 and n0 + 1 of frames whose SFN parity is
+  floor((O 2^mu + floor(i M)) / 10) mod 2 (38.213 13), i the SSB index.
+- ``cce_rbs``: 38.211 7.3.2.2. REGs are numbered time first, a bundle is 6
+  REGs (6 / N_symb RBs over every symbol), and CCE j is bundle f(j),
+  f(x) = (r C + c + n_shift) mod (N_REG / 6) with x = c R + r, R = 2 and
+  n_shift = PCI. So the PCI moves every CCE by one bundle per unit.
+- ``type0_candidates``: table 10.1-1 (AL 4, 8, 16 with 4, 2, 1 candidates)
+  and the hashing of 38.213 10.1 with Y = 0 in a common search space.
+- The transmitter (``encode_pdcch``): DCI format 1_0 with CRC scrambled by
+  SI-RNTI, 39 bits at 48 RBs (38.212 7.3.1.2.1, no format identifier); the
+  CRC 24C of 24 ones and the payload, its last 16 bits XORed with the RNTI
+  (7.3.2); the polar code with n_max 9 and no parity-check bits (7.3.3), N
+  from 5.3.1; rate matching to E = 108 x AL (7.3.4): E < N is punctured when
+  K / E <= 7/16 (the AL4 case, E 432 against N 512: the first N - E
+  sub-block-interleaved bits are dropped and more positions frozen, 5.3.1.2)
+  and shortened otherwise; scrambling with c_init = PCI (n_RNTI 0 in a common
+  search space, 38.211 7.3.2.3), QPSK, and the REs of the candidate's REGs
+  that are not DM-RS, k first across all its RBs, then l (7.3.2.5).
+- ``decode_pdcch`` undoes these on one occasion's CORESET grid, every
+  candidate, largest first. Per candidate the PDCCH DM-RS (38.211 7.4.1.3,
+  N_ID = PCI, subcarriers 1, 5, 9 of each RB, m counted from the CORESET's
+  lowest RB) gives a common delay (a matched search over the phase slope)
+  and a gain per REG bundle and symbol, since precoding may change between
+  bundles. ``parse_dci_1_0_si`` reads the fields, ``riv_to_rbs`` the RBs
+  (38.214 5.1.2.2.2).
+
+Only 15 kHz SSB and common spacing (table 13-1) is covered; other tables are
+not copied yet.
 
 Wrong turns
 -----------
@@ -192,10 +228,36 @@ def _ssb_layout(pci):
 
 # ----- polar code (38.212 5.3.1, 5.4.1) ---------------------------------------------------
 
-def _info_set(k, n):
-    """The ``k`` most reliable of ``n`` positions, in increasing order (no puncturing: E >= N)."""
-    qn = [q for q in _Q if q < n]
-    return np.sort(np.array(qn[n - k:], dtype=np.int64))
+def polar_n(k, e, n_max):
+    """N of 38.212 5.3.1 for ``k`` bits rate-matched to ``e`` (R_min 1/8, n_min 5)."""
+    ce = (int(e) - 1).bit_length()                               # ceil(log2 E)
+    n1 = ce - 1 if (8 * e <= 9 * 2 ** (ce - 1) and 16 * k < 9 * e) else ce
+    n2 = (8 * int(k) - 1).bit_length()                           # ceil(log2(K / R_min))
+    return 2 ** max(min(n1, n2, int(n_max)), 5)
+
+
+def _punctured(k, n, e):
+    """True when E < N is met by puncturing (K/E <= 7/16), False by shortening (5.4.1.2)."""
+    return 16 * k <= 7 * e
+
+
+def _info_set(k, n, e=None):
+    """The ``k`` most reliable of ``n`` positions, in increasing order, leaving out those that
+    rate matching to ``e`` < ``n`` freezes (Q_F,tmp of 38.212 5.3.1.2)."""
+    frozen = set()
+    if e is not None and e < n:
+        j = _subblock(n)
+        if _punctured(k, n, e):
+            frozen.update(int(v) for v in j[:n - e])
+            if 4 * e >= 3 * n:
+                top = -((2 * e - 3 * n) // 4)                     # ceil(3N/4 - E/2)
+            else:
+                top = -((4 * e - 9 * n) // 16)                    # ceil(9N/16 - E/4)
+            frozen.update(range(top))
+        else:
+            frozen.update(int(v) for v in j[e:])
+    qn = [q for q in _Q if q < n and q not in frozen]
+    return np.sort(np.array(qn[len(qn) - k:], dtype=np.int64))
 
 
 def _input_interleaver(k):
@@ -222,12 +284,15 @@ def _transform(u):
 
 
 def polar_encode(c, n, e):
-    """Rate-matched polar codeword (``e`` bits) of the ``k = len(c)`` bits ``c``, I_IL = 1, E >= N."""
+    """Rate-matched polar codeword (``e`` bits) of the ``k = len(c)`` bits ``c``, I_IL = 1, no
+    parity-check bits: repetition when E >= N, else puncturing or shortening (5.4.1.2)."""
     k = len(c)
     u = np.zeros(n, dtype=np.uint8)
-    u[_info_set(k, n)] = np.asarray(c, dtype=np.uint8)[_input_interleaver(k)]
+    u[_info_set(k, n, e)] = np.asarray(c, dtype=np.uint8)[_input_interleaver(k)]
     y = _transform(u)[_subblock(n)]
-    return y[np.arange(e) % n]
+    if e >= n:
+        return y[np.arange(e) % n]
+    return y[n - e:] if _punctured(k, n, e) else y[:e]
 
 
 class _SCL:
@@ -269,26 +334,41 @@ class _SCL:
         return np.concatenate((xl[p2] ^ xr, xr), axis=1), p1[p2]
 
 
-def polar_decode(llr_e, k, n, list_size=LIST):
-    """``(c, metric)``: the ``k`` bits whose CRC 24C (the last 24) checks, from the ``e`` rate-matched
-    LLRs (positive means 0), or ``(None, None)``. The list's paths are tried best first."""
+#: The LLR given a shortened bit, known to be 0.
+_SURE = 1e4
+
+
+def polar_decode(llr_e, k, n, list_size=LIST, check=None):
+    """``(c, metric)``: the ``k`` bits whose CRC checks, from the ``e`` rate-matched LLRs
+    (positive means 0), or ``(None, None)``. The list's paths are tried best first. ``check``
+    takes the ``k`` bits and says whether they pass; by default the last 24 are their CRC 24C."""
+    llr_e = np.asarray(llr_e, dtype=np.float64)
     e = len(llr_e)
     y = np.zeros(n)
-    np.add.at(y, np.arange(e) % n, np.asarray(llr_e, dtype=np.float64))
+    if e >= n:
+        np.add.at(y, np.arange(e) % n, llr_e)
+    elif _punctured(k, n, e):
+        y[n - e:] = llr_e                                         # the punctured bits stay at 0
+    else:
+        y[:e] = llr_e
+        y[e:] = _SURE
     d = np.zeros(n)
     d[_subblock(n)] = y
-    info = _info_set(k, n)
+    info = _info_set(k, n, e)
     frozen = np.ones(n, dtype=bool)
     frozen[info] = False
     dec = _SCL(frozen, list_size)
     dec.node(np.tile(d, (list_size, 1)))
     pi = _input_interleaver(k)
+    if check is None:
+        def check(bits):
+            return np.array_equal(crc24c(bits[:k - L_CRC]), bits[k - L_CRC:])
     for p in np.argsort(dec.pm, kind='stable'):
         if dec.pm[p] >= 1e11:
             break
         c = np.zeros(k, dtype=np.uint8)
         c[pi] = dec.u[p, info]
-        if np.array_equal(crc24c(c[:k - L_CRC]), c[k - L_CRC:]):
+        if check(c):
             return c, float(dec.pm[p])
     return None, None
 
@@ -476,3 +556,254 @@ def decode_pbch(xc, pci, i_bar, list_size=LIST):
         'snr_db': float(snr),
         'metric': metric,
     }
+
+
+# ----- CORESET 0 and the Type0-PDCCH search space (38.213 13, 10.1; 38.211 7.3.2) ----------
+
+#: 38.213 table 13-1, {SS/PBCH block, PDCCH} SCS {15, 15} kHz: index -> (N_RB, N_symb, offset
+#: in RBs), all with multiplexing pattern 1; index 15 is reserved.
+CORESET0_15_15 = ((24, 2, 0), (24, 2, 2), (24, 2, 4), (24, 3, 0), (24, 3, 2), (24, 3, 4),
+                  (48, 1, 12), (48, 1, 16), (48, 2, 12), (48, 2, 16), (48, 3, 12), (48, 3, 16),
+                  (96, 1, 38), (96, 2, 38), (96, 3, 38), None)
+#: 38.213 table 13-11 (pattern 1, FR1): index -> (O, search space sets per slot, M, first
+#: symbol); a first symbol of None is 0 for an even SSB index and N_symb for an odd one.
+SS0_FR1 = ((0, 1, 1, 0), (0, 2, 0.5, None), (2, 1, 1, 0), (2, 2, 0.5, None),
+           (5, 1, 1, 0), (5, 2, 0.5, None), (7, 1, 1, 0), (7, 2, 0.5, None),
+           (0, 1, 2, 0), (5, 1, 2, 0), (0, 1, 1, 1), (0, 1, 1, 2),
+           (2, 1, 1, 1), (2, 1, 1, 2), (5, 1, 1, 1), (5, 1, 1, 2))
+#: 38.213 table 10.1-1: (aggregation level, candidates) of the Type0-PDCCH CSS set.
+TYPE0_CANDIDATES = ((4, 4), (8, 2), (16, 1))
+#: The SI-RNTI (38.321 7.1).
+SI_RNTI = 0xFFFF
+#: Polar n_max of a DCI (38.212 7.3.3).
+N_MAX_DCI = 9
+#: Subcarriers of a REG that carry PDCCH data, and those that carry its DM-RS (38.211 7.4.1.3.2).
+_REG_DATA = np.array([0, 2, 3, 4, 6, 7, 8, 10, 11])
+_REG_DMRS = np.array([1, 5, 9])
+
+
+def coreset0(mib):
+    """CORESET 0 of a MIB (``decode_pbch``'s dict) whose SSB and common spacing are 15 kHz:
+    ``n_rb``, ``n_symb``, ``offset_rb`` (from table 13-1) and ``k0``, its lowest subcarrier
+    counted from the SSB's subcarrier 0 (-k_SSB - 12 offset). None for another spacing or a
+    reserved index."""
+    if int(mib.get('scs_common_khz') or 0) != 15:
+        return None
+    row = CORESET0_15_15[int(mib['coreset0_index']) & 15]
+    if row is None:
+        return None
+    n_rb, n_symb, offset = row
+    return {'n_rb': n_rb, 'n_symb': n_symb, 'offset_rb': offset,
+            'k0': -int(mib['ssb_subcarrier_offset']) - 12 * offset}
+
+
+def type0_occasion(search_space0_index, ssb_index, n_symb, mu=0):
+    """Where the Type0-PDCCH CSS of SSB ``ssb_index`` is monitored (38.213 13, table 13-11):
+    ``n0`` (the first of two consecutive slots), ``parity`` (of the SFN of n0's frame),
+    ``first_symbol``, ``sets_per_slot``."""
+    o, sets, m, first = SS0_FR1[int(search_space0_index) & 15]
+    n_slot = 10 * 2 ** mu
+    v = int(o * 2 ** mu) + int(np.floor(ssb_index * m))
+    if first is None:
+        first = 0 if ssb_index % 2 == 0 else int(n_symb)
+    return {'n0': v % n_slot, 'parity': (v // n_slot) % 2, 'first_symbol': int(first),
+            'sets_per_slot': sets}
+
+
+def cce_rbs(n_rb, n_symb, pci):
+    """For each CCE of CORESET 0, the RBs (counted from the CORESET's lowest) of its one REG
+    bundle (L = 6, R = 2, n_shift = PCI, interleaved; 38.211 7.3.2.2). A bundle is 6 / N_symb
+    RBs over all N_symb symbols, since REGs are numbered time first."""
+    n_bundle = n_rb * n_symb // 6
+    c = n_bundle // 2
+    out = []
+    for x in range(n_bundle):
+        f = ((x % 2) * c + x // 2 + int(pci)) % n_bundle
+        rb0 = 6 * f // n_symb
+        out.append(list(range(rb0, rb0 + 6 // n_symb)))
+    return out
+
+
+def type0_candidates(n_cce):
+    """(aggregation level, first CCE) of each Type0-PDCCH candidate: Y = 0 in a common search
+    space (38.213 10.1); a repeated candidate is listed once."""
+    out = []
+    for level, count in TYPE0_CANDIDATES:
+        if level > n_cce:
+            continue
+        for m in range(count):
+            first = level * ((m * n_cce) // (level * count) % (n_cce // level))
+            if (level, first) not in out:
+                out.append((level, first))
+    return out
+
+
+def pdcch_dmrs(pci, slot, symbol, n_rb):
+    """The 3 x ``n_rb`` PDCCH DM-RS values of one symbol (38.211 7.4.1.3.1, N_ID = PCI), from
+    the CORESET's lowest RB (CORESET 0's reference point)."""
+    c_init = ((1 << 17) * (14 * int(slot) + int(symbol) + 1) * (2 * int(pci) + 1) + 2 * int(pci)) % (1 << 31)
+    c = _gold(c_init, 6 * n_rb).astype(np.float64)
+    return ((1 - 2 * c[0::2]) + 1j * (1 - 2 * c[1::2])) / np.sqrt(2.0)
+
+
+def _candidate_res(rbs, n_symb):
+    """(data RE (l, k) pairs in mapping order: k first, then l; DM-RS (l, k, m) triples)."""
+    rbs = sorted(rbs)
+    data = [(l, 12 * rb + k) for l in range(n_symb) for rb in rbs for k in _REG_DATA]
+    dmrs = [(l, 12 * rb + k, 3 * rb + j) for l in range(n_symb) for rb in rbs for j, k in enumerate(_REG_DMRS)]
+    return np.array(data), np.array(dmrs)
+
+
+# ----- DCI (38.212 7.3) -------------------------------------------------------------------
+
+def dci_1_0_si_bits(n_rb):
+    """Payload size of DCI format 1_0 with CRC scrambled by SI-RNTI (38.212 7.3.1.2.1, FR1, no
+    shared spectrum): frequency assignment ceil(log2(N(N+1)/2)), then 4 + 1 + 5 + 2 + 1 + 15."""
+    return (n_rb * (n_rb + 1) // 2 - 1).bit_length() + 28
+
+
+def dci_crc(a, rnti):
+    """The 24 CRC bits of a DCI payload ``a``: CRC 24C of 24 ones then ``a``, the last 16
+    scrambled by ``rnti``, MSB first (38.212 7.3.2)."""
+    p = crc24c(np.concatenate((np.ones(L_CRC, dtype=np.uint8), np.asarray(a, dtype=np.uint8))))
+    p[8:] ^= ((int(rnti) >> np.arange(15, -1, -1)) & 1).astype(np.uint8)
+    return p
+
+
+def encode_pdcch(a, rnti, pci, level):
+    """The 54 x ``level`` QPSK symbols of a PDCCH carrying DCI ``a`` (CRC, polar with n_max 9
+    and rate matching to E = 108 x level; scrambled with c_init = PCI, n_RNTI 0 in a common
+    search space, 38.211 7.3.2.3)."""
+    a = np.asarray(a, dtype=np.uint8)
+    c = np.concatenate((a, dci_crc(a, rnti)))
+    e_len = 108 * int(level)
+    b = polar_encode(c, polar_n(len(c), e_len, N_MAX_DCI), e_len)
+    b ^= _gold(int(pci), e_len)
+    return ((1 - 2.0 * b[0::2]) + 1j * (1 - 2.0 * b[1::2])) / np.sqrt(2.0)
+
+
+def coreset_grid(n_rb, n_symb, pci, slot, first_symbol, pdcchs):
+    """The N_symb x 12 N_rb CORESET grid holding ``pdcchs``, (level, first CCE, symbols) each,
+    with their DM-RS (in their own REGs only), for tests."""
+    g = np.zeros((n_symb, 12 * n_rb), dtype=np.complex128)
+    rbs_of = cce_rbs(n_rb, n_symb, pci)
+    dm = [pdcch_dmrs(pci, slot, first_symbol + l, n_rb) for l in range(n_symb)]
+    for level, cce0, sym in pdcchs:
+        rbs = [rb for j in range(cce0, cce0 + level) for rb in rbs_of[j]]
+        data, dmrs = _candidate_res(rbs, n_symb)
+        g[data[:, 0], data[:, 1]] = sym
+        g[dmrs[:, 0], dmrs[:, 1]] = [dm[l][m] for l, _k, m in dmrs]
+    return g
+
+
+#: Timing slopes searched in a candidate's DM-RS, rad per subcarrier (+/- 0.3 is +/- 3 us at 15 kHz).
+_PD_SLOPES = np.linspace(-0.3, 0.3, 241)
+
+
+def pdcch_llrs(grid, pci, slot, first_symbol, n_rb, n_symb, level, cce0):
+    """The 108 x ``level`` descrambled soft bits of one candidate, and its SNR per RE in dB.
+
+    ``grid`` is the CORESET's N_symb x 12 N_rb REs (symbol ``first_symbol`` first). A common
+    delay is fitted to the candidate's DM-RS (a matched search over the phase slope), then each
+    REG bundle and symbol gets its own gain, since precoding may change between bundles."""
+    grid = np.asarray(grid)
+    rbs_of = cce_rbs(n_rb, n_symb, pci)
+    bundles = [rbs_of[j] for j in range(cce0, cce0 + level)]
+    rbs = [rb for b in bundles for rb in b]
+    data, dmrs = _candidate_res(rbs, n_symb)
+    dm = [pdcch_dmrs(pci, slot, first_symbol + l, n_rb) for l in range(n_symb)]
+    z = grid[dmrs[:, 0], dmrs[:, 1]] * np.conj([dm[l][m] for l, _k, m in dmrs])
+    k_dm = dmrs[:, 1].astype(np.float64)
+    group = np.array([(l, rb) for l, k, _m in dmrs for rb in [k // 12]])
+    bundle_of = {rb: i for i, b in enumerate(bundles) for rb in b}
+    gid = np.array([l * len(bundles) + bundle_of[rb] for l, rb in group])
+    n_g = n_symb * len(bundles)
+    turn = np.exp(-1j * np.outer(_PD_SLOPES, k_dm))
+    sums = np.zeros((len(_PD_SLOPES), n_g), dtype=np.complex128)
+    for g in range(n_g):
+        sums[:, g] = turn[:, gid == g] @ z[gid == g]
+    score = np.sum(np.abs(sums) ** 2, axis=1)
+    i = int(np.argmax(score))
+    slope = float(_PD_SLOPES[i])
+    if 0 < i < len(score) - 1:
+        a, b, c = score[i - 1], score[i], score[i + 1]
+        den = a - 2 * b + c
+        if den < 0:
+            slope += 0.5 * (a - c) / den * float(_PD_SLOPES[1] - _PD_SLOPES[0])
+    zf = z * np.exp(-1j * slope * k_dm)
+    h_g = np.array([np.mean(zf[gid == g]) for g in range(n_g)])
+    resid = zf - h_g[gid]
+    per = len(zf) / n_g
+    noise = max(float(np.mean(np.abs(resid) ** 2)) * per / max(per - 1, 1), 1e-12)
+    l_d, k_d = data[:, 0], data[:, 1]
+    gid_d = np.array([l * len(bundles) + bundle_of[k // 12] for l, k in data])
+    h = h_g[gid_d] * np.exp(1j * slope * k_d)
+    zz = grid[l_d, k_d] * np.conj(h)
+    scale = 2.0 * np.sqrt(2.0) / noise
+    llr = np.empty(2 * len(zz))
+    llr[0::2] = scale * zz.real
+    llr[1::2] = scale * zz.imag
+    llr *= 1.0 - 2.0 * _gold(int(pci), len(llr))
+    snr = 10 * np.log10(max(float(np.mean(np.abs(h_g) ** 2)) / noise, 1e-12))
+    return llr, snr, slope
+
+
+def riv_to_rbs(riv, n):
+    """(first RB, number of RBs) of a type 1 resource indication value in ``n`` RBs (38.214
+    5.1.2.2.2), or None when it names none."""
+    a, b = divmod(int(riv), int(n))
+    if a + b < n:
+        start, length = b, a + 1
+    else:
+        start, length = n - 1 - b, n - a + 1
+    if length < 1 or start < 0 or start + length > n:
+        return None
+    return start, length
+
+
+def parse_dci_1_0_si(a, n_rb):
+    """The fields of a DCI format 1_0 payload with CRC scrambled by SI-RNTI (38.212 7.3.1.2.1)."""
+    w = (n_rb * (n_rb + 1) // 2 - 1).bit_length()
+    widths = (('fda', w), ('tdra', 4), ('vrb_to_prb', 1), ('mcs', 5), ('rv', 2), ('sii', 1), ('reserved', 15))
+    out, at = {}, 0
+    for name, width in widths:
+        v = 0
+        for bit in a[at:at + width]:
+            v = (v << 1) | int(bit)
+        out[name] = v
+        at += width
+    rbs = riv_to_rbs(out['fda'], n_rb)
+    out['rb_start'], out['n_rbs'] = rbs if rbs else (None, None)
+    out['vrb_to_prb'] = 'interleaved' if out['vrb_to_prb'] else 'non-interleaved'
+    return out
+
+
+def decode_pdcch(grid, pci, slot, first_symbol, n_rb, n_symb, rnti=SI_RNTI, payload_bits=None,
+                 list_size=LIST):
+    """Every Type0-PDCCH candidate in one CORESET 0 occasion whose CRC checks with ``rnti``:
+    a list of dicts ``level``, ``cce``, ``bits`` (the payload, a string of 0 and 1), the DCI
+    format 1_0 SI-RNTI fields, ``snr_db``, ``metric``. A candidate inside a larger one that
+    decoded is not tried."""
+    a_len = dci_1_0_si_bits(n_rb) if payload_bits is None else int(payload_bits)
+    k = a_len + L_CRC
+
+    def check(c):
+        return np.array_equal(dci_crc(c[:a_len], rnti), c[a_len:])
+    found = []
+    taken = set()
+    for level, cce0 in sorted(type0_candidates(n_rb * n_symb // 6), key=lambda t: -t[0]):
+        cces = set(range(cce0, cce0 + level))
+        if cces & taken:
+            continue
+        llr, snr, slope = pdcch_llrs(grid, pci, slot, first_symbol, n_rb, n_symb, level, cce0)
+        c, metric = polar_decode(llr, k, polar_n(k, len(llr), N_MAX_DCI), list_size, check)
+        if c is None:
+            continue
+        taken |= cces
+        a = c[:a_len]
+        out = {'level': level, 'cce': cce0, 'bits': ''.join(str(int(b)) for b in a)}
+        if payload_bits is None:
+            out.update(parse_dci_1_0_si(a, n_rb))
+        out.update(snr_db=float(snr), slope=slope, metric=metric)
+        found.append(out)
+    return found

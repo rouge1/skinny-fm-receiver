@@ -4,7 +4,8 @@ Given complex IQ, its sample rate and centre frequency, list every NR cell whose
 SS/PBCH block is in the capture: where it sits on the sync raster (GSCN), its
 subcarrier spacing (15 or 30 kHz), physical cell ID (PCI), SSB index and
 half-frame (from the PBCH DM-RS), burst period, carrier offset, and a chance
-estimate. It decodes nothing: no PBCH bits, no MIB. NR's sync signals are
+estimate. The search decodes nothing; ``ssb_search(mib=True)`` and
+``type0_pdcch`` (SIB1's DCIs) hand the grids they cut to ``iqnr_phy``. NR's sync signals are
 m-sequences, not LTE's Zadoff-Chu, so ``iqlte`` can only call an NR carrier
 "possible"; this module is the NR counterpart of its PSS/SSS search.
 
@@ -125,6 +126,28 @@ calculation); the rest were hit while building this.
 - Scanning the PSS at the full working rate with the offset grid: the
   elementwise work of 15 correlations dominated a raster search (63 candidates
   at 20 MS/s). Half the rate and one batched argmax cut it by a third.
+
+SIB1's PDCCH (``type0_pdcch``, roadmap Round 28.2)
+---------------------------------------------------
+The MIB of a cell's first decoded burst times its frames: SSB index i starts
+symbol {2, 8, 16, 22}[i] of its half-frame (case A), so frame SFN starts that
+far, and 5 ms per half-frame, before ``ssb_s``. CORESET 0's lowest subcarrier
+is k0 = -k_SSB - 12 x offset subcarriers from the SSB's subcarrier 0. Each
+occasion (slots n0 and n0 + 1 of frames of the right parity) is cut from the
+capture alone: about 0.2 ms around its CORESET symbols, moved so subcarrier
+6 N_RB is at 0 Hz (the cell's ``cfo_hz`` included) and resampled by cutting
+its spectrum to nfft x 15 kHz, nfft the multiple of 128 that holds the
+CORESET (640 for 48 RBs). Each symbol's window opens half its cyclic prefix
+early, and the ramp that puts on the subcarriers is taken off. So memory
+does not grow with the capture, which may be a memmap of a whole recording.
+
+The recorder's clock drifts against the cell's. Over a 5.7 s recording the
+DM-RS delay fit walked 2 us (0.36 ppm), the same ratio as the carrier offset
+to the carrier frequency: the BB60D's sample clock and tuner share a reference.
+So time from the anchoring burst is scaled by 1 - cfo / f; the fitted delays
+then stayed within 0.2 us across that file (0.8 us on another). A recorder without a shared
+reference leaves a drift the per-candidate delay fit (+/- 3 us) absorbs over
+a few seconds.
 """
 
 import math
@@ -662,3 +685,115 @@ def ssb_search(iq, fs, center_hz, ssb_hz=None, scs_khz=None, max_cells=4, mib=Fa
     for e in out:
         del e['_power']
     return out[:max(0, int(max_cells))]
+
+
+# ----- SIB1's PDCCH (roadmap Round 28.2) --------------------------------------------
+
+#: Start of symbol l in a 15 kHz slot (cyclic prefix included), and its prefix, in 1/30.72 MHz
+#: samples (38.211 5.3.1: the prefix of symbols 0 and 7 is 16 longer).
+_TS_RATE = 30.72e6
+
+
+def _symbol_start(l):
+    return l * 2192 + 16 * (l >= 1) + 16 * (l >= 8)
+
+
+def _symbol_cp(l):
+    return 160 if l in (0, 7) else 144
+
+
+#: First symbol of SSB index i in its half-frame, case A (38.213 4.1: {2, 8} + 14 n).
+_CASE_A = (2, 8, 16, 22)
+
+
+def _cut(x, fs, i0, n_in, shift_hz, out_rate):
+    """``x[i0:i0 + n_in]`` moved by -shift_hz (phase from sample 0) and resampled to ``out_rate``
+    by cutting its spectrum: sample j is at time i0 / fs + j / out_rate."""
+    seg = np.asarray(x[i0:i0 + n_in], dtype=np.complex128)
+    seg = seg * np.exp(-2j * np.pi * ((shift_hz / fs * np.arange(i0, i0 + n_in)) % 1.0))
+    m = int(round(n_in * out_rate / fs))
+    spec = np.fft.fft(seg)
+    q = np.arange(-(m // 2), m - m // 2)
+    return np.fft.ifft(np.roll(spec.take(q, mode='wrap'), -(m // 2))) * (m / float(n_in))
+
+
+def type0_pdcch(iq, fs, center_hz, cell, rnti=None):
+    """SIB1's DCIs (DCI format 1_0, CRC scrambled by SI-RNTI) of one cell, decoded with
+    ``iqnr_phy`` in every Type0-PDCCH occasion of the capture.
+
+    ``cell`` is an ``ssb_search(..., mib=True)`` entry with a MIB (its ``ssb_s``, SFN,
+    half-frame and SSB index time the frames; ``cfo_hz`` is removed). 15 kHz SSB and common
+    spacing only. Returns None without a usable MIB, else a dict: ``coreset0`` (``n_rb``,
+    ``n_symb``, ``offset_rb``, ``f0_hz``: its lowest subcarrier), ``occasion`` (from table
+    13-11), ``slots`` (slots tried), and ``dcis``, one per DCI found: ``sfn``, ``slot``,
+    ``t_s`` (the slot's start), ``level``, ``cce``, the payload's fields, ``snr_db``."""
+    from . import iqnr_phy as P
+    mib = (cell or {}).get('mib')
+    if not mib or int(cell.get('scs_khz') or 0) != 15:
+        return None
+    cs = P.coreset0(mib)
+    if cs is None:
+        return None
+    rnti = P.SI_RNTI if rnti is None else int(rnti)
+    fs = float(fs)
+    x = iq
+    pci, i_ssb = int(cell['pci']), int(mib['ssb_index'])
+    n_rb, n_symb = cs['n_rb'], cs['n_symb']
+    occ = P.type0_occasion(mib['search_space0_index'], i_ssb, n_symb)
+    scs = 15e3
+    f0 = float(cell['ssb_hz']) + (cs['k0'] - _REF_K) * scs
+    nfft = 128 * -(-12 * n_rb // 128)
+    rate = nfft * scs
+    f_mid = f0 + 6 * n_rb * scs                     # subcarrier 6 N_RB sits on bin 0
+    shift = f_mid - float(center_hz) + float(cell.get('cfo_hz') or 0.0)
+    if abs(f_mid - float(center_hz)) + 6 * n_rb * scs > 0.5 * fs:
+        return None
+    s = _CASE_A[i_ssb]
+    t_frame = (float(mib['ssb_s']) - (s // 14) * 1e-3 - _symbol_start(s % 14) / _TS_RATE
+               - 5e-3 * int(mib['half_frame']))
+    sfn0 = int(mib['sfn'])
+    # The recorder's sample clock is taken to share its reference with its tuner: a carrier
+    # cfo_hz high means the clock runs slow by cfo / f, and the cell's frames come early.
+    scale = 1.0 - float(cell.get('cfo_hz') or 0.0) / float(cell['ssb_hz'])
+    ratio = Fraction(int(round(rate)), int(round(fs)))
+    k_bins = (np.arange(12 * n_rb) - 6 * n_rb)
+    margin = 64 / rate
+    dcis, slots = [], 0
+    n_total = len(x)
+    first_frame = int(math.floor(-t_frame / 10e-3))
+    last_frame = int(math.ceil((n_total / fs - t_frame) / 10e-3))
+    for fr in range(first_frame, last_frame + 1):
+        sfn = (sfn0 + fr) % 1024
+        if sfn % 2 != occ['parity']:
+            continue
+        for slot_abs in (occ['n0'], occ['n0'] + 1):
+            t_slot = float(mib['ssb_s']) + (t_frame - float(mib['ssb_s']) + fr * 10e-3 + slot_abs * 1e-3) * scale
+            l0 = occ['first_symbol']
+            t_a = t_slot + _symbol_start(l0) / _TS_RATE - margin
+            t_b = t_slot + _symbol_start(l0 + n_symb) / _TS_RATE + margin
+            i0 = int(math.floor(t_a * fs))
+            n_in = int(math.ceil((t_b - t_a) * fs)) + 1
+            n_in += (-n_in) % ratio.denominator
+            if i0 < 0 or i0 + n_in > n_total:
+                continue
+            y = _cut(x, fs, i0, n_in, shift, rate)
+            grid = np.zeros((n_symb, 12 * n_rb), dtype=np.complex128)
+            for li in range(n_symb):
+                l = l0 + li
+                cp = _symbol_cp(l) * nfft / 2048.0
+                start = (t_slot + _symbol_start(l) / _TS_RATE - i0 / fs) * rate + cp - cp / 2
+                p = int(math.floor(start))
+                if p < 0 or p + nfft > len(y):
+                    break
+                spec = np.fft.fft(y[p:p + nfft])
+                d = (start + cp / 2) - p                # the window opens d samples early
+                grid[li] = spec[k_bins % nfft] * np.exp(2j * np.pi * k_bins * d / nfft)
+            else:
+                slots += 1
+                slot = slot_abs % 10
+                sfn_slot = (sfn + slot_abs // 10) % 1024
+                for dci in P.decode_pdcch(grid, pci, slot, l0, n_rb, n_symb, rnti=rnti):
+                    dci.pop('metric', None)
+                    dcis.append(dict(sfn=int(sfn_slot), slot=int(slot), t_s=float(t_slot), **dci))
+    return {'coreset0': dict(n_rb=n_rb, n_symb=n_symb, offset_rb=cs['offset_rb'], f0_hz=f0),
+            'occasion': occ, 'slots': slots, 'dcis': dcis}

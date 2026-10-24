@@ -356,6 +356,54 @@ tenth of a second to the search.
 Tests: `tools/tests/test_iqnr_phy.py` (synthetic; `nr_synth` can now carry
 a real PBCH).
 
+## Our own SIB1 PDCCH decoder (`--pdcch`, roadmap Round 28.2)
+
+`tools/iq-nr FILE --pdcch` (which implies `--mib`) finds the DCIs that
+schedule each cell's SIB1 with `iqnr.type0_pdcch` and `iqnr_phy`: numpy
+only, written from 38.211, 38.212, 38.213 and 38.214. Tables 13-1, 13-11 and
+10.1-1 are copied from 38.213 V19.5.0, and a test pins them. From the MIB:
+1. CORESET 0 (table 13-1): its RBs, symbols and the offset below the SSB,
+   so its lowest subcarrier is k_SSB + 12 x offset subcarriers under the
+   SSB's first.
+2. The occasions (table 13-11): slots n0 and n0 + 1 of frames of one SFN
+   parity, timed from the first decoded burst.
+3. Each occasion is cut from the capture on its own (about 0.2 ms, moved
+   and resampled to 640 x 15 kHz for 48 RBs), and its CORESET symbols are
+   transformed. Times are scaled by 1 - CFO / f for the recorder's clock
+   drift, which on the BB60D is the carrier offset's ratio (0.36 ppm on one
+   recording: 2 us over 5.7 s if left).
+4. Every Type0 candidate, largest first: CCE-to-REG interleaving with the
+   PCI shift, a delay and per-bundle gains from the PDCCH DM-RS, QPSK soft
+   bits, descrambling (c_init = PCI), rate recovery (AL4 is punctured, E
+   432 against N 512), SC list decoding (8), and the CRC with its last 16
+   bits masked by the SI-RNTI.
+5. DCI format 1_0's fields: the RBs (from the RIV), time row, VRB-to-PRB,
+   MCS, RV, SI indicator and reserved bits.
+
+Each entry gains `pdcch` (see usage.md). Only the SI-RNTI is tried, and only
+in SIB1's occasions: the DCIs for other SI, which come in their own windows,
+are not searched. 15 kHz SSB and common spacing only.
+
+On real air (2026-10-24, two 6 s recordings, the outside program's DCIs
+logged as the referee):
+- The strongest sector of one site: every one of the 52 DCIs the outside
+  program found was found, with the same aggregation level, CCE and fields,
+  and 91 more: 143, one every 40 ms through the file, always AL4 at CCE 0,
+  the same RBs (0 to 33 of 48) and redundancy version 0.
+- A barred cell with a one-symbol CORESET: all 74 found, same fields, and
+  113 more: 187, eight per 160 ms, redundancy versions 0, 2, 3, 1, 0, AL4 at
+  CCE 0 or 4, the RBs moving each time.
+- No decode disagreed with the referee or with the cell's own pattern.
+- The site's second sector (SSB 7 dB under the strongest): no SIB1 DCI. Its
+  candidate is the strongest sector's one REG bundle along, so half of it
+  lies under the stronger cell's. Ten DCIs with the SI indicator set did
+  decode, at about -4 dB per RE, in the strongest sector's other-SI windows
+  and with the same allocations: the sectors share one schedule, and slot 4,
+  where the second sector's other SI fell, is also one of its SIB1 slots.
+- The third sector (12 dB under): nothing.
+
+About 50 ms an occasion, 30 s for a 6 s recording.
+
 ## Decoding a listed SSB (`--decode`)
 
 `tools/iq-nr FILE --decode` goes one step past the search. For each SSB the
