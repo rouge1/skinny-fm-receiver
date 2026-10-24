@@ -35,8 +35,9 @@ Method, for one SSB entry of ``iqnr.ssb_search`` (``decode_ssb``):
    slots too, but cannot decode it (its DM-RS counts from CRB 0, so it needs ``-a``): those
    blocks are ``NR_SI_CRC_FAIL`` / ``NR_SI_ERR`` with ``sii`` 1. When pass 1 had any and
    SIB1 schedules nothing, pass 2 runs all the same (``-a``, and ``-t`` when SIB1 has a
-   list). Pass 1's other ``sii`` 0 failures are SIB1's repeats with redundancy versions 2
-   and 3, which do not decode alone (on air, every one of them), not another message.
+   list). Pass 1's ``sii`` 0 failures are SIB1: its repeats with redundancy versions 2 and
+   3, which do not decode alone, and copies with version 0 that failed (on air, 31 and 7
+   of 38), not another message.
 
 Time (SIB9 ``timeInfo``): ``timeInfoUTC`` counts 10 ms units from 1900-01-01 00:00:00
 UTC, exactly as LTE SIB16, so ``iqlte_decode.sib16_time`` does the arithmetic.
@@ -533,6 +534,7 @@ def decode_ssb(src, centre_hz, ssb, tools=None, cut_reason=None):
             base += ['-P', int(want_pci)]
             aimed = _Pass(*_run(script, base, timeout))
             if aimed.mib is None or aimed.mib.get('pci') is None or int(aimed.mib['pci']) != int(want_pci):
+                passes = [aimed]               # the stronger cell's blocks are not this one's
                 out['decoded_pci'] = int(mib_pci)
                 out['time_reason'] = 'another cell was decoded'
                 why = aimed.error or 'no MIB (%s)' % ((aimed.no_mib or {}).get('reason') or 'none read')

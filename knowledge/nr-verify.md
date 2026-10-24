@@ -387,8 +387,8 @@ The other exit codes are those of the search (see the Exit codes table above).
    pass 2 runs all the same, and `reason` says so. Pass 1's other `sii` 0
    failures are SIB1's repeats. On the barred cell, SIB1 came every 80 ms
    with redundancy version 0, which decodes. Its repeats 20 and 40 ms later
-   used versions 2 and 3, which do not decode alone, and every failure was
-   one of those.
+   used versions 2 and 3, which do not decode alone: 31 of the 38 failures
+   were those, and the other 7 were version-0 copies of SIB1 that failed.
 
 5. **Clean up.** The temporary folder is deleted, on success and on every
    failure path.

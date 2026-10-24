@@ -1038,6 +1038,7 @@ def test_t_weaker_sector_without_a_mib_keeps_decoded_pci():
     reason = dec.get('reason') or ''
     assert 'PCI %d' % (PCI + 3) in reason and 'no MIB' in reason, 'reason %r' % reason
     assert dec.get('time_reason') == 'another cell was decoded', dec
+    assert (dec.get('blocks') or {}).get('sib1') == 0, 'the stronger cell\'s blocks counted: %r' % dec.get('blocks')
 
 
 def test_u_unscheduled_si_in_sib1_slots_is_heard():
