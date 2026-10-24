@@ -161,7 +161,7 @@ full gain: noise only, floor about -120 dBm).
 
 `--decode` reads the MIB, the SIB1 and every other SIB of a cell that the
 fingerprint called `lte` with a PCI (the other SIBs since 2026-10-22; what they
-hold is in [lte-broadcast.md](lte-broadcast.md)). Nothing of ours decodes: the work is done by srsRAN 4G's
+hold is in [lte-broadcast.md](lte-broadcast.md)). No code of ours decodes LTE yet: the work is done by srsRAN 4G's
 `pdsch_ue`, which the user builds separately.
 
 What the decode does:

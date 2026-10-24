@@ -1352,8 +1352,10 @@ outside the repo. Method, output and limits: [nr-verify.md](nr-verify.md).
   `-P PCI`, and the decode retries with it when pass 1 reads another PCI. On
   air the second sector's MIB came; the third gave none.
 - [ ] A weaker sector's SIB1: it shares CORESET 0 and SIB1's slots with the
-  stronger cell, whose PDCCH covers it. It would need the stronger cell's
-  signal subtracted first, or a place where the weaker sector is the stronger.
+  stronger cell. Measured 2026-10-24 (reference signals only): its PDCCH half
+  overlaps the stronger cell's, and its SIB1 data lies under the stronger
+  cell's, about -4 to -10 dB per RE even after cancelling it. One transmission
+  is out of reach; combining the repeats is not. Planned as Round 28.
 
 ## Round 27: fixes from the first cell survey (2026-10-23)
 
@@ -1373,3 +1375,57 @@ recording, live and saved.
 - [ ] The two 700 MHz carriers whose SIB1 never decodes (see
   [lte-verify.md](lte-verify.md)): tried again with the outside antenna, 6 s,
   live; still the MIB only. A directional antenna or another place is next.
+
+## Round 28: our own NR broadcast decoder, with combining (planned 2026-10-24)
+
+Why: decoding is what tells cells apart (operator, tracking area, cell
+identity, the SIBs a cell sends), and the outside decoder (`nr_si`, srsRAN)
+reads one transmission at a time. A weaker sector of a site sends its SIB1
+in the same slot as the stronger sector's, under it. On the first real case
+(2026-10-24), the SSB SNR was 2.4 dB and the SIB1 data was about -4 to -10 dB
+per RE after cancelling the stronger cell. SIB1 is one block for 160 ms (8
+transmissions, redundancy versions 0, 2, 3, 1) and the same across a 6 s
+capture (about 37 periods). Adding the soft bits of those copies gains about
+9 to 15 dB, and only a decoder that keeps soft bits can do it.
+
+Rules:
+- `iqnr_phy.py` is numpy only, like `iqnr`, and written from the specs
+  (38.211, 38.212, 38.213, 38.214). srsRAN is AGPL: none of its code is
+  copied or translated.
+- Broadcast only: the PBCH, and PDCCH and PDSCH on the SI-RNTI in CORESET 0.
+  No other RNTI is searched, and nothing is sent.
+- Tests: synthetic signals from our own encoders, with made-up values (PCI
+  123, PLMN 001-01), plus bit-for-bit agreement with `nr_si` on real
+  recordings, in the ops folder only, never in the repo.
+- `nr_si` stays as the referee and the fallback; `iq-nr --decode` chooses.
+
+Phases, each one checked before the next:
+- [ ] 28.1 PBCH: SSB grid at the time and offset `iqnr` gives, PBCH DM-RS
+  channel estimate, QPSK, descrambling (38.211 7.3.3.1), rate recovery and
+  the polar decoder (38.212 5.3.1, 7.1: list decoding with CRC 24C), and the
+  MIB. Done when the MIB matches `nr_si`'s on every real NR recording, and a
+  synthetic MIB round-trips to 0 dB.
+- [ ] 28.2 CORESET 0 and Type0-PDCCH: CORESET 0 and search space 0 from the
+  MIB (38.213 13, tables 13-1 to 13-11), the REG-bundle interleaver with
+  the PCI shift, PDCCH DM-RS, the polar decoder for DCI 1_0 with the
+  SI-RNTI mask, and the DCI's fields. Done when every SIB1 DCI `nr_si` finds
+  on a real recording is found with the same fields.
+- [ ] 28.3 PDSCH for SIB1 and other SI: time and frequency allocation, PDSCH
+  DM-RS (type 1, CORESET 0 reference for SIB1 and CRB 0 for other SI),
+  descrambling, LDPC base graph choice and segmentation, rate recovery, the
+  LDPC decoder (layered min-sum), CRC, and the blocks handed to the pycrate
+  parser that exists. Done when SIB1 and the other SI match `nr_si`'s bytes.
+- [ ] 28.4 Combining:
+  - LLRs of the same SIB1 block are kept per redundancy version across
+    occasions, within a 160 ms period and across periods while the content
+    holds (a CRC pass ends it).
+  - PDCCH is combined over the occasions where a cell's candidate repeats,
+    or the DCI is taken from earlier passes.
+  - Measured gain on synthetic signals, then the weaker sector's SIB1 on the
+    real recording.
+- [ ] 28.5 Optional cancellation: the stronger cell's PDCCH and PDSCH
+  rebuilt from its decoded bits and subtracted before the weaker one is
+  read. Only if 28.4 falls short.
+- [ ] LTE (later, separate): PBCH, PCFICH, PDCCH and PDSCH with turbo
+  decoding, for the 700 MHz carriers whose SIB1 the outside decoder never
+  reads.

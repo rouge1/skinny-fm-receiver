@@ -314,7 +314,7 @@ search listed, it hands a block of the recording to an outside program, and
 reads back the MIB, SIB1, the other system information and, where SIB9
 carries it, the network time. The program is `$FMRX_LTE_TOOLS/run_nr.sh`,
 srsRAN 4G's NR library (AGPL). It is not in this repo and is never installed
-here. Nothing of ours decodes: `iqnr_decode.py` cuts the samples, runs that
+here. No code of ours decodes NR yet (roadmap Round 28 plans it): `iqnr_decode.py` cuts the samples, runs that
 program, reads its tagged lines and sends the RRC messages to pycrate.
 
 The program reads only the broadcast channel. It searches the SI-RNTI

@@ -30,11 +30,17 @@ with no launcher.
     leaves gaps for hidden rows.
   - With the window open, drive it with `tools/fmctl` (`control.py`'s
     socket) rather than opening the radio.
-  - Nothing of ours decodes: `tools/iq-decode` runs rtl_433 (on PATH);
-    `iqlte_decode.py` hands off to an outside srsRAN 4G `pdsch_ue` and
-    `iqnr_decode.py` to its NR library (`run_nr.sh`), both via
-    `$FMRX_LTE_TOOLS`, SI-RNTI only, and srsRAN is never installed here
-    (`knowledge/lte-verify.md`, `knowledge/nr-verify.md`).
+  - We decode when decoding is what classifies a signal (a cell's
+    broadcast, say), and only then: the aim is to say what a signal is, not
+    a decoder per protocol. Today the decoders are outside ones:
+    `tools/iq-decode` runs rtl_433 (on PATH); `iqlte_decode.py` hands off to
+    an outside srsRAN 4G `pdsch_ue` and `iqnr_decode.py` to its NR library
+    (`run_nr.sh`), both via `$FMRX_LTE_TOOLS`, SI-RNTI only, and srsRAN is
+    never installed here (`knowledge/lte-verify.md`,
+    `knowledge/nr-verify.md`). Our own decoders are written from the
+    3GPP specs: srsRAN is AGPL and none of its code comes into this repo.
+    Cellular decoding stays broadcast only (MIB, SIB1, other SI on the
+    SI-RNTI): no paging, random access or user traffic, and nothing sent.
   - `sceptre_dvr`, `iqmeasure`, `iqburst`, `iqframes`, `iqcatalog`,
     `iqlte` and `iqnr` stay numpy only, so their tools run anywhere
     (`iq-picture` needs matplotlib; the LTE test helpers use scipy).
