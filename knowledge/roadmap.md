@@ -1408,9 +1408,11 @@ Phases, each one checked before the next:
   Shipped 2026-10-24: `iqnr_phy.py`, `iq-nr --mib`, `test_iqnr_phy.py`
   (round trip to -2 dB per RE). On the four real NR recordings every field
   matched `nr_si` on every cell it decoded, and the third sector, 12 dB
-  under the strongest, which `nr_si` never read, decoded in every block. Its
-  MIB names search space 0 index 0, not the others' 2: its SIB1 control
-  channel is in other slots, so 28.2 may read its SIB1 without combining.
+  under the strongest, which `nr_si` never read, decoded in every block, the
+  five blocks agreeing. Its MIB names search space 0 index 0, not the
+  others' 2, but with its SSB index 2 that still puts its SIB1 control
+  channel in the strongest sector's slots (38.213 table 13-11, which also
+  gives the slots measured on the other cells).
 - [ ] 28.2 CORESET 0 and Type0-PDCCH: CORESET 0 and search space 0 from the
   MIB (38.213 13, tables 13-1 to 13-11), the REG-bundle interleaver with
   the PCI shift, PDCCH DM-RS, the polar decoder for DCI 1_0 with the

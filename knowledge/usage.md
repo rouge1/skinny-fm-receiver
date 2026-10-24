@@ -1342,7 +1342,8 @@ tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead o
   - `mib_bursts` is `[decoded, blocks]`.
 
   It reads weaker sectors too: on real air it read a sector 12 dB under the
-  strongest, which the outside decoder never could. It adds about a second.
+  strongest, which the outside decoder never could. It adds about 6 ms a
+  block.
 - `--decode` needs srsRAN 4G's NR library behind `run_nr.sh`, built by you
   (AGPL, not part of this repo), and pycrate under `$FMRX_LTE_TOOLS/pyc`. Only
   the broadcast (SI-RNTI) is read. Each entry gets a `decode`: the MIB, SIB1

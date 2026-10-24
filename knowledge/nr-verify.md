@@ -334,8 +334,24 @@ On real air (2026-10-24, the four saved NR recordings), every MIB field
 equalled the outside program's on every cell it decoded. The SFNs agreed
 once moved to the same block. Every block of every cell decoded, 5 of 5,
 including a sector 12 dB under the strongest (PBCH SNR -2 dB) that the
-outside program never read. Its MIB names another search space 0, so its
-SIB1 control channel is in other slots than the strongest sector's.
+outside program never read. That sector has no referee, so its five blocks
+were checked against each other: every setting agreed, and the SFN stepped
+by 2 every 20 ms.
+
+Its MIB names search space 0 index 0, where the strongest sector's names 2.
+With its SSB index 2, 38.213 13 (table 13-11) still puts its SIB1 control
+channel in slots 2 and 3 of even frames, the strongest sector's own. The
+same rule gives the slots measured on the other cells: slot 5 on the barred
+cell, slots 2 and 3 for the strongest sector and 3 and 4 for the second.
+
+Some fields were the same on every real cell: `half_frame` 0, k_SSB under
+16 (its MSB, from the timing bits, 0), `scs_common_khz` 15 and
+`intra_freq_reselection` allowed. Those bit positions are checked only by
+the synthetic round trip, which an encoder and decoder written together
+could both get wrong in the same way.
+
+Decoding takes about 6 ms a block, so 15 blocks in 100 ms add under a
+tenth of a second to the search.
 
 Tests: `tools/tests/test_iqnr_phy.py` (synthetic; `nr_synth` can now carry
 a real PBCH).
