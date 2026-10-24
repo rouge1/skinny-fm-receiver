@@ -30,6 +30,10 @@ Checks (one behaviour each; ok / FAIL / SKIP lines):
       without --decode equals a fixed baseline (sha256 and length hardcoded below)
   H   child peak RSS on a 2 s, 40 MS/s file under 900 MB
   R1-R4 robustness probes (R1-R3 need pycrate, R4 does not)
+  P   the program read another PCI than the SSB entry's (a stronger cell on the same SSB
+      frequency): mib and sib1 null, decoded_pci and a reason naming both, no pass 2
+  U   other SI that SIB1 does not schedule, sent in SIB1's slots with sii 0 (as one cell did
+      on air): heard, listed in si.unscheduled, its SIB9 gives the time, no second call
 
 Decisions where the spec is open (also in the report):
   - Point A (spec amendment 2026-10-23 (b)): point_a_hz = ssb_hz - 120*ssb_scs_hz - k_SSB*15e3
@@ -602,6 +606,8 @@ def main():
             blocks += [(0, cfg['sib1_hex'])] * int(cfg.get('sib1_repeat', 1))
             if cfg.get('minor_sib1_hex'):
                 blocks = [(0, cfg['minor_sib1_hex'])] + blocks
+        if '-a' not in opts:
+            blocks += [(0, hexed) for hexed in cfg.get('sii0_si_hex', [])]
         if '-a' in opts:
             blocks += [(1, hexed) for hexed in cfg.get('si_hex', [])]
         sent = 0
@@ -700,6 +706,12 @@ def case_cfg(name):
                       minor_sib1=fixture_hex('sib1_three_plmn')),
         'crc': dict(sib1=fixture_hex('sib1_full'), si=[fixture_hex('si_sib2_sib9')], crc_fail=2),
         'no_tdra': dict(sib1=fixture_hex('sib1_no_tdra'), si=[fixture_hex('si_sib2_sib9')]),
+        'other_cell': dict(sib1=fixture_hex('sib1_full'), si=[fixture_hex('si_sib2_sib9')],
+                           mib=dict(MIB, pci=PCI + 3)),
+        'unscheduled': dict(sib1=fixture_hex('sib1_none'), si=[],
+                            sii0_si=[fixture_hex('si_sib2_sib9')]),
+        'sii0_scheduled': dict(sib1=fixture_hex('sib1_full'), si=[],
+                               sii0_si=[fixture_hex('si_sib2_sib9')]),
     }[name]
     cfg = dict(full)
     cfg['sib1_hex'] = cases.get('sib1')
@@ -709,6 +721,8 @@ def case_cfg(name):
             cfg[k] = cases[k]
     if 'minor_sib1' in cases:
         cfg['minor_sib1_hex'] = cases['minor_sib1']
+    if 'sii0_si' in cases:
+        cfg['sii0_si_hex'] = cases['sii0_si']
     return cfg
 
 
@@ -961,6 +975,53 @@ def test_d_reference_time_gps_reading_equals_gps():
     got = datetime.datetime.fromisoformat(ref['gps_reading'])
     want = datetime.datetime.fromisoformat(GPS_ISO)
     assert abs((got - want).total_seconds()) <= 1e-3, 'gps_reading %s, time.gps %s' % (got, want)
+
+
+def test_p_another_cells_mib_is_not_reported_as_this_one():
+    """P: the MIB's PCI is not the SSB's: mib and sib1 null, decoded_pci and reason say so."""
+    run = decode_case('other_cell', args=DECODE_ARGS)
+    check_code(run, 0, 'iq-nr --decode')
+    assert len(run.calls) == 1, 'want one call (no pass 2 for another cell), got %d' % len(run.calls)
+    dec = need_decode(run)
+    assert dec.get('mib') is None and dec.get('sib1') is None, 'another cell reported as this one'
+    assert dec.get('decoded_pci') == PCI + 3, 'decoded_pci %r' % dec.get('decoded_pci')
+    reason = dec.get('reason') or ''
+    assert 'PCI %d' % (PCI + 3) in reason and 'PCI %d' % PCI in reason, 'reason %r' % reason
+    assert dec.get('time') is None and dec.get('time_reason') == 'another cell was decoded', dec
+
+
+def test_u_unscheduled_si_in_sib1_slots_is_heard():
+    """U: SIB1 schedules nothing, SIB2 and SIB9 come with sii 0: heard and listed as unscheduled."""
+    need('sib1_none', 'si_sib2_sib9')
+    run = decode_case('unscheduled', args=DECODE_ARGS)
+    check_code(run, 0, 'iq-nr --decode')
+    assert len(run.calls) == 1, 'want one call (no schedule, no pass 2), got %d' % len(run.calls)
+    dec = need_decode(run)
+    si_out = dec.get('si') or {}
+    assert sorted(si_out.get('sibs_heard') or {}) == ['sib2', 'sib9'], 'heard %r' % si_out.get('sibs_heard')
+    assert si_out.get('scheduled') == [], 'scheduled %r' % si_out.get('scheduled')
+    assert sorted(si_out.get('unscheduled') or []) == ['sib2', 'sib9'], (
+        'unscheduled %r' % si_out.get('unscheduled'))
+    assert 'does not schedule' in (dec.get('reason') or ''), 'reason %r' % dec.get('reason')
+    assert dec.get('sib1') is not None, 'the SI block was taken for SIB1'
+
+
+def test_u_unscheduled_sib9_gives_the_time():
+    """U: an unscheduled SIB9 still gives the network time."""
+    need('sib1_none', 'si_sib2_sib9')
+    dec = need_decode(decode_case('unscheduled', args=DECODE_ARGS))
+    utc = _time(dec).get('utc')
+    assert utc is not None and (datetime.datetime.fromisoformat(utc)
+                                == datetime.datetime.fromisoformat(UTC_ISO)), 'utc %r' % utc
+
+
+def test_u_scheduled_si_with_sii_0_is_not_unscheduled():
+    """U: scheduled SIB2 and SIB9 that come with sii 0 are heard, and none is unscheduled."""
+    need('sib1_full', 'si_sib2_sib9')
+    dec = need_decode(decode_case('sii0_scheduled', args=DECODE_ARGS))
+    si_out = dec.get('si') or {}
+    assert sorted(si_out.get('sibs_heard') or {}) == ['sib2', 'sib9'], 'heard %r' % si_out.get('sibs_heard')
+    assert si_out.get('unscheduled') == [] and si_out.get('missing') == [], si_out
 
 
 def test_e_no_sib9_scheduled_gives_reason():

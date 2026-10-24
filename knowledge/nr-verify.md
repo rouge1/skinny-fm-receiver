@@ -372,8 +372,13 @@ The other exit codes are those of the search (see the Exit codes table above).
    program is run again with the time allocation list (`-t`) and
    `offsetToPointA` (`-a`). The `-t` values are SIB1's
    `pdsch-TimeDomainAllocationList` `startSymbolAndLength` values, in list
-   order. `-t` is left out when SIB1 has no list. The other SI blocks of both
-   passes are parsed, and SIB9's time is read from them.
+   order. `-t` is left out when SIB1 has no list.
+
+   Then every distinct block of both passes is parsed, whatever its SI
+   indicator (`sii`), and each SystemInformation message counts as other SI.
+   A cell may send SI that SIB1 does not schedule, and in SIB1's own slots
+   with `sii` 0: one barred cell on air sent SIB2 that way, with SIB1
+   scheduling nothing. SIB9's time is read from these blocks, scheduled or not.
 
 5. **Clean up.** The temporary folder is deleted, on success and on every
    failure path.
@@ -385,9 +390,10 @@ Each entry of `ssbs` gets a `decode` object. Its keys are these.
 | Key | Meaning |
 |---|---|
 | `ran` | true when the decode ran |
+| `decoded_pci` | only when the outside program read another cell than this entry (a stronger cell on the same SSB frequency, such as another sector): the PCI it read. `mib` and `sib1` are then null, and `reason` names both PCIs |
 | `mib` | the MIB's fields: `pci`, `sfn`, `ssb_index`, `half_frame`, `scs_common_khz`, `ssb_subcarrier_offset`, `dmrs_typeA_position`, `coreset0_index`, `search_space0_index`, `cell_barred`, `intra_freq_reselection`, `ssb_sample`, `cfo_hz`, `snr_db`, and any other field the program gives. Null when there is no MIB |
 | `sib1` | null when SIB1 was not parsed. Otherwise an object: `plmns` (`"MCC-MNC"` strings, with the MNC's digit count kept, so `"001-01"` and `"001-001"` are different), `tac`, `cell_identity` (36 bits), `cell_barred`, `si_window_slots`, `si_schedule` (a list of `periodicity_rf`, `broadcast_status` and `sibs`), and `carrier` (`point_a_arfcn`, `point_a_mhz`, `bands`, `carrier_prb`, `scs_khz`, `offset_to_point_a`) |
-| `si` | null when SIB1 scheduled no other SI. Otherwise: `sibs_heard` (count of each SIB heard), `sibs` (each SIB's contents), `scheduled` (the SIBs SIB1 schedules), and `missing` (scheduled and on air, but not heard) |
+| `si` | null when SIB1 scheduled no other SI and none was heard. Otherwise: `sibs_heard` (count of each SIB heard), `sibs` (each SIB's contents), `scheduled` (the SIBs SIB1 schedules), `missing` (scheduled and on air, but not heard) and `unscheduled` (heard, but not scheduled by SIB1; `reason` names them too) |
 | `time` | null when there is no network time. Otherwise: `utc` (ISO 8601 with milliseconds), `gps`, `leap_seconds`, `local_offset_minutes`, `dst_hours`, and `reference_time`. Each is present only when SIB9 carries it. `reference_time` holds the raw `referenceTimeInfo-r16` fields and `gps_reading` (ISO 8601 GPS time) |
 | `time_reason` | null when `time` is set. Otherwise one of the values below |
 | `reason` | the reasons that apply, joined with `; `; null when there are none. It can hold the cut from `--decode-seconds`, a `run_nr.sh` error, a pycrate note, the SIBs not heard, and `the other SI were not searched (...)`. When there is no MIB, the reason is the `NR_NO_MIB` reason if the program gave one, else `no MIB decoded`. When there is no SIB1, the reason is the `NR_DONE` reason if the program gave one, else `no SIB1 heard in N s` (when no SIB1 block was heard at all; when blocks were heard but none parsed, the note says so and no stop reason is added) |
@@ -468,11 +474,17 @@ which is not in this repo.
   The decode reports that time as SIB9 carries it and does not check it
   against the capture's timing. When SIB9 has no `timeInfo`, `time` is null
   and `time_reason` says so.
-- **Other SI only when SIB1 schedules it.** Pass 2 runs only then. On real
-  air one barred cell's SIB1 carried only the operators and cell identity
-  (no schedule, no `offsetToPointA`), so its `si` and `carrier` are null,
-  while the outside program, run by hand, heard a SIB2 from it. Reading SI
-  that SIB1 does not list would need pass 2 without SIB1's values.
+- **Only the strongest cell on an SSB frequency is decoded.** The outside
+  program locks to the strongest cell, so a weaker sector on the same SSB
+  frequency (another PCI) gets no MIB or SIB1 of its own: its `decode` has
+  `decoded_pci` and a reason instead. On air, one site's three sectors shared
+  one SSB frequency; only the strongest was decoded.
+- **Unscheduled SI is heard only in pass 1's slots, or when pass 2 runs.**
+  Pass 2 runs only when SIB1 schedules other SI and gives `offsetToPointA`.
+  SI that SIB1 does not schedule is found when it comes in the slots pass 1
+  reads (as on the barred cell above, whose SIB2 came in SIB1's slots), or
+  when pass 2 runs for the scheduled SI. Unscheduled SI in its own slots, on a
+  cell whose SIB1 schedules nothing, is not searched for.
 
 ## Decode tests
 
@@ -498,9 +510,12 @@ kept outside the repo):
   the outside program run by hand. The MIB matched on every field on both.
   The first cell (not barred, one operator): SIB1's operator, tracking area
   and cell identity matched, the carrier point A matched the formula in the
-  glossary, SIB2, 3, 4, 5 and 9 were heard, and SIB9's UTC was 3 s after the
-  capture's start. The second (barred, two operators): the operators and cell
-  identity matched; `time` null with "SIB1 does not schedule SIB9". Each
-  decode took about a minute.
+  glossary, SIB2, 3, 4, 5 and 9 were heard, and SIB9's UTC was 2.4 s after the
+  capture's start (by the recording's start time: the `.sigmf-meta` of that
+  day held the stop time, a bug fixed since). The second (barred, two
+  operators): the operators and cell identity matched; `time` null with "SIB1
+  does not schedule SIB9". Since 2026-10-23 the SIB2 the outside program heard
+  on it is heard too, and listed in `si.unscheduled`: it came in SIB1's slots.
+  Each decode took about a minute.
 
 See [capabilities.md](capabilities.md) and Round 26 of [roadmap.md](roadmap.md).

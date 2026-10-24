@@ -1293,7 +1293,7 @@ and cell IDs stay in `recordings/`, never in the repo or knowledge files.
   On real air one cell's whole schedule was heard; that cell sends no SIB16. See
   [lte-broadcast.md](lte-broadcast.md).
 - [x] Network time from the air, NR SIB9 (2026-10-23): `iq-nr --decode` read it from
-  a real 850 MHz NR cell, 3 s after the capture's start (Round 26).
+  a real 850 MHz NR cell, 2.4 s after the capture's start (Round 26).
 - [ ] Network time from the air, LTE SIB16: needs an LTE cell that sends it; none found yet.
 - [ ] 15 MHz decode (2026-10-19): built (`nfft=1536`, 23.04 MS/s, `PRB` to the
   wrapper), pure functions tested; not ticked until a real 15 MHz carrier decodes.
@@ -1326,9 +1326,11 @@ outside the repo. Method, output and limits: [nr-verify.md](nr-verify.md).
   parses the MIB, SIB1, the other SI and SIB9's time with pycrate. Stub-tested
   (G1-G10); on real air (G11) two cells matched a hand decode, SIB9's time
   included.
-- [ ] Other SI that SIB1 does not schedule. On one real cell the outside program
-  heard a SIB2 that SIB1 does not list; `--decode` searches other SI only when
-  SIB1 schedules it, so that cell's `si` is null.
+- [x] Other SI that SIB1 does not schedule (2026-10-23). On one real cell the
+  outside program heard a SIB2 that SIB1 does not list. It came in SIB1's own
+  slots with `sii` 0, so `--decode` now parses every block of both passes and
+  lists such SIBs in `si.unscheduled`; that cell's SIB2 is heard. Not searched:
+  unscheduled SI in its own slots on a cell whose SIB1 schedules nothing.
 - [ ] TDD special slots, and SSBs above 3 GHz with a 30 kHz CORESET 0 (srsRAN
   lacks the table): not handled.
 - [x] A read-only `fmctl` reply: `fmctl cells nr [decode] [PATH]` (2026-10-23,
