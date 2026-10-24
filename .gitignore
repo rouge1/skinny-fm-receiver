@@ -13,3 +13,15 @@ recordings/
 challenge/
 # Web summaries of signal work (pages and pictures), kept out of the public repo.
 web_summary/
+# IQ and other captured data anywhere in the checkout, not only in recordings/: the
+# repo is public, and a capture holds what was on air (cell IDs, payloads).
+# Tests write theirs to temporary folders.
+*.cfile
+*.cf32
+*.sigmf-data
+*.sigmf-meta
+*.sdvr
+*.cdif
+*.fft
+*.card.json
+*-recording.json

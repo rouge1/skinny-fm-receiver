@@ -87,6 +87,8 @@ FirstNet).
 | Point A, `offsetToPointA` | The carrier's reference frequency (subcarrier 0 of resource block 0). SIB1 gives it as an offset in resource blocks from the SSB: point A = SSB centre - 120 x SCS - k_SSB x 15 kHz - `offsetToPointA` x 180 kHz (15 kHz case). |
 | SIB9 | NR's network-time SIB: UTC, GPS time, leap seconds, local offset, as LTE SIB16. Optional; sent only when SIB1 schedules it. |
 | Cell barred | A MIB and SIB1 flag: phones may not camp on the cell. |
+| SI indicator (`sii`) | A bit in the control message for a broadcast block: 0 for SIB1, 1 for another SI message. A cell may also send other SI with 0, in SIB1's slots. |
+| NSA-only cell | An NR cell whose SIB1 gives no tracking area code: it serves only as a second carrier beside LTE (EN-DC), and is usually barred. |
 
 ## Our tools
 

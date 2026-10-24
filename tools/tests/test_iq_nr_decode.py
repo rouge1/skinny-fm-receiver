@@ -210,8 +210,11 @@ def need_decode(run):
 
 
 def repo_status():
-    proc = subprocess.run(['git', '-C', ROOT, 'status', '--porcelain'], capture_output=True, text=True)
-    return proc.stdout
+    """``git status``, ignored files included (a stray .cf32 is ignored by .gitignore), less
+    Python's caches."""
+    proc = subprocess.run(['git', '-C', ROOT, 'status', '--porcelain', '--ignored'],
+                          capture_output=True, text=True)
+    return '\n'.join(line for line in proc.stdout.splitlines() if '__pycache__' not in line)
 
 
 def clean_env(tools, tmp):

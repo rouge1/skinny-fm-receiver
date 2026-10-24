@@ -21,7 +21,22 @@ recordings back as if they were a radio. The status line warns of overload
 (on a HackRF or RTL-SDR it always shows the share of samples clipped).
 `tools/fmctl` works the open window from a script or an LLM: tuning, gain,
 sweeps, the view's dials (`view`), the signals on the spectrum as numbers
-(`peaks`), screenshots and IQ captures.
+(`peaks`), screenshots, IQ captures, and what is in a capture (`measure`,
+`cells`).
+
+Tools for what a recording holds, each run on a file:
+
+- `tools/iq-measure` and `tools/iq-picture`: a signal's card (level,
+  bandwidth, bursts, modulation class) and a waterfall picture.
+- `tools/iq-demod`, `tools/iq-frames`, `tools/iq-decode`: bursts to bits,
+  frames, a scrambler and CRC search, and rtl_433 on a span.
+- `tools/iq-lte` and `tools/iq-nr`: the LTE and 5G NR cells in a capture
+  (cell ID, timing), and with `--decode` what each tower broadcasts to every
+  phone (operators, tracking area, cell identity, neighbour carriers, network
+  time). Only the broadcast is read, and nothing is sent. The decode is done
+  by srsRAN, which you build separately; it is not part of this repo.
+- `tools/dvr-hd`, `tools/dvr-sweep`, `tools/dvr-to-iq`: Sceptre DVR files (HD
+  Radio from one, its sweep spectra, a channel of it as a `.cfile`).
 
 ```sh
 ./fm-receiver                # opens straight into the window
@@ -32,6 +47,9 @@ tools/fmctl status           # work the open window from a script (fmctl help)
 - [knowledge/usage.md](knowledge/usage.md): how to use it
 - [knowledge/capabilities.md](knowledge/capabilities.md): what it can do, and what has been verified
 - [knowledge/roadmap.md](knowledge/roadmap.md): what is planned next
+- [knowledge/lte-verify.md](knowledge/lte-verify.md),
+  [knowledge/nr-verify.md](knowledge/nr-verify.md): how LTE and NR cells are
+  found and their broadcast read ([glossary](knowledge/glossary.md))
 - `tools/fm_receiver/`: the code
 - `tools/tests/`: tests (`python tools/tests/run_all.py`)
 

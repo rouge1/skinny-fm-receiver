@@ -364,7 +364,10 @@ are not recorded here: they are kept with the recordings. See
   subframe 5, with about 4 dB SNR on the PBCH. So the operator is not proven for
   those carriers. Not established: whether it is the weak signal, the two
   synchronised cells overlapping, or both. More captures of the same kind did not
-  help; a better antenna is the next test. The 600 MHz and 850 MHz bands and 1.9-2.7 GHz
+  help; a better antenna is the next test. Tried 2026-10-23 with the outside
+  antenna (6 s live captures centred on each carrier, through `fmctl cells lte
+  decode`): both cells' MIBs on the lower carrier, neither on the upper, and
+  still no SIB1 on either. The 600 MHz and 850 MHz bands and 1.9-2.7 GHz
   gave no confirmed cell.
 - **A quiet carrier failed the PSS check (fixed 2026-10-22).** On the three
   700 MHz carriers at the second location the verdict was `possible` with no PCI,

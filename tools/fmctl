@@ -6,6 +6,7 @@
     tools/fmctl 'tune 99.1; wait 3; status'     several, in turn
     tools/fmctl help                             every command
     tools/fmctl open "my folder/a b.cfile"       a path with a space
+    tools/fmctl 'capture 6; cells nr decode'     the 5G NR cells in a capture
 
 Each command goes to the window's control socket (fm_receiver/control.py)
 and its reply is printed as JSON. A path (open, recordings-folder, folders

@@ -29,6 +29,21 @@ workflows, commands and constraints. Read the file that fits before acting:
   spectra, also while Sceptre is still recording it; `tools/dvr-to-iq` makes a channel of one a
   plain `.cfile` + SigMF; `sceptre_blue.py` reads Sceptre's `.cdif` and `.fft`;
   `spectra.py` reads a sweep DVR or a `.fft` as dBm for the Recordings tab)
+- knowledge/catalogs.md: the scramblers and CRCs `iq-frames` searches (kept
+  equal to `iqcatalog.py` by a test)
+- knowledge/digital-radio.md: HD Radio on the local FM band, and the other
+  digital radio standards
+- knowledge/signal-hound-calibration.md: the BB60D's and VSG60A's calibration,
+  and what it means for dBm here
+- knowledge/glossary.md: the LTE, 5G NR, TV and radio acronyms
+- knowledge/lte-verify.md: how an LTE carrier is verified (CP, PSS, SSS, CRS,
+  several cells) and its MIB and SIB1 read; real-air results and wrong turns
+- knowledge/lte-broadcast.md: the LTE SIBs after SIB1: schedule, how long to
+  record, SIB16 network time, the NR carriers in SIB24
+- knowledge/nr-verify.md: the 5G NR sync-block search and the broadcast decode
+  (MIB, SIB1, other SI, SIB9 time), output fields and limits
+- knowledge/cell-location.md: locating a tower from broadcast only, sending
+  nothing (no hardware for it yet)
 
 ## The radio
 
@@ -98,7 +113,10 @@ user sees it, and is refused where the window would refuse it.
   reads the level at FREQ (MHz) on the RF trace, read-only; `measure [SECONDS]
   [card]` replies the card of the last capture (see "Measuring a recording");
   `cells lte|nr [decode] [PATH]` runs `iq-lte` or `iq-nr` on the last capture
-  (or PATH) and replies with its JSON, read-only (60 s, 300 s with `decode`).
+  (or PATH) and replies with its JSON, read-only (60 s, 300 s with `decode`);
+  for `lte` the carrier is taken at the station the recording was tuned to.
+  A cell survey: `rate 20; center MHZ; capture 6 iq-band; cells nr decode`
+  (6 s is what `decode` reads).
 - `wait SECONDS` lets the window run between commands: your shell can't
   sleep in the foreground, and RDS or peak hold need seconds.
 
@@ -137,8 +155,8 @@ sample rate. Method and wrong turns: knowledge/silver-spring.md.
 
 `tools/iq-decode FILE [--t0 S --t1 S] [--band LO HI] [-R N ...]` scales a span and runs rtl_433 on it, printing its decodes as JSON (needs rtl_433 installed: exit 2 without it; see usage.md, "Decoding a recording with rtl_433"). Built, tested on a synthetic frame and over the air once (VSG60 to BB60D).
 `iqmeasure.extract(path, t0, t1, band, max_rate, rate, center_hz)` returns that span as an `IQSlice` (iq, rate, center_hz, t0, t1), band-limited and decimated, read in chunks; `tools/iq-decode` feeds it to rtl_433.
-`tools/iq-lte FILE [--block-center HZ] [--t0 S --t1 S] [--decode]` says whether an LTE-looking block is an LTE downlink (cyclic-prefix, PSS and SSS checks, numpy only; PCI from the SSS) and, with `--decode`, reads its MIB, SIB1 and every other SIB (`si`: schedule, carriers, SIB16 network time; 6 s by `--si-seconds`) through an outside srsRAN 4G `pdsch_ue` under `$FMRX_LTE_TOOLS` (nothing of ours decodes; exit 2 without those tools). Method: knowledge/lte-verify.md; the SIBs after SIB1 (schedule, capture length, network time, NR): knowledge/lte-broadcast.md. Built, tested on synthetic signals and a stub decoder; on real air (2026-10-16 and 2026-10-22, 10 MHz cells) the PCI, MIB, SIB1 and the SI schedule matched. With the window open, `fmctl cells lte [decode] [PATH]` runs it and replies with its JSON.
-`tools/iq-nr FILE [--ssb-hz HZ] [--scs 15|30] [--t0 S --seconds S] [--decode]` lists the 5G NR cells whose sync block (SSB) is in a capture: the raster point (GSCN), spacing, PCI, SSB index, period and a chance (PSS, SSS and PBCH DM-RS, numpy only; 0.1 s searched by default). With `--decode` it reads each cell's MIB, SIB1 (operators, tracking area, cell identity, barring, carrier point A), the other SI that SIB1 schedules and SIB9's network time, through srsRAN's NR library (`run_nr.sh`) under `$FMRX_LTE_TOOLS` (SI-RNTI only; 6 s by `--decode-seconds`, about a minute; exit 2 without those tools). Method, output and limits: knowledge/nr-verify.md. Built, tested on synthetic signals and a stub decoder; on real air (2026-10-23, two 850 MHz cells) the MIB, SIB1, other SI and SIB9 time matched a hand decode. With the window open, `fmctl cells nr [decode] [PATH]` runs it and replies with its JSON.
+`tools/iq-lte FILE [--block-center HZ] [--t0 S --t1 S] [--decode]` says whether an LTE-looking block is an LTE downlink (cyclic-prefix, PSS and SSS checks, numpy only; PCI from the SSS) and, with `--decode`, reads its MIB, SIB1 and every other SIB (`si`: schedule, carriers, SIB16 network time; 6 s by `--si-seconds`) through an outside srsRAN 4G `pdsch_ue` under `$FMRX_LTE_TOOLS` (nothing of ours decodes; exit 2 without those tools). Method: knowledge/lte-verify.md; the SIBs after SIB1 (schedule, capture length, network time, NR): knowledge/lte-broadcast.md. Built, tested on synthetic signals and a stub decoder; on real air (2026-10-16 and 2026-10-22, 10 MHz cells) the PCI, MIB, SIB1 and the SI schedule matched. With the window open, `fmctl cells lte [decode] [PATH]` runs it and replies with its JSON. The carrier must be at the file centre or given by `--block-center`: a Receive-tab capture is centred 300 kHz below the tuned station (`fmctl cells lte` passes the station itself), and an off-centre carrier reads as `possible` with no cells.
+`tools/iq-nr FILE [--ssb-hz HZ] [--scs 15|30] [--t0 S --seconds S] [--decode]` lists the 5G NR cells whose sync block (SSB) is in a capture: the raster point (GSCN), spacing, PCI, SSB index, period and a chance (PSS, SSS and PBCH DM-RS, numpy only; 0.1 s searched by default). With `--decode` it reads each cell's MIB, SIB1 (operators, tracking area, cell identity, barring, carrier point A), the other SI that SIB1 schedules and SIB9's network time, through srsRAN's NR library (`run_nr.sh`) under `$FMRX_LTE_TOOLS` (SI-RNTI only; 6 s by `--decode-seconds`, about a minute; exit 2 without those tools). Method, output and limits: knowledge/nr-verify.md. Built, tested on synthetic signals and a stub decoder; on real air (2026-10-23, two 850 MHz cells) the MIB, SIB1, other SI and SIB9 time matched a hand decode. Other SI that SIB1 does not schedule is listed in `si.unscheduled` when it comes in the slots read (one cell sent SIB2 in SIB1's own slots). The outside program decodes only the strongest cell on an SSB frequency: a weaker sector there gets `decoded_pci` and a reason, not that cell's broadcast. With the window open, `fmctl cells nr [decode] [PATH]` runs it and replies with its JSON.
 
 ## Decoding a recording
 
@@ -179,5 +197,9 @@ Details in rtl-software.md, "What this machine already has".
 ## The repo is public
 
 Nothing captured goes into a commit: no meter or device IDs, no decoded
-payloads, no recordings (recordings/ and challenge/ are git-ignored).
+payloads, no recordings (recordings/ and challenge/ are git-ignored). For
+cells that means no real PCIs, operator codes, tracking areas, cell
+identities, carrier frequencies or times in a file, test or commit message:
+use made-up ones (PCI 123, PLMN 001-01, TAC 0x1234, SSB 600.15 MHz). Real
+decodes live outside the repo (the ops folder, `$FMRX_LTE_TOOLS/work`).
 Knowledge files describe method and format, with placeholder IDs.

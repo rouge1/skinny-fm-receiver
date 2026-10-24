@@ -1336,3 +1336,28 @@ outside the repo. Method, output and limits: [nr-verify.md](nr-verify.md).
 - [x] A read-only `fmctl` reply: `fmctl cells nr [decode] [PATH]` (2026-10-23,
   `test_control_more.py`), which runs `iq-nr` and replies with its JSON.
 - [ ] An `nr` section on the `iqmeasure` card, as for LTE's stage 4.
+- [x] A weaker sector is not given the strongest cell's broadcast (2026-10-24).
+  Three sectors of one site share one SSB frequency, and the outside program
+  decodes the strongest; the other two came back with its MIB and SIB1 under
+  their own PCIs. Now their `decode` has `decoded_pci` and a reason instead.
+- [ ] A weaker sector's own MIB and SIB1: the outside program would have to
+  decode a given PCI, not the strongest on the frequency.
+
+## Round 27: fixes from the first cell survey (2026-10-23)
+
+Found while running `fmctl cells` and both decoders over every cellular
+recording, live and saved.
+
+- [x] SigMF `core:datetime` is the first sample's time (2026-10-23). It was
+  written when recording stopped, so a 6 s capture said it began 6 s late, and
+  SIB9's time looked earlier than the capture. `recording.IqRecording` keeps
+  the time its file opened. Recordings made before then still hold the stop
+  time: the start is in their `-recording.json` (`started`).
+  Test: `test_receive_chain.py`.
+- [x] `fmctl cells lte` looks at the station the recording was tuned to
+  (2026-10-24). A Receive-tab capture is centred 300 kHz below the station;
+  `iq-lte` looks at the file centre and found nothing there.
+  Test: `test_control_more.py`.
+- [ ] The two 700 MHz carriers whose SIB1 never decodes (see
+  [lte-verify.md](lte-verify.md)): tried again with the outside antenna, 6 s,
+  live; still the MIB only. A directional antenna or another place is next.

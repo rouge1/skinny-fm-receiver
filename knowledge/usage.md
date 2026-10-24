@@ -650,7 +650,8 @@ Recording works in Receive only.
   station sent over RDS while it was recorded (see *Recordings* below).
 - **IQ file format:** each IQ recording is a `.cfile` of complex float32 data
   with two description files beside it. `.sigmf-meta` is SigMF, which other
-  SDR tools read. `.json` is the RF bench toolkit's capture format, so its
+  SDR tools read; its `core:datetime` is when the first sample came (in
+  recordings made before 2026-10-23 it is the stop time). `.json` is the RF bench toolkit's capture format, so its
   `scripts/test_rds_core.py` can decode the recording.
 - **Retuning while recording IQ** closes the file and continues in a new one
   (`-part2`, `-part3`, …), so each file has one centre frequency. A
@@ -970,7 +971,7 @@ tools/fmctl help                          # every command
 | `recordings-folder PATH` | Sets the app's recordings folder (where Record saves, and what the list reads), saved in the settings, and reads the list again. Refused if PATH is not a directory. Replies `recordings_folder` and `recordings` (the count) |
 | `marker FREQ` | On a spectrum recording (Recordings tab), places the spectrum marker there, as a click does, and replies. Elsewhere read-only: the level at FREQ (MHz) on the RF trace, in the view's unit: the held trace while Peak hold is on, otherwise the live one. Refused for a frequency off the shown band. Replies `freq_mhz`, `level_db`, `unit` and `trace` |
 | `measure [SECONDS] [card]` | Measures the last capture (the file the last `capture` replied with) with `tools/iq-measure`, and replies the card (see [Measuring a recording](#measuring-a-recording-iq-measure-and-iq-picture)). `SECONDS` measures only the first that long. `card` also writes `<base>.card.json` beside a `.cfile`. Runs for at most 60 s, and the window keeps running meanwhile. Refused when there is no capture yet
-| `cells lte` / `nr [decode] [PATH]` | Runs `tools/iq-lte` or `tools/iq-nr` on PATH (default: the file the last `capture` replied with) and replies with what it prints, unchanged (see [Verifying an LTE carrier](#verifying-an-lte-carrier-iq-lte) and [Finding and decoding 5G NR cells](#finding-and-decoding-5g-nr-cells-iq-nr)). `decode` adds `--decode`: each cell's MIB, SIB1, other SI and network time, through the outside tools under `$FMRX_LTE_TOOLS`. Read-only: the window is not changed. Runs for at most 60 s, or 300 s with `decode`, and the window keeps running meanwhile. Refused with no PATH and no capture yet, for a missing file, and with the tool's own message when it fails (for example, no outside tools) |
+| `cells lte` / `nr [decode] [PATH]` | Runs `tools/iq-lte` or `tools/iq-nr` on PATH (default: the file the last `capture` replied with) and replies with what it prints, unchanged. For `lte` the carrier is taken at the station the recording was tuned to (a Receive-tab capture is centred 300 kHz below it) (see [Verifying an LTE carrier](#verifying-an-lte-carrier-iq-lte) and [Finding and decoding 5G NR cells](#finding-and-decoding-5g-nr-cells-iq-nr)). `decode` adds `--decode`: each cell's MIB, SIB1, other SI and network time, through the outside tools under `$FMRX_LTE_TOOLS`. Read-only: the window is not changed. Runs for at most 60 s, or 300 s with `decode`, and the window keeps running meanwhile. Refused with no PATH and no capture yet, for a missing file, and with the tool's own message when it fails (for example, no outside tools) |
 | `record audio` / `iq-channel` / `iq-band` `on` / `off`, `record start` / `stop` | The Record box. `stop` replies with the files saved, the `.sigmf-meta` beside each IQ file included |
 | `capture SECONDS [iq-band` / `iq-channel` / `audio]` | Records only that (IQ of the whole band by default) for SECONDS and replies with the files; the Record box's ticks are put back after. Refused over 4 GB: at 40 MS/s the whole band is 320 MB/s, so 12 s at most |
 | `scan START STOP [step KHZ] [quick S] [listen S] [snr DB]` | Tunes each channel from START to STOP MHz and replies with one row for each: level, SNR, stereo pilot, and `rds` (the same block as `status`) and `hd` (station, programs, now playing, BER) where something was decoded. The step is the Tuner's Step unless given. Each channel is heard for `quick` seconds (2); one with a pilot or an SNR of `snr` dB (6) or more is heard `listen` seconds more (12; 0 for none), long enough for RDS and for HD Radio's name. A channel outside an IQ file's band is a row with the reason. Receive's, refused while recording (retuning would spoil it). The Tuner goes back where it was afterwards, and also if the client leaves, which ends the scan. Up to 30 minutes, worst case |
@@ -1258,6 +1259,10 @@ tools/iq-lte CAPTURE.cfile --decode --si-seconds 2        # decode 2 s instead o
   `unknown`, and each check in `checks` has its score and chance estimate.
   The CP and PSS checks decide the verdict; SSS gives `pci`, which is null
   unless the SSS chance is at most 1e-3.
+- The carrier is looked for at the file centre. A capture from the Receive tab
+  is centred 300 kHz below the tuned station, so give `--block-center` there
+  (`fmctl cells lte` does it for you). An off-centre carrier reads as
+  `possible` with no cells.
 - Exit 0 whatever the verdict; 1 for a bad option, a file it cannot read, or a
   sweep file (the reason on stderr); 2 when `--decode` is asked and the outside
   tools directory (`$FMRX_LTE_TOOLS`, or its default when unset) or `run_pdsch.sh` is
@@ -1302,10 +1307,14 @@ tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead o
   (AGPL, not part of this repo), and pycrate under `$FMRX_LTE_TOOLS/pyc`. Only
   the broadcast (SI-RNTI) is read. Each entry gets a `decode`: the MIB, SIB1
   (operators, tracking area, cell identity, barring, carrier point A), `si` (the
-  other SIBs, when SIB1 schedules any) and `time` (SIB9's UTC and GPS time), or
-  `time_reason` when there is none. A missing pycrate leaves `sib1` null and
+  other SIBs heard; `si.unscheduled` lists any SIB1 does not schedule) and `time`
+  (SIB9's UTC and GPS time), or `time_reason` when there is none. A missing pycrate leaves `sib1` null and
   still exits 0. It reads 6 s from `--t0` (`--decode-seconds`, at most 10):
   record at least that long. A 6 s decode takes about a minute.
 - A cell whose SIB1 carries only the operators and cell identity (one barred
-  cell on real air did) schedules no other SI: `si` is null and `time_reason`
-  says "SIB1 does not schedule SIB9". That is a result, not a failure.
+  cell on real air did) schedules no other SI, and `time_reason` says "SIB1 does
+  not schedule SIB9". That is a result, not a failure. Such a cell may still send
+  SI in SIB1's own slots (that one sent SIB2): then `si` lists it as unscheduled.
+- Only the strongest cell on an SSB frequency is decoded. Sectors of one site
+  often share one: the weaker ones' `decode` has `decoded_pci` (the PCI that
+  was read) and a reason, and no MIB or SIB1 of their own.
