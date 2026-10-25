@@ -1494,7 +1494,7 @@ Phases, each one checked before the next:
   - [ ] The weaker sectors' other SI: 2 of 80 and none. Their missing SIBs
     are marked unsure. The third sector, also sending the same SI on the same
     RBs, is not cancelled from the second, since its DCI there is not found.
-- [ ] 28.6 The weaker sectors' other SI (planned 2026-10-25). The first idea
+- [x] 28.6 The weaker sectors' other SI (2026-10-25: stopped at its exit, not reached). The first idea
   was iterative cancellation: once the third sector is decoded, cancel it
   from the second sector's slots too and re-read. The budget (2026-10-25,
   the first sector cancelled) says it is worth little. On the shared SI's
@@ -1511,6 +1511,12 @@ Phases, each one checked before the next:
     into `pdsch_llrs` for cells read under cancellation, with a synthetic
     check; otherwise the floor and the gap are written down,
     `missing_unsure` stays, and Round 29 starts.
+  - Outcome: none did. The DM-RS drift fit, smoothing across PRBs and the
+    noise taken on the data REs brought ours from 16 and 14 copies to 12 and
+    11 (bit agreement 0.611 to 0.614); the estimate from the known bytes
+    took 2 to 7 (0.641), partly because it fits the REs it decodes. Not
+    adopted; the floor and the gap are in
+    [nr-verify.md](nr-verify.md#cancelling-a-stronger-sector-roadmap-round-285).
 - [ ] LTE: Round 29 below.
 
 ## Round 29: our own LTE broadcast decoder (planned 2026-10-25)

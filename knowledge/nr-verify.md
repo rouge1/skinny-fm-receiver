@@ -586,6 +586,15 @@ On real air (2026-10-25, the 850 MHz site, 6 s), the three sectors:
   one site.
 - The weaker sectors' other SI is not read: their `si.missing` comes with
   `missing_unsure` and a reason, so it is not proof that a SIB is absent.
+  Round 28.6 measured why. On those RBs, with the first sector cancelled,
+  the second sector is 5 to 7 dB under what is left and the third 7.5 to 10.
+  About a third of the leftover repeats copy to copy. It is not the first
+  sector's channel mismatch (richer fits changed nothing) and not another
+  cell sending the same bytes (a scan of all 1008 PCIs was flat). Better
+  channel estimates for the second sector (the drift model on its DM-RS,
+  smoothing across PRBs, the noise taken on the data REs) brought the copies
+  a block needs from 14-16 to 11-12. An estimate fitted to its known bytes
+  needed 2 to 7, so the gap is the estimate, under a floor that repeats.
 - Time: about 195 s for the three cells, against 50 s for the first alone.
 
 Tests: `tools/tests/test_iqnr_cancel.py`. The idea, where else it applies and
