@@ -809,7 +809,7 @@ class _Timing:
         return out
 
 
-def type0_pdcch(iq, fs, center_hz, cell, rnti=None, pdsch=False):
+def type0_pdcch(iq, fs, center_hz, cell, rnti=None, pdsch=False, combine=True):
     """SIB1's DCIs (DCI format 1_0, CRC scrambled by SI-RNTI) of one cell, decoded with
     ``iqnr_phy`` in every Type0-PDCCH occasion of the capture, and with ``pdsch`` the SIB1
     each one schedules.
@@ -821,7 +821,9 @@ def type0_pdcch(iq, fs, center_hz, cell, rnti=None, pdsch=False):
     13-11), ``slots`` (slots tried), and ``dcis``, one per DCI found: ``sfn``, ``slot``,
     ``t_s`` (the slot's start), ``level``, ``cce``, the payload's fields, ``snr_db``. With
     ``pdsch`` each DCI also has ``pdsch``: ``tbs``, ``snr_db``, ``hex`` (the transport block,
-    or None when its CRC failed), or None when the allocation is not one this reads."""
+    or None when its CRC failed), ``copies`` (1 decoded alone, more when ``combine`` summed it
+    with earlier copies of its 160 ms period or since the last pass: ``iqnr_phy.SoftCombiner``;
+    0 none), or None when the allocation is not one this reads."""
     from . import iqnr_phy as P
     mib = (cell or {}).get('mib')
     if not mib or int(cell.get('scs_khz') or 0) != 15:
@@ -838,6 +840,7 @@ def type0_pdcch(iq, fs, center_hz, cell, rnti=None, pdsch=False):
     if not tm.fits:
         return None
     l0 = occ['first_symbol']
+    comb = P.SoftCombiner() if combine else None
     dcis, slots = [], 0
     for fr in tm.frames(len(x)):
         sfn = (tm.sfn0 + fr) % 1024
@@ -855,14 +858,16 @@ def type0_pdcch(iq, fs, center_hz, cell, rnti=None, pdsch=False):
                 dci.pop('metric', None)
                 entry = dict(sfn=int(sfn_slot), slot=int(slot), t_s=float(t_slot), **dci)
                 if pdsch:
-                    entry['pdsch'] = _sib1_block(P, tm, x, t_slot, pci, slot, dci, mib, n_rb, rnti)
+                    entry['pdsch'] = _sib1_block(P, tm, x, t_slot, pci, slot, dci, mib, n_rb, rnti,
+                                                 comb, sfn_slot // 16)
                 dcis.append(entry)
     return {'coreset0': dict(n_rb=n_rb, n_symb=n_symb, offset_rb=cs['offset_rb'], f0_hz=tm.f0),
             'occasion': occ, 'slots': slots, 'dcis': dcis}
 
 
-def _sib1_block(P, tm, x, t_slot, pci, slot, dci, mib, n_rb, rnti):
-    """The PDSCH a SIB1 DCI schedules (K0 0: the same slot), decoded on its own."""
+def _sib1_block(P, tm, x, t_slot, pci, slot, dci, mib, n_rb, rnti, comb=None, group=None):
+    """The PDSCH a SIB1 DCI schedules (K0 0: the same slot), decoded on its own, or through
+    ``comb`` with the copies of ``group``."""
     if dci.get('sii') != 0:
         return None
     alloc = P.pdsch_alloc(dci, mib['dmrs_typeA_position'], n_rb)
@@ -872,9 +877,20 @@ def _sib1_block(P, tm, x, t_slot, pci, slot, dci, mib, n_rb, rnti):
     if grid is None:
         return None
     llr, snr, _slope = P.pdsch_llrs(grid, pci, slot, alloc, rnti, slope=dci.get('slope'))
+    return _block(P, llr, snr, alloc, dci['rv'], comb, 'sib1', group)
+
+
+def _block(P, llr, snr, alloc, rv, comb, key, group):
+    """One PDSCH's transport block from its soft bits, alone or through the combiner."""
     setup = P.dlsch_setup(alloc['tbs'], alloc['rate'])
-    data = P.dlsch_decode(P.dlsch_soft(llr, setup, dci['rv'], alloc['qm']), setup)
-    return {'tbs': alloc['tbs'], 'snr_db': float(snr), 'hex': data.hex() if data is not None else None}
+    soft = P.dlsch_soft(llr, setup, rv, alloc['qm'])
+    if comb is None:
+        data = P.dlsch_decode(soft, setup)
+        copies = 1 if data is not None else 0
+    else:
+        data, copies = comb.add(key, group, soft, setup)
+    return {'tbs': alloc['tbs'], 'snr_db': float(snr), 'hex': data.hex() if data is not None else None,
+            'copies': copies}
 
 
 def _ss_slots(search, frame, slot):
@@ -883,7 +899,7 @@ def _ss_slots(search, frame, slot):
     return (frame * 10 + slot - offset) % period == 0
 
 
-def other_si(iq, fs, center_hz, cell, config, rnti=None):
+def other_si(iq, fs, center_hz, cell, config, rnti=None, combine=True):
     """The other SI messages of one cell (DCI format 1_0 with the SI indicator 1, and the PDSCH
     each schedules), decoded with ``iqnr_phy`` in the SI windows SIB1 names.
 
@@ -893,7 +909,9 @@ def other_si(iq, fs, center_hz, cell, config, rnti=None):
     ``period_slots``, ``offset_slots``; for search space 0, the Type0 candidates and
     symbols). Returns None when the cell or config cannot be read, else a dict: ``slots`` tried
     and ``blocks``, one per DCI: ``sfn``, ``slot``, ``si`` (1-based message, from the window),
-    ``level``, ``cce``, the DCI fields, and ``pdsch`` (``tbs``, ``snr_db``, ``hex`` or None)."""
+    ``level``, ``cce``, the DCI fields, and ``pdsch`` (``tbs``, ``snr_db``, ``hex`` or None,
+    ``copies`` as ``type0_pdcch``'s: with ``combine`` a message's copies are summed within its
+    window, then across windows until one passes)."""
     from . import iqnr_phy as P
     mib = (cell or {}).get('mib')
     if not mib or int(cell.get('scs_khz') or 0) != 15 or not config:
@@ -910,17 +928,18 @@ def other_si(iq, fs, center_hz, cell, config, rnti=None):
     k_ref = 12 * (int(config['offset_to_point_a']) - cs['offset_rb'])
     search = config['search']
     w = int(config['window_slots'])
+    comb = P.SoftCombiner() if combine else None
     blocks, slots = [], 0
     for fr in tm.frames(len(x)):
         sfn = (tm.sfn0 + fr) % 1024
         for slot in range(10):
             here = sfn * 10 + slot
-            which = None
+            which = window = None
             for n, period in enumerate(config['periods_rf'], start=1):
                 start = (n - 1) * w                     # 38.331 5.2.2.3.2: x = (n - 1) w
                 rel = (here - (start // 10) * 10 - start % 10) % (int(period) * 10)
                 if rel < w:
-                    which = n
+                    which, window = n, (here - rel) % 10240
                     break
             if which is None or not _ss_slots(search, sfn, slot):
                 continue
@@ -943,9 +962,6 @@ def other_si(iq, fs, center_hz, cell, config, rnti=None):
                         if g is not None:
                             llr, snr, _slope = P.pdsch_llrs(g, pci, slot, alloc, rnti, k_ref=k_ref,
                                                             slope=dci.get('slope'))
-                            setup = P.dlsch_setup(alloc['tbs'], alloc['rate'])
-                            data = P.dlsch_decode(P.dlsch_soft(llr, setup, dci['rv'], alloc['qm']), setup)
-                            entry['pdsch'] = {'tbs': alloc['tbs'], 'snr_db': float(snr),
-                                              'hex': data.hex() if data is not None else None}
+                            entry['pdsch'] = _block(P, llr, snr, alloc, dci['rv'], comb, ('si', which), window)
                     blocks.append(entry)
     return {'slots': slots, 'blocks': blocks}

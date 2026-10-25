@@ -477,6 +477,46 @@ the CRC catalogue's check values.
 
 Tests: `tools/tests/test_iqnr_pdsch.py`.
 
+### Combining the repeats (roadmap Round 28.4)
+
+A cell sends SIB1 and each SI message again and again with no feedback, at
+any redundancy version and on any RBs. `iqnr_phy.SoftCombiner` (on by
+default in `type0_pdcch` and `other_si`, `combine=False` to read each copy
+alone) decodes a copy alone first. A copy that fails is kept, by transport
+block size and base graph, so only copies of one codeword meet. Then two sums
+are tried:
+1. The copies in its group: SIB1's 160 ms period, or the SI message's window,
+   where the content is the same for certain.
+2. Every copy kept since the last pass, for content that held over periods.
+
+A pass empties the store. Each block's `pdsch` gains `copies` (1 alone, 2 or
+more summed, 0 none), and `own.blocks.combined` counts SIB1's and other SI's
+summed blocks.
+
+On real air (2026-10-25, the same recordings):
+- The barred cell: SIB1 108 blocks instead of 56, all one content, and every
+  160 ms period now has one (38 of 38, before 36). The extra 52 came from 2
+  copies each, often two parity-heavy versions together (2 and 3, or 1 and 2).
+  Summing its version-0 copies against the known codeword raised the
+  buffer's SNR by 3.3 dB for 2 copies, 5.3 for 4 and 7.0 for 8 (3, 6 and 9
+  ideal). The noise is independent from copy to copy.
+- The second sector: combining does not reach it. The strongest sector sends
+  the same SI on the same RBs in the same slots (the sectors share one
+  schedule and, it turns out, the bytes), 6 to 7 dB above it. That repeat is
+  the same in every copy, so it adds up just as the wanted signal does: 8
+  copies gained about 3 dB, not 9. Subtracting the strongest sector's
+  rebuilt PDSCH (its bytes are known) lifted the second sector's DM-RS SNR
+  by about 2.5 dB, but no copy or sum decoded. Cancellation done well is
+  Round 28.5's.
+
+Tests: `tools/tests/test_iqnr_combine.py`. Its synthetic block is the barred
+cell's kind (1 RB at MCS 9), with versions 0, 2, 3, 1 on moving RBs:
+- four copies at 2 dB per RE always decode summed, never alone (one copy
+  needs about 7 dB);
+- a parity-only copy is kept and lifts a weak version 0;
+- an older content's copies do not block a new one;
+- end to end, SIB1 and other SI that no copy of decodes alone.
+
 ## Decoding a listed SSB (`--decode`)
 
 `tools/iq-nr FILE --decode` goes one step past the search. For each SSB the

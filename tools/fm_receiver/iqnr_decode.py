@@ -590,14 +590,16 @@ def own_decode(iq, fs, centre_hz, cell, tools=None):
 
     Returns ``sib1`` (the summary ``decode_ssb`` gives, or None), ``sib1_hex`` (the block most
     often decoded), ``blocks`` (``sib1``: copies decoded and DCIs found; ``other``: the same
-    for other SI), ``si`` (``sibs_heard``, ``sibs``, ``scheduled``, ``missing``,
+    for other SI; ``combined``: how many of those blocks, SIB1's and other SI's, took more than
+    one copy summed), ``si`` (``sibs_heard``, ``sibs``, ``scheduled``, ``missing``,
     ``unscheduled``, as ``decode_ssb``; None when SIB1 schedules nothing and none was heard),
     ``time`` (SIB9's), ``time_reason`` and ``reason``."""
     from fm_receiver import iqnr
     tools = tools if tools is not None else tools_dir()
     seconds = len(iq) / float(fs) if fs else 0.0
     out = {'ran': True, 'decoder': 'ours', 'sib1': None, 'sib1_hex': None, 'si': None, 'time': None,
-           'time_reason': None, 'reason': None, 'blocks': {'sib1': [0, 0], 'other': [0, 0]}}
+           'time_reason': None, 'reason': None,
+           'blocks': {'sib1': [0, 0], 'other': [0, 0], 'combined': [0, 0]}}
     notes = []
     got = iqnr.type0_pdcch(iq, fs, centre_hz, cell, pdsch=True)
     if got is None:
@@ -606,6 +608,7 @@ def own_decode(iq, fs, centre_hz, cell, tools=None):
         return out
     hexes = [d['pdsch']['hex'] for d in got['dcis'] if d.get('pdsch') and d['pdsch']['hex']]
     out['blocks']['sib1'] = [len(hexes), len(got['dcis'])]
+    out['blocks']['combined'][0] = sum(1 for d in got['dcis'] if (d.get('pdsch') or {}).get('copies', 0) > 1)
     if not hexes:
         out['time_reason'] = 'no SIB1'
         out['reason'] = ('no SIB1 decoded from %d DCIs in %g s' % (len(got['dcis']), round(seconds, 3))
@@ -637,6 +640,7 @@ def own_decode(iq, fs, centre_hz, cell, tools=None):
     blocks = (other or {}).get('blocks') or []
     ok = [b['pdsch']['hex'] for b in blocks if b.get('pdsch') and b['pdsch']['hex']]
     out['blocks']['other'] = [len(ok), len(blocks)]
+    out['blocks']['combined'][1] = sum(1 for b in blocks if (b.get('pdsch') or {}).get('copies', 0) > 1)
     counted = {}
     for h in ok:
         counted[h] = counted.get(h, 0) + 1

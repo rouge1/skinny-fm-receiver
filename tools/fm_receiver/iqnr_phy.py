@@ -1102,6 +1102,40 @@ def dlsch_decode(buffers, setup):
     return bytes(np.packbits(b[:a]))
 
 
+class SoftCombiner:
+    """Soft combining of a broadcast block's repeats (no HARQ feedback: the cell just sends it
+    again, at any redundancy version and on any RBs).
+
+    ``add`` decodes a copy alone; failing that it keeps the copy's buffers under ``key`` (with
+    the transport block's size and base graph, so only copies of one codeword meet) and tries
+    the sum of the copies in its ``group`` (SIB1's 160 ms period, an SI message's window: the
+    same content for certain), then the sum of every copy kept under the key (content that held
+    over periods). A pass empties the key: later copies start a new sum."""
+
+    def __init__(self):
+        self._kept = {}
+
+    def add(self, key, group, soft, setup):
+        """``(bytes or None, copies)``: the block and how many copies it took (1 alone, 0 none)."""
+        data = dlsch_decode(soft, setup)
+        k = (key, setup['tbs'], setup['bg'])
+        if data is not None:
+            self._kept.pop(k, None)
+            return data, 1
+        kept = self._kept.setdefault(k, [])
+        kept.append((group, soft))
+        same = [s for g, s in kept if g == group]
+        tries = [same] if len(same) > 1 else []
+        if len(kept) > len(same):
+            tries.append([s for _g, s in kept])
+        for copies in tries:
+            data = dlsch_decode([np.sum(bufs, axis=0) for bufs in zip(*copies)], setup)
+            if data is not None:
+                del self._kept[k]
+                return data, len(copies)
+        return None, 0
+
+
 def encode_dlsch(data, setup, rv, qm, g):
     """The ``g`` bits sent of transport block ``data`` (bytes) at redundancy version ``rv``, for tests."""
     from . import iqnr_ldpc as L
