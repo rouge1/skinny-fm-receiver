@@ -28,16 +28,20 @@ Method, for one SSB entry of ``iqnr.ssb_search`` (``decode_ssb``):
    values in list order; left out when SIB1 has none). Both passes' distinct blocks
    are parsed and summarised.
 5. Every distinct block of both passes is parsed, whatever its ``sii``: a SystemInformation
-   message is other SI wherever it came. A cell may send one that SIB1 does not schedule, in
-   SIB1's own slots with ``sii`` 0 (one did on air: SIB2, with SIB1 scheduling nothing).
-   ``si.unscheduled`` lists the SIBs heard that SIB1 does not schedule.
+   message is other SI wherever it came, and ``si.unscheduled`` lists the SIBs heard that
+   SIB1 does not schedule. A block of all zero bytes is dropped and counted in
+   ``crc_fail``: it passes the CRC (whose register starts at zero) and parses as a
+   SystemInformation holding a SIB2 of defaults, but it is the program's output for a block
+   it had next to nothing of. On air every "SIB2 in SIB1's slots" of 2026-10-23 was such a
+   block: the barred cell's SIB1 repeats with redundancy version 1, which carry no
+   systematic bits (our own decoder, 2026-10-24).
 6. Pass 1 reads every slot's CORESET 0 for SI-RNTI DCIs, so it sees other SI in its own
    slots too, but cannot decode it (its DM-RS counts from CRB 0, so it needs ``-a``): those
    blocks are ``NR_SI_CRC_FAIL`` / ``NR_SI_ERR`` with ``sii`` 1. When pass 1 had any and
    SIB1 schedules nothing, pass 2 runs all the same (``-a``, and ``-t`` when SIB1 has a
-   list). Pass 1's ``sii`` 0 failures are SIB1: its repeats with redundancy versions 2 and
-   3, which do not decode alone, and copies with version 0 that failed (on air, 31 and 7
-   of 38), not another message.
+   list). Pass 1's ``sii`` 0 failures are SIB1: its repeats with redundancy versions 1, 2
+   and 3, which do not decode alone, and copies with version 0 that failed, not another
+   message.
 
 Time (SIB9 ``timeInfo``): ``timeInfoUTC`` counts 10 ms units from 1900-01-01 00:00:00
 UTC, exactly as LTE SIB16, so ``iqlte_decode.sib16_time`` does the arithmetic.
@@ -98,7 +102,7 @@ _MIB_KEYS = ('pci', 'sfn', 'ssb_index', 'half_frame', 'scs_common_khz', 'ssb_sub
              'dmrs_typeA_position', 'coreset0_index', 'search_space0_index', 'cell_barred',
              'intra_freq_reselection', 'ssb_sample', 'cfo_hz', 'snr_db')
 
-__all__ = ['SampleSource', 'ToolsMissing', 'cap_seconds', 'decode_ssb', 'point_a_arfcn', 'RATE',
+__all__ = ['SampleSource', 'ToolsMissing', 'cap_seconds', 'decode_ssb', 'own_decode', 'point_a_arfcn', 'RATE', 'si_config',
            'DEFAULT_SECONDS', 'MAX_SECONDS']
 
 # Runs under the pycrate interpreter. argv[1] is a JSON file holding a list of hex strings,
@@ -216,6 +220,7 @@ class _Pass:
         self.blocks = []                       # (sii, hex)
         self.crc_fail = 0
         self.osi_failed = 0                    # sii 1 blocks that did not decode
+        self.zero = 0                          # "decoded" blocks of all zero bytes, dropped
         for tag, obj in _tagged(lines):
             if tag == 'NR_MIB':
                 self.mib = obj
@@ -224,7 +229,15 @@ class _Pass:
             elif tag == 'NR_CORESET0':
                 self.coreset0 = obj
             elif tag == 'NR_SI' and isinstance(obj.get('hex'), str):
-                self.blocks.append((1 if obj.get('sii') else 0, obj['hex'].strip().lower()))
+                block = obj['hex'].strip().lower()
+                if block and not block.strip('0'):
+                    # All zero bytes pass a CRC whose register starts at zero: the program's
+                    # answer for a block it had next to nothing of, not a message.
+                    self.crc_fail += 1
+                    self.zero += 1
+                    self.osi_failed += 1 if obj.get('sii') == 1 else 0
+                    continue
+                self.blocks.append((1 if obj.get('sii') else 0, block))
             elif tag == 'NR_SI_CRC_FAIL':
                 self.crc_fail += 1
                 self.osi_failed += 1 if obj.get('sii') == 1 else 0
@@ -364,6 +377,65 @@ def _schedule(sib1):
     return _prefixed(info.get('si-WindowLength'), 's'), entries
 
 
+def _sliv(value):
+    """(S, L) of a startSymbolAndLength (38.214 5.1.2.1), or None."""
+    a, b = divmod(int(value), 14)
+    for s, l in ((b, a + 1), (13 - b, 15 - a)):
+        if 0 <= s < 14 and 1 <= l <= 14 - s and int(value) == (
+                14 * (l - 1) + s if l - 1 <= 7 else 14 * (14 - l + 1) + (13 - s)):
+            return s, l
+    return None
+
+
+def si_config(sib1):
+    """What our own other-SI decode (``iqnr.other_si``) needs from a parsed SIB1, or None:
+    ``offset_to_point_a``, ``tdra`` ((K0, mapping, S, L) rows of pdsch-ConfigCommon), the SI
+    ``window_slots``, ``periods_rf`` (each message's periodicity, in order) and ``search``,
+    the search space for other SI (searchSpaceOtherSystemInformation in commonSearchSpaceList;
+    0 or none is search space 0's Type0 candidates on symbol 0 of every slot)."""
+    if not isinstance(sib1, dict):
+        return None
+    window, entries = _schedule(sib1)
+    offset = _offset_to_point_a(sib1)
+    if not entries or window is None or offset is None:
+        return None
+    found = _find_key(sib1, 'pdsch-TimeDomainAllocationList')
+    if isinstance(found, list) and len(found) == 2 and isinstance(found[0], str):
+        found = found[1]
+    tdra = []
+    for row in found if isinstance(found, list) else []:
+        sl = _sliv(row.get('startSymbolAndLength', -1)) if isinstance(row, dict) else None
+        if sl is None:
+            tdra = []
+            break
+        kind = 'B' if str(row.get('mappingType')).lower().endswith('b') else 'A'
+        tdra.append((int(row.get('k0') or 0), kind, sl[0], sl[1]))
+    search = {'counts': ((4, 4), (8, 2), (16, 1)), 'first_symbols': (0,), 'period_slots': 1,
+              'offset_slots': 0}
+    ss_id = _find_key(sib1, 'searchSpaceOtherSystemInformation')
+    for ss in _find_key(sib1, 'commonSearchSpaceList') or []:
+        if not isinstance(ss, dict) or ss.get('searchSpaceId') != ss_id or not ss_id:
+            continue
+        cands = ss.get('nrofCandidates') or {}
+        counts = []
+        for level in (1, 2, 4, 8, 16):
+            n = str(cands.get('aggregationLevel%d' % level, 'n0'))
+            counts.append((level, int(n[1:]) if n[1:].isdigit() else 0))
+        per = ss.get('monitoringSlotPeriodicityAndOffset')
+        period, off = 1, 0
+        if isinstance(per, list) and len(per) == 2 and str(per[0]).startswith('sl'):
+            period, off = int(str(per[0])[2:]), int(per[1] or 0)
+        sym = ss.get('monitoringSymbolsWithinSlot')
+        first = (0,)
+        if isinstance(sym, list) and len(sym) == 2:
+            value, width = int(sym[0]), int(sym[1])
+            first = tuple(i for i in range(width) if (value >> (width - 1 - i)) & 1) or (0,)
+        search = {'counts': tuple(counts), 'first_symbols': first, 'period_slots': period,
+                  'offset_slots': off}
+    return {'offset_to_point_a': offset, 'tdra': tdra, 'window_slots': window,
+            'periods_rf': [e['periodicity_rf'] for e in entries], 'search': search}
+
+
 def _offset_to_point_a(sib1):
     value = _find_key(sib1, 'offsetToPointA')
     return value if isinstance(value, int) and not isinstance(value, bool) else None
@@ -487,6 +559,108 @@ def _write_span(src, centre_hz, ssb_hz, path):
     return written
 
 
+def _heard(si_blocks, tools, notes):
+    """``(heard, sibs)`` of SI blocks ``[(copies, hex)]``: each SIB's copies, and its first
+    content; a parse failure goes to ``notes``."""
+    heard, sibs = {}, {}
+    if not si_blocks:
+        return heard, sibs
+    results, why = _parse_blocks([h for _c, h in si_blocks], tools)
+    if results is None:
+        notes.append(why)
+        return heard, sibs
+    for (count, _h), res in zip(si_blocks, results):
+        kind, value = _body(res)
+        if kind != 'systemInformation':
+            continue
+        ext = value.get('criticalExtensions') if isinstance(value, dict) else None
+        ies = ext[1] if isinstance(ext, list) and len(ext) == 2 else {}
+        for item in (ies.get('sib-TypeAndInfo') or []) if isinstance(ies, dict) else []:
+            if isinstance(item, list) and len(item) == 2:
+                name = _sib_name(item[0])
+                heard[name] = heard.get(name, 0) + count
+                sibs.setdefault(name, item[1])
+    return heard, sibs
+
+
+def own_decode(iq, fs, centre_hz, cell, tools=None):
+    """SIB1 and the other SI of one ``iqnr.ssb_search(..., mib=True)`` entry by our own decoder
+    (``iqnr.type0_pdcch`` with ``pdsch``, then ``iqnr.other_si`` configured from that SIB1),
+    over the whole of ``iq``. Only the RRC parse is outside: pycrate, as for ``decode_ssb``.
+
+    Returns ``sib1`` (the summary ``decode_ssb`` gives, or None), ``sib1_hex`` (the block most
+    often decoded), ``blocks`` (``sib1``: copies decoded and DCIs found; ``other``: the same
+    for other SI), ``si`` (``sibs_heard``, ``sibs``, ``scheduled``, ``missing``,
+    ``unscheduled``, as ``decode_ssb``; None when SIB1 schedules nothing and none was heard),
+    ``time`` (SIB9's), ``time_reason`` and ``reason``."""
+    from fm_receiver import iqnr
+    tools = tools if tools is not None else tools_dir()
+    seconds = len(iq) / float(fs) if fs else 0.0
+    out = {'ran': True, 'decoder': 'ours', 'sib1': None, 'sib1_hex': None, 'si': None, 'time': None,
+           'time_reason': None, 'reason': None, 'blocks': {'sib1': [0, 0], 'other': [0, 0]}}
+    notes = []
+    got = iqnr.type0_pdcch(iq, fs, centre_hz, cell, pdsch=True)
+    if got is None:
+        out['time_reason'] = 'no SIB1'
+        out['reason'] = 'no MIB, or a cell this decoder does not read (15 kHz only)'
+        return out
+    hexes = [d['pdsch']['hex'] for d in got['dcis'] if d.get('pdsch') and d['pdsch']['hex']]
+    out['blocks']['sib1'] = [len(hexes), len(got['dcis'])]
+    if not hexes:
+        out['time_reason'] = 'no SIB1'
+        out['reason'] = ('no SIB1 decoded from %d DCIs in %g s' % (len(got['dcis']), round(seconds, 3))
+                         if got['dcis'] else 'no SIB1 DCI in %g s' % round(seconds, 3))
+        return out
+    best = max(set(hexes), key=hexes.count)
+    out['sib1_hex'] = best
+    results, why = _parse_blocks([best], tools)
+    sib1 = None
+    if results is None:
+        notes.append(why)
+    else:
+        kind, value = _body(results[0])
+        sib1 = value if kind == 'systemInformationBlockType1' and isinstance(value, dict) else None
+        if sib1 is None:
+            notes.append('the SIB1 block did not parse')
+    if sib1 is None:
+        out['time_reason'] = 'no SIB1'
+        out['reason'] = _join(*notes)
+        return out
+    mib = cell['mib']
+    offset = _offset_to_point_a(sib1)
+    point_a = None
+    if offset is not None and mib.get('ssb_subcarrier_offset') is not None:
+        point_a = _point_a_hz(float(cell['ssb_hz']), 15e3, mib['ssb_subcarrier_offset'], offset)
+    out['sib1'] = _summarise_sib1(sib1, mib, point_a)
+    config = si_config(sib1)
+    other = iqnr.other_si(iq, fs, centre_hz, cell, config) if config else None
+    blocks = (other or {}).get('blocks') or []
+    ok = [b['pdsch']['hex'] for b in blocks if b.get('pdsch') and b['pdsch']['hex']]
+    out['blocks']['other'] = [len(ok), len(blocks)]
+    counted = {}
+    for h in ok:
+        counted[h] = counted.get(h, 0) + 1
+    heard, sibs = _heard([(n, h) for h, n in counted.items()], tools, notes)
+    entries = out['sib1']['si_schedule']
+    if entries or heard:
+        scheduled = []
+        for entry in entries:
+            scheduled += [n for n in entry['sibs'] if n not in scheduled]
+        on_air = [n for e in entries if str(e.get('broadcast_status')).lower() != 'notbroadcasting'
+                  for n in e['sibs']]
+        out['si'] = {'sibs_heard': heard, 'sibs': sibs, 'scheduled': scheduled,
+                     'missing': [n for n in dict.fromkeys(on_air) if n not in heard],
+                     'unscheduled': [n for n in heard if n not in scheduled]}
+        if out['si']['missing']:
+            notes.append('not heard in %g s: %s' % (round(seconds, 3), ', '.join(out['si']['missing'])))
+        if 'sib9' in sibs:
+            out['time'] = _sib9_time(sibs['sib9'])
+    if out['time'] is None:
+        out['time_reason'] = _time_reason(out['sib1'], out['si'], seconds, True)
+    out['reason'] = _join(*notes)
+    return out
+
+
 def _join(*parts):
     return '; '.join(p for p in parts if p) or None
 
@@ -599,24 +773,7 @@ def decode_ssb(src, centre_hz, ssb, tools=None, cut_reason=None):
             notes.append(second.error)
 
         # Every block, both indicators: other SI may come in SIB1's slots (step 5).
-        si_blocks = _common([b for p in passes for b in p.blocks])
-        heard, sibs = {}, {}
-        if si_blocks:
-            results, why = _parse_blocks([h for _c, h in si_blocks], tools)
-            if results is None:
-                notes.append(why)
-            else:
-                for (count, _h), res in zip(si_blocks, results):
-                    kind, value = _body(res)
-                    if kind != 'systemInformation':
-                        continue
-                    ext = value.get('criticalExtensions') if isinstance(value, dict) else None
-                    ies = ext[1] if isinstance(ext, list) and len(ext) == 2 else {}
-                    for item in (ies.get('sib-TypeAndInfo') or []) if isinstance(ies, dict) else []:
-                        if isinstance(item, list) and len(item) == 2:
-                            name = _sib_name(item[0])
-                            heard[name] = heard.get(name, 0) + count
-                            sibs.setdefault(name, item[1])
+        heard, sibs = _heard(_common([b for p in passes for b in p.blocks]), tools, notes)
 
         if entries or heard:
             scheduled = []

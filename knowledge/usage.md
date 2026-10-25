@@ -1323,6 +1323,7 @@ tools/iq-nr CAPTURE.cfile --t0 1.5 --seconds 2 --max-cells 8
 tools/iq-nr CAPTURE.cfile --rate 20000000 --center 600000000    # a bare .cfile, no .sigmf-meta
 tools/iq-nr CAPTURE.cfile --mib                            # also each cell's MIB, by our own decoder
 tools/iq-nr CAPTURE.cfile --pdcch --seconds 2              # and the DCIs that schedule SIB1, ours too
+tools/iq-nr CAPTURE.cfile --pdsch --max-cells 1            # SIB1, other SI and SIB9 time, all ours
 tools/iq-nr CAPTURE.cfile --decode --max-cells 1           # also the MIB, SIB1, other SI and SIB9 time
 tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead of 6
 ```
@@ -1355,6 +1356,17 @@ tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead o
   `rv`, `sii`, `reserved`) and `snr_db` per RE. It is null without a MIB
   and for a 30 kHz cell. A cell sends SIB1 every 20 to 40 ms, so the default
   0.1 s span holds two to five; about 50 ms an occasion.
+- `--pdsch` (implies `--mib`) decodes each cell's SIB1 and other SI with our
+  own decoder, over the `--decode-seconds` span (default 6 s, read in pieces):
+  no srsRAN. Each entry gets `own`, shaped as `decode` is: `sib1` (the same
+  summary), `sib1_hex` (the block decoded most often), `blocks` (`sib1` and
+  `other`: [copies decoded, DCIs found]), `si`, `time` and `time_reason`,
+  `reason`, `seconds`. The RRC parse uses pycrate under
+  `$FMRX_LTE_TOOLS/pyc`; without it `sib1` is null, `sib1_hex` is still
+  there and `reason` says why. 15 kHz cells only. On real air it read every
+  SIB1 and other SI copy of a strong cell (about 50 s for 6 s), and agreed
+  with `--decode`. A weak cell's copies may each be too weak to decode alone:
+  combining them is the next round.
 - `--decode` needs srsRAN 4G's NR library behind `run_nr.sh`, built by you
   (AGPL, not part of this repo), and pycrate under `$FMRX_LTE_TOOLS/pyc`. Only
   the broadcast (SI-RNTI) is read. Each entry gets a `decode`: the MIB, SIB1
@@ -1365,8 +1377,9 @@ tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead o
   record at least that long. A 6 s decode takes about a minute.
 - A cell whose SIB1 carries only the operators and cell identity (one barred
   cell on real air did) schedules no other SI, and `time_reason` says "SIB1 does
-  not schedule SIB9". That is a result, not a failure. Such a cell may still send
-  SI in SIB1's own slots (that one sent SIB2): then `si` lists it as unscheduled.
+  not schedule SIB9". That is a result, not a failure. SI that SIB1 does not
+  schedule would be listed in `si.unscheduled`; none has been seen on air (a
+  "SIB2" once reported there was a block of zeros, now dropped).
 - Sectors of one site often share one SSB frequency, and the outside program
   reads the strongest. For a weaker one the decode aims at its PCI: its MIB
   then comes with `targeted` true and a reason naming the stronger cell. Its

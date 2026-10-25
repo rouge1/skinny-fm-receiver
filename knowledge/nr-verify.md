@@ -414,6 +414,69 @@ in a Type0 search space at all (E is at least 432), so only the synthetic
 test reaches it. These are checked only by the round trip, which an encoder
 and decoder written together could both get wrong in the same way.
 
+## Our own SIB1 and other SI decoder (`--pdsch`, roadmap Round 28.3)
+
+`tools/iq-nr FILE --pdsch` reads each cell's SIB1, other SI and SIB9's time
+with no srsRAN: `iqnr.type0_pdcch(pdsch=True)`, `iqnr.other_si` and
+`iqnr_decode.own_decode`, on `iqnr_phy` and `iqnr_ldpc` (numpy only, from
+38.211, 38.212, 38.214 and 38.331; 38.212's lifting sizes and both LDPC base
+graphs, and 38.214's time, MCS and TBS tables are copied and pinned). Only
+the RRC parse is outside: pycrate, as for `--decode`. It reads the
+`--decode-seconds` span (default 6 s) in pieces.
+
+For each SIB1 DCI (28.2), in the same slot:
+1. The allocation: default time table A, MCS table 1, the RBs, DM-RS symbols
+   (pos2: {l0, 7, 11} for S + L = 14), the TBS (38.214 5.1.3.2).
+2. The slot's symbols cut as for the PDCCH, each multiplied by
+   exp(+j 2 pi f tau_l) (38.211 5.4's per-symbol phase; see below).
+3. DM-RS from CORESET 0's subcarrier 0, a gain per PRB and DM-RS symbol after
+   the PDCCH's delay, linear in time between DM-RS symbols; data at -3 dB to
+   the DM-RS; soft bits; descrambling.
+4. DL-SCH: base graph, segmentation, rate recovery into a soft buffer, layered
+   normalised min-sum, CRC 16 (or 24A and 24B).
+
+Then SIB1 is parsed, and its schedule, time list, `offsetToPointA` and
+other-SI search space (`iqnr_decode.si_config`) drive `other_si`. It
+searches the slots of each SI window with that search space's candidates
+and decodes each DCI with the SI indicator set, its DM-RS counted from common
+RB 0. Output `own` is shaped as `decode`.
+
+On real air (2026-10-24, two 6 s recordings; the referee was the outside
+program, and for other SI its second pass with SIB1's `-t` and `-a`):
+- The strongest sector of one site: SIB1 143 of 143 copies; the 52 the
+  referee read were equal byte for byte. Other SI 80 of 80 blocks (five
+  messages, 16 copies each); the referee's 39 were equal. SIB1's summary,
+  SIB2 to 5 and SIB9 equal to `--decode`'s; SIB9's time one SI period (1.28 s)
+  earlier, from a copy the referee missed. About 50 s.
+- The barred cell (1-RB SIB1 at code rate 0.66): 56 of its 75 version-0
+  copies, the referee's 19 real ones equal; the failures were weak copies at
+  the top of CORESET 0. Its versions 1 to 3 carry no or few data bits (E 192
+  of a 1200-bit buffer): min-sum cannot start on such a copy, so they wait
+  for combining (28.4).
+- The referee's 17 "decodes" of version-1 copies on that cell were all-zero
+  blocks: they pass the CRC (its register starts at zero) and pycrate reads
+  them as a SIB2 of defaults. That was the "unscheduled SIB2" of 2026-10-23,
+  now withdrawn; both decode paths drop all-zero blocks.
+- The second sector (SSB 7 dB under the strongest): 20 other-SI DCIs in the
+  shared SI windows, their data at -3 to -7 dB per RE, six to eight copies a
+  message, none decoded alone. Its SIB1 DCI still does not decode (28.2).
+
+Wrong turn: the per-symbol phase. 38.211 5.4 restarts each symbol's phase at
+its useful start, so after the FFT symbol l is turned by exp(-j 2 pi f
+tau_l), f the radio frequency at 0 Hz of the cut, tau_l its useful start in
+the subframe. The PBCH and PDCCH hid it (every symbol has DM-RS and its own
+gain); the PDSCH interpolates between DM-RS symbols, and without the term,
+or with its sign flipped, 40 % of the bits agreed and nothing decoded. With
+it, the first three copies tried were equal to the referee's bytes.
+
+Never on air: base graph 1, several code blocks (CRC 24A and 24B), 16QAM and
+64QAM, interleaved VRB-to-PRB, mapping type B and shared DM-RS symbols, and
+search space 0 for other SI. The synthetic tests reach them (`nr_synth` now
+takes `rf_hz` to add 5.4's per-symbol phase), and CRC 24A and 24B also match
+the CRC catalogue's check values.
+
+Tests: `tools/tests/test_iqnr_pdsch.py`.
+
 ## Decoding a listed SSB (`--decode`)
 
 `tools/iq-nr FILE --decode` goes one step past the search. For each SSB the
@@ -483,9 +546,13 @@ The other exit codes are those of the search (see the Exit codes table above).
 
    Then every distinct block of both passes is parsed, whatever its SI
    indicator (`sii`), and each SystemInformation message counts as other SI.
-   A cell may send SI that SIB1 does not schedule, and in SIB1's own slots
-   with `sii` 0: one barred cell on air sent SIB2 that way, with SIB1
-   scheduling nothing. SIB9's time is read from these blocks, scheduled or not.
+   SI that SIB1 does not schedule is listed in `si.unscheduled`, wherever it
+   came. A block of all zero bytes is dropped and counted as a CRC failure:
+   it passes the CRC and parses as a SystemInformation holding a SIB2 of
+   defaults, but it is what the program returns for a block it had next to
+   nothing of. The barred cell's "SIB2 in SIB1's slots" reported on
+   2026-10-23 was exactly that (its SIB1 repeats with redundancy version 1)
+   and is withdrawn. SIB9's time is read from these blocks, scheduled or not.
 
    Pass 1 reads CORESET 0 in every slot, so it also sees other SI sent in
    its own slots. It cannot decode it, because that SI's DM-RS counts from
@@ -619,8 +686,8 @@ which is not in this repo.
   reads every slot. Pass 2 runs when SIB1 schedules other SI, or when pass 1
   saw `sii` 1 blocks fail, and needs `offsetToPointA`. SI under another
   CORESET or search space is not looked for. On the barred cell (SIB1
-  scheduling nothing), every SI-RNTI grant in 6 s was SIB1, one of its
-  repeats, or the SIB2 in SIB1's slots: nothing came in its own slots.
+  scheduling nothing), every SI-RNTI grant in 6 s was SIB1 or one of its
+  repeats: nothing came in its own slots.
 
 ## Decode tests
 
@@ -650,8 +717,8 @@ kept outside the repo):
   capture's start (by the recording's start time: the `.sigmf-meta` of that
   day held the stop time, a bug fixed since). The second (barred, two
   operators): the operators and cell identity matched; `time` null with "SIB1
-  does not schedule SIB9". Since 2026-10-23 the SIB2 the outside program heard
-  on it is heard too, and listed in `si.unscheduled`: it came in SIB1's slots.
+  does not schedule SIB9". The SIB2 the outside program seemed to hear on it
+  (2026-10-23) was a block of zeros, withdrawn 2026-10-24 (see above).
   Each decode took about a minute.
 
 See [capabilities.md](capabilities.md) and Round 26 of [roadmap.md](roadmap.md).

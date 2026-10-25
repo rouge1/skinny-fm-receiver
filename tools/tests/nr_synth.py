@@ -202,7 +202,7 @@ def _resample(iq, native, fs):
 # ----- the cell -----------------------------------------------------------------------
 
 def _cell_native(pci, scs_khz, case, l_max, ssb_sent, period_ms, n_hf, bw_mhz,
-                 ssb_offset_hz, dur_ms, seed, load, pbch=None, res=None):
+                 ssb_offset_hz, dur_ms, seed, load, pbch=None, res=None, phase_hz=None):
     """One cell at the native rate. Returns (iq, native, truth, rng); unit mean power."""
     if not 0 <= int(pci) <= 1007:
         raise ValueError('pci must be 0..1007')
@@ -278,10 +278,14 @@ def _cell_native(pci, scs_khz, case, l_max, ssb_sent, period_ms, n_hf, bw_mhz,
 
     td = np.fft.ifft(grid, axis=1) * (nfft / np.sqrt(n_sc))
     out = np.empty(n_frames * frame_len, dtype=np.complex128)
+    sub_len = frame_len // 10
     for f in range(n_frames):
         base = f * frame_len
         for s in range(syms_per_frame):
             row = td[f * syms_per_frame + s]
+            if phase_hz is not None:
+                tau = ((int(starts[s]) + int(cps[s])) % sub_len) / native
+                row = row * np.exp(-2j * np.pi * ((phase_hz * tau) % 1.0))
             a = base + int(starts[s])
             c = int(cps[s])
             out[a:a + c] = row[nfft - c:]
@@ -323,7 +327,7 @@ def _finish(iq, rate, snr_db, cfo_hz, rng):
 
 def synth_nr(pci=123, scs_khz=15, case='A', l_max=4, ssb_sent=(0,), period_ms=20, n_hf=0, bw_mhz=10,
              ssb_offset_hz=0.0, dur_ms=100, snr_db=20.0, cfo_hz=0.0, fs=None, seed=0, load=1.0, pbch=None,
-             res=None):
+             res=None, rf_hz=None):
     """One NR cell with SSBs. Returns ``(iq complex64, fs, truth)``; see the module docstring.
 
     ``pbch`` (frame_no, half_frame, ssb_idx) -> 432 symbols gives each SSB's PBCH data, for a
@@ -334,12 +338,17 @@ def synth_nr(pci=123, scs_khz=15, case='A', l_max=4, ssb_sent=(0,), period_ms=20
     SSBs: ``values`` on symbol ``symbol`` of that slot (14 symbols, normal CP), from subcarrier
     ``k`` counted from SSB subcarrier 0 (negative below it), for a CORESET or a PDSCH.
 
+    ``rf_hz`` (the capture's radio frequency at 0 Hz) adds the phase 38.211 5.4 gives each
+    symbol: exp(-j 2 pi f tau_l), f the carrier's own frequency (rf_hz + cfo_hz: the offset is
+    the transmitter's) and tau_l the symbol's useful start within its subframe. None leaves it
+    out, as before.
+
     ``fs`` None keeps the native rate nfft x scs. Signal power over noise power is
     ``snr_db`` at the output rate (non-finite adds none).
     """
     iq, native, truth, rng = _cell_native(
         pci, scs_khz, case, l_max, ssb_sent, period_ms, n_hf, bw_mhz, ssb_offset_hz,
-        dur_ms, seed, load, pbch, res)
+        dur_ms, seed, load, pbch, res, None if rf_hz is None else float(rf_hz) + float(cfo_hz))
     rate = native if fs is None else float(fs)
     if int(round(rate)) != int(round(native)):
         iq = _resample(iq, native, rate)

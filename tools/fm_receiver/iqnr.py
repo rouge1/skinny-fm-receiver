@@ -148,6 +148,27 @@ So time from the anchoring burst is scaled by 1 - cfo / f; the fitted delays
 then stayed within 0.2 us across that file (0.8 us on another). A recorder without a shared
 reference leaves a drift the per-candidate delay fit (+/- 3 us) absorbs over
 a few seconds.
+
+SIB1 and the other SI (``type0_pdcch(pdsch=True)``, ``other_si``, Round 28.3)
+------------------------------------------------------------------------------
+Each SIB1 DCI's PDSCH is in the same slot (K0 0), cut the same way over its
+symbols S..S+L-1 and decoded on its own (``iqnr_phy.pdsch_llrs`` with the DCI's
+delay, then ``dlsch_decode``). ``other_si`` walks SIB1's SI windows (38.331
+5.2.2.3.2: message n's window starts x = (n - 1) w slots into a frame whose SFN
+mod T is floor(x / 10)), searches each slot the other-SI search space monitors
+with that space's candidates (AL2 among them on air), and decodes each DCI
+with the SI indicator 1 with SIB1's time list and DM-RS from common RB 0
+(CORESET 0 starts offsetToPointA - offset RBs above it).
+
+Wrong turn: the per-symbol phase. 38.211 5.4 starts every symbol's phase
+afresh at its useful start, so after the FFT symbol l carries exp(-j 2 pi f
+tau_l), f the radio frequency at 0 Hz of the cut (the cell's carrier less a
+whole number of subcarriers) and tau_l the useful start within the subframe.
+The PBCH and PDCCH never showed it, since every symbol of theirs has DM-RS and
+its own gain; PDSCH data symbols are interpolated between DM-RS symbols 2, 7
+and 11, and without the term (or with its sign flipped) about 40 % of the
+bits agreed with the block on air, none decoded. ``_Timing.grid`` multiplies
+each symbol by exp(+j 2 pi f tau_l).
 """
 
 import math
@@ -717,16 +738,90 @@ def _cut(x, fs, i0, n_in, shift_hz, out_rate):
     return np.fft.ifft(np.roll(spec.take(q, mode='wrap'), -(m // 2))) * (m / float(n_in))
 
 
-def type0_pdcch(iq, fs, center_hz, cell, rnti=None):
+#: Sign of the per-symbol phase 38.211 5.4 leaves after the FFT: symbol l is turned by
+#: exp(-j 2 pi f tau_l), f the radio frequency at 0 Hz of the cut and tau_l the symbol's useful
+#: start within the subframe; the grid is multiplied by exp(_PHASE_SIGN j 2 pi f tau_l).
+_PHASE_SIGN = 1.0
+
+
+class _Timing:
+    """A cell's frames and CORESET 0 band in a capture, from its MIB (15 kHz only)."""
+
+    def __init__(self, fs, center_hz, cell, cs):
+        mib = cell['mib']
+        self.fs = float(fs)
+        self.n_rb = cs['n_rb']
+        scs = 15e3
+        self.f0 = float(cell['ssb_hz']) + (cs['k0'] - _REF_K) * scs
+        self.nfft = 128 * -(-12 * self.n_rb // 128)
+        self.rate = self.nfft * scs
+        f_mid = self.f0 + 6 * self.n_rb * scs            # subcarrier 6 N_RB sits on bin 0
+        self.fits = abs(f_mid - float(center_hz)) + 6 * self.n_rb * scs <= 0.5 * self.fs
+        self.shift = f_mid - float(center_hz) + float(cell.get('cfo_hz') or 0.0)
+        self.f_rf = float(center_hz) + self.shift
+        s = _CASE_A[int(mib['ssb_index'])]
+        self.ssb_s = float(mib['ssb_s'])
+        self.t_frame = (self.ssb_s - (s // 14) * 1e-3 - _symbol_start(s % 14) / _TS_RATE
+                        - 5e-3 * int(mib['half_frame']))
+        self.sfn0 = int(mib['sfn'])
+        # The recorder's sample clock is taken to share its reference with its tuner: a carrier
+        # cfo_hz high means the clock runs slow by cfo / f, and the cell's frames come early.
+        self.scale = 1.0 - float(cell.get('cfo_hz') or 0.0) / float(cell['ssb_hz'])
+        self.ratio = Fraction(int(round(self.rate)), int(round(self.fs)))
+        self.k_bins = np.arange(12 * self.n_rb) - 6 * self.n_rb
+
+    def slot_start(self, frame, slot):
+        """Capture time of slot ``slot`` (0..9, or beyond into the next frames) of frame
+        ``frame`` counted from the anchoring burst's frame."""
+        return self.ssb_s + (self.t_frame - self.ssb_s + frame * 10e-3 + slot * 1e-3) * self.scale
+
+    def frames(self, n_total):
+        first = int(math.floor(-self.t_frame / 10e-3))
+        last = int(math.ceil((n_total / self.fs - self.t_frame) / 10e-3))
+        return range(first, last + 1)
+
+    def grid(self, x, t_slot, symbols):
+        """The slot's 14 x 12 N_RB grid from CORESET 0's subcarrier 0, with ``symbols`` filled
+        (None when the capture does not hold them)."""
+        symbols = sorted(symbols)
+        margin = 64 / self.rate
+        t_a = t_slot + _symbol_start(symbols[0]) / _TS_RATE - margin
+        t_b = t_slot + _symbol_start(symbols[-1] + 1) / _TS_RATE + margin
+        i0 = int(math.floor(t_a * self.fs))
+        n_in = int(math.ceil((t_b - t_a) * self.fs)) + 1
+        n_in += (-n_in) % self.ratio.denominator
+        if i0 < 0 or i0 + n_in > len(x):
+            return None
+        y = _cut(x, self.fs, i0, n_in, self.shift, self.rate)
+        nfft = self.nfft
+        out = np.zeros((14, 12 * self.n_rb), dtype=np.complex128)
+        for l in symbols:
+            cp = _symbol_cp(l) * nfft / 2048.0
+            start = (t_slot + _symbol_start(l) / _TS_RATE - i0 / self.fs) * self.rate + cp / 2
+            p = int(math.floor(start))
+            if p < 0 or p + nfft > len(y):
+                return None
+            spec = np.fft.fft(y[p:p + nfft])
+            d = (start + cp / 2) - p                     # the window opens d samples early
+            tau = (_symbol_start(l) + _symbol_cp(l)) / _TS_RATE
+            out[l] = (spec[self.k_bins % nfft] * np.exp(2j * np.pi * self.k_bins * d / nfft)
+                      * np.exp(_PHASE_SIGN * 2j * np.pi * ((self.f_rf * tau) % 1.0)))
+        return out
+
+
+def type0_pdcch(iq, fs, center_hz, cell, rnti=None, pdsch=False):
     """SIB1's DCIs (DCI format 1_0, CRC scrambled by SI-RNTI) of one cell, decoded with
-    ``iqnr_phy`` in every Type0-PDCCH occasion of the capture.
+    ``iqnr_phy`` in every Type0-PDCCH occasion of the capture, and with ``pdsch`` the SIB1
+    each one schedules.
 
     ``cell`` is an ``ssb_search(..., mib=True)`` entry with a MIB (its ``ssb_s``, SFN,
     half-frame and SSB index time the frames; ``cfo_hz`` is removed). 15 kHz SSB and common
     spacing only. Returns None without a usable MIB, else a dict: ``coreset0`` (``n_rb``,
     ``n_symb``, ``offset_rb``, ``f0_hz``: its lowest subcarrier), ``occasion`` (from table
     13-11), ``slots`` (slots tried), and ``dcis``, one per DCI found: ``sfn``, ``slot``,
-    ``t_s`` (the slot's start), ``level``, ``cce``, the payload's fields, ``snr_db``."""
+    ``t_s`` (the slot's start), ``level``, ``cce``, the payload's fields, ``snr_db``. With
+    ``pdsch`` each DCI also has ``pdsch``: ``tbs``, ``snr_db``, ``hex`` (the transport block,
+    or None when its CRC failed), or None when the allocation is not one this reads."""
     from . import iqnr_phy as P
     mib = (cell or {}).get('mib')
     if not mib or int(cell.get('scs_khz') or 0) != 15:
@@ -735,65 +830,122 @@ def type0_pdcch(iq, fs, center_hz, cell, rnti=None):
     if cs is None:
         return None
     rnti = P.SI_RNTI if rnti is None else int(rnti)
-    fs = float(fs)
     x = iq
-    pci, i_ssb = int(cell['pci']), int(mib['ssb_index'])
+    pci = int(cell['pci'])
     n_rb, n_symb = cs['n_rb'], cs['n_symb']
-    occ = P.type0_occasion(mib['search_space0_index'], i_ssb, n_symb)
-    scs = 15e3
-    f0 = float(cell['ssb_hz']) + (cs['k0'] - _REF_K) * scs
-    nfft = 128 * -(-12 * n_rb // 128)
-    rate = nfft * scs
-    f_mid = f0 + 6 * n_rb * scs                     # subcarrier 6 N_RB sits on bin 0
-    shift = f_mid - float(center_hz) + float(cell.get('cfo_hz') or 0.0)
-    if abs(f_mid - float(center_hz)) + 6 * n_rb * scs > 0.5 * fs:
+    occ = P.type0_occasion(mib['search_space0_index'], int(mib['ssb_index']), n_symb)
+    tm = _Timing(fs, center_hz, cell, cs)
+    if not tm.fits:
         return None
-    s = _CASE_A[i_ssb]
-    t_frame = (float(mib['ssb_s']) - (s // 14) * 1e-3 - _symbol_start(s % 14) / _TS_RATE
-               - 5e-3 * int(mib['half_frame']))
-    sfn0 = int(mib['sfn'])
-    # The recorder's sample clock is taken to share its reference with its tuner: a carrier
-    # cfo_hz high means the clock runs slow by cfo / f, and the cell's frames come early.
-    scale = 1.0 - float(cell.get('cfo_hz') or 0.0) / float(cell['ssb_hz'])
-    ratio = Fraction(int(round(rate)), int(round(fs)))
-    k_bins = (np.arange(12 * n_rb) - 6 * n_rb)
-    margin = 64 / rate
+    l0 = occ['first_symbol']
     dcis, slots = [], 0
-    n_total = len(x)
-    first_frame = int(math.floor(-t_frame / 10e-3))
-    last_frame = int(math.ceil((n_total / fs - t_frame) / 10e-3))
-    for fr in range(first_frame, last_frame + 1):
-        sfn = (sfn0 + fr) % 1024
+    for fr in tm.frames(len(x)):
+        sfn = (tm.sfn0 + fr) % 1024
         if sfn % 2 != occ['parity']:
             continue
         for slot_abs in (occ['n0'], occ['n0'] + 1):
-            t_slot = float(mib['ssb_s']) + (t_frame - float(mib['ssb_s']) + fr * 10e-3 + slot_abs * 1e-3) * scale
-            l0 = occ['first_symbol']
-            t_a = t_slot + _symbol_start(l0) / _TS_RATE - margin
-            t_b = t_slot + _symbol_start(l0 + n_symb) / _TS_RATE + margin
-            i0 = int(math.floor(t_a * fs))
-            n_in = int(math.ceil((t_b - t_a) * fs)) + 1
-            n_in += (-n_in) % ratio.denominator
-            if i0 < 0 or i0 + n_in > n_total:
+            t_slot = tm.slot_start(fr, slot_abs)
+            grid = tm.grid(x, t_slot, range(l0, l0 + n_symb))
+            if grid is None:
                 continue
-            y = _cut(x, fs, i0, n_in, shift, rate)
-            grid = np.zeros((n_symb, 12 * n_rb), dtype=np.complex128)
-            for li in range(n_symb):
-                l = l0 + li
-                cp = _symbol_cp(l) * nfft / 2048.0
-                start = (t_slot + _symbol_start(l) / _TS_RATE - i0 / fs) * rate + cp - cp / 2
-                p = int(math.floor(start))
-                if p < 0 or p + nfft > len(y):
-                    break
-                spec = np.fft.fft(y[p:p + nfft])
-                d = (start + cp / 2) - p                # the window opens d samples early
-                grid[li] = spec[k_bins % nfft] * np.exp(2j * np.pi * k_bins * d / nfft)
-            else:
-                slots += 1
-                slot = slot_abs % 10
-                sfn_slot = (sfn + slot_abs // 10) % 1024
-                for dci in P.decode_pdcch(grid, pci, slot, l0, n_rb, n_symb, rnti=rnti):
-                    dci.pop('metric', None)
-                    dcis.append(dict(sfn=int(sfn_slot), slot=int(slot), t_s=float(t_slot), **dci))
-    return {'coreset0': dict(n_rb=n_rb, n_symb=n_symb, offset_rb=cs['offset_rb'], f0_hz=f0),
+            slots += 1
+            slot = slot_abs % 10
+            sfn_slot = (sfn + slot_abs // 10) % 1024
+            for dci in P.decode_pdcch(grid[l0:l0 + n_symb], pci, slot, l0, n_rb, n_symb, rnti=rnti):
+                dci.pop('metric', None)
+                entry = dict(sfn=int(sfn_slot), slot=int(slot), t_s=float(t_slot), **dci)
+                if pdsch:
+                    entry['pdsch'] = _sib1_block(P, tm, x, t_slot, pci, slot, dci, mib, n_rb, rnti)
+                dcis.append(entry)
+    return {'coreset0': dict(n_rb=n_rb, n_symb=n_symb, offset_rb=cs['offset_rb'], f0_hz=tm.f0),
             'occasion': occ, 'slots': slots, 'dcis': dcis}
+
+
+def _sib1_block(P, tm, x, t_slot, pci, slot, dci, mib, n_rb, rnti):
+    """The PDSCH a SIB1 DCI schedules (K0 0: the same slot), decoded on its own."""
+    if dci.get('sii') != 0:
+        return None
+    alloc = P.pdsch_alloc(dci, mib['dmrs_typeA_position'], n_rb)
+    if alloc is None or max(alloc['prbs']) >= n_rb:
+        return None
+    grid = tm.grid(x, t_slot, range(alloc['S'], alloc['S'] + alloc['L']))
+    if grid is None:
+        return None
+    llr, snr, _slope = P.pdsch_llrs(grid, pci, slot, alloc, rnti, slope=dci.get('slope'))
+    setup = P.dlsch_setup(alloc['tbs'], alloc['rate'])
+    data = P.dlsch_decode(P.dlsch_soft(llr, setup, dci['rv'], alloc['qm']), setup)
+    return {'tbs': alloc['tbs'], 'snr_db': float(snr), 'hex': data.hex() if data is not None else None}
+
+
+def _ss_slots(search, frame, slot):
+    """Whether a search space ``search`` monitors slot ``slot`` of frame ``frame`` (15 kHz)."""
+    period, offset = search.get('period_slots', 1), search.get('offset_slots', 0)
+    return (frame * 10 + slot - offset) % period == 0
+
+
+def other_si(iq, fs, center_hz, cell, config, rnti=None):
+    """The other SI messages of one cell (DCI format 1_0 with the SI indicator 1, and the PDSCH
+    each schedules), decoded with ``iqnr_phy`` in the SI windows SIB1 names.
+
+    ``config`` comes from SIB1 (``iqnr_decode.si_config``): ``offset_to_point_a``, ``tdra``
+    ((K0, mapping, S, L) rows), ``window_slots``, ``periods_rf`` (each SI message's
+    periodicity in frames, in SIB1's order) and ``search`` (``counts``, ``first_symbols``,
+    ``period_slots``, ``offset_slots``; for search space 0, the Type0 candidates and
+    symbols). Returns None when the cell or config cannot be read, else a dict: ``slots`` tried
+    and ``blocks``, one per DCI: ``sfn``, ``slot``, ``si`` (1-based message, from the window),
+    ``level``, ``cce``, the DCI fields, and ``pdsch`` (``tbs``, ``snr_db``, ``hex`` or None)."""
+    from . import iqnr_phy as P
+    mib = (cell or {}).get('mib')
+    if not mib or int(cell.get('scs_khz') or 0) != 15 or not config:
+        return None
+    cs = P.coreset0(mib)
+    if cs is None or config.get('offset_to_point_a') is None or not config.get('periods_rf'):
+        return None
+    rnti = P.SI_RNTI if rnti is None else int(rnti)
+    tm = _Timing(fs, center_hz, cell, cs)
+    if not tm.fits:
+        return None
+    x = iq
+    pci, n_rb, n_symb = int(cell['pci']), cs['n_rb'], cs['n_symb']
+    k_ref = 12 * (int(config['offset_to_point_a']) - cs['offset_rb'])
+    search = config['search']
+    w = int(config['window_slots'])
+    blocks, slots = [], 0
+    for fr in tm.frames(len(x)):
+        sfn = (tm.sfn0 + fr) % 1024
+        for slot in range(10):
+            here = sfn * 10 + slot
+            which = None
+            for n, period in enumerate(config['periods_rf'], start=1):
+                start = (n - 1) * w                     # 38.331 5.2.2.3.2: x = (n - 1) w
+                rel = (here - (start // 10) * 10 - start % 10) % (int(period) * 10)
+                if rel < w:
+                    which = n
+                    break
+            if which is None or not _ss_slots(search, sfn, slot):
+                continue
+            t_slot = tm.slot_start(fr, slot)
+            for l0 in search['first_symbols']:
+                grid = tm.grid(x, t_slot, range(l0, l0 + n_symb))
+                if grid is None:
+                    continue
+                slots += 1
+                for dci in P.decode_pdcch(grid[l0:l0 + n_symb], pci, slot, l0, n_rb, n_symb, rnti=rnti,
+                                          counts=search['counts']):
+                    dci.pop('metric', None)
+                    if dci.get('sii') != 1:
+                        continue
+                    entry = dict(sfn=int(sfn), slot=int(slot), si=which, t_s=float(t_slot), **dci)
+                    entry['pdsch'] = None
+                    alloc = P.pdsch_alloc(dci, mib['dmrs_typeA_position'], n_rb, tdra=config['tdra'] or None)
+                    if alloc is not None and max(alloc['prbs']) < n_rb:
+                        g = tm.grid(x, t_slot, range(alloc['S'], alloc['S'] + alloc['L']))
+                        if g is not None:
+                            llr, snr, _slope = P.pdsch_llrs(g, pci, slot, alloc, rnti, k_ref=k_ref,
+                                                            slope=dci.get('slope'))
+                            setup = P.dlsch_setup(alloc['tbs'], alloc['rate'])
+                            data = P.dlsch_decode(P.dlsch_soft(llr, setup, dci['rv'], alloc['qm']), setup)
+                            entry['pdsch'] = {'tbs': alloc['tbs'], 'snr_db': float(snr),
+                                              'hex': data.hex() if data is not None else None}
+                    blocks.append(entry)
+    return {'slots': slots, 'blocks': blocks}

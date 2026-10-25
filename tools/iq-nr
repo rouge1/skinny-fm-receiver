@@ -3,7 +3,7 @@
 
     tools/iq-nr FILE [--rate HZ --center HZ] [--t0 S] [--seconds S]
                      [--ssb-hz HZ] [--scs 15|30] [--max-cells N]
-                     [--mib] [--pdcch] [--decode] [--decode-seconds S]
+                     [--mib] [--pdcch] [--pdsch] [--decode] [--decode-seconds S]
 
 Rate and centre come from the ``.sigmf-meta`` beside the file; the options
 override them. Only the span ``[t0, t0 + seconds]`` is read (default 0.1 s,
@@ -15,7 +15,10 @@ PBCH ourselves (``iqnr_phy``, numpy, every burst in the span) and adds
 ``mib`` and ``mib_bursts`` to each entry; it needs no outside program. ``--pdcch`` (which
 implies ``--mib``) also decodes, ourselves, the DCIs that schedule SIB1 in every Type0-PDCCH
 occasion of the span and adds ``pdcch`` (``iqnr.type0_pdcch``; times from the span's start,
-null without a MIB or for a 30 kHz cell). ``--decode`` adds a ``decode``
+null without a MIB or for a 30 kHz cell). ``--pdsch`` (which implies ``--mib``) decodes
+SIB1 and the other SI ourselves (``iqnr_decode.own_decode``) over the ``--decode-seconds``
+span and adds ``own``: SIB1's summary as ``--decode`` gives it, the SI heard and SIB9's time;
+only the RRC parse uses pycrate, and without it ``own`` still has SIB1's bytes. ``--decode`` adds a ``decode``
 object to each entry (MIB, SIB1, other SI, SIB9 time) via ``iqnr_decode``;
 the search span stays the short one. ``--decode-seconds`` is how long that
 read is (default 6 s, at most 10 s).
@@ -184,6 +187,42 @@ def _json_num(value):
     return x
 
 
+class _Span:
+    """``[t0, t0 + seconds]`` of a recording as a sliceable, read on demand (only ``len`` and
+    ``x[a:b]`` are used), so a long span is never held in memory."""
+
+    def __init__(self, src, i_start, n):
+        self.src, self.i_start, self.n = src, int(i_start), int(n)
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, key):
+        a, b, _step = key.indices(self.n)
+        return np.asarray(self.src.read(self.i_start + a, max(0, b - a)), dtype=np.complex64)
+
+
+def _attach_own(args, src, t0, ssbs):
+    """Add ``own`` (our own SIB1 and other SI) to each SSB with a MIB."""
+    from fm_receiver import iqnr_decode  # noqa: E402
+    requested = DEFAULT_DECODE_S if args.decode_seconds is None else float(args.decode_seconds)
+    seconds, cut_reason = iqnr_decode.cap_seconds(requested)
+    i_start = int(round(t0 * float(src.rate)))
+    n = max(0, min(int(round(float(seconds) * float(src.rate))), int(src.samples) - i_start))
+    span = _Span(src, i_start, n)
+    for e in ssbs:
+        if not isinstance(e, dict):
+            continue
+        if not e.get('mib'):
+            e['own'] = None
+            continue
+        own = iqnr_decode.own_decode(span, src.rate, src.center_hz, e, tools=_tools_dir())
+        if cut_reason:
+            own['reason'] = '; '.join(r for r in (cut_reason, own.get('reason')) if r)
+        own['seconds'] = round(n / float(src.rate), 6)
+        e['own'] = own
+
+
 def _attach_decode(args, src, t0, ssbs):
     """Add ``decode`` to each SSB. Exit 2 when ``run_nr.sh`` is missing.
 
@@ -271,6 +310,9 @@ def main(argv=None):
     ap.add_argument('--pdcch', action='store_true',
                     help="with --mib, decode the DCIs that schedule each cell's SIB1 (our own "
                          "decoder, every Type0-PDCCH occasion of the span)")
+    ap.add_argument('--pdsch', action='store_true',
+                    help="decode each cell's SIB1 and other SI with our own decoder over the "
+                         "--decode-seconds span (pycrate, if present, parses them)")
     ap.add_argument('--decode', action='store_true',
                     help='decode the MIB, SIB1, other SI and SIB9 time of each '
                          'listed SSB with $FMRX_LTE_TOOLS/run_nr.sh')
@@ -329,10 +371,12 @@ def main(argv=None):
     ssbs = iqnr.ssb_search(
         iq, src.rate, src.center_hz,
         ssb_hz=args.ssb_hz, scs_khz=args.scs,
-        max_cells=4 if args.max_cells is None else args.max_cells, mib=args.mib or args.pdcch)
+        max_cells=4 if args.max_cells is None else args.max_cells, mib=args.mib or args.pdcch or args.pdsch)
     if args.pdcch:
         for e in ssbs:
             e['pdcch'] = iqnr.type0_pdcch(iq, src.rate, src.center_hz, e) if e.get('mib') else None
+    if args.pdsch:
+        _attach_own(args, src, t0, ssbs)
     if args.decode:
         missing = _attach_decode(args, src, t0, ssbs)
         if missing:

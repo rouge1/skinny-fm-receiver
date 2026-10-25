@@ -35,9 +35,11 @@ Checks (one behaviour each; ok / FAIL / SKIP lines):
       reason naming both, no pass 2
   T   the same, with a program that takes -P PCI: the retry aimed at the PCI is this cell's
       decode (pass 2 keeps -P); a retry without a MIB ends as P
-  U   other SI that SIB1 does not schedule, sent in SIB1's slots with sii 0 (as one cell did
-      on air): heard, listed in si.unscheduled, its SIB9 gives the time, no second call;
-      sent in its own slots (sii 1 blocks failing in pass 1): pass 2 runs and hears it
+  U   other SI that SIB1 does not schedule, sent in SIB1's slots with sii 0: heard, listed
+      in si.unscheduled, its SIB9 gives the time, no second call; sent in its own slots (sii
+      1 blocks failing in pass 1): pass 2 runs and hears it; a block of all zero bytes (what
+      the program gave on air for SIB1 repeats it could not read, once taken for a SIB2) is
+      dropped and counted as a CRC failure
 
 Decisions where the spec is open (also in the report):
   - Point A (spec amendment 2026-10-23 (b)): point_a_hz = ssb_hz - 120*ssb_scs_hz - k_SSB*15e3
@@ -731,6 +733,7 @@ def case_cfg(name):
                               crc_fail=2, crc_pass1_only=True),
         'sii0_scheduled': dict(sib1=fixture_hex('sib1_full'), si=[],
                                sii0_si=[fixture_hex('si_sib2_sib9')]),
+        'zero_block': dict(sib1=fixture_hex('sib1_none'), si=[], sii0_si=['00' * 15]),
     }[name]
     cfg = dict(full)
     cfg['sib1_hex'] = cases.get('sib1')
@@ -1059,6 +1062,18 @@ def test_u_unscheduled_si_in_sib1_slots_is_heard():
         'unscheduled %r' % si_out.get('unscheduled'))
     assert 'does not schedule' in (dec.get('reason') or ''), 'reason %r' % dec.get('reason')
     assert dec.get('sib1') is not None, 'the SI block was taken for SIB1'
+
+
+def test_u_all_zero_block_is_dropped():
+    """U: a "decoded" block of all zero bytes (it passes the CRC, and pycrate reads it as a SIB2
+    of defaults) is dropped and counted as a CRC failure, never heard as a SIB."""
+    need('sib1_none')
+    dec = need_decode(decode_case('zero_block', args=DECODE_ARGS))
+    heard = (dec.get('si') or {}).get('sibs_heard') or {}
+    assert not heard, 'the zero block was heard as %r' % heard
+    blocks = dec.get('blocks') or {}
+    assert blocks.get('crc_fail', 0) >= 1 and blocks.get('sib1') == 1, 'blocks %r' % blocks
+    assert dec.get('sib1') is not None, 'SIB1 lost'
 
 
 def test_u_unscheduled_sib9_gives_the_time():

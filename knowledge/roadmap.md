@@ -1328,15 +1328,20 @@ outside the repo. Method, output and limits: [nr-verify.md](nr-verify.md).
   parses the MIB, SIB1, the other SI and SIB9's time with pycrate. Stub-tested
   (G1-G10); on real air (G11) two cells matched a hand decode, SIB9's time
   included.
-- [x] Other SI that SIB1 does not schedule (2026-10-23). On one real cell the
-  outside program heard a SIB2 that SIB1 does not list. It came in SIB1's own
-  slots with `sii` 0, so `--decode` now parses every block of both passes and
-  lists such SIBs in `si.unscheduled`; that cell's SIB2 is heard.
+- [x] Other SI that SIB1 does not schedule (2026-10-23). `--decode` parses
+  every block of both passes and lists SIBs that SIB1 does not schedule in
+  `si.unscheduled`. Withdrawn 2026-10-24: the "SIB2" that one real cell
+  seemed to send in SIB1's slots was 15 bytes of zeros, the outside
+  program's output for the barred cell's SIB1 repeats with redundancy
+  version 1 (parity only), which pass the CRC and parse as a SIB2 of
+  defaults. Our own decoder (28.3) showed those repeats are SIB1. `--decode`
+  now drops all-zero blocks. No cell has been seen sending unscheduled SI.
 - [x] Unscheduled SI in its own slots (2026-10-24). Pass 1 already reads
   every slot; such SI fails there (`sii` 1, DM-RS from CRB 0), so pass 2 now
   also runs when pass 1 saw that, even if SIB1 schedules nothing. On the
-  barred cell every SI-RNTI grant in 6 s was accounted for: SIB1 (version 0),
-  its repeats (versions 2 and 3, which do not decode alone) and the SIB2.
+  barred cell every SI-RNTI grant in 6 s was SIB1: version 0 and its
+  repeats (versions 1, 2 and 3, which do not decode alone; the "SIB2" was
+  version 1 misread, see above).
 - [ ] TDD special slots, and SSBs above 3 GHz with a 30 kHz CORESET 0 (srsRAN
   lacks the table): not handled.
 - [x] A read-only `fmctl` reply: `fmctl cells nr [decode] [PATH]` (2026-10-23,
@@ -1437,11 +1442,32 @@ Phases, each one checked before the next:
   AL16 (the repetition path), 3-symbol, 24- and 96-RB CORESETs, the
   odd-SSB-index rows of table 13-11, interleaved VRB-to-PRB and nonzero
   reserved bits are checked only by the synthetic round trip.
-- [ ] 28.3 PDSCH for SIB1 and other SI: time and frequency allocation, PDSCH
+- [x] 28.3 PDSCH for SIB1 and other SI: time and frequency allocation, PDSCH
   DM-RS (type 1, CORESET 0 reference for SIB1 and CRB 0 for other SI),
   descrambling, LDPC base graph choice and segmentation, rate recovery, the
   LDPC decoder (layered min-sum), CRC, and the blocks handed to the pycrate
   parser that exists. Done when SIB1 and the other SI match `nr_si`'s bytes.
+  Shipped 2026-10-24: `iqnr_ldpc.py` (CRCs, segmentation, LDPC from 38.212's
+  base graphs, rate matching, layered normalised min-sum on a soft buffer
+  that can be summed), the PDSCH in `iqnr_phy`, `iqnr.type0_pdcch(pdsch=True)`
+  and `iqnr.other_si`, `iqnr_decode.own_decode`, `iq-nr --pdsch`,
+  `test_iqnr_pdsch.py` (14 checks). On real air:
+  - SIB1 on the strongest sector: 143 of 143 copies decoded, the 52 the
+    outside program read byte for byte equal.
+  - SIB1 on the barred cell: all 56 version-0 copies that cleared the noise
+    (of 75), the outside program's 19 real ones equal. Versions 1 to 3 are
+    parity only and wait for 28.4.
+  - Other SI: 80 of 80 blocks (five messages, 16 copies each), the outside
+    program's 39 equal; SIB1's summary, SIB2 to 5 and SIB9's time equal to
+    `--decode`'s, the time one SI period earlier (a copy it missed).
+  - It found that the barred cell's "unscheduled SIB2" was an artifact (see
+    the 2026-10-23 item, withdrawn).
+  - The second sector: 20 other-SI DCIs, their data at -3 to -7 dB per RE,
+    six to eight copies a message; none decodes alone.
+  Never on air: base graph 1, more than one code block (CRC 24A and 24B),
+  16QAM and 64QAM, interleaved VRB-to-PRB, mapping type B and shared DM-RS
+  symbols, search space 0 for other SI. The synthetic tests reach them, and
+  CRC 24A and 24B also match the CRC catalogue.
 - [ ] 28.4 Combining:
   - LLRs of the same SIB1 block are kept per redundancy version across
     occasions, within a 160 ms period and across periods while the content

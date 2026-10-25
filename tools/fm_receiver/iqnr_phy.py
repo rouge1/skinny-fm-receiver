@@ -1,5 +1,5 @@
-"""5G NR broadcast decoding, numpy only: the PBCH and its MIB, and the PDCCH that schedules
-SIB1 (roadmap Rounds 28.1 and 28.2).
+"""5G NR broadcast decoding, numpy only: the PBCH and its MIB, the PDCCH that schedules SIB1
+and the other SI, and their PDSCH (roadmap Rounds 28.1 to 28.3).
 
 Written from the 3GPP specifications (TS 38.211 V19, 38.212 V19.4.0, 38.213 V19.5.0,
 38.214); the tables below are copied from 38.212 and 38.213. No srsRAN code is used: srsRAN
@@ -61,6 +61,29 @@ SIB1's PDCCH (Round 28.2). The MIB names CORESET 0 and search space 0:
   and a gain per REG bundle and symbol, since precoding may change between
   bundles. ``parse_dci_1_0_si`` reads the fields, ``riv_to_rbs`` the RBs
   (38.214 5.1.2.2.2).
+
+SIB1's and the other SI's PDSCH (Round 28.3; the channel code is ``iqnr_ldpc``):
+
+- ``pdsch_alloc``: the DCI's time row (38.214 table 5.1.2.1.1-2, default A, for
+  SIB1; SIB1's own pdsch-TimeDomainAllocationList for other SI), MCS table 1,
+  RBs (VRB n is PRB n from CORESET 0's lowest, or interleaved in bundles of 2,
+  38.211 7.3.1.6), DM-RS (single symbol, type 1, port 1000, pos2 as a UE
+  assumes for DCI 1_0, 38.214 5.1.6.2; table 7.4.1.1.2-3 with l_d = S + L for
+  mapping type A), no data on DM-RS symbols (two CDM groups, data -3 dB to the
+  DM-RS), and the TBS (38.214 5.1.3.2: N_RE = min(156, 12 L - 12 x DM-RS
+  symbols) per PRB, no overhead for SI-RNTI).
+- ``pdsch_llrs``: DM-RS r(m) with the PDCCH's c_init formula (n_SCID 0), m = k / 2
+  for even k from the reference point: CORESET 0's subcarrier 0 for SIB1,
+  common RB 0 for other SI (``k_ref``). A gain per PRB and DM-RS symbol after
+  the PDCCH's delay (one PRB cannot tell a delay from its own gain), linear in
+  time between DM-RS symbols; max-log soft bits (QPSK, 16QAM, 64QAM);
+  descrambling with c_init = RNTI x 2^15 + PCI.
+- ``dlsch_setup``, ``dlsch_soft``, ``dlsch_decode``: 38.212 7.2 (CRC 16 or 24A,
+  base graph, segmentation, E per code block) around ``iqnr_ldpc``. The soft
+  buffers can be summed across transmissions before ``dlsch_decode``. A block
+  of all zero bits is refused: it passes the CRC (whose register starts at 0),
+  and is what a decoder settles on when it was given next to nothing.
+- ``pdsch_grid`` and ``encode_dlsch`` are the transmitter, for the tests.
 
 Only 15 kHz SSB and common spacing (table 13-1) is covered; other tables are
 not copied yet.
@@ -624,11 +647,14 @@ def cce_rbs(n_rb, n_symb, pci):
     return out
 
 
-def type0_candidates(n_cce):
-    """(aggregation level, first CCE) of each Type0-PDCCH candidate: Y = 0 in a common search
-    space (38.213 10.1); a repeated candidate is listed once."""
+def type0_candidates(n_cce, counts=TYPE0_CANDIDATES):
+    """(aggregation level, first CCE) of each candidate of a common search space with
+    ``counts`` ((level, candidates), by default table 10.1-1's for Type0): Y = 0 in a common
+    search space (38.213 10.1); a repeated candidate is listed once."""
     out = []
-    for level, count in TYPE0_CANDIDATES:
+    for level, count in counts:
+        if count <= 0:
+            continue
         if level > n_cce:
             continue
         for m in range(count):
@@ -779,8 +805,9 @@ def parse_dci_1_0_si(a, n_rb):
 
 
 def decode_pdcch(grid, pci, slot, first_symbol, n_rb, n_symb, rnti=SI_RNTI, payload_bits=None,
-                 list_size=LIST):
-    """Every Type0-PDCCH candidate in one CORESET 0 occasion whose CRC checks with ``rnti``:
+                 list_size=LIST, counts=TYPE0_CANDIDATES):
+    """Every candidate (by default the Type0-PDCCH's; ``counts`` as ``type0_candidates`` takes)
+    in one CORESET 0 occasion whose CRC checks with ``rnti``:
     a list of dicts ``level``, ``cce``, ``bits`` (the payload, a string of 0 and 1), the DCI
     format 1_0 SI-RNTI fields, ``snr_db``, ``metric``. A candidate inside a larger one that
     decoded is not tried."""
@@ -791,7 +818,7 @@ def decode_pdcch(grid, pci, slot, first_symbol, n_rb, n_symb, rnti=SI_RNTI, payl
         return np.array_equal(dci_crc(c[:a_len], rnti), c[a_len:])
     found = []
     taken = set()
-    for level, cce0 in sorted(type0_candidates(n_rb * n_symb // 6), key=lambda t: -t[0]):
+    for level, cce0 in sorted(type0_candidates(n_rb * n_symb // 6, counts), key=lambda t: -t[0]):
         cces = set(range(cce0, cce0 + level))
         if cces & taken:
             continue
@@ -807,3 +834,323 @@ def decode_pdcch(grid, pci, slot, first_symbol, n_rb, n_symb, rnti=SI_RNTI, payl
         out.update(snr_db=float(snr), slope=slope, metric=metric)
         found.append(out)
     return found
+
+
+# ----- SIB1's PDSCH (38.211 7.3.1, 7.4.1.1; 38.214 5.1.2, 5.1.3, 5.1.6.2; 38.212 7.2) ----
+
+#: 38.214 table 5.1.2.1.1-2 (default A, normal CP), rows 1..16: (mapping type, S, L) with
+#: dmrs-TypeA-Position 2, then 3; K0 is 0 in every row.
+PDSCH_TDRA_A = ((('A', 2, 12), ('A', 3, 11)), (('A', 2, 10), ('A', 3, 9)), (('A', 2, 9), ('A', 3, 8)),
+                (('A', 2, 7), ('A', 3, 6)), (('A', 2, 5), ('A', 3, 4)), (('B', 9, 4), ('B', 10, 4)),
+                (('B', 4, 4), ('B', 6, 4)), (('B', 5, 7), ('B', 5, 7)), (('B', 5, 2), ('B', 5, 2)),
+                (('B', 9, 2), ('B', 9, 2)), (('B', 12, 2), ('B', 12, 2)), (('A', 1, 13), ('A', 1, 13)),
+                (('A', 1, 6), ('A', 1, 6)), (('A', 2, 4), ('A', 2, 4)), (('B', 4, 7), ('B', 4, 7)),
+                (('B', 8, 4), ('B', 8, 4)))
+#: 38.214 table 5.1.3.1-1 (MCS index table 1): (Qm, R x 1024) for MCS 0..28.
+MCS_TABLE_1 = ((2, 120), (2, 157), (2, 193), (2, 251), (2, 308), (2, 379), (2, 449), (2, 526), (2, 602),
+               (2, 679), (4, 340), (4, 378), (4, 434), (4, 490), (4, 553), (4, 616), (4, 658), (6, 438),
+               (6, 466), (6, 517), (6, 567), (6, 616), (6, 666), (6, 719), (6, 772), (6, 822), (6, 873),
+               (6, 910), (6, 948))
+#: 38.214 table 5.1.3.2-1: TBS for N_info <= 3824.
+TBS_TABLE = (24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168, 176,
+             184, 192, 208, 224, 240, 256, 272, 288, 304, 320, 336, 352, 368, 384, 408, 432, 456, 480,
+             504, 528, 552, 576, 608, 640, 672, 704, 736, 768, 808, 848, 888, 928, 984, 1032, 1064,
+             1128, 1160, 1192, 1224, 1256, 1288, 1320, 1352, 1416, 1480, 1544, 1608, 1672, 1736, 1800,
+             1864, 1928, 2024, 2088, 2152, 2216, 2280, 2408, 2472, 2536, 2600, 2664, 2728, 2792, 2856,
+             2976, 3104, 3240, 3368, 3496, 3624, 3752, 3824)
+#: 38.211 table 7.4.1.1.2-3, single-symbol DM-RS, dmrs-AdditionalPosition pos2 (what a UE
+#: assumes for DCI format 1_0, 38.214 5.1.6.2): l_d -> positions; 0 stands for l0.
+_DMRS_A_POS2 = {3: (0,), 4: (0,), 5: (0,), 6: (0,), 7: (0,), 8: (0, 7), 9: (0, 7), 10: (0, 6, 9),
+                11: (0, 6, 9), 12: (0, 6, 9), 13: (0, 7, 11), 14: (0, 7, 11)}
+_DMRS_B_POS2 = {2: (0,), 3: (0,), 4: (0,), 5: (0, 4), 6: (0, 4), 7: (0, 4), 8: (0, 3, 6), 9: (0, 4, 7),
+                10: (0, 4, 7), 11: (0, 4, 8), 12: (0, 5, 9), 13: (0, 5, 9)}
+#: PDSCH-to-DM-RS amplitude with two DM-RS CDM groups without data (38.214 table 4.1-1: -3 dB).
+_DATA_GAIN = 1.0 / np.sqrt(2.0)
+
+
+def tbs_of(n_re, rate, qm, layers=1):
+    """The transport block size (38.214 5.1.3.2) of ``n_re`` REs at code rate ``rate`` (0..1)."""
+    n_info = n_re * rate * qm * layers
+    if n_info <= 0:
+        return 0
+    if n_info <= 3824:
+        n = max(3, int(np.floor(np.log2(n_info))) - 6)
+        q = max(24, (2 ** n) * int(np.floor(n_info / 2 ** n)))
+        return next(t for t in TBS_TABLE if t >= q)
+    n = int(np.floor(np.log2(n_info - 24))) - 5
+    q = max(3840, (2 ** n) * int(round((n_info - 24) / 2 ** n)))
+    if rate <= 0.25:
+        c = -(-(q + 24) // 3816)
+        return 8 * c * -(-(q + 24) // (8 * c)) - 24
+    if q > 8424:
+        c = -(-(q + 24) // 8424)
+        return 8 * c * -(-(q + 24) // (8 * c)) - 24
+    return 8 * -(-(q + 24) // 8) - 24
+
+
+def vrb_to_prb(vrbs, n_rb, interleaved):
+    """The PRBs (from CORESET 0's lowest) of ``vrbs`` for DCI format 1_0 with SI-RNTI in the
+    Type0 CSS (38.211 7.3.1.6): VRB n is PRB n, or with interleaving bundles of 2 RBs over
+    CORESET 0, bundle j = c R + r going to r C + c (R 2, C = floor(N_bundle / 2)), the last
+    bundle staying put."""
+    vrbs = list(vrbs)
+    if not interleaved:
+        return vrbs
+    n_bundle = -(-n_rb // 2)
+    c_cols = n_bundle // 2
+    out = []
+    for v in vrbs:
+        j, within = divmod(v, 2)
+        f = n_bundle - 1 if j == n_bundle - 1 else (j % 2) * c_cols + j // 2
+        out.append(2 * f + within)
+    return out
+
+
+def sliv_to_sl(sliv):
+    """(S, L) of a start and length indicator (38.214 5.1.2.1), or None."""
+    a, b = divmod(int(sliv), 14)
+    for s, l in ((b, a + 1), (13 - b, 15 - a)):
+        if 0 <= s < 14 and 1 <= l <= 14 - s and int(sliv) == (14 * (l - 1) + s if l - 1 <= 7 else 14 * (14 - l + 1) + (13 - s)):
+            return s, l
+    return None
+
+
+def pdsch_alloc(dci, dmrs_typea_position, n_rb, tdra=None):
+    """Where a DCI 1_0 (SI-RNTI) puts its PDSCH: a dict ``mapping``, ``S``, ``L``, ``dmrs``
+    (DM-RS symbols of the slot), ``data_symbols``, ``vrbs``, ``prbs``, ``qm``, ``rate``,
+    ``n_re``, ``tbs``; None for a reserved MCS, no RBs, a K0 other than 0 or a row ``tdra``
+    lacks. ``tdra`` is SIB1's pdsch-TimeDomainAllocationList as (K0, mapping type 'A' or 'B',
+    S, L) rows, for other SI (38.214 table 5.1.2.1.1-1); None is default table A."""
+    mcs = int(dci['mcs'])
+    if mcs > 28 or not dci.get('n_rbs'):
+        return None
+    if tdra is None:
+        kind, s, l = PDSCH_TDRA_A[int(dci['tdra']) & 15][0 if int(dmrs_typea_position) == 2 else 1]
+    else:
+        if int(dci['tdra']) >= len(tdra) or int(tdra[int(dci['tdra'])][0]) != 0:
+            return None
+        _k0, kind, s, l = tdra[int(dci['tdra'])]
+    if kind == 'A':
+        pos = _DMRS_A_POS2.get(s + l)
+        dmrs = tuple(int(dmrs_typea_position) if p == 0 else p for p in pos) if pos else ()
+    else:
+        pos = _DMRS_B_POS2.get(l)
+        dmrs = tuple(s + p for p in pos) if pos else ()
+    if not dmrs:
+        return None
+    shared = kind == 'B' and l == 2                    # data in the DM-RS symbol: one CDM group
+    data = tuple(x for x in range(s, s + l) if shared or x not in dmrs)
+    qm, r = MCS_TABLE_1[mcs]
+    vrbs = list(range(int(dci['rb_start']), int(dci['rb_start']) + int(dci['n_rbs'])))
+    prbs = vrb_to_prb(vrbs, n_rb, dci.get('vrb_to_prb') == 'interleaved')
+    n_dmrs = (6 if shared else 12) * len(dmrs)
+    n_re = min(156, 12 * l - n_dmrs) * len(vrbs)
+    return {'mapping': kind, 'S': s, 'L': l, 'dmrs': dmrs, 'data_symbols': data, 'shared_dmrs': shared,
+            'vrbs': vrbs, 'prbs': prbs, 'qm': qm, 'rate': r / 1024.0, 'n_re': n_re,
+            'tbs': tbs_of(n_re, r / 1024.0, qm)}
+
+
+def pdsch_dmrs(pci, slot, symbol, n_sc):
+    """PDSCH DM-RS r(m), m = 0..n_sc/2 - 1, of one symbol (38.211 7.4.1.1.1, N_ID = PCI, n_SCID
+    0): type 1, port 1000, on even subcarriers k = 2m counted from the reference point."""
+    return pdcch_dmrs(pci, slot, symbol, n_sc // 6)
+
+
+def _qam_llr(z, gain2, noise, qm):
+    """Max-log soft bits of equalised symbols ``z`` (= y conj(h)), |h|^2 ``gain2``, noise
+    variance ``noise`` (38.211 5.1.3-5.1.5 Gray maps; positive means 0)."""
+    if qm == 2:
+        scale = 2.0 * np.sqrt(2.0) / noise
+        out = np.empty((len(z), 2))
+        out[:, 0] = scale * z.real
+        out[:, 1] = scale * z.imag
+        return out.ravel()
+    m = qm // 2
+    norm = {4: np.sqrt(10.0), 6: np.sqrt(42.0)}[qm]
+    bits = np.array([[(v >> (m - 1 - i)) & 1 for i in range(m)] for v in range(2 ** m)])
+    level = np.ones(2 ** m)
+    for i in range(m - 1, -1, -1):          # x = (1 - 2b0)(2^(m-1) - (1 - 2b1)(2^(m-2) - ...)))
+        level = (1 - 2 * bits[:, i]) * (2 ** (m - 1 - i) - level) if i < m - 1 else (1 - 2 * bits[:, i])
+    level = level / norm
+    out = np.empty((len(z), qm))
+    for axis, part in ((0, z.real), (1, z.imag)):
+        d = (part[:, None] - gain2[:, None] * level[None, :]) ** 2 / (gain2[:, None] * noise)
+        for i in range(m):
+            zero = np.min(np.where(bits[None, :, i] == 0, d, np.inf), axis=1)
+            one = np.min(np.where(bits[None, :, i] == 1, d, np.inf), axis=1)
+            out[:, axis + 2 * i] = one - zero
+    return out.ravel()
+
+
+def pdsch_llrs(grid, pci, slot, alloc, rnti=SI_RNTI, k_ref=0, slope=None):
+    """The G descrambled soft bits of one PDSCH, its SNR per RE in dB and the delay slope.
+
+    ``grid`` is the slot's 14 symbols x CORESET 0's subcarriers; ``k_ref`` is CORESET 0's
+    subcarrier 0 counted from the DM-RS reference point: 0 for SIB1 (the reference is CORESET
+    0), 12 x its lowest common RB for other SI (the reference is common RB 0). ``slope`` (rad
+    per subcarrier, the scheduling PDCCH's delay fit) is used when given: one or two PRBs
+    cannot tell a delay from their own gains. The channel is estimated per PRB and DM-RS symbol (the
+    precoding may change between PRBs), after a common delay is fitted, and is linear in time
+    between DM-RS symbols (held beyond them)."""
+    grid = np.asarray(grid)
+    prbs = alloc['prbs']
+    dm_k = np.array([12 * p + 2 * j for p in prbs for j in range(6)])
+    dm_l = list(alloc['dmrs'])
+    zs = []
+    for l in dm_l:
+        r = pdsch_dmrs(pci, slot, l, 12 * (max(prbs) + 1) + int(k_ref))
+        zs.append(grid[l, dm_k] * np.conj(r[(dm_k + int(k_ref)) // 2]))
+    z = np.concatenate(zs)
+    k_all = np.tile(dm_k, len(dm_l)).astype(np.float64)
+    n_g = len(prbs) * len(dm_l)
+    gid = np.repeat(np.arange(n_g), 6)
+    if slope is None:
+        turn = np.exp(-1j * np.outer(_PD_SLOPES, k_all))
+        sums = np.zeros((len(_PD_SLOPES), n_g), dtype=np.complex128)
+        np.add.at(sums.T, gid, (turn * z[None, :]).T)
+        score = np.sum(np.abs(sums) ** 2, axis=1)
+        i = int(np.argmax(score))
+        slope = float(_PD_SLOPES[i])
+        if 0 < i < len(score) - 1:
+            a, b, c = score[i - 1], score[i], score[i + 1]
+            den = a - 2 * b + c
+            if den < 0:
+                slope += 0.5 * (a - c) / den * float(_PD_SLOPES[1] - _PD_SLOPES[0])
+    slope = float(slope)
+    zf = z * np.exp(-1j * slope * k_all)
+    h_g = np.array([zf[gid == g].mean() for g in range(n_g)]).reshape(len(dm_l), len(prbs))
+    resid = zf - h_g.ravel()[gid]
+    noise = max(float(np.mean(np.abs(resid) ** 2)) * 6 / 5, 1e-12) * _DATA_GAIN ** 2
+    soft = []
+    k_sc = np.arange(12)
+    for l in alloc['data_symbols']:
+        if len(dm_l) == 1:
+            h_l = h_g[0]
+        else:
+            h_l = np.array([np.interp(l, dm_l, h_g[:, p].real) + 1j * np.interp(l, dm_l, h_g[:, p].imag)
+                            for p in range(len(prbs))])
+        sc = (12 * np.array(prbs)[:, None] + k_sc[None, :])                # VRB order, k first
+        h = (h_l[:, None] * np.exp(1j * slope * sc)).ravel() * _DATA_GAIN
+        sc = sc.ravel()
+        if alloc.get('shared_dmrs') and l in dm_l:
+            keep = sc % 2 == 1
+            sc, h = sc[keep], h[keep]
+        y = grid[l, sc]
+        soft.append(_qam_llr(y * np.conj(h), np.abs(h) ** 2, noise, alloc['qm']))
+    llr = np.concatenate(soft)
+    c_init = (int(rnti) << 15) + int(pci)
+    llr *= 1.0 - 2.0 * _gold(c_init, len(llr))
+    snr = 10 * np.log10(max(float(np.mean(np.abs(h_g) ** 2)) * _DATA_GAIN ** 2 / noise, 1e-12))
+    return llr, snr, slope
+
+
+def dlsch_setup(tbs, rate):
+    """The coding of a transport block of ``tbs`` bits (38.212 7.2): ``bg``, ``crc`` ('16' or
+    '24A') and the segmentation (``iqnr_ldpc.segment``)."""
+    from . import iqnr_ldpc as L
+    bg = L.base_graph(tbs, rate)
+    kind = '24A' if tbs > 3824 else '16'
+    seg = L.segment(tbs + int(kind[:2]), bg)
+    return dict(seg, bg=bg, crc=kind, tbs=int(tbs))
+
+
+def _block_lengths(g, qm, n_blocks):
+    """E_r of each code block (38.212 5.4.2.1) for G bits."""
+    sym = g // qm
+    out = []
+    for r in range(n_blocks):
+        if r <= n_blocks - (sym % n_blocks) - 1:
+            out.append(qm * (sym // n_blocks))
+        else:
+            out.append(qm * -(-sym // n_blocks))
+    return out
+
+
+def dlsch_soft(llr, setup, rv, qm, buffers=None):
+    """Each code block's soft circular buffer from one transmission (summed into ``buffers``)."""
+    from . import iqnr_ldpc as L
+    out, at = [], 0
+    for r, e_len in enumerate(_block_lengths(len(llr), qm, setup['C'])):
+        prev = None if buffers is None else buffers[r]
+        out.append(L.rate_recover(llr[at:at + e_len], rv, qm, setup['bg'], setup['Zc'], setup['k_prime'],
+                                  setup['K'], prev))
+        at += e_len
+    return out
+
+
+def dlsch_decode(buffers, setup):
+    """The transport block's bytes from its code blocks' buffers, or None when a CRC fails."""
+    from . import iqnr_ldpc as L
+    a = setup['tbs']
+    n_crc = int(setup['crc'][:2])
+    bits = []
+    for buf in buffers:
+        if setup['C'] > 1:
+            def check(c):
+                return np.array_equal(L.crc(c[:-24], '24B'), c[-24:])
+        else:
+            def check(c):
+                return np.array_equal(L.crc(c[:a], setup['crc']), c[a:a + n_crc])
+        c, _it = L.decode(buf, setup['bg'], setup['Zc'], setup['i_ls'], setup['k_prime'], setup['K'],
+                          check=check)
+        if c is None:
+            return None
+        bits.append(c[:len(c) - setup['L']])
+    b = np.concatenate(bits)
+    if not np.array_equal(L.crc(b[:a], setup['crc']), b[a:a + n_crc]) or not b[:a].any():
+        return None                      # all zero bits pass the CRC, and are no block
+    return bytes(np.packbits(b[:a]))
+
+
+def encode_dlsch(data, setup, rv, qm, g):
+    """The ``g`` bits sent of transport block ``data`` (bytes) at redundancy version ``rv``, for tests."""
+    from . import iqnr_ldpc as L
+    a = setup['tbs']
+    tb = np.unpackbits(np.frombuffer(bytes(data), dtype=np.uint8))[:a]
+    b = np.concatenate((tb, L.crc(tb, setup['crc'])))
+    per = setup['k_prime'] - setup['L']
+    out = []
+    for r, e_len in enumerate(_block_lengths(g, qm, setup['C'])):
+        blk = b[r * per:(r + 1) * per]
+        if setup['C'] > 1:
+            blk = np.concatenate((blk, L.crc(blk, '24B')))
+        c = np.zeros(setup['K'], dtype=np.uint8)
+        c[:len(blk)] = blk
+        d = L.encode(c, setup['bg'], setup['Zc'], setup['i_ls'])
+        out.append(L.rate_match(d, e_len, rv, qm, setup['bg'], setup['Zc'], setup['k_prime'], setup['K']))
+    return np.concatenate(out)
+
+
+def _qam_map(bits, qm):
+    """38.211 5.1.3-5.1.5: Gray-mapped QPSK, 16QAM or 64QAM symbols of ``bits``."""
+    b = np.asarray(bits, dtype=np.float64).reshape(-1, qm)
+    s = 1 - 2 * b
+    if qm == 2:
+        return (s[:, 0] + 1j * s[:, 1]) / np.sqrt(2.0)
+    if qm == 4:
+        return (s[:, 0] * (2 - s[:, 2]) + 1j * s[:, 1] * (2 - s[:, 3])) / np.sqrt(10.0)
+    return (s[:, 0] * (4 - s[:, 2] * (2 - s[:, 4])) + 1j * s[:, 1] * (4 - s[:, 3] * (2 - s[:, 5]))) / np.sqrt(42.0)
+
+
+def pdsch_grid(data, setup, alloc, pci, slot, rv, n_rb, rnti=SI_RNTI, k_ref=0):
+    """The 14 x 12 ``n_rb`` slot grid of one PDSCH carrying ``data`` (bytes), with its DM-RS,
+    for tests: data REs at -3 dB to the DM-RS, in VRB order, k first, then l."""
+    n_data = sum(12 * len(alloc['prbs']) if not (alloc.get('shared_dmrs') and l in alloc['dmrs'])
+                 else 6 * len(alloc['prbs']) for l in alloc['data_symbols'])
+    g_len = n_data * alloc['qm']
+    bits = encode_dlsch(data, setup, rv, alloc['qm'], g_len)
+    bits = bits ^ _gold((int(rnti) << 15) + int(pci), g_len)
+    sym = _qam_map(bits, alloc['qm']) * _DATA_GAIN
+    grid = np.zeros((14, 12 * n_rb), dtype=np.complex128)
+    at = 0
+    for l in alloc['data_symbols']:
+        sc = (12 * np.array(alloc['prbs'])[:, None] + np.arange(12)[None, :]).ravel()
+        if alloc.get('shared_dmrs') and l in alloc['dmrs']:
+            sc = sc[sc % 2 == 1]
+        grid[l, sc] = sym[at:at + len(sc)]
+        at += len(sc)
+    dm_k = np.array([12 * p + 2 * j for p in alloc['prbs'] for j in range(6)])
+    for l in alloc['dmrs']:
+        r = pdsch_dmrs(pci, slot, l, 12 * n_rb + int(k_ref))
+        grid[l, dm_k] = r[(dm_k + int(k_ref)) // 2]
+    return grid
