@@ -896,20 +896,27 @@ def _slot_grid(P, tm, x, fr, slot_abs, key, known, cs, l0, mib, pci):
     """``(t_slot, grid, cancelled)``: the slot's CORESET symbols, or with known transmissions in
     it the whole slot with them cancelled."""
     t_slot = tm.slot_start(fr, slot_abs)
-    ks = _knowns(P, known, key, tm, cs, mib, int(pci))
+    ks = _knowns(P, known, key, tm, cs, mib, int(pci), t_slot)
     if not ks:
         return t_slot, tm.grid(x, t_slot, range(l0, l0 + cs['n_symb'])), False
     grid = tm.grid(x, t_slot, range(14))
     return t_slot, (None if grid is None else P.cancel(grid, ks)), grid is not None
 
 
-def _knowns(P, known, key, tm, cs, mib, pci):
+#: How far apart (s) a known transmission's slot and this cell's may start for it to be
+#: cancelled: under half a 15 kHz cyclic prefix. Sectors of one site share their frame timing;
+#: cells of other sites on the same SSB frequency need not, nor their SFNs.
+_SAME_SLOT_S = 2e-6
+
+
+def _knowns(P, known, key, tm, cs, mib, pci, t_slot):
     """The known transmissions of ``key`` (SFN, slot) rebuilt in this cell's grid: only those
-    whose CORESET 0 lies where this cell's does, so the rebuild falls on the right REs."""
+    sent at this slot's time (``_SAME_SLOT_S``) whose CORESET 0 lies where this cell's does, so
+    the rebuild falls on the right REs."""
     out = []
     for e in (known or {}).get(key, ()):
-        if int(e['pci']) == pci:
-            continue                                   # a cell's own blocks are not taken from it
+        if int(e['pci']) == pci or abs(float(e['t_s']) - float(t_slot)) > _SAME_SLOT_S:
+            continue                       # a cell's own blocks, or another site's timing
         if abs(float(e['f0_hz']) - tm.f0) > 1.0 or int(e['n_rb']) != cs['n_rb'] or int(e['n_symb']) != cs['n_symb']:
             continue
         r = P.known_grid(int(e['pci']), key[1], cs['n_rb'], cs['n_symb'], int(e['first_symbol']), e['dci'],
@@ -941,7 +948,8 @@ def known_transmissions(result, cell, known=None):
         dci = {k: d[k] for k in ('bits', 'level', 'cce', 'fda', 'tdra', 'vrb_to_prb', 'mcs', 'rv', 'sii',
                                  'rb_start', 'n_rbs') if k in d}
         known.setdefault((int(d['sfn']), int(d['slot'])), []).append(dict(
-            pci=int(cell['pci']), dci=dci, hex=block['hex'], f0_hz=float(cs['f0_hz']), n_rb=int(cs['n_rb']),
+            pci=int(cell['pci']), dci=dci, hex=block['hex'], t_s=float(d['t_s']), f0_hz=float(cs['f0_hz']),
+            n_rb=int(cs['n_rb']),
             n_symb=int(cs['n_symb']), first_symbol=int(l0), dmrs_pos=int(cell['mib']['dmrs_typeA_position']),
             k_ref=int(k_ref) if d.get('sii') == 1 else 0, tdra=tdra if d.get('sii') == 1 else None))
     return known

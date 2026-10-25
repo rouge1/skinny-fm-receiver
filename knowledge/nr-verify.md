@@ -573,7 +573,7 @@ On real air (2026-10-25, the 850 MHz site, 6 s), the three sectors:
 | | SIB1 | Other SI |
 |---|---|---|
 | First | 143 of 143 | 80 of 80 |
-| Second | 143 of 143, each alone | 2 of 80 |
+| Second | 143 of its 143 SIB1 DCIs, each alone | 2 of 80 |
 | Third | one block | none found |
 
 - The second sector's PDCCH carries the first's DCI. Its SIB1 is its own,
@@ -586,7 +586,7 @@ On real air (2026-10-25, the 850 MHz site, 6 s), the three sectors:
   one site.
 - The weaker sectors' other SI is not read: their `si.missing` comes with
   `missing_unsure` and a reason, so it is not proof that a SIB is absent.
-- Time: about 210 s for the three cells, against 50 s for the first alone.
+- Time: about 195 s for the three cells, against 50 s for the first alone.
 
 Tests: `tools/tests/test_iqnr_cancel.py`.
 

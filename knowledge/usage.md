@@ -1378,7 +1378,7 @@ tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead o
   decoded transmissions subtracted: on real air a sector 13 dB under another
   gave its own SIB1 every time, and a third once. Their other SI was not
   read, so `si.missing_unsure` is set and the reason says so. Three cells
-  take about 3.5 minutes.
+  take about 3 minutes.
 - `--decode` needs srsRAN 4G's NR library behind `run_nr.sh`, built by you
   (AGPL, not part of this repo), and pycrate under `$FMRX_LTE_TOOLS/pyc`. Only
   the broadcast (SI-RNTI) is read. Each entry gets a `decode`: the MIB, SIB1

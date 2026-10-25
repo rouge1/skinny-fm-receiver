@@ -19,10 +19,12 @@ in the ops folder, not here. What the checks pin:
 - at 6 dB no SIB1 DCI of the weaker cell decodes alone even after cancelling: from candidates
   summed over the occasions the DCI is found, held in exactly the occasions it was sent in,
   and SIB1 decodes from those summed;
+- a cell whose slots start elsewhere (another site's timing, same SFN and slot numbers) has
+  nothing cancelled;
 - ``own_decode_cells``: the weaker cell is read at the stronger one's offset (``cfo_from``) with
   its blocks cancelled, and gives its own SIB1 bytes.
 
-Run:  PYTHONPATH=tools python tools/tests/test_iqnr_cancel.py   (about a minute)
+Run:  PYTHONPATH=tools python tools/tests/test_iqnr_cancel.py   (about 40 s)
 """
 
 import os
@@ -172,6 +174,15 @@ def check_end_to_end():
                                                                        blocks(clean, data_w), clean['cancelled'])
     expect("15 dB: the weaker sector's SIB1 decodes only with the stronger one's cancelled, every copy alone",
            strong_signal)
+
+    def other_site():
+        x, strong, weak, data_s, data_w, sent = site(15.0, 100)
+        known = iqnr.known_transmissions(iqnr.type0_pdcch(x, FS, CENTRE, strong, pdsch=True), strong)
+        m = weak['mib']
+        apart = dict(weak, mib=dict(m, ssb_s=m['ssb_s'] + 0.25e-3))     # its frames a quarter slot later
+        got = iqnr.type0_pdcch(x, FS, CENTRE, apart, pdsch=True, known=known)
+        return got['cancelled'] == 0 and len(known) == len(sent), (got['cancelled'], len(known))
+    expect("another site's timing (frames 0.25 ms apart, the same slot numbers): nothing cancelled", other_site)
 
     def weak_signal():
         x, strong, weak, data_s, data_w, sent = site(6.0, 300)
