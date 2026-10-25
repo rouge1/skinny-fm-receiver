@@ -810,7 +810,7 @@ class _Timing:
         return out
 
 
-def type0_pdcch(iq, fs, center_hz, cell, rnti=None, pdsch=False, combine=True):
+def type0_pdcch(iq, fs, center_hz, cell, rnti=None, pdsch=False, combine=True, known=None):
     """SIB1's DCIs (DCI format 1_0, CRC scrambled by SI-RNTI) of one cell, decoded with
     ``iqnr_phy`` in every Type0-PDCCH occasion of the capture, and with ``pdsch`` the SIB1
     each one schedules.
@@ -819,12 +819,24 @@ def type0_pdcch(iq, fs, center_hz, cell, rnti=None, pdsch=False, combine=True):
     half-frame and SSB index time the frames; ``cfo_hz`` is removed). 15 kHz SSB and common
     spacing only. Returns None without a usable MIB, else a dict: ``coreset0`` (``n_rb``,
     ``n_symb``, ``offset_rb``, ``f0_hz``: its lowest subcarrier), ``occasion`` (from table
-    13-11), ``slots`` (slots tried), and ``dcis``, one per DCI found: ``sfn``, ``slot``,
+    13-11), ``slots`` (slots tried), ``cancelled`` (slots a known transmission was taken out
+    of), ``summed`` (see below, or None), and ``dcis``, one per DCI found: ``sfn``, ``slot``,
     ``t_s`` (the slot's start), ``level``, ``cce``, the payload's fields, ``snr_db``. With
     ``pdsch`` each DCI also has ``pdsch``: ``tbs``, ``snr_db``, ``hex`` (the transport block,
     or None when its CRC failed), ``copies`` (1 decoded alone, more when ``combine`` summed it
     with earlier copies of its 160 ms period or since the last pass: ``iqnr_phy.SoftCombiner``;
-    0 none), or None when the allocation is not one this reads."""
+    0 none), or None when the allocation is not one this reads.
+
+    ``known`` holds what stronger cells on the same carrier were decoded sending
+    (``known_transmissions``, by (SFN, slot)): each is rebuilt and cancelled from its slot
+    before this cell is read (``iqnr_phy.cancel``). With ``combine``, when no SIB1 DCI decodes
+    alone in any occasion, every candidate's soft bits are summed over the occasions of its
+    slot. A SIB1 DCI decoded alone twice or more, or failing any one from a sum, is then looked for in every
+    occasion where none decoded (its codeword's score over ``_DETECT``, or the place in the
+    160 ms period whose occasions score over ``_PLACE`` together) and given to those, each
+    marked ``summed`` (how many occasions held it) and ``score``; ``summed`` in the result says
+    how the last was found. That finds only copies of the same DCI: a cell cycling redundancy
+    versions sends another in each occasion."""
     from . import iqnr_phy as P
     mib = (cell or {}).get('mib')
     if not mib or int(cell.get('scs_khz') or 0) != 15:
@@ -842,39 +854,180 @@ def type0_pdcch(iq, fs, center_hz, cell, rnti=None, pdsch=False, combine=True):
         return None
     l0 = occ['first_symbol']
     comb = P.SoftCombiner() if combine else None
-    dcis, slots = [], 0
+    dcis, slots, cancelled, empty = [], 0, 0, []
     for fr in tm.frames(len(x)):
         sfn = (tm.sfn0 + fr) % 1024
         if sfn % 2 != occ['parity']:
             continue
         for slot_abs in (occ['n0'], occ['n0'] + 1):
-            t_slot = tm.slot_start(fr, slot_abs)
-            grid = tm.grid(x, t_slot, range(l0, l0 + n_symb))
+            slot = slot_abs % 10
+            sfn_slot = (sfn + slot_abs // 10) % 1024
+            t_slot, grid, cut = _slot_grid(P, tm, x, fr, slot_abs, (sfn_slot, slot), known, cs, l0, mib, pci)
             if grid is None:
                 continue
             slots += 1
-            slot = slot_abs % 10
-            sfn_slot = (sfn + slot_abs // 10) % 1024
-            for dci in P.decode_pdcch(grid[l0:l0 + n_symb], pci, slot, l0, n_rb, n_symb, rnti=rnti):
+            cancelled += cut
+            found = P.decode_pdcch(grid[l0:l0 + n_symb], pci, slot, l0, n_rb, n_symb, rnti=rnti)
+            if not any(d.get('sii') == 0 for d in found):
+                empty.append((fr, slot_abs, sfn_slot, slot, t_slot, grid[l0:l0 + n_symb].copy()))
+            for dci in found:
                 dci.pop('metric', None)
                 entry = dict(sfn=int(sfn_slot), slot=int(slot), t_s=float(t_slot), **dci)
                 if pdsch:
                     entry['pdsch'] = _sib1_block(P, tm, x, t_slot, pci, slot, dci, mib, n_rb, rnti,
-                                                 comb, sfn_slot // 16)
+                                                 comb, sfn_slot // 16, grid if cut else None)
                 dcis.append(entry)
+    summed = None
+    if combine and empty:
+        summed = _more_sib1(P, tm, x, cell, cs, occ, empty, known, rnti, pdsch, comb, dcis)
     return {'coreset0': dict(n_rb=n_rb, n_symb=n_symb, offset_rb=cs['offset_rb'], f0_hz=tm.f0),
-            'occasion': occ, 'slots': slots, 'dcis': dcis}
+            'occasion': occ, 'slots': slots, 'cancelled': cancelled, 'summed': summed, 'dcis': dcis}
 
 
-def _sib1_block(P, tm, x, t_slot, pci, slot, dci, mib, n_rb, rnti, comb=None, group=None):
+#: A codeword score (``iqnr_phy.codeword_score``, about 0 +/- 1 where the DCI is not sent) over
+#: which an occasion is taken to hold a DCI found from summed occasions; and the mean score, in
+#: units of its spread where nothing is sent (1 / sqrt(n) for n occasions), over which a place in
+#: SIB1's 160 ms period is taken to hold it in every period (a schedule repeats each period).
+_DETECT = 4.0
+_PLACE = 5.0
+
+
+def _slot_grid(P, tm, x, fr, slot_abs, key, known, cs, l0, mib, pci):
+    """``(t_slot, grid, cancelled)``: the slot's CORESET symbols, or with known transmissions in
+    it the whole slot with them cancelled."""
+    t_slot = tm.slot_start(fr, slot_abs)
+    ks = _knowns(P, known, key, tm, cs, mib, int(pci))
+    if not ks:
+        return t_slot, tm.grid(x, t_slot, range(l0, l0 + cs['n_symb'])), False
+    grid = tm.grid(x, t_slot, range(14))
+    return t_slot, (None if grid is None else P.cancel(grid, ks)), grid is not None
+
+
+def _knowns(P, known, key, tm, cs, mib, pci):
+    """The known transmissions of ``key`` (SFN, slot) rebuilt in this cell's grid: only those
+    whose CORESET 0 lies where this cell's does, so the rebuild falls on the right REs."""
+    out = []
+    for e in (known or {}).get(key, ()):
+        if int(e['pci']) == pci:
+            continue                                   # a cell's own blocks are not taken from it
+        if abs(float(e['f0_hz']) - tm.f0) > 1.0 or int(e['n_rb']) != cs['n_rb'] or int(e['n_symb']) != cs['n_symb']:
+            continue
+        r = P.known_grid(int(e['pci']), key[1], cs['n_rb'], cs['n_symb'], int(e['first_symbol']), e['dci'],
+                         bytes.fromhex(e['hex']), int(e['dmrs_pos']), k_ref=int(e.get('k_ref') or 0),
+                         tdra=e.get('tdra'))
+        if r is not None:
+            out.append(r)
+    return out
+
+
+def known_transmissions(result, cell, known=None):
+    """``known`` (a dict, made when None) with every block ``type0_pdcch`` or ``other_si``
+    decoded in ``result`` added, by (SFN, slot): what ``known=`` takes for the weaker cells."""
+    known = {} if known is None else known
+    if not result:
+        return known
+    k_ref, tdra = result.get('k_ref') or 0, result.get('tdra')
+    cs = result.get('coreset0') or {}
+    if 'f0_hz' not in cs:
+        from . import iqnr_phy as P
+        c0 = P.coreset0(cell['mib'])
+        cs = dict(c0, f0_hz=float(cell['ssb_hz']) + (c0['k0'] - _REF_K) * 15e3)
+    rows = result.get('dcis') if 'dcis' in result else result.get('blocks')
+    for d in rows or ():
+        block = d.get('pdsch') or {}
+        if not block.get('hex'):
+            continue
+        l0 = d.get('first_symbol', (result.get('occasion') or {}).get('first_symbol', 0))
+        dci = {k: d[k] for k in ('bits', 'level', 'cce', 'fda', 'tdra', 'vrb_to_prb', 'mcs', 'rv', 'sii',
+                                 'rb_start', 'n_rbs') if k in d}
+        known.setdefault((int(d['sfn']), int(d['slot'])), []).append(dict(
+            pci=int(cell['pci']), dci=dci, hex=block['hex'], f0_hz=float(cs['f0_hz']), n_rb=int(cs['n_rb']),
+            n_symb=int(cs['n_symb']), first_symbol=int(l0), dmrs_pos=int(cell['mib']['dmrs_typeA_position']),
+            k_ref=int(k_ref) if d.get('sii') == 1 else 0, tdra=tdra if d.get('sii') == 1 else None))
+    return known
+
+
+def _more_sib1(P, tm, x, cell, cs, occ, empty, known, rnti, pdsch, comb, dcis):
+    """SIB1's DCI in the occasions where none decoded (``type0_pdcch``'s ``combine``): each SIB1
+    DCI decoded alone, or failing any, one decoded from every candidate's soft bits summed over
+    the occasions of its slot, is looked for in each of them, and those that hold it are decoded
+    with it. Adds to ``dcis``; returns how the last was found (``slot``, ``level``, ``cce``,
+    ``from``: 'alone' or 'summed', ``occasions`` looked in, ``held``, ``scores``), or None."""
+    mib = cell['mib']
+    pci, n_rb, n_symb, l0 = int(cell['pci']), cs['n_rb'], cs['n_symb'], occ['first_symbol']
+    a_len = P.dci_1_0_si_bits(n_rb)
+    k = a_len + P.L_CRC
+
+    def check(c):
+        return np.array_equal(P.dci_crc(c[:a_len], rnti), c[a_len:])
+    times = {}
+    for d in dcis:
+        if d.get('sii') == 0:
+            key = (d['slot'], d['level'], d['cce'], d['bits'])
+            times[key] = times.get(key, 0) + 1
+    # Only a DCI decoded alone twice or more: a cell that changes its DCI every time (redundancy
+    # versions, moving RBs) would otherwise have each looked for in every occasion, inviting a
+    # chance match.
+    looks = [(sl, lv, cce, np.array([int(b) for b in bits], dtype=np.uint8), 'alone')
+             for (sl, lv, cce, bits), n in times.items() if n >= 2]
+    llrs = {}
+
+    def soft(i, level, cce0):
+        if (i, level, cce0) not in llrs:
+            _fr, _sa, _sfn, slot, _t, rows = empty[i]
+            llrs[(i, level, cce0)] = P.pdcch_llrs(rows, pci, slot, l0, n_rb, n_symb, level, cce0)
+        return llrs[(i, level, cce0)]
+    if not looks:
+        sums = {}
+        for i, e in enumerate(empty):
+            for level, cce0 in P.type0_candidates(n_rb * n_symb // 6):
+                key = (e[3], level, cce0)
+                sums[key] = sums.get(key, 0.0) + soft(i, level, cce0)[0]
+        for (slot, level, cce0), llr in sorted(sums.items(), key=lambda kv: -kv[0][1]):
+            c, _m = P.polar_decode(llr, k, P.polar_n(k, len(llr), P.N_MAX_DCI), P.LIST, check)
+            if c is not None and P.parse_dci_1_0_si(c[:a_len], n_rb)['sii'] == 0:
+                looks.append((slot, level, cce0, c[:a_len], 'summed'))
+                break
+    found = None
+    for slot, level, cce0, a, how in looks:
+        signs = P.pdcch_codeword(a, rnti, level)
+        scored = [(i, P.codeword_score(soft(i, level, cce0)[0], signs)) for i, e in enumerate(empty) if e[3] == slot]
+        place = {}
+        for i, score in scored:                        # its place in SIB1's 160 ms period
+            place.setdefault(empty[i][2] % 16, []).append(score)
+        sent = {p for p, v in place.items() if np.mean(v) > _PLACE / np.sqrt(len(v))}
+        held = [(i, score) for i, score in scored if empty[i][2] % 16 in sent or score > _DETECT]
+        fields = P.parse_dci_1_0_si(a, n_rb)
+        bits = ''.join(str(int(b)) for b in a)
+        for i, score in held:
+            fr, slot_abs, sfn_slot, _sl, t_slot, _rows = empty[i]
+            _llr, snr, slope = soft(i, level, cce0)
+            dci = dict(level=level, cce=cce0, bits=bits, **fields)
+            dci.update(snr_db=float(snr), slope=slope, summed=len(held), score=round(score, 1))
+            entry = dict(sfn=int(sfn_slot), slot=int(slot), t_s=float(t_slot), **dci)
+            if pdsch:
+                _t, grid, cut = _slot_grid(P, tm, x, fr, slot_abs, (sfn_slot, slot), known, cs, l0, mib, pci)
+                entry['pdsch'] = _sib1_block(P, tm, x, t_slot, pci, slot, dci, mib, n_rb, rnti, comb,
+                                             sfn_slot // 16, grid if cut else None)
+            dcis.append(entry)
+        if held:
+            found = {'slot': int(slot), 'level': int(level), 'cce': int(cce0), 'from': how, 'occasions': len(scored),
+                     'held': len(held), 'scores': sorted(round(sc, 1) for _i, sc in scored)}
+    dcis.sort(key=lambda d: d['t_s'])
+    return found
+
+
+def _sib1_block(P, tm, x, t_slot, pci, slot, dci, mib, n_rb, rnti, comb=None, group=None, grid=None):
     """The PDSCH a SIB1 DCI schedules (K0 0: the same slot), decoded on its own, or through
-    ``comb`` with the copies of ``group``."""
+    ``comb`` with the copies of ``group``; ``grid`` the whole slot when one was built (known
+    transmissions cancelled)."""
     if dci.get('sii') != 0:
         return None
     alloc = P.pdsch_alloc(dci, mib['dmrs_typeA_position'], n_rb)
     if alloc is None or max(alloc['prbs']) >= n_rb:
         return None
-    grid = tm.grid(x, t_slot, range(alloc['S'], alloc['S'] + alloc['L']))
+    if grid is None:
+        grid = tm.grid(x, t_slot, range(alloc['S'], alloc['S'] + alloc['L']))
     if grid is None:
         return None
     llr, snr, _slope = P.pdsch_llrs(grid, pci, slot, alloc, rnti, slope=dci.get('slope'))
@@ -900,7 +1053,7 @@ def _ss_slots(search, frame, slot):
     return (frame * 10 + slot - offset) % period == 0
 
 
-def other_si(iq, fs, center_hz, cell, config, rnti=None, combine=True):
+def other_si(iq, fs, center_hz, cell, config, rnti=None, combine=True, known=None):
     """The other SI messages of one cell (DCI format 1_0 with the SI indicator 1, and the PDSCH
     each schedules), decoded with ``iqnr_phy`` in the SI windows SIB1 names.
 
@@ -912,7 +1065,10 @@ def other_si(iq, fs, center_hz, cell, config, rnti=None, combine=True):
     and ``blocks``, one per DCI: ``sfn``, ``slot``, ``si`` (1-based message, from the window),
     ``level``, ``cce``, the DCI fields, and ``pdsch`` (``tbs``, ``snr_db``, ``hex`` or None,
     ``copies`` as ``type0_pdcch``'s: with ``combine`` a message's copies are summed within its
-    window, then across windows until one passes)."""
+    window, then across windows until one passes), and ``first_symbol`` (its PDCCH's).
+    ``known`` as ``type0_pdcch``'s: stronger cells' transmissions cancelled from each slot first;
+    ``cancelled`` in the result counts the slots; ``k_ref`` and ``tdra`` are the DM-RS reference
+    and time list used."""
     from . import iqnr_phy as P
     mib = (cell or {}).get('mib')
     if not mib or int(cell.get('scs_khz') or 0) != 15 or not config:
@@ -930,7 +1086,7 @@ def other_si(iq, fs, center_hz, cell, config, rnti=None, combine=True):
     search = config['search']
     w = int(config['window_slots'])
     comb = P.SoftCombiner() if combine else None
-    blocks, slots = [], 0
+    blocks, slots, cancelled = [], 0, 0
     for fr in tm.frames(len(x)):
         sfn = (tm.sfn0 + fr) % 1024
         for slot in range(10):
@@ -944,25 +1100,25 @@ def other_si(iq, fs, center_hz, cell, config, rnti=None, combine=True):
                     break
             if which is None or not _ss_slots(search, sfn, slot):
                 continue
-            t_slot = tm.slot_start(fr, slot)
             for l0 in search['first_symbols']:
-                grid = tm.grid(x, t_slot, range(l0, l0 + n_symb))
+                t_slot, grid, cut = _slot_grid(P, tm, x, fr, slot, (sfn, slot), known, cs, l0, mib, pci)
                 if grid is None:
                     continue
                 slots += 1
+                cancelled += cut
                 for dci in P.decode_pdcch(grid[l0:l0 + n_symb], pci, slot, l0, n_rb, n_symb, rnti=rnti,
                                           counts=search['counts']):
                     dci.pop('metric', None)
                     if dci.get('sii') != 1:
                         continue
-                    entry = dict(sfn=int(sfn), slot=int(slot), si=which, t_s=float(t_slot), **dci)
+                    entry = dict(sfn=int(sfn), slot=int(slot), si=which, t_s=float(t_slot), first_symbol=int(l0), **dci)
                     entry['pdsch'] = None
                     alloc = P.pdsch_alloc(dci, mib['dmrs_typeA_position'], n_rb, tdra=config['tdra'] or None)
                     if alloc is not None and max(alloc['prbs']) < n_rb:
-                        g = tm.grid(x, t_slot, range(alloc['S'], alloc['S'] + alloc['L']))
+                        g = grid if cut else tm.grid(x, t_slot, range(alloc['S'], alloc['S'] + alloc['L']))
                         if g is not None:
                             llr, snr, _slope = P.pdsch_llrs(g, pci, slot, alloc, rnti, k_ref=k_ref,
                                                             slope=dci.get('slope'))
                             entry['pdsch'] = _block(P, llr, snr, alloc, dci['rv'], comb, ('si', which), window)
                     blocks.append(entry)
-    return {'slots': slots, 'blocks': blocks}
+    return {'slots': slots, 'cancelled': cancelled, 'k_ref': k_ref, 'tdra': config['tdra'] or None, 'blocks': blocks}

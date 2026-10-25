@@ -532,6 +532,64 @@ cell's kind (1 RB at MCS 9), with versions 0, 2, 3, 1 on moving RBs:
 - an older content's copies do not block a new one;
 - end to end, SIB1 and other SI that no copy of decodes alone.
 
+### Cancelling a stronger sector (roadmap Round 28.5)
+
+Sectors of one site share a carrier and an SI schedule: their SIB1 and SI
+come in the same slots on the same RBs. On the recording the second sector
+was 13 dB under the first on those REs (not the 7 dB its SSB showed), and the
+third sent the same SI there too. That repeat is the same in every copy, so
+combining alone could not reach them (28.4).
+
+`iqnr_decode.own_decode_cells` (what `--pdsch` runs) reads the cells
+strongest first. A weaker cell on the same SSB frequency gets two things:
+- **The strongest cell's frequency offset** (`cfo_hz`, with `cfo_from`
+  saying which cell it came from). The offset is mostly the recorder's, and
+  a weak SSB measures it worse: 80 Hz off here.
+- **What the stronger cells were decoded sending** (`known`, by SFN and
+  slot). Each such transmission is rebuilt (`iqnr_phy.known_grid`: its
+  PDCCH, and the PDSCH that PDCCH schedules, DM-RS included) and fitted to
+  the slot (`fit_known`). Then it is subtracted (`cancel`). The fit:
+  - a delay slope across subcarriers and a frequency across symbols, both
+    searched;
+  - then per PRB, a gain that moves linearly over the slot;
+  - the PDCCH and the PDSCH fitted separately.
+
+  A rebuild is used only where the two cells' CORESET 0 lie on the same REs.
+
+When no SIB1 DCI of a cell decodes alone, each candidate's soft bits are
+summed over the occasions of its slot. A DCI that decodes from a sum, or one
+that decoded alone twice, is then looked for in every occasion where none
+decoded:
+- by its codeword's score (`codeword_score`, about 0 ± 1 where it is not
+  sent);
+- or by its place in the 160 ms period, where all the occasions at that place
+  score high together.
+
+That finds only copies of the same DCI. A cell that cycles redundancy
+versions changes its DCI, so this does not find it.
+
+On real air (2026-10-25, the 850 MHz site, 6 s), the three sectors:
+
+| | SIB1 | Other SI |
+|---|---|---|
+| First | 143 of 143 | 80 of 80 |
+| Second | 143 of 143, each alone | 2 of 80 |
+| Third | one block | none found |
+
+- The second sector's PDCCH carries the first's DCI. Its SIB1 is its own,
+  and parses: it differs only in the cell identity, `ssb-PositionsInBurst`,
+  and the PUCCH and RACH settings.
+- For the third sector, no DCI decoded alone. Its DCI came from 286
+  occasions summed. It was then held in the 143 occasions the others send in
+  (every 40 ms), and gave one SIB1 from 131 copies summed.
+- The three cell identities are a fixed step apart, with one tracking area:
+  one site.
+- The weaker sectors' other SI is not read: their `si.missing` comes with
+  `missing_unsure` and a reason, so it is not proof that a SIB is absent.
+- Time: about 210 s for the three cells, against 50 s for the first alone.
+
+Tests: `tools/tests/test_iqnr_cancel.py`.
+
 ## Decoding a listed SSB (`--decode`)
 
 `tools/iq-nr FILE --decode` goes one step past the search. For each SSB the

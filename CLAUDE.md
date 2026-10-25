@@ -40,7 +40,8 @@ with no launcher.
     `knowledge/nr-verify.md`). Our own NR broadcast decoder (`iqnr_phy`,
     `iqnr_ldpc`: MIB, SIB1, other SI; `iq-nr --mib`, `--pdcch`, `--pdsch`)
     runs beside it, with `nr_si` kept as the referee; only the RRC parse is
-    outside (pycrate). Our own decoders are written from the 3GPP specs:
+    outside (pycrate). It reads weaker sectors under a stronger one by
+    cancelling what the stronger was decoded sending (`iqnr.type0_pdcch(known=)`). Our own decoders are written from the 3GPP specs:
     srsRAN is AGPL and none of its code comes into this repo.
     Cellular decoding stays broadcast only (MIB, SIB1, other SI on the
     SI-RNTI): no paging, random access or user traffic, and nothing sent.

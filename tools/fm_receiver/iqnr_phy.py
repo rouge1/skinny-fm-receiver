@@ -1,5 +1,6 @@
 """5G NR broadcast decoding, numpy only: the PBCH and its MIB, the PDCCH that schedules SIB1
-and the other SI, and their PDSCH (roadmap Rounds 28.1 to 28.3).
+and the other SI, and their PDSCH (roadmap Rounds 28.1 to 28.3), with the repeats combined
+and a stronger cell's known transmissions cancelled (28.4, 28.5).
 
 Written from the 3GPP specifications (TS 38.211 V19, 38.212 V19.4.0, 38.213 V19.5.0,
 38.214); the tables below are copied from 38.212 and 38.213. No srsRAN code is used: srsRAN
@@ -84,6 +85,17 @@ SIB1's and the other SI's PDSCH (Round 28.3; the channel code is ``iqnr_ldpc``):
   of all zero bits is refused: it passes the CRC (whose register starts at 0),
   and is what a decoder settles on when it was given next to nothing.
 - ``pdsch_grid`` and ``encode_dlsch`` are the transmitter, for the tests.
+- ``SoftCombiner`` (28.4) sums a block's copies that fail alone.
+
+Cancellation (Round 28.5). Sectors of one site send their SIB1 and SI in the same slots and
+RBs, a stronger one up to 13 dB above a weaker. Once the stronger is decoded its transmission
+is known: ``known_grid`` rebuilds its PDCCH and PDSCH (DM-RS included) in the slot,
+``fit_known`` fits them to the received grid (a delay slope across subcarriers and a frequency
+across symbols, both searched, then per PRB a gain moving linearly over the symbols: a gain per
+PRB and symbol could not follow the drift and left most of it) and ``cancel`` subtracts them.
+The PDCCH and the PDSCH are fitted apart, as their precoding may differ. ``pdcch_codeword``
+gives a decoded DCI's soft-bit signs, so a candidate summed over occasions can be looked for
+in each one (``codeword_score``).
 
 Only 15 kHz SSB and common spacing (table 13-1) is covered; other tables are
 not copied yet.
@@ -1188,3 +1200,94 @@ def pdsch_grid(data, setup, alloc, pci, slot, rv, n_rb, rnti=SI_RNTI, k_ref=0):
         r = pdsch_dmrs(pci, slot, l, 12 * n_rb + int(k_ref))
         grid[l, dm_k] = r[(dm_k + int(k_ref)) // 2]
     return grid
+
+
+# ----- cancellation of known transmissions (Round 28.5) ----------------------------------
+
+#: Searched in ``fit_known``: delay slopes (rad per subcarrier) and frequencies (Hz).
+_FIT_SLOPES = np.linspace(-0.2, 0.2, 161)
+_FIT_FREQS = np.linspace(-300.0, 300.0, 121)
+_T_SYMBOL = 1e-3 / 14                    # a symbol's spacing, cyclic prefixes averaged
+
+
+def known_grid(pci, slot, n_rb, n_symb, first_symbol, dci, data, dmrs_typea_position, rnti=SI_RNTI, k_ref=0,
+               tdra=None):
+    """A decoded transmission's slot grid (its PDCCH in CORESET 0 and the PDSCH ``data`` it
+    schedules, DM-RS included) and its parts, ``[(symbols, PRBs)]`` of the PDCCH and the PDSCH;
+    ``dci`` as ``decode_pdcch`` gives it (``bits``, ``level``, ``cce`` and the fields). None
+    when the allocation is not one this reads."""
+    alloc = pdsch_alloc(dci, dmrs_typea_position, n_rb, tdra=tdra)
+    if alloc is None or max(alloc['prbs']) >= n_rb:
+        return None
+    setup = dlsch_setup(alloc['tbs'], alloc['rate'])
+    q = pdsch_grid(bytes(data), setup, alloc, pci, slot, int(dci['rv']), n_rb, rnti, k_ref)
+    a = np.array([int(c) for c in dci['bits']], dtype=np.uint8)
+    pdcch = encode_pdcch(a, rnti, pci, int(dci['level']))
+    q[first_symbol:first_symbol + n_symb] += coreset_grid(n_rb, n_symb, pci, slot, first_symbol,
+                                                          [(int(dci['level']), int(dci['cce']), pdcch)])
+    parts = [(list(range(first_symbol, first_symbol + n_symb)), list(range(n_rb))),
+             (list(range(alloc['S'], alloc['S'] + alloc['L'])), list(alloc['prbs']))]
+    return q, parts
+
+
+def _sums(t, ids):
+    return float(np.sum(np.abs(np.bincount(ids, t.real) + 1j * np.bincount(ids, t.imag)) ** 2))
+
+
+def fit_known(grid, q, symbols, prbs):
+    """The part of ``grid`` that the known grid ``q`` explains on ``symbols`` and ``prbs``: q
+    turned by a delay slope and a frequency, then per PRB a gain a + b (l - mean l)."""
+    m = np.zeros(q.shape, dtype=bool)
+    m[list(symbols)] = q[list(symbols)] != 0
+    est = np.zeros(grid.shape, dtype=np.complex128)
+    if not m.any():
+        return est
+    li, ki = np.nonzero(m)
+    z = grid[m] * np.conj(q[m])
+    pi = ki // 12
+    _u, per_symbol = np.unique(li * 4096 + pi, return_inverse=True)
+    slope = max(_FIT_SLOPES, key=lambda s: _sums(z * np.exp(-1j * s * ki), per_symbol))
+    t = z * np.exp(-1j * slope * ki)
+    _u, per_prb = np.unique(pi, return_inverse=True)
+    freq = max(_FIT_FREQS, key=lambda f: _sums(t * np.exp(-2j * np.pi * f * li * _T_SYMBOL), per_prb))
+    turned = (q * np.exp(1j * slope * np.arange(q.shape[1]))[None, :]
+              * np.exp(2j * np.pi * freq * np.arange(q.shape[0]) * _T_SYMBOL)[:, None])
+    mid = float(np.mean(list(symbols)))
+    for p in prbs:
+        c = slice(12 * p, 12 * p + 12)
+        mm = m[:, c]
+        if not mm.any():
+            continue
+        qq = turned[:, c][mm]
+        tl = np.nonzero(mm)[0] - mid
+        a = np.stack([qq, qq * tl], axis=1) if np.ptp(tl) > 0 else qq[:, None]
+        coef, *_ = np.linalg.lstsq(a, grid[:, c][mm], rcond=None)
+        e = np.zeros(mm.shape, dtype=np.complex128)
+        e[mm] = a @ coef
+        est[:, c] += e
+    return est
+
+
+def cancel(grid, knowns):
+    """``grid`` less each known transmission (``known_grid``'s ``(q, parts)``), in turn."""
+    out = np.array(grid, dtype=np.complex128)
+    for q, parts in knowns:
+        out = out - sum(fit_known(out, q, sy, prbs) for sy, prbs in parts)
+    return out
+
+
+def pdcch_codeword(a, rnti, level):
+    """The signs (+1 for bit 0) of the 108 x ``level`` descrambled bits a PDCCH carrying DCI ``a``
+    sends: what ``pdcch_llrs`` should give for it."""
+    a = np.asarray(a, dtype=np.uint8)
+    c = np.concatenate((a, dci_crc(a, rnti)))
+    e_len = 108 * int(level)
+    return 1.0 - 2.0 * polar_encode(c, polar_n(len(c), e_len, N_MAX_DCI), e_len)
+
+
+def codeword_score(llr, signs):
+    """How strongly soft bits ``llr`` hold the codeword ``signs``: their correlation over its
+    spread, about 0 +/- 1 where it is not sent."""
+    llr = np.asarray(llr, dtype=np.float64)
+    spread = float(np.sqrt(np.sum(llr ** 2)))
+    return float(np.dot(llr, signs)) / spread if spread > 0 else 0.0

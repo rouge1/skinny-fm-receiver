@@ -210,13 +210,12 @@ def _attach_own(args, src, t0, ssbs):
     i_start = int(round(t0 * float(src.rate)))
     n = max(0, min(int(round(float(seconds) * float(src.rate))), int(src.samples) - i_start))
     span = _Span(src, i_start, n)
-    for e in ssbs:
-        if not isinstance(e, dict):
-            continue
-        if not e.get('mib'):
+    entries = [e for e in ssbs if isinstance(e, dict)]
+    owns = iqnr_decode.own_decode_cells(span, src.rate, src.center_hz, entries, tools=_tools_dir())
+    for e, own in zip(entries, owns):
+        if own is None:
             e['own'] = None
             continue
-        own = iqnr_decode.own_decode(span, src.rate, src.center_hz, e, tools=_tools_dir())
         if cut_reason:
             own['reason'] = '; '.join(r for r in (cut_reason, own.get('reason')) if r)
         own['seconds'] = round(n / float(src.rate), 6)

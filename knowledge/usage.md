@@ -1361,7 +1361,11 @@ tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead o
   no srsRAN. Each entry gets `own`, shaped as `decode` is: `sib1` (the same
   summary), `sib1_hex` (the block decoded most often), `blocks` (`sib1` and
   `other`: [copies decoded, DCIs found]; `combined`: [SIB1's, other SI's]
-  blocks that took more than one copy), `si`, `time` and `time_reason`,
+  blocks that took more than one copy), `cancelled` ([SIB1, other SI] slots
+  a stronger cell's transmission was taken out of), `summed` (SIB1's DCI
+  found from summed occasions, or null), `cfo_hz` and `cfo_from` (the
+  offset used: its own SSB's, or the strongest cell's on its SSB frequency),
+  `si`, `time` and `time_reason`,
   `reason`, `seconds`. The RRC parse uses pycrate under
   `$FMRX_LTE_TOOLS/pyc`; without it `sib1` is null, `sib1_hex` is still
   there and `reason` says why. 15 kHz cells only. On real air it read every
@@ -1370,7 +1374,11 @@ tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead o
   160 ms period or an SI window first) and `blocks.combined` counts the
   blocks that took more than one: on the barred cell this doubled the SIB1
   blocks and gave one in every period. A sector under a stronger one that
-  sends the same thing on the same RBs stays out of reach.
+  sends the same thing on the same RBs is read with the stronger one's
+  decoded transmissions subtracted: on real air a sector 13 dB under another
+  gave its own SIB1 every time, and a third once. Their other SI was not
+  read, so `si.missing_unsure` is set and the reason says so. Three cells
+  take about 3.5 minutes.
 - `--decode` needs srsRAN 4G's NR library behind `run_nr.sh`, built by you
   (AGPL, not part of this repo), and pycrate under `$FMRX_LTE_TOOLS/pyc`. Only
   the broadcast (SI-RNTI) is read. Each entry gets a `decode`: the MIB, SIB1

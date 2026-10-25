@@ -583,7 +583,7 @@ def _heard(si_blocks, tools, notes):
     return heard, sibs
 
 
-def own_decode(iq, fs, centre_hz, cell, tools=None):
+def own_decode(iq, fs, centre_hz, cell, tools=None, known=None):
     """SIB1 and the other SI of one ``iqnr.ssb_search(..., mib=True)`` entry by our own decoder
     (``iqnr.type0_pdcch`` with ``pdsch``, then ``iqnr.other_si`` configured from that SIB1),
     over the whole of ``iq``. Only the RRC parse is outside: pycrate, as for ``decode_ssb``.
@@ -593,15 +593,21 @@ def own_decode(iq, fs, centre_hz, cell, tools=None):
     for other SI; ``combined``: how many of those blocks, SIB1's and other SI's, took more than
     one copy summed), ``si`` (``sibs_heard``, ``sibs``, ``scheduled``, ``missing``,
     ``unscheduled``, as ``decode_ssb``; None when SIB1 schedules nothing and none was heard),
-    ``time`` (SIB9's), ``time_reason`` and ``reason``."""
+    ``time`` (SIB9's), ``time_reason`` and ``reason``.
+
+    ``known`` (``iqnr.known_transmissions``' dict): what stronger cells on the same carrier were
+    decoded sending, cancelled first; this cell's blocks are added to it. ``cancelled`` gives
+    the slots something was taken out of ([SIB1's, other SI's]) and ``summed`` SIB1's DCI found
+    from summed occasions (``iqnr.type0_pdcch``), or None."""
     from fm_receiver import iqnr
     tools = tools if tools is not None else tools_dir()
     seconds = len(iq) / float(fs) if fs else 0.0
     out = {'ran': True, 'decoder': 'ours', 'sib1': None, 'sib1_hex': None, 'si': None, 'time': None,
            'time_reason': None, 'reason': None,
-           'blocks': {'sib1': [0, 0], 'other': [0, 0], 'combined': [0, 0]}}
+           'blocks': {'sib1': [0, 0], 'other': [0, 0], 'combined': [0, 0]}, 'cancelled': [0, 0],
+           'summed': None}
     notes = []
-    got = iqnr.type0_pdcch(iq, fs, centre_hz, cell, pdsch=True)
+    got = iqnr.type0_pdcch(iq, fs, centre_hz, cell, pdsch=True, known=known)
     if got is None:
         out['time_reason'] = 'no SIB1'
         out['reason'] = 'no MIB, or a cell this decoder does not read (15 kHz only)'
@@ -609,6 +615,10 @@ def own_decode(iq, fs, centre_hz, cell, tools=None):
     hexes = [d['pdsch']['hex'] for d in got['dcis'] if d.get('pdsch') and d['pdsch']['hex']]
     out['blocks']['sib1'] = [len(hexes), len(got['dcis'])]
     out['blocks']['combined'][0] = sum(1 for d in got['dcis'] if (d.get('pdsch') or {}).get('copies', 0) > 1)
+    out['cancelled'][0] = got.get('cancelled', 0)
+    out['summed'] = got.get('summed')
+    if known is not None:
+        iqnr.known_transmissions(got, cell, known)
     if not hexes:
         out['time_reason'] = 'no SIB1'
         out['reason'] = ('no SIB1 decoded from %d DCIs in %g s' % (len(got['dcis']), round(seconds, 3))
@@ -636,8 +646,11 @@ def own_decode(iq, fs, centre_hz, cell, tools=None):
         point_a = _point_a_hz(float(cell['ssb_hz']), 15e3, mib['ssb_subcarrier_offset'], offset)
     out['sib1'] = _summarise_sib1(sib1, mib, point_a)
     config = si_config(sib1)
-    other = iqnr.other_si(iq, fs, centre_hz, cell, config) if config else None
+    other = iqnr.other_si(iq, fs, centre_hz, cell, config, known=known) if config else None
     blocks = (other or {}).get('blocks') or []
+    out['cancelled'][1] = (other or {}).get('cancelled', 0)
+    if known is not None and other:
+        iqnr.known_transmissions(other, cell, known)
     ok = [b['pdsch']['hex'] for b in blocks if b.get('pdsch') and b['pdsch']['hex']]
     out['blocks']['other'] = [len(ok), len(blocks)]
     out['blocks']['combined'][1] = sum(1 for b in blocks if (b.get('pdsch') or {}).get('copies', 0) > 1)
@@ -657,11 +670,48 @@ def own_decode(iq, fs, centre_hz, cell, tools=None):
                      'unscheduled': [n for n in heard if n not in scheduled]}
         if out['si']['missing']:
             notes.append('not heard in %g s: %s' % (round(seconds, 3), ', '.join(out['si']['missing'])))
+            if out['cancelled'][1] or out['cancelled'][0]:
+                # Under a stronger sector the SI it shares lands on the same RBs: a SIB not heard
+                # here may well be sent, just not decoded.
+                out['si']['missing_unsure'] = True
+                notes.append('other SI read under a stronger cell (%d of %d DCIs decoded): a missing '
+                             'SIB may be sent but too weak here' % tuple(out['blocks']['other']))
         if 'sib9' in sibs:
             out['time'] = _sib9_time(sibs['sib9'])
     if out['time'] is None:
         out['time_reason'] = _time_reason(out['sib1'], out['si'], seconds, True)
     out['reason'] = _join(*notes)
+    return out
+
+
+def own_decode_cells(iq, fs, centre_hz, cells, tools=None):
+    """``own_decode`` for each of ``cells`` (``iqnr.ssb_search`` entries, strongest first; one
+    without a MIB gets None), weaker cells after stronger ones on the same SSB frequency.
+
+    Sectors of one site share a carrier and send their SIB1 and SI in the same slots and RBs, so
+    each cell's decoded transmissions are cancelled from the slots of the weaker cells on its SSB
+    frequency (``known``). Such a cell is read at the strongest one's frequency offset: the
+    offset is mostly the recorder's, and the strongest cell's SSB measures it best. Each result
+    gains ``cfo_hz`` (the offset used) and ``cfo_from`` ('own SSB', or 'strongest on this SSB
+    frequency: PCI n')."""
+    groups = []                                    # [ssb_hz, strongest cell, known]
+    out = []
+    for cell in cells:
+        if not isinstance(cell, dict) or not cell.get('mib'):
+            out.append(None)
+            continue
+        group = next((g for g in groups if abs(g[0] - float(cell['ssb_hz'])) < 1e3), None)
+        if group is None:
+            group = [float(cell['ssb_hz']), cell, {}]
+            groups.append(group)
+            used, source = cell, 'own SSB'
+        else:
+            used = dict(cell, cfo_hz=group[1].get('cfo_hz'))
+            source = 'strongest on this SSB frequency: PCI %s' % group[1]['pci']
+        own = own_decode(iq, fs, centre_hz, used, tools=tools, known=group[2])
+        own['cfo_hz'] = used.get('cfo_hz')
+        own['cfo_from'] = source
+        out.append(own)
     return out
 
 

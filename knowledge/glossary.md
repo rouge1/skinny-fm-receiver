@@ -90,6 +90,7 @@ FirstNet).
 | SI indicator (`sii`) | A bit in the control message for a broadcast block: 0 for SIB1, 1 for another SI message. |
 | Redundancy version (RV) | Which part of a block's coded bits one transmission sends (0 to 3, from four starting points of the LDPC circular buffer). Version 0 starts with the data bits; a small block's versions 1 to 3 can be parity only, and decode only summed with other copies. |
 | Soft combining | Adding the soft bits of several copies of one block (any mix of redundancy versions) before decoding: with independent noise, N copies gain up to 10 log N dB. It cannot remove a stronger cell sending the same thing on the same resource blocks every time, since that adds up just as the wanted signal does. |
+| Cancellation | Rebuilding a decoded cell's transmission (its control message and data, reference signals included), fitting it to the recording and subtracting it, so a weaker cell sending in the same slots and resource blocks can be read. Sectors of one site do exactly that with their SIB1 and SI. |
 | All-zero block | A block of all zero bytes passes the NR data CRC (its register starts at zero), so a decoder given next to nothing can return one. It parses as a SystemInformation holding a SIB2 of defaults. Both of our decode paths drop it. |
 | NSA-only cell | An NR cell whose SIB1 gives no tracking area code: it serves only as a second carrier beside LTE (EN-DC), and is usually barred. |
 
