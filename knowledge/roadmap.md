@@ -1468,17 +1468,28 @@ Phases, each one checked before the next:
   16QAM and 64QAM, interleaved VRB-to-PRB, mapping type B and shared DM-RS
   symbols, search space 0 for other SI. The synthetic tests reach them, and
   CRC 24A and 24B also match the CRC catalogue.
-- [ ] 28.4 Combining:
-  - LLRs of the same SIB1 block are kept per redundancy version across
-    occasions, within a 160 ms period and across periods while the content
-    holds (a CRC pass ends it).
-  - PDCCH is combined over the occasions where a cell's candidate repeats,
-    or the DCI is taken from earlier passes.
-  - Measured gain on synthetic signals, then the weaker sector's SIB1 on the
-    real recording.
+- [ ] 28.4 Combining (soft combining shipped 2026-10-25; the weaker
+  sector not reached):
+  - [x] LLRs of the same block are kept across occasions and summed within a
+    160 ms period (or an SI window), then across periods while the content
+    holds (a CRC pass ends it): `iqnr_phy.SoftCombiner`, on in
+    `type0_pdcch` and `other_si`. The barred cell's SIB1 went from 56 to 108
+    blocks, one in every 160 ms period.
+  - [ ] PDCCH combined over the occasions where a cell's candidate repeats,
+    or the DCI taken from earlier passes: not built. Only the weaker sector
+    needs it.
+  - [x] Gain measured on synthetic signals (`test_iqnr_combine.py`: four
+    copies at 2 dB where one needs about 7), and on real air (3.3, 5.3 and
+    7.0 dB for 2, 4 and 8 copies).
+  - [ ] The weaker sector's SIB1 on the real recording: not reached. The
+    stronger sector sends the same SI on the same RBs in the same slots, 6
+    to 7 dB above it, identically in every copy, so it adds up as the wanted
+    signal does (8 copies gained about 3 dB, not 9). Two quick
+    cancellations of the stronger sector's PDSCH gave no decode
+    ([nr-verify.md](nr-verify.md#combining-the-repeats-roadmap-round-284)).
 - [ ] 28.5 Optional cancellation: the stronger cell's PDCCH and PDSCH
   rebuilt from its decoded bits and subtracted before the weaker one is
-  read. Only if 28.4 falls short.
+  read. Only if 28.4 falls short, which it now has (2026-10-25).
 - [ ] LTE (later, separate): PBCH, PCFICH, PDCCH and PDSCH with turbo
   decoding, for the 700 MHz carriers whose SIB1 the outside decoder never
   reads.

@@ -499,10 +499,14 @@ On real air (2026-10-25, the same recordings):
   copies each, often two parity-heavy versions together (2 and 3, or 1 and 2).
   Summing its version-0 copies against the known codeword raised the
   buffer's SNR by 3.3 dB for 2 copies, 5.3 for 4 and 7.0 for 8 (3, 6 and 9
-  ideal). The noise is independent from copy to copy.
+  ideal), then levelled off (8.2 for 16). The measure (mean squared over
+  variance across buffer positions) levels off by itself: a position lands
+  on the same RE in every copy, so differences between REs repeat. It cannot
+  say more than near ideal up to 8 copies.
 - The second sector: combining does not reach it. The strongest sector sends
   the same SI on the same RBs in the same slots (the sectors share one
-  schedule and, it turns out, the bytes), 6 to 7 dB above it. That repeat is
+  schedule and, by correlation for two of the messages, the bytes), 6 to 7
+  dB above it. That repeat is
   the same in every copy, so it adds up just as the wanted signal does: 8
   copies gained about 3 dB, not 9. Subtracting the strongest sector's
   rebuilt PDSCH (its bytes are known) lifted the second sector's DM-RS SNR
@@ -512,7 +516,7 @@ On real air (2026-10-25, the same recordings):
 Tests: `tools/tests/test_iqnr_combine.py`. Its synthetic block is the barred
 cell's kind (1 RB at MCS 9), with versions 0, 2, 3, 1 on moving RBs:
 - four copies at 2 dB per RE always decode summed, never alone (one copy
-  needs about 7 dB);
+  needs about 7 dB: 2 of 20 decoded at 6 dB, 14 at 7, 19 at 8);
 - a parity-only copy is kept and lifts a weak version 0;
 - an older content's copies do not block a new one;
 - end to end, SIB1 and other SI that no copy of decodes alone.

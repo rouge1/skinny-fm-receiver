@@ -19,7 +19,7 @@ not here. What the checks pin:
   copies in one SI window are each too weak alone: with ``combine`` both decode, with the bytes
   sent, and without it neither does.
 
-Run:  PYTHONPATH=tools python tools/tests/test_iqnr_combine.py   (about a minute)
+Run:  PYTHONPATH=tools python tools/tests/test_iqnr_combine.py   (about 10 s)
 """
 
 import os
