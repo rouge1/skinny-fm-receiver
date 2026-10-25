@@ -1473,14 +1473,14 @@ Phases, each one checked before the next:
   - [x] LLRs of the same block are kept across occasions and summed within a
     160 ms period (or an SI window), then across periods while the content
     holds (a CRC pass ends it): `iqnr_phy.SoftCombiner`, on in
-    `type0_pdcch` and `other_si`. The barred cell's SIB1 went from 56 to 108
+    `type0_pdcch` and `other_si`. The barred cell's SIB1 went from 57 to 110
     blocks, one in every 160 ms period.
   - [ ] PDCCH combined over the occasions where a cell's candidate repeats,
     or the DCI taken from earlier passes: not built. Only the weaker sector
     needs it.
   - [x] Gain measured on synthetic signals (`test_iqnr_combine.py`: four
-    copies at 2 dB where one needs about 7), and on real air (3.3, 5.3 and
-    7.0 dB for 2, 4 and 8 copies).
+    copies at 2 dB where one needs about 7), and on real air (4.0, 6.6, 8.7
+    and 11.3 dB for 2, 4, 8 and 16 copies, with 28.5's phase fix).
   - [ ] The weaker sector's SIB1 on the real recording: not reached. The
     stronger sector sends the same SI on the same RBs in the same slots, 6
     to 7 dB above it, identically in every copy, so it adds up as the wanted

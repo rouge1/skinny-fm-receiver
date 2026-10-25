@@ -339,16 +339,16 @@ def synth_nr(pci=123, scs_khz=15, case='A', l_max=4, ssb_sent=(0,), period_ms=20
     ``k`` counted from SSB subcarrier 0 (negative below it), for a CORESET or a PDSCH.
 
     ``rf_hz`` (the capture's radio frequency at 0 Hz) adds the phase 38.211 5.4 gives each
-    symbol: exp(-j 2 pi f tau_l), f the carrier's own frequency (rf_hz + cfo_hz: the offset is
-    the transmitter's) and tau_l the symbol's useful start within its subframe. None leaves it
-    out, as before.
+    symbol: exp(-j 2 pi f tau_l), f the carrier's own frequency (rf_hz: ``cfo_hz`` is the
+    receiver's offset, as a recorder's tuner error is, so it does not enter) and tau_l the
+    symbol's useful start within its subframe. None leaves it out, as before.
 
     ``fs`` None keeps the native rate nfft x scs. Signal power over noise power is
     ``snr_db`` at the output rate (non-finite adds none).
     """
     iq, native, truth, rng = _cell_native(
         pci, scs_khz, case, l_max, ssb_sent, period_ms, n_hf, bw_mhz, ssb_offset_hz,
-        dur_ms, seed, load, pbch, res, None if rf_hz is None else float(rf_hz) + float(cfo_hz))
+        dur_ms, seed, load, pbch, res, None if rf_hz is None else float(rf_hz))
     rate = native if fs is None else float(fs)
     if int(round(rate)) != int(round(native)):
         iq = _resample(iq, native, rate)

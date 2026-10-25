@@ -463,11 +463,21 @@ program, and for other SI its second pass with SIB1's `-t` and `-a`):
 
 Wrong turn: the per-symbol phase. 38.211 5.4 restarts each symbol's phase at
 its useful start, so after the FFT symbol l is turned by exp(-j 2 pi f
-tau_l), f the radio frequency at 0 Hz of the cut, tau_l its useful start in
-the subframe. The PBCH and PDCCH hid it (every symbol has DM-RS and its own
-gain); the PDSCH interpolates between DM-RS symbols, and without the term,
-or with its sign flipped, 40 % of the bits agreed and nothing decoded. With
-it, the first three copies tried were equal to the referee's bytes.
+tau_l), f the cell's own radio frequency at 0 Hz of the cut, tau_l its useful
+start in the subframe. The PBCH and PDCCH hid it (every symbol has DM-RS and
+its own gain); the PDSCH interpolates between DM-RS symbols, and without the
+term, or with its sign flipped, 40 % of the bits agreed and nothing decoded.
+With it, the first three copies tried were equal to the referee's bytes.
+
+A second wrong turn, found in 28.5 (2026-10-25): f was first taken as
+received, the cell's carrier plus the recording's frequency offset. The
+offset is the recorder's (its tuner and clock share one reference), not the
+cell's, so that turned every symbol by a ramp of the offset itself, about
+330 Hz here. A strong cell's PDSCH interpolation between DM-RS symbols hid
+it; under a stronger sector it did not. The synthesiser had made the same
+choice (the offset as the transmitter's), so the tests agreed with the
+decoder either way; `test_iqnr_pdsch.py` now checks that the DM-RS turns only
+by the offset's estimation error.
 
 Never on air: base graph 1, several code blocks (CRC 24A and 24B), 16QAM and
 64QAM, interleaved VRB-to-PRB, mapping type B and shared DM-RS symbols, and
@@ -494,15 +504,15 @@ more summed, 0 none), and `own.blocks.combined` counts SIB1's and other SI's
 summed blocks.
 
 On real air (2026-10-25, the same recordings):
-- The barred cell: SIB1 108 blocks instead of 56, all one content, and every
-  160 ms period now has one (38 of 38, before 36). The extra 52 came from 2
+- The barred cell: SIB1 110 blocks instead of 57, all one content, and every
+  160 ms period now has one (38 of 38, before 37). The extra 53 came from 2
   copies each, often two parity-heavy versions together (2 and 3, or 1 and 2).
   Summing its version-0 copies against the known codeword raised the
-  buffer's SNR by 3.3 dB for 2 copies, 5.3 for 4 and 7.0 for 8 (3, 6 and 9
-  ideal), then levelled off (8.2 for 16). The measure (mean squared over
-  variance across buffer positions) levels off by itself: a position lands
-  on the same RE in every copy, so differences between REs repeat. It cannot
-  say more than near ideal up to 8 copies.
+  buffer's SNR by 4.0 dB for 2 copies, 6.6 for 4, 8.7 for 8, 11.3 for 16 and
+  13.0 for 32: about the ideal 10 log N. (Before 28.5's phase fix, below, it
+  levelled off after 8 copies: the wrong phase was the same in every copy.
+  Those first figures, 108 blocks of 56 and 3.3, 5.3, 7.0 dB, were measured
+  with it.)
 - The second sector: combining does not reach it. The strongest sector sends
   the same SI on the same RBs in the same slots (the sectors share one
   schedule and, by correlation for two of the messages, the bytes), 6 to 7
@@ -510,8 +520,9 @@ On real air (2026-10-25, the same recordings):
   the same in every copy, so it adds up just as the wanted signal does: 8
   copies gained about 3 dB, not 9. Subtracting the strongest sector's
   rebuilt PDSCH (its bytes are known) lifted the second sector's DM-RS SNR
-  by about 2.5 dB, but no copy or sum decoded. Cancellation done well is
-  Round 28.5's.
+  by about 2.5 dB, but no copy or sum decoded. Round 28.5 found why: the
+  per-symbol phase above, and a channel model (one gain per PRB and symbol)
+  too coarse to follow the drift it left.
 
 Tests: `tools/tests/test_iqnr_combine.py`. Its synthetic block is the barred
 cell's kind (1 RB at MCS 9), with versions 0, 2, 3, 1 on moving RBs:

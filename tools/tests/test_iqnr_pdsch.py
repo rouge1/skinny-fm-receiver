@@ -314,6 +314,24 @@ def check_end_to_end():
         return (len(blocks) >= 4 and all(h == data1.hex() for h in blocks)), (len(blocks), blocks[:1], sent['sib1'])
     expect("type0_pdcch(pdsch=True): every SIB1 PDSCH in the span, its bytes (3 dB, 700 Hz off, symbol phase)", sib1)
 
+    def phase():
+        cell = holder.get('cell')
+        if cell is None:
+            return False, 'no cell'
+        got = iqnr.type0_pdcch(iq, FS, CENTRE, cell)
+        cs = P.coreset0(cell['mib'])
+        tm = iqnr._Timing(FS, CENTRE, cell, cs)
+        al = P.pdsch_alloc(got['dcis'][0], 2, 48)
+        g = tm.grid(iq, got['dcis'][0]['t_s'], range(al['S'], al['S'] + al['L']))
+        dm_k = np.array([12 * p + 2 * j for p in al['prbs'] for j in range(6)])
+        z = {l: np.vdot(P.pdsch_dmrs(PCI, got['dcis'][0]['slot'], l, 576)[dm_k // 2], g[l, dm_k]) for l in al['dmrs']}
+        ls = sorted(z)
+        hz = [np.angle(z[b] / z[a]) / (2 * np.pi * (b - a) / 14e3) for a, b in zip(ls, ls[1:])]
+        left = 700.0 - float(cell['cfo_hz'])      # the offset's estimation error, all that should turn it
+        return abs(left) > 50 and all(abs(f - left) < 40 for f in hz), ([round(f) for f in hz], round(left))
+    expect("38.211 5.4's phase at the cell's own carrier: SIB1's DM-RS turns only by the offset's estimation error",
+           phase)
+
     def other():
         cell = holder.get('cell')
         if cell is None:

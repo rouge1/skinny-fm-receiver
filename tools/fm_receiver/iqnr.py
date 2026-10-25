@@ -739,8 +739,9 @@ def _cut(x, fs, i0, n_in, shift_hz, out_rate):
 
 
 #: Sign of the per-symbol phase 38.211 5.4 leaves after the FFT: symbol l is turned by
-#: exp(-j 2 pi f tau_l), f the radio frequency at 0 Hz of the cut and tau_l the symbol's useful
-#: start within the subframe; the grid is multiplied by exp(_PHASE_SIGN j 2 pi f tau_l).
+#: exp(-j 2 pi f tau_l), f the cell's own radio frequency at 0 Hz of the cut (the recorder's
+#: offset left out: it is the receiver's, not the cell's) and tau_l the symbol's useful start
+#: within the subframe; the grid is multiplied by exp(_PHASE_SIGN j 2 pi f tau_l).
 _PHASE_SIGN = 1.0
 
 
@@ -758,7 +759,7 @@ class _Timing:
         f_mid = self.f0 + 6 * self.n_rb * scs            # subcarrier 6 N_RB sits on bin 0
         self.fits = abs(f_mid - float(center_hz)) + 6 * self.n_rb * scs <= 0.5 * self.fs
         self.shift = f_mid - float(center_hz) + float(cell.get('cfo_hz') or 0.0)
-        self.f_rf = float(center_hz) + self.shift
+        self.f_rf = f_mid                                # the cell's carrier, not as received
         s = _CASE_A[int(mib['ssb_index'])]
         self.ssb_s = float(mib['ssb_s'])
         self.t_frame = (self.ssb_s - (s // 14) * 1e-3 - _symbol_start(s % 14) / _TS_RATE
