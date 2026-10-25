@@ -1356,7 +1356,7 @@ outside the repo. Method, output and limits: [nr-verify.md](nr-verify.md).
 - [x] A weaker sector's own MIB (2026-10-24): the outside program takes
   `-P PCI`, and the decode retries with it when pass 1 reads another PCI. On
   air the second sector's MIB came; the third gave none.
-- [ ] A weaker sector's SIB1: it shares CORESET 0 and SIB1's slots with the
+- [x] A weaker sector's SIB1 (done in Round 28.5, 2026-10-25): it shares CORESET 0 and SIB1's slots with the
   stronger cell. Measured 2026-10-24 (reference signals only): its PDCCH half
   overlaps the stronger cell's, and its SIB1 data lies under the stronger
   cell's, about -4 to -10 dB per RE even after cancelling it. One transmission
@@ -1494,6 +1494,83 @@ Phases, each one checked before the next:
   - [ ] The weaker sectors' other SI: 2 of 80 and none. Their missing SIBs
     are marked unsure. The third sector, also sending the same SI on the same
     RBs, is not cancelled from the second, since its DCI there is not found.
-- [ ] LTE (later, separate): PBCH, PCFICH, PDCCH and PDSCH with turbo
-  decoding, for the 700 MHz carriers whose SIB1 the outside decoder never
-  reads.
+- [ ] 28.6 Iterative cancellation (planned 2026-10-25): what 28.5 does once,
+  strongest to weakest, gone round again. Once the third sector is decoded,
+  it is cancelled from the second sector's slots too, and the second
+  re-read; any new block goes back into `known`, until a pass adds nothing.
+  On the shared SI's RBs, with the first sector gone, the leftover (noise and
+  model error) is the larger part, the second sector about 5.5 dB under it
+  and the third about 7 dB: the third is the largest thing left that repeats
+  in every copy, which combining cannot average away.
+  - A second lever: the weak cell's own channel estimate. With the first
+    sector cancelled, an estimate from its known bytes decoded the second
+    sector's SI from 4 to 6 copies and ours did not (bit agreement 0.62
+    against 0.65): its DM-RS fitted with `fit_known`'s drift model.
+  - First step: the budget again (as 28.5's), to choose between the levers.
+  - Other SI: the sectors send the same bytes (by correlation), so a block
+    decoded on one sector is a hypothesis for the others. It is rebuilt with
+    that sector's PCI and cancelled only where the sector's own DCI is found
+    (by codeword score, as SIB1's in 28.5), never assumed.
+  - Done when the second sector's other SI decodes from its own copies, or
+    the leftover is shown to be noise (a budget as 28.5's); `missing_unsure`
+    then cleared where it can be.
+- [ ] LTE: Round 29 below.
+
+## Round 29: our own LTE broadcast decoder (planned 2026-10-25)
+
+Why: the two 700 MHz carriers (Round 27) give their MIB but never SIB1, so
+their operator, tracking area and cell identity are unknown. The outside
+decoder (`pdsch_ue`, srsRAN 4G) reads one transmission at a time, and the
+recordings hold two synchronised cells within 2 dB of each other on one
+carrier (9 dB apart on the other), 2 antenna ports, about 4 dB SNR on the
+PBCH. Whether SIB1 fails for the weak signal or for the two cells' SIB1s
+overlapping (Round 28's problem, nearly at equal power) is not known: 29.2
+measures it. Decoding stays for
+classification and broadcast only (MIB, SIB1, SI on the SI-RNTI).
+
+Written from the 3GPP specifications (36.211, 36.212, 36.213, 36.321,
+36.331: downloaded first, untrusted, each in its own folder), numpy only, in
+a new `iqlte_phy` (and `iqlte_turbo` for the channel code), as `iqnr_phy`
+and `iqnr_ldpc`. srsRAN stays outside and is the referee: `pdsch_ue` on the
+Band 13 cell it reads in full (the Band 13 recordings), and its MIBs on the
+700 MHz pair. What `iqlte` already has (PSS, SSS, PCI, frame timing, CRS
+sequences and the CRS check) is the start.
+
+- [ ] 29.1 PBCH and the MIB: CRS channel estimates (1, 2 or 4 ports, which the
+  CRC mask gives),
+  SFBC (Alamouti) for 2 ports, PBCH descrambling, the tail-biting
+  convolutional code (36.212 5.1.3.1) with a Viterbi decoder, rate matching,
+  CRC 16 masked by the number of ports (which finds the port count), the
+  four 10 ms parts of the 40 ms TTI (which gives the SFN's low bits).
+  Checked against `pdsch_ue`'s MIBs on every recording.
+- [ ] 29.2 PCFICH and PDCCH: the CFI (32-bit code, 3 hypotheses), the REGs
+  left after PCFICH and PHICH (from the MIB's PHICH config), the REG
+  interleaver (sub-block interleaver, cyclic shift by PCI), the common search
+  space (CCEs 0-15, aggregation 4 and 8), DCI formats 1A and 1C with CRC
+  scrambled by SI-RNTI. Checked against `pdsch_ue`'s DCIs on the Band 13 cell.
+  The go or no-go for 29.5: each 700 MHz cell's SIB1 DCI decoded on its own,
+  and the power budget on its SIB1's REs (as 28.5's), say whether the two
+  overlap or the signal is just weak. (The pair's CRS do not collide on ports
+  0 and 1: each cell's CRS sits on the other's data REs.)
+- [ ] 29.3 PDSCH and DL-SCH: allocation type 2 (1A, 1C: N_PRB^1A from the TPC
+  bit), TBS (36.213 7.1.7), REs around the CRS, the control region, and the
+  PSS and SSS in the central 6 PRBs of subframe 5 (the PBCH in subframe 0 for
+  other SI), SFBC
+  for 2 ports, descrambling, the turbo code (QPP interleaver, 36.212 table
+  5.1.3-3; sub-block interleaver and circular buffer rate matching) with a
+  max-log-MAP decoder, CRC 24A and segmentation. SIB1 is in subframe 5 of
+  even frames, 80 ms TTI, redundancy versions from 36.321 5.3.1 (0, 2, 3, 1).
+  Checked: the Band 13 cell's SIB1 byte-equal to `pdsch_ue`'s.
+- [ ] 29.4 Combining: SIB1's four copies per 80 ms (known RVs) and across
+  periods while the content holds (`SoftCombiner`'s rules), the PDCCH summed
+  as 28.5's, but grouped by k = (SFN/2) mod 4: DCI 1A carries the RV, so its
+  payload differs across the four copies. Gain measured on synthetic signals, then on the 700 MHz pair.
+- [ ] 29.5 Cancellation: the other cell's CRS (always on, known from its PCI)
+  taken out of every subframe first; then its decoded PDCCH and PDSCH, as
+  28.5's (cells strongest first, the strongest's frequency offset). Goal:
+  both 700 MHz cells' SIB1, and their operator from it.
+- [ ] 29.6 The other SI (SIB2 onwards, SIB16's network time if a cell sends
+  it) from SIB1's schedule; `iq-lte --own`, shaped as `--decode`.
+
+Never on air yet, so tests only: 4 antenna ports, extended CP, TDD.
+
