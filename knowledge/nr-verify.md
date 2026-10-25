@@ -588,7 +588,8 @@ On real air (2026-10-25, the 850 MHz site, 6 s), the three sectors:
   `missing_unsure` and a reason, so it is not proof that a SIB is absent.
 - Time: about 195 s for the three cells, against 50 s for the first alone.
 
-Tests: `tools/tests/test_iqnr_cancel.py`.
+Tests: `tools/tests/test_iqnr_cancel.py`. The idea, where else it applies and
+its limits: [cancellation.md](cancellation.md).
 
 ## Decoding a listed SSB (`--decode`)
 

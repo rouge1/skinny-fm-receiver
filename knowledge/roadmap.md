@@ -1494,26 +1494,23 @@ Phases, each one checked before the next:
   - [ ] The weaker sectors' other SI: 2 of 80 and none. Their missing SIBs
     are marked unsure. The third sector, also sending the same SI on the same
     RBs, is not cancelled from the second, since its DCI there is not found.
-- [ ] 28.6 Iterative cancellation (planned 2026-10-25): what 28.5 does once,
-  strongest to weakest, gone round again. Once the third sector is decoded,
-  it is cancelled from the second sector's slots too, and the second
-  re-read; any new block goes back into `known`, until a pass adds nothing.
-  On the shared SI's RBs, with the first sector gone, the leftover (noise and
-  model error) is the larger part, the second sector about 5.5 dB under it
-  and the third about 7 dB: the third is the largest thing left that repeats
-  in every copy, which combining cannot average away.
-  - A second lever: the weak cell's own channel estimate. With the first
-    sector cancelled, an estimate from its known bytes decoded the second
-    sector's SI from 4 to 6 copies and ours did not (bit agreement 0.62
-    against 0.65): its DM-RS fitted with `fit_known`'s drift model.
-  - First step: the budget again (as 28.5's), to choose between the levers.
-  - Other SI: the sectors send the same bytes (by correlation), so a block
-    decoded on one sector is a hypothesis for the others. It is rebuilt with
-    that sector's PCI and cancelled only where the sector's own DCI is found
-    (by codeword score, as SIB1's in 28.5), never assumed.
-  - Done when the second sector's other SI decodes from its own copies, or
-    the leftover is shown to be noise (a budget as 28.5's); `missing_unsure`
-    then cleared where it can be.
+- [ ] 28.6 The weaker sectors' other SI (planned 2026-10-25). The first idea
+  was iterative cancellation: once the third sector is decoded, cancel it
+  from the second sector's slots too and re-read. The budget (2026-10-25,
+  the first sector cancelled) says it is worth little. On the shared SI's
+  RBs the second sector is 5 to 7 dB under what is left and the third 7.5 to
+  10; about a third of the leftover repeats copy to copy (about 4.5 dB under
+  it), is not the first sector's channel mismatch (richer fits changed
+  nothing) and is not another cell sending the same bytes (a scan of every
+  PCI is flat). Cancelling the third sector would gain at most about 0.5 dB.
+  - The lever kept: the weak cell's own channel estimate. An estimate fitted
+    to its known bytes decodes its SI from 3 to 7 copies, ours from 14 to 16.
+    Tried: DM-RS fitted with `fit_known`'s drift model, gains smoothed across
+    PRBs, and the noise taken on the data REs.
+  - Exit: a variant that decodes a message from about 8 copies or fewer goes
+    into `pdsch_llrs` for cells read under cancellation, with a synthetic
+    check; otherwise the floor and the gap are written down,
+    `missing_unsure` stays, and Round 29 starts.
 - [ ] LTE: Round 29 below.
 
 ## Round 29: our own LTE broadcast decoder (planned 2026-10-25)
