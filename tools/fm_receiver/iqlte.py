@@ -633,33 +633,55 @@ def _bandwidth(iq, n_fft, phase0, fs_capture):
     return _class_from_width(n_used, fs_capture), n_used
 
 
-_RAMP_SHIFTS = {}
+_NULL_BANKS = {}
 
 
-def _ramp_shifts(span):
-    """Cyclic shifts of the 62 PSS bins that correlate above one half with a root times a
-    timing ramp of at most ``span`` cycles per bin (shifts 5 and 57 are a root 1/63 off)."""
+def _null_bank(span):
+    """The scrambled roots of the PSS null, ``(62, 3 n)`` conjugated, three columns (the roots)
+    a scramble: the circular shifts of the 62 bins, then a fixed set of permutations.
+
+    Shifts of 0 are the real roots: the hypothesis, not the null. So are the shifts that
+    correlate above one half with a root times a timing ramp of at most ``span`` cycles per
+    bin, the widest the search applied (samples over the FFT size): a cyclic shift of a
+    Zadoff-Chu root is a root times a ramp (shifts 5 and 57 are a root 1/63 off). The
+    permutations' seed is fixed so the same capture always reports the same chance; a draw
+    that lands back on a root is skipped."""
     key = round(float(span), 6)
-    if key not in _RAMP_SHIFTS:
+    if key not in _NULL_BANKS:
         refs = _pss_seqs()
         refs = refs / np.linalg.norm(refs, axis=1, keepdims=True)
         bins = np.concatenate((np.arange(-31, 0), np.arange(1, 32)))
         slopes = np.linspace(-key, key, 2 * int(np.ceil(key * 62 * 8)) + 1)
         ramped = np.concatenate([refs * np.exp(2j * np.pi * a * bins) for a in slopes])
-        _RAMP_SHIFTS[key] = {s for s in range(1, 62)
-                             if float(np.max(np.abs(np.roll(refs, s, axis=1).conj() @ ramped.T))) > 0.5}
-    return _RAMP_SHIFTS[key]
+        bank = []
+        for shift in range(1, 62):
+            templ = np.roll(refs, shift, axis=1)
+            if float(np.max(np.abs(templ.conj() @ ramped.T))) <= 0.5:
+                bank.append(templ)
+        draw = np.random.default_rng(0)
+        for _ in range(24):
+            templ = refs[:, draw.permutation(62)]
+            # A permutation of one root can match another; drop that draw.
+            if float(np.max(np.abs(templ.conj() @ refs.T))) <= 0.9:
+                bank.append(templ)
+        _NULL_BANKS[key] = np.concatenate(bank).conj().T
+    return _NULL_BANKS[key]
 
 
-def _pss_chance(peak, obs, span=0.0):
+def _null_max(obs, bank):
+    """Each scramble's largest correlation over the rows ``obs`` (n, 62) (``_null_bank``)."""
+    return np.abs(obs @ bank).max(axis=0).reshape(-1, 3).max(axis=1)
+
+
+def _pss_chance(peak, null):
     """Chance the best correlation is a Zadoff-Chu root, from this capture.
 
     The null is the same centre-bin vectors correlated against the three roots
-    with their bins scrambled: circular shifts, plus a fixed set of
-    permutations. Each scramble contributes its maximum over every symbol,
-    frequency trial and prefix peak that the real search used. A Beta tail
-    fitted to the unscrambled bulk is too thin for an OFDM signal that is not
-    LTE (an uplink-like waveform then scores as if it had a PSS).
+    with their bins scrambled (``_null_bank``): ``null`` is each scramble's
+    maximum over every symbol, frequency trial and prefix start that the real
+    search used (one row in five; ``_null_max``), or None with too few rows. A
+    Beta tail fitted to the unscrambled bulk is too thin for an OFDM signal that
+    is not LTE (an uplink-like waveform then scores as if it had a PSS).
 
     When the real peak does not clear the scrambled maxima, the chance is the
     rank of that peak, which cannot be finer than one over the number of
@@ -667,38 +689,11 @@ def _pss_chance(peak, obs, span=0.0):
     used, with the scale held at least a few hundredths so a lucky gap of one
     scramble cannot pretend to be 1e-30. A true PSS sits near 1 and the
     scrambles near 0.4, so the tail is still far below 1e-6.
-
-    ``span`` is the widest timing ramp the search applied, in cycles per bin
-    (samples over the FFT size): a cyclic shift of a Zadoff-Chu root is a
-    root times a ramp, so the shifts within it are left out of the null.
     """
-    if obs is None or obs.ndim != 2 or obs.shape[0] < 4 or not np.isfinite(peak):
+    if null is None or not np.isfinite(peak):
         return 1.0
     peak = float(np.clip(peak, 0.0, 1.0))
-    refs = _pss_seqs()
-    refs = refs / np.linalg.norm(refs, axis=1, keepdims=True)
-    null_max = []
-    # Shifts of 0 are the real roots; they are the hypothesis, not the null. So are the
-    # shifts that are a root at another timing the search ramped to (``_ramp_shifts``).
-    same = _ramp_shifts(span)
-    for shift in range(1, 62):
-        if shift in same:
-            continue
-        templ = np.roll(refs, shift, axis=1)
-        corr = np.abs(obs @ templ.conj().T)
-        null_max.append(float(corr.max()))
-    # Bin permutations. The seed is fixed so the same capture always reports
-    # the same chance. Skip a draw that landed back on a real root.
-    draw = np.random.default_rng(0)
-    for _ in range(24):
-        perm = draw.permutation(62)
-        templ = refs[:, perm]
-        # A permutation of one root can match another; drop that draw.
-        if float(np.max(np.abs(templ.conj() @ refs.T))) > 0.9:
-            continue
-        corr = np.abs(obs @ templ.conj().T)
-        null_max.append(float(corr.max()))
-    null = np.asarray(null_max, dtype=np.float64)
+    null = np.asarray(null, dtype=np.float64)
     null = null[np.isfinite(null)]
     if null.size < 8:
         return 1.0
@@ -816,24 +811,32 @@ def _pss_on_grid(iq, fs, n_fft, folded, slot, cp):
     are the same length; the folded profile still has a peak on every prefix,
     and the PSS is the last symbol of only two slots, so every peak is tried.
     A couple of samples of timing error (the peak jitters at low SNR, and a
-    CFO walks the bin phase) is a ramp across the FFT bins, not a new FFT.
+    CFO walks the bin phase) is a ramp across the FFT bins, not a new FFT; a
+    grid phase's later starts are ramps every second sample (half a sample
+    off at most: about 1 % of the correlation over 62 bins).
+
+    Returns ``(peak, root, cfo, null, n_sym)``: ``null`` each scramble's maximum
+    over the same trials (``_pss_chance``), or None with fewer than four rows.
     """
     peaks = _pss_phases(folded, n_fft, cp)
     if not peaks:
-        return 0.0, None, 0.0, np.zeros((0, 62), dtype=np.complex128), 0, 0.0
+        return 0.0, None, 0.0, None, 0
     refs = _pss_seqs()
     ref_m = (refs / np.linalg.norm(refs, axis=1, keepdims=True)).conj().T
     bins = np.concatenate((np.arange(-31, 0), np.arange(1, 32))) % n_fft
     k = np.arange(n_fft)
     # Offsets that stay inside a normal prefix, so the shift is circular.
     offsets = range(-1, 2)
+    starts = [(phase, range(offsets[0], offsets[-1] + 1) if not late else
+               range(offsets[0], offsets[-1] + 1 + late, 2)) for phase, late in peaks]
+    bank = _null_bank(max(max(-ds[0], ds[-1]) for _p, ds in starts) / float(n_fft))
+    null, rows = None, 0
     best = 0.0
     best_root = 0
     best_cfo = 0.0
-    kept = []
     n_sym = 0
     t = k / float(fs)
-    for phase, late in peaks:
+    for phase, ds in starts:
         base = _bodies_at(iq, n_fft, slot, phase + cp)
         if base.shape[0] < 2:
             continue
@@ -841,7 +844,7 @@ def _pss_on_grid(iq, fs, n_fft, folded, slot, cp):
         for f in _CFO_HZ:
             ramp_t = np.exp(-2j * np.pi * float(f) * t)
             spec = np.fft.fft(base * ramp_t, axis=1)[:, bins]
-            for d in range(offsets[0], offsets[-1] + 1 + late):
+            for d in ds:
                 # The window d samples later (earlier when d < 0), still inside the prefix.
                 obs = spec * np.exp(2j * np.pi * d * bins / n_fft)
                 norms = np.linalg.norm(obs, axis=1)
@@ -849,19 +852,18 @@ def _pss_on_grid(iq, fs, n_fft, folded, slot, cp):
                 obs_n = np.zeros_like(obs)
                 obs_n[good] = obs[good] / norms[good, None]
                 corr = np.abs(obs_n @ ref_m)
-                # One row in five is enough for the scrambled null and keeps
-                # the store small; the peak itself still sees every symbol.
-                kept.append(obs_n[::5])
+                # One row in five is enough for the scrambled null; the peak itself
+                # still sees every symbol. Each scramble's maximum is kept as it goes.
+                got = _null_max(obs_n[::5], bank)
+                null = got if null is None else np.maximum(null, got)
+                rows += obs_n[::5].shape[0]
                 flat = int(np.argmax(corr))
                 m = float(corr.ravel()[flat])
                 if m > best:
                     best = m
                     best_root = int(flat % 3)
                     best_cfo = float(f)
-    if not kept:
-        return 0.0, None, 0.0, np.zeros((0, 62), dtype=np.complex128), 0, 0.0
-    span = max(max(-offsets[0], offsets[-1] + late) for _p, late in peaks) / float(n_fft)
-    return best, best_root, best_cfo, np.concatenate(kept, axis=0), n_sym, span
+    return best, best_root, best_cfo, null if rows >= 4 else None, n_sym
 
 
 #: While ``fingerprint`` runs, the class-rate block of each input it has resampled, so its
@@ -951,8 +953,8 @@ def pss_search(iq, fs):
         return {'score': 0.0, 'chance': 1.0, 'detail': 'no symbol grid to search',
                 'passed': False, 'nid2': None}
     align, slot, cp, _n_slots, folded = found
-    peak, root, cfo, obs, _n, span = _pss_on_grid(block, rate, n_fft, folded, slot, cp)
-    chance = _floor_chance(_pss_chance(peak, obs, span))
+    peak, root, cfo, null, _n = _pss_on_grid(block, rate, n_fft, folded, slot, cp)
+    chance = _floor_chance(_pss_chance(peak, null))
     passed = chance <= _PASS
     return {
         'score': float(peak),
@@ -1039,8 +1041,10 @@ def _locate_pss(block, rate, n_fft, folded, slot, cp):
                     }
     if best_hit is None or best < 0.25:
         return None
-    # The winning ramp starts the window ``d`` samples later than phase+cp.
-    best_hit['body'] = int(best_hit['phase'] + cp + best_hit['d'])
+    # The winning ramp starts the window ``d`` samples later than phase+cp, which
+    # ``_bodies_at`` takes inside the slot: a prefix in a slot's last samples has
+    # its body in the next slot, and ``corr``'s row for slot i is read there.
+    best_hit['body'] = int((best_hit['phase'] + cp) % slot + best_hit['d'])
     return best_hit
 
 
@@ -2183,8 +2187,8 @@ def _fingerprint(iq, fs):
             f'prefix correlation {score:.3f} over {cp_len} samples, '
             f'about {n_used} subcarriers in use',
         )
-        peak, root, cfo, obs, _n, span = _pss_on_grid(block, rate, n_fft, folded, slot, cp_len)
-        pss_chance = _pss_chance(peak, obs, span)
+        peak, root, cfo, null, _n = _pss_on_grid(block, rate, n_fft, folded, slot, cp_len)
+        pss_chance = _pss_chance(peak, null)
         pss = _check(
             'pss', True, peak, pss_chance,
             f'best root {root} correlation {peak:.3f} at {cfo:.0f} Hz',

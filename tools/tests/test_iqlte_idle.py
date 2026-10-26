@@ -14,8 +14,11 @@ its prefixes outscore the quiet cell's in the folded profile, and the peaks
 spent on it leave out the PSS symbol, or the quiet cell's whole grid. The PSS is
 now tried on the symbols of the best slot alignment and of a clear second one
 too (``_pss_phases``), and the scrambled null leaves out the cyclic shifts that
-are a root at a timing the search ramped to (``_ramp_shifts``). Group E fails
-before that (``possible``, no PCI).
+are a root at a timing the search ramped to (``_null_bank``). Group E fails
+before that (``possible``, no PCI). Group F is the same search at the slot's
+edge: a PSS whose prefix starts in a slot's last samples has its body in the
+next slot, and the SSS was read a slot late (no PCI) until the body was taken
+inside the slot as the windows are.
 
 Signals: ``tests/lte_synth.py`` with ``idle=True`` (QPSK in the first three
 symbols of each subframe only). Made-up PCIs.
@@ -28,6 +31,8 @@ Groups:
   D  one idle cell with echoes at 20 and 40 samples, 10 dB: lte, pci 123
   E  one idle cell and a loaded cell 6 dB down at another timing (700 and
      9000 samples later), 10 dB: lte, pci 123, the SSS and CRS checks passed
+  F  one cell whose PSS prefix starts 40, 20 and 5 samples before a slot's end
+     (15.36 MS/s), 10 dB: the SSS gives pci 123 at the cell's own frame timing
 
 Run:  PYTHONPATH=tools python tools/tests/test_iqlte_idle.py   (about 40 s)
 """
@@ -37,6 +42,8 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+
+import numpy as np  # noqa: E402
 
 from fm_receiver import iqlte  # noqa: E402
 from tests import lte_synth  # noqa: E402
@@ -129,7 +136,25 @@ def group_other_timing():
         expect(f'E  an idle cell and a loaded one 6 dB down, {delay} samples later, 10 dB: lte, pci {PCI}', case)
 
 
-GROUPS = [group_peaks, group_one_cell, group_two_cells, group_echoes, group_other_timing]
+def group_slot_edge():
+    iq, fs = lte_synth.synth_lte(10, 10, PCI, 10, seed=3)
+    off = iqlte.cells(iq, fs)[0]['frame_offset_samples']
+    slot, sym = 7680, 1096                           # 15.36 MS/s: a slot, a short-prefix symbol
+    for before in (40, 20, 5):
+        def case(before=before):
+            # The PSS prefix starts a symbol before a slot's end from the frame start (symbol 6
+            # of slot 0): rolled to start ``before`` samples before one.
+            x = np.roll(iq, (sym - before - off) % slot)
+            got = iqlte.sss_search(x, fs)
+            want = iqlte.cells(x, fs)[0]['frame_offset_samples']
+            frame = 10 * slot
+            gap = got.get('frame_offset_samples') is not None and min(
+                (got['frame_offset_samples'] - want) % (frame // 2), (want - got['frame_offset_samples']) % (frame // 2))
+            return got.get('pci') == PCI and gap is not False and gap <= 4, (got.get('pci'), got.get('frame_offset_samples'), want)
+        expect(f'F  a PSS prefix {before} samples before a slot ends: the SSS gives pci {PCI} at its timing', case)
+
+
+GROUPS = [group_peaks, group_one_cell, group_two_cells, group_echoes, group_other_timing, group_slot_edge]
 
 
 def main():

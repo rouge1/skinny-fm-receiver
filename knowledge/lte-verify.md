@@ -728,7 +728,17 @@ are not recorded here: they are kept with the recordings. See
   the other two carriers unchanged but for those few samples, every
   decode the same. Synthetic (`test_iqlte_idle.py` group E, fails before):
   an idle cell and a loaded one 6 dB down 700 and 9000 samples later.
-  Normal carriers try the same phases as before, at the same cost.
+  Normal carriers try the same phases as before, at the same cost, and give
+  the same chance. The null's maxima are kept as the search goes (one row
+  in five of every trial, as the peaks always had), not the rows: the
+  fingerprint of that carrier takes 1.9 GB, under the 2.0 it took before.
+  The noise, tone, Wi-Fi-, ATSC- and uplink-like negatives stay `not-lte`,
+  every PSS chance at or above the rank floor (about 0.012).
+- **A PSS at a slot's edge (fixed 2026-10-26).** With the PSS symbol's prefix
+  in a slot's last samples, its body falls in the next slot; the windows were
+  read there but the SSS a slot late, so the SSS check found nothing (about
+  1 in 100 timings, never seen on air). `test_iqlte_idle.py` group F, 5 to 40
+  samples before the edge.
 - **Draw the block before trusting its width.** A carrier 2.3 MHz off the file
   centre read as 15 MHz; centred, it read 10 MHz and its MIB said 50 PRB. Step 3
   of [workflow.md](workflow.md) (`tools/iq-picture`) shows the occupied edges and
