@@ -538,6 +538,36 @@ check is pending, so it is not verified on air.
 `cells` reports `half_frame` 0 always: the frame offset is only known modulo
 the 5 ms half-frame, so the decode tries both boundaries.
 
+## Memory
+
+`iq-lte`'s memory grows with the span it reads. Measured on the two-cell
+700 MHz carrier (20 MS/s, `--pdsch`), peak resident memory:
+
+| Span | Before 2026-10-26 | After |
+|---|---|---|
+| 1 s | 4.5 GB, 35 s | 2.0 GB, 21 s |
+| 2 s | 9.0 GB, 66 s | 3.8 GB, 43 s |
+| 6 s (fingerprint alone) | over 12 GB | over 12 GB |
+
+Where it went: the fingerprint (`iqlte`), never our own decoders, which
+read the span in small cuts. `iqlte._resample` took the whole span to a
+complex128 FFT and a cubic over a dozen full-length temporaries, 23 times its
+input at the peak, and the fingerprint's checks did it six times over (the
+CP, PSS, SSS, `cells` and each cell's CRS). Now `_resample` cuts the
+spectrum by bin index, frees each array when used and interpolates in
+chunks (the same output to the bit; its peak about 4 to 6 times the input),
+`fingerprint` resamples the capture once for all its checks, and the
+length checks no longer copy the span. `iq-lte`'s output on the three
+recordings is byte-for-byte the same. Cancellation's rebuilt subframes are
+kept for the last few frames only (`_KNOWN_CACHE`), not the span.
+
+What is left grows at about 1.9 GB a second of span, from the fingerprint's
+own steps (the CP alignment and `cells` each take about four times the
+resampled block for a moment). Spans of several seconds (the other SI, 29.6,
+needs 6 s) need one of the steps in the roadmap's memory item.
+
+Tests: `tools/tests/test_iqlte_memory.py`.
+
 ## Status
 
 Built, tested on synthetic signals and a stub decoder, and run on real air once

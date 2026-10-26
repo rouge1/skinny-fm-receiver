@@ -300,6 +300,17 @@ def _unknown(reason, iq=None, fs=None):
     }
 
 
+def _as_vector(iq):
+    """``iq`` as a 1-D array without a copy (``_vector``'s test, not its cleaning), or None."""
+    if iq is None:
+        return None
+    try:
+        a = np.asarray(iq)
+    except (TypeError, ValueError):
+        return None
+    return a if a.ndim == 1 else None
+
+
 def _vector(iq):
     """1-D complex samples, or None when the input is not a 1-D sequence.
 
@@ -344,42 +355,71 @@ def _analysis_plan(fs):
     return chosen
 
 
+#: Output samples ``_resample`` interpolates at a time: its temporaries are this long, not the
+#: capture's length (the cubic's arithmetic per sample is the same, so the result is too).
+_RESAMPLE_CHUNK = 1 << 18
+
+
+def _first_cut_bin(n, fs_in, cutoff):
+    """The smallest j >= 1 with |fftfreq(n, 1 / fs_in)| > cutoff at signed bin +/- j, by the
+    same floating point product ``np.fft.fftfreq`` forms (j times 1 / (n d)), so the bins cut
+    are exactly those a mask on ``fftfreq`` would cut."""
+    val = 1.0 / (n * (1.0 / fs_in))
+    j = max(1, int(cutoff / val) - 2)
+    while float(j) * val <= cutoff:
+        j += 1
+    while j > 1 and float(j - 1) * val > cutoff:
+        j -= 1
+    return j
+
+
 def _resample(iq, fs_in, fs_out):
     """Band-limited resample, complex, numpy only.
 
     A full FFT cuts everything above the output Nyquist, then a cubic picks
     the output instants. Used when the capture is not already on a class rate
     (a 10 MHz carrier at 20 MS/s). Exact class rates are returned as they are.
+    Lean (2026-10-26): the cut by bin index, each big array freed when used, the
+    cubic in chunks of ``_RESAMPLE_CHUNK``; the result is the same to the bit as
+    a mask on ``fftfreq`` and one whole-array cubic, at about a fifth of the
+    peak memory.
     """
     if abs(fs_in - fs_out) <= 1e-3:
         return np.ascontiguousarray(iq, dtype=np.complex128)
-    x = np.ascontiguousarray(iq, dtype=np.complex128)
-    n = x.size
+    n = int(np.size(iq))
     n_out = int(round(n * fs_out / fs_in))
     if n_out < 8 or n < 8:
-        return x[:0]
-    spec = np.fft.fft(x)
-    freqs = np.fft.fftfreq(n, d=1.0 / fs_in)
-    spec[np.abs(freqs) > (0.96 * fs_out * 0.5)] = 0.0
-    y = np.fft.ifft(spec)
-    # One sample of pad so the cubic can see both neighbours at the ends.
-    y = np.concatenate((y[:1], y, y[-1:]))
-    idx = np.arange(n_out) * (fs_in / fs_out) + 1.0  # shift by the pad
-    i0 = np.floor(idx).astype(np.int64)
-    i0 = np.clip(i0, 1, n - 1)
-    f = idx - i0
-    ym1 = y[i0 - 1]
-    y0 = y[i0]
-    y1 = y[i0 + 1]
-    y2 = y[np.minimum(i0 + 2, n)]
-    f2 = f * f
-    f3 = f2 * f
-    out = 0.5 * (
-        (2.0 * y0)
-        + (-ym1 + y1) * f
-        + (2.0 * ym1 - 5.0 * y0 + 4.0 * y1 - y2) * f2
-        + (-ym1 + 3.0 * y0 - 3.0 * y1 + y2) * f3
-    )
+        return np.ascontiguousarray(iq, dtype=np.complex128)[:0]
+    y = np.fft.fft(np.ascontiguousarray(iq, dtype=np.complex128))
+    j = _first_cut_bin(n, float(fs_in), 0.96 * fs_out * 0.5)
+    half = (n - 1) // 2 + 1                          # bins 0 .. half - 1 are the positive ones
+    if j < half:
+        y[j:half] = 0.0
+    if n - n // 2 <= n - j:
+        y[n - n // 2:n - j + 1] = 0.0                 # signed bins -(n // 2) .. -j
+    y = np.fft.ifft(y)
+    # The ends as one sample of pad would give them: sample p of the padded series is
+    # y[max(p - 1, 0)], and p never exceeds n.
+    out = np.empty(n_out, dtype=np.complex128)
+    step = fs_in / fs_out
+    for a in range(0, n_out, _RESAMPLE_CHUNK):
+        b = min(n_out, a + _RESAMPLE_CHUNK)
+        idx = np.arange(a, b) * step + 1.0           # shift by the pad
+        i0 = np.floor(idx).astype(np.int64)
+        i0 = np.clip(i0, 1, n - 1)
+        f = idx - i0
+        ym1 = y[i0 - 2 + (i0 == 1)]
+        y0 = y[i0 - 1]
+        y1 = y[i0]
+        y2 = y[np.minimum(i0 + 2, n) - 1]
+        f2 = f * f
+        f3 = f2 * f
+        out[a:b] = 0.5 * (
+            (2.0 * y0)
+            + (-ym1 + y1) * f
+            + (2.0 * ym1 - 5.0 * y0 + 4.0 * y1 - y2) * f2
+            + (-ym1 + 3.0 * y0 - 3.0 * y1 + y2) * f3
+        )
     return out
 
 
@@ -744,6 +784,26 @@ def _pss_on_grid(iq, fs, n_fft, folded, slot, cp):
     return best, best_root, best_cfo, np.concatenate(kept, axis=0), n_sym
 
 
+#: While ``fingerprint`` runs, the class-rate block of each input it has resampled, so its
+#: checks (the CP, PSS, SSS, ``cells`` and the CRS of each cell) resample the capture once and
+#: not once each; None outside it. Each entry keeps its input alive, so no other array can come
+#: to sit at the address it is keyed on, and its block is read-only.
+_BLOCKS = None
+
+
+def _class_block(iq, fs_in, rate, clean):
+    """``_resample(clean(), fs_in, rate)``, shared within one ``fingerprint`` call."""
+    if _BLOCKS is None:
+        return _resample(clean(), fs_in, rate)
+    a = np.asarray(iq)
+    key = (a.__array_interface__['data'][0], a.shape, a.strides, a.dtype.str, float(fs_in), float(rate))
+    if key not in _BLOCKS:
+        block = _resample(clean(), fs_in, rate)
+        block.flags.writeable = False
+        _BLOCKS[key] = (a, block)
+    return _BLOCKS[key][1]
+
+
 def _prepare(iq, fs):
     """Return analysis IQ at a class rate, or None when the block cannot be one."""
     if _too_small(iq, fs):
@@ -753,10 +813,10 @@ def _prepare(iq, fs):
     if plan is None:
         return None
     n_fft, rate, _n_sc = plan
-    vec = _vector(iq)
-    if vec is None:
+    a = _as_vector(iq)
+    if a is None:
         return None
-    block = _resample(vec, fs, rate)
+    block = _class_block(a, fs, rate, lambda: _vector(a))
     if block.size < n_fft * 4:
         return None
     return block, rate, n_fft, fs
@@ -1035,7 +1095,7 @@ def sss_search(iq, fs):
         fs_in = float(fs)
     except (TypeError, ValueError):
         return _sss_none('not a sample rate')
-    vec = _vector(iq)
+    vec = _as_vector(iq)
     if vec is None or not np.isfinite(fs_in) or fs_in < _MIN_FS:
         return _sss_none('too short or too slow to check')
     if vec.size < _SSS_MIN_DUR * fs_in:
@@ -1524,7 +1584,7 @@ def cells(iq, fs, max_cells=4):
         return []
     if limit < 1:
         return []
-    vec = _vector(iq)
+    vec = _as_vector(iq)
     if vec is None or not np.isfinite(fs_in) or fs_in < _MIN_FS:
         return []
     if vec.size < _SSS_MIN_DUR * fs_in:
@@ -1820,9 +1880,12 @@ def crs_search(iq, fs, frame_offset, nfft, exclude=(), target=None):
     n_sc = _CRS_USED[n_fft]
     n_rb = n_sc // 12
     rate = n_fft * 15000.0
-    x = np.asarray(iq, dtype=np.complex128).reshape(-1)
-    x = np.where(np.isfinite(x), x, 0)
-    x = _resample(x, fs_in, rate)
+    src = np.asarray(iq).reshape(-1)
+
+    def clean():
+        x = np.asarray(src, dtype=np.complex128)
+        return np.where(np.isfinite(x), x, 0)
+    x = _class_block(src, fs_in, rate, clean)
     cp0 = 160 * n_fft // 2048
     cp = 144 * n_fft // 2048
     frame_len = _SLOTS * ((cp0 + n_fft) + 6 * (cp + n_fft))
@@ -1996,7 +2059,7 @@ def mix_to_dc(iq, rate, delta_hz):
     return out
 
 
-def fingerprint(iq, fs):
+def _fingerprint(iq, fs):
     """Structural fingerprint. See the module docstring for the method.
 
     ``verdict`` is ``lte`` when the CP and PSS checks both pass at 1e-3,
@@ -2011,12 +2074,12 @@ def fingerprint(iq, fs):
     when only ``cells`` found one at the TDD position (``pci`` is then that
     cell's), and None without a cell ID.
     """
-    if _vector(iq) is None or _too_small(iq, fs):
+    if _as_vector(iq) is None or _too_small(iq, fs):
         try:
             slow = float(fs) < _MIN_FS
         except (TypeError, ValueError):
             slow = True
-        if _vector(iq) is None and not slow:
+        if _as_vector(iq) is None and not slow:
             why = 'not a 1-D capture'
         else:
             why = 'sample rate under 1.92 MS/s' if slow else 'shorter than 10 ms'
@@ -2088,3 +2151,17 @@ def fingerprint(iq, fs):
         'duplex': duplex,
         'cells': found,
     }
+
+
+def fingerprint(iq, fs):
+    """Structural fingerprint (``_fingerprint``), the capture resampled once for all its checks
+    (``_class_block``). See ``_fingerprint`` and the module docstring."""
+    global _BLOCKS
+    outer = _BLOCKS is None
+    if outer:
+        _BLOCKS = {}
+    try:
+        return _fingerprint(iq, fs)
+    finally:
+        if outer:
+            _BLOCKS = None

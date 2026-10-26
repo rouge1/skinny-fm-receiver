@@ -1640,6 +1640,9 @@ def sib1(iq, fs, cell, pbch_result, dci_result=None, center_offset_hz=0.0, carri
 #: How far apart (s) a known cell's frames and the reading cell's may start for the known cell
 #: to be taken out of its grids: sectors of one site start together, another site does not.
 _KNOWN_ALIGN_S = 1e-6
+#: Subframes a known cell keeps rebuilt (``_known_subframe``; about 0.7 MB each at 50 RB and 2
+#: ports): a frame's 0 and 1 for the PBCH and its 5, a few frames back, not the whole span.
+_KNOWN_CACHE = 12
 
 
 def known_cell(fs, cell, pbch_result, dci_result=None, sib1_result=None, center_offset_hz=0.0,
@@ -1712,6 +1715,8 @@ def _known_subframe(kc, sfn, sf):
                                                     si_allocation(d, n_rb), rv):
                 rest[p][ls, ks] = vals
     kc['cache'][key] = out
+    while len(kc['cache']) > _KNOWN_CACHE:                # the oldest out: the readers go in time order
+        kc['cache'].pop(next(iter(kc['cache'])))
     return out
 
 

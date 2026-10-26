@@ -1618,6 +1618,21 @@ sequences and the CRS check) is the start.
   weaker 6 dB down: SIB1 0 of 6 alone without, every copy with.
 - [ ] 29.6 The other SI (SIB2 onwards, SIB16's network time if a cell sends
   it) from SIB1's schedule; `iq-lte --own`, shaped as `--decode`.
+- [ ] Memory for long LTE spans (`iq-lte` was 4.5 GB a second of span at 20 MS/s;
+  `lte-verify.md`'s Memory section).
+  - [x] `iqlte._resample` lean, the same to the bit; `fingerprint` resampling
+    once, not once a check; no copies for length checks; cancellation's cache
+    bounded (2026-10-26: 1.9 GB a second, from 4.5; output byte-equal).
+  - [ ] The fingerprint on a bounded window (say the first second), the
+    decoders on the whole span: memory then flat in the span but for the
+    samples themselves. Changes what `cells` sees on a long span: check the
+    cell lists stay the same on the recordings.
+  - [ ] The decoders reading the file through a memmap, the carrier's offset
+    passed to them (`center_offset_hz`) instead of mixing the whole span:
+    no copy of the span at all. Then `MAX_SPAN_S` can grow (6 to 10 s for
+    the other SI).
+  - [ ] The fingerprint's folds (CP alignment, PSS, `cells`) accumulated a
+    frame at a time, if a bounded window is not enough.
 - [ ] Cancelling a cell of another timing (another site): the rebuilt signal
   OFDM-modulated and subtracted from the samples, not fitted on the reading
   cell's grid. A candidate: the other 700 MHz carrier's third PCI, about 9 dB
