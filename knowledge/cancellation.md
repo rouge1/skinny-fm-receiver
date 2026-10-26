@@ -1,10 +1,13 @@
 # Successive interference cancellation
 
 How this receiver reads a weak cell sitting under a strong one (roadmap Round
-28.5), why it works, where else the idea applies, and its limits. The method
-and the measurements are in [nr-verify.md](nr-verify.md#cancelling-a-stronger-sector-roadmap-round-285);
+28.5 for NR, 29.5 for LTE), why it works, where else the idea applies, and
+its limits. The method and the measurements are in
+[nr-verify.md](nr-verify.md#cancelling-a-stronger-sector-roadmap-round-285)
+and [lte-verify.md](lte-verify.md#a-weaker-sector-under-a-stronger-one-cancellation-roadmap-round-295);
 the code is `iqnr_phy.known_grid`, `fit_known` and `cancel`, and
-`iqnr_decode.own_decode_cells`.
+`iqnr_decode.own_decode_cells` (NR), and `iqlte_phy.known_cell` with
+`known=` on its decoders (LTE).
 
 ## The idea
 
@@ -45,6 +48,37 @@ slots, on the same resource blocks.
   to copy and is not the first sector's channel mismatch or another cell
   sending the same bytes (Round 28.6). It sets a floor roughly 1.5 dB above
   the second sector, so its other SI decodes only rarely.
+
+## On the 700 MHz LTE carriers (2026-10-26)
+
+Two LTE carriers, each with two sectors of one site, frames aligned. The
+sectors send their PBCH in the same REs every frame, and their SIB1 DCI and
+SIB1 in the same subframes.
+
+- **What is rebuilt.** LTE's reference signals are on in every subframe and
+  known from the PCI alone, so the CRS, PSS, SSS and PBCH come back from the
+  stronger cell's MIB without any other decode. Its PCFICH, SIB1 DCI and SIB1
+  are added where each passed its CRC. The fit is simpler than NR's: per RB a
+  gain and a slope in time for each antenna port and for the synchronisation
+  signals, the port's PBCH and data riding on its CRS channel at the cell's
+  own power ratio (a cell may send its CRS at another power: 1.5 to 3 dB
+  under on one carrier here). LTE upconverts continuously, so there is no
+  per-symbol phase to undo.
+- **The pair (2 dB apart).** Combining alone (29.4) already read the weaker
+  sector, by summing two or three copies of each 80 ms period. Cancelling the
+  stronger one makes every copy decode alone.
+- **The other carrier (9 dB apart).** Here neither technique works alone.
+  Cancellation reads the weaker sector's MIB (summed over the 40 ms TTI),
+  then its SIB1 DCIs (a fifth by summing copies), then its SIB1 (by
+  summing, in every period). Each stage needed the stronger sector taken out.
+- **What it costs.** Taking a cell out can disturb a marginal read of the one
+  under it (a PCFICH turned once), so a subframe that gives nothing after
+  cancelling is read again as it is.
+
+Unlike the NR site, combining helped on top of cancellation here (no copy
+of the second cell's SIB1 decoded alone; every period did summed). Likely
+why: the two sectors' SIB1 differ (the cell identity), so what cancellation
+leaves of the stronger one does not repeat in step with the weaker.
 
 ## Two techniques, two conditions
 

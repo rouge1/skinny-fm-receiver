@@ -347,7 +347,8 @@ def synth_lte_multi(cells, bw_mhz=10, n_frames=10, snr_db=20.0, seed=0, cfo_hz=0
                     fs=None, duplex='fdd', idle=False):
     """Several FDD downlinks on one carrier, summed, then one noise draw.
 
-    ``cells`` is a list of ``dict(pci, power_db, delay_samples)``. Cell ``i`` is
+    ``cells`` is a list of ``dict(pci, power_db, delay_samples)``, each with
+    ``ports``, ``port_gains`` and ``res`` too if wanted (``_cell_native``'s). Cell ``i`` is
     the same native-rate waveform as ``synth_lte`` with ``seed + i`` (so cell 0
     and ``synth_lte(..., seed=seed)`` share data and the random frame offset),
     with no per-cell noise. ``power_db`` 0 is that waveform's amplitude (about
@@ -377,7 +378,8 @@ def synth_lte_multi(cells, bw_mhz=10, n_frames=10, snr_db=20.0, seed=0, cfo_hz=0
     native = None
     for i, cell in enumerate(cells):
         iq_i, native_i, offset, _rng = _cell_native(
-            bw_mhz, n_frames, cell['pci'], int(seed) + i, duplex=duplex, idle=idle)
+            bw_mhz, n_frames, cell['pci'], int(seed) + i, duplex=duplex, idle=idle,
+            ports=cell.get('ports', 1), port_gains=cell.get('port_gains'), res=cell.get('res'))
         if native is None:
             native = native_i
         waves.append(iq_i)

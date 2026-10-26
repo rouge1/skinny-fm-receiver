@@ -1312,9 +1312,15 @@ tools/iq-lte CAPTURE.cfile --pdsch --t1 1                 # and SIB1 itself, by 
   sum keeps its own), and `fields` what pycrate reads from them (operators,
   tracking area, cell identity, band, barring), or null with a
   `fields_reason` when pycrate is not under `$FMRX_LTE_TOOLS`. On real air
-  it read SIB1 on two 700 MHz carriers where the outside decoder reads none,
-  the weaker cell of the pair by summing copies only. About 0.1 s a
-  subframe.
+  it read SIB1 on two 700 MHz carriers where the outside decoder reads none.
+  About 0.1 s a subframe.
+- With `--mib`, `--pdcch` or `--pdsch` the cells are read strongest first,
+  and each has the cells decoded before it taken out (cancellation): what
+  they were decoded sending (reference and synchronisation signals, PBCH,
+  and the SIB1 DCI and SIB1 where those passed their CRC) is rebuilt,
+  fitted and subtracted. `own_known` lists the PCIs taken out. It reads
+  sectors of one site that send their broadcast on the same REs: on real air
+  a sector 9 dB under another, unread without it.
 - `--decode` runs when the fingerprint's verdict is `lte` or `possible` (a
   possible carrier may well be one: a 700 MHz carrier read `possible` while
   both decoders read its MIB), not when it is `not-lte` or `unknown`.

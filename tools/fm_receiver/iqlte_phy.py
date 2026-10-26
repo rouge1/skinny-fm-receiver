@@ -64,17 +64,36 @@ decoder is max-log-MAP with its extrinsic scaled by 0.75, up to 8 iterations, st
 the CRC passes. SIB1's RV is 1A's field or, for 1C, ceil(3 k / 2) mod 4 with k = (SFN / 2)
 mod 4 (36.321 5.3.1).
 
+Combining (29.4): SIB1's copies of one 80 ms period (and then of a few periods) summed in the
+soft buffers; SIB1's DCIs summed by k = (SFN / 2) mod 4, as DCI 1A carries the RV.
+
+Cancellation (29.5): sectors of one site start their frames together and send their PBCH, SIB1
+DCI and SIB1 on the same REs. What a decoded cell sent is rebuilt (``known_cell``: its CRS, PSS,
+SSS and PBCH from its PCI and MIB; its PCFICH, SIB1 DCI and SIB1 PDSCH where each passed its
+CRC), fitted to the reading cell's grid per RB (a gain and a slope in time for each port and for
+the synchronisation signals; a port's PBCH and data on its CRS channel times the cell's own power
+ratio, ``_rest_ratio``) and subtracted before the weaker cell's grid is read (``known=`` on
+``pbch``, ``sib1_dcis`` and ``sib1``). Only cells whose frames start within 1 us are taken out.
+
 Wrong turns
 -----------
 - A level-8 candidate passed the CRC where the cell sent level 4 (Band 13, 2026-10-25): the
   circular buffer read on puts the level-4 bits first in the level-8 ones. Level 4 is tried
   first, and level 8 only when CCEs 4-7 carry the continuation.
+- Taking the stronger cell out turned one marginal PCFICH of the weaker (the 700 MHz pair,
+  2026-10-26: CFI 1 read as 3, its DCI lost). A subframe with no DCI after cancelling is read
+  again as it is.
+- One gain a port for the CRS and the rest together left the other 700 MHz carrier's stronger
+  cell in (it sends its CRS 1.5 to 3 dB under the rest); a gain of its own for the rest in each
+  RB followed the weaker cell on the few REs a PDCCH has there and took it out too (a DCI lost in
+  the synthetic test). The rest now rides on the CRS channel at one measured ratio a port.
 """
 
 from fractions import Fraction
 
 import numpy as np
 
+from . import iqlte
 from .iqnr import _cut
 from .iqnr_ldpc import crc as _crc
 from .iqnr_phy import _gold
@@ -257,10 +276,15 @@ def cc_rate_recover(llr_e, d, buffer=None):
 # ----- the MIB ---------------------------------------------------------------------------------
 
 def mib_bits(fields):
-    """The 24 MIB bits of ``fields`` (``parse_mib``'s names; ``sfn`` gives ``sfn_msb``)."""
+    """The 24 MIB bits of ``fields`` (``parse_mib``'s names; ``sfn`` gives ``sfn_msb``; the PHICH
+    fields as numbers or as ``parse_mib`` gives them, so a decoded MIB re-encodes)."""
     f = dict(fields)
     if 'sfn' in f:
         f['sfn_msb'] = int(f['sfn']) >> 2
+    if isinstance(f.get('phich_duration'), str):
+        f['phich_duration'] = int(f['phich_duration'] == 'extended')
+    if isinstance(f.get('phich_resource'), str):
+        f['phich_resource'] = PHICH_RESOURCE.index(f['phich_resource'])
     out = []
     for name, width in _MIB_FIELDS:
         v = int(f.get(name, 0))
@@ -1116,7 +1140,8 @@ class _PbFrames:
     the clock scaled by the offset as ``iqnr._Timing`` (the recorder's clock and tuner share one
     reference)."""
 
-    def __init__(self, fs, center_offset_hz, frame_offset, cfo_hz, carrier_hz):
+    def __init__(self, fs, center_offset_hz, frame_offset, cfo_hz, carrier_hz, known=None):
+        self.known = known                              # ``known_cell``s taken out of each grid
         self.fs = float(fs)
         self.shift = float(center_offset_hz) + float(cfo_hz)
         self.t0 = float(frame_offset) / self.fs
@@ -1149,11 +1174,12 @@ class _PbFrames:
             spec = np.fft.fft(y[p:p + _PB_N])
             d = start + cp / 2 - p                         # the window opens d samples early
             out[l] = spec[_PB_BINS % _PB_N] * np.exp(2j * np.pi * _PB_BINS * d / _PB_N)
-        return out
+        return _cancel_grid(out, self.known, t_f, 0, _PB_SYMBOLS, central=True) if self.known else out
 
-    def subframe(self, x, f, sf, n_rb, n_symb=14):
+    def subframe(self, x, f, sf, n_rb, n_symb=14, cancel=True):
         """Frame ``f``'s subframe ``sf``: its first ``n_symb`` symbols on every subcarrier,
-        (n_symb, 12 n_rb), k = 0 lowest (DC not counted), or None."""
+        (n_symb, 12 n_rb), k = 0 lowest (DC not counted), the known cells taken out (unless not
+        ``cancel``), or None."""
         nfft = _NFFT_FOR_RB[n_rb]
         rate = nfft * 15e3
         cp0, cp1 = 160 * nfft // 2048, 144 * nfft // 2048
@@ -1179,7 +1205,7 @@ class _PbFrames:
             spec = np.fft.fft(y[p:p + nfft])
             d = start + cp / 2 - p
             out[l] = spec[bins % nfft] * np.exp(2j * np.pi * bins * d / nfft)
-        return out
+        return _cancel_grid(out, self.known, self.start(f), sf, n_symb) if self.known and cancel else out
 
 
 #: The FFT size of each bandwidth (36.104): N_RB -> nfft.
@@ -1271,7 +1297,7 @@ def _pb_channel(g, pci, ports=4):
     return h, max(resid / max(dof, 1), 1e-12)
 
 
-def pbch(iq, fs, cell, center_offset_hz=0.0, carrier_hz=None, cfo_hz=None):
+def pbch(iq, fs, cell, center_offset_hz=0.0, carrier_hz=None, cfo_hz=None, known=None):
     """Our own MIB decode of one cell (``cells`` entry: ``pci``, ``frame_offset_samples`` with
     ``half_frame`` 0) over every frame of ``iq``: ``iqlte_phy``, numpy only.
 
@@ -1295,7 +1321,7 @@ def pbch(iq, fs, cell, center_offset_hz=0.0, carrier_hz=None, cfo_hz=None):
     offset %= frame
     if cfo_hz is None:
         cfo_hz = lte_cfo(iq, fs, offset)
-    frames = _PbFrames(fs, center_offset_hz, offset, cfo_hz, carrier_hz)
+    frames = _PbFrames(fs, center_offset_hz, offset, cfo_hz, carrier_hz, known)
     res = pbch_res(pci)
     got, snrs, tti = [], [], {}
     n = frames.count(len(iq))
@@ -1353,12 +1379,12 @@ def pbch(iq, fs, cell, center_offset_hz=0.0, carrier_hz=None, cfo_hz=None):
     return out
 
 
-def _cell_frames(fs, cell, pbch_result, center_offset_hz, carrier_hz):
+def _cell_frames(fs, cell, pbch_result, center_offset_hz, carrier_hz, known=None):
     offset = float(cell['frame_offset_samples'])
     if int(cell.get('half_frame') or 0) == 1:
         offset -= 0.005 * float(fs)
     offset %= 0.010 * float(fs)
-    return _PbFrames(fs, center_offset_hz, offset, pbch_result['cfo_hz'], carrier_hz)
+    return _PbFrames(fs, center_offset_hz, offset, pbch_result['cfo_hz'], carrier_hz, known)
 
 
 def _dci_sum(run, use, n_rb, rnti):
@@ -1410,7 +1436,53 @@ def _dci_sums(missed, sizes, n_rb, rnti):
     return out
 
 
-def sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz=0.0, carrier_hz=None, rnti=SI_RNTI, combine=True):
+def _read_control(g, pci, n_rb, ports, mib, quads, sizes, rnti):
+    """One subframe's control region (``g``, its first symbols): the CFI from the PCFICH, then
+    the common search space's candidates for both ``sizes``. Returns ``(cfi, dcis, miss)``:
+    each DCI's fields with ``level``, ``cce``, ``bits``, ``snr_db``; ``miss`` the soft bits in
+    CCE order and each CCE's |h|^2 / noise, for summing (``_dci_sums``)."""
+    h, noise = subframe_channel(g, pci, 5, ports, list(range(4)))
+    pk = [(0, k + j) for k in pcfich_starts(pci, n_rb) for j in range(6) if (k + j) % 3 != pci % 3]
+    r = np.array([g[l, k] for l, k in pk])
+    hh = np.array([[h[p, l, k] for l, k in pk] for p in range(4)])
+    cfi, _score = decode_pcfich(r, hh, noise, pci, 5, ports)
+    if cfi not in quads:
+        quads[cfi] = pdcch_quads(pci, n_rb, ports, cfi, mib['phich_resource'], mib['phich_duration'])
+    q = quads[cfi]
+    ls = np.array([l for l, ks in q for _k in ks])
+    ks = np.array([k for _l, kk in q for k in kk])
+    r = g[ls, ks]
+    hh = h[:, ls, ks]
+    llr = soft_bits(r, hh[:ports], noise, ports) * (1.0 - 2.0 * pdcch_scrambling(pci, 5, 2 * len(r)))
+    n_cce = len(q) // 9
+    taken, found = set(), []
+    for level, cce0 in common_candidates(n_cce):
+        if set(range(cce0, cce0 + level)) & taken:
+            continue
+        seg = llr[72 * cce0:72 * (cce0 + level)]
+        for fmt, size in sizes:
+            a = decode_dci(seg, size, rnti)
+            if a is None:
+                continue
+            fields = parse_dci_1a(a, n_rb) if fmt == '1A' else parse_dci_1c(a, n_rb)
+            if fmt == '1A' and not fields['format1a']:
+                continue
+            if level == 4 and cce0 % 8 == 0 and 72 * (cce0 + 8) <= len(llr):
+                more = encode_dci(a, rnti, 8)[288:]
+                if codeword_score(llr[72 * (cce0 + 4):72 * (cce0 + 8)], 1.0 - 2.0 * more) > _WIDER:
+                    level = 8                          # CCEs 4-7 carry the continuation
+            taken |= set(range(cce0, cce0 + level))
+            sig = float(np.mean(np.abs(hh[0, 36 * cce0:36 * (cce0 + level)]) ** 2))
+            found.append(dict(fields, level=level, cce=cce0, bits=''.join(str(int(b)) for b in a),
+                              snr_db=float(10 * np.log10(max(sig / noise, 1e-12)))))
+            break
+    power = np.abs(hh[0]) ** 2
+    power = np.array([np.mean(power[36 * c:36 * (c + 1)]) for c in range(n_cce)]) / noise
+    return cfi, found, (llr[:72 * n_cce], power)
+
+
+def sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz=0.0, carrier_hz=None, rnti=SI_RNTI, combine=True,
+              known=None):
     """SIB1's DCIs (formats 1A and 1C with CRC scrambled by SI-RNTI) of one cell, in subframe 5
     of every even frame, by our own PCFICH and PDCCH decode (roadmap Round 29.2); with
     ``combine``, the subframes none was found in summed (``_dci_sums``, 29.4).
@@ -1424,7 +1496,7 @@ def sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz=0.0, carrier_hz=None, 
     if not mib or not mib.get('n_rb') or mib['n_rb'] not in _NFFT_FOR_RB:
         return None
     pci, n_rb, ports = int(cell['pci']), int(mib['n_rb']), int(pbch_result['ports'])
-    frames = _cell_frames(fs, cell, pbch_result, center_offset_hz, carrier_hz)
+    frames = _cell_frames(fs, cell, pbch_result, center_offset_hz, carrier_hz, known)
     sizes = (('1A', dci_1a_bits(n_rb)), ('1C', dci_1c_bits(n_rb)))
     quads, missed = {}, []
     out = {'cfi': {}, 'subframes': 0, 'dcis': []}
@@ -1436,48 +1508,19 @@ def sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz=0.0, carrier_hz=None, 
         if g is None:
             continue
         out['subframes'] += 1
-        h, noise = subframe_channel(g, pci, 5, ports, list(range(4)))
-        pk = [(0, k + j) for k in pcfich_starts(pci, n_rb) for j in range(6) if (k + j) % 3 != pci % 3]
-        r = np.array([g[l, k] for l, k in pk])
-        hh = np.array([[h[p, l, k] for l, k in pk] for p in range(4)])
-        cfi, _score = decode_pcfich(r, hh, noise, pci, 5, ports)
+        cfi, found, miss = _read_control(g, pci, n_rb, ports, mib, quads, sizes, rnti)
+        if not found and known:
+            # A subframe the known cells' fit left nothing in is read as it is too: taking them
+            # out turned a marginal PCFICH once (the 700 MHz pair, 2026-10-26).
+            again = _read_control(frames.subframe(iq, f, 5, n_rb, n_symb=9, cancel=False), pci, n_rb, ports,
+                                  mib, quads, sizes, rnti)
+            if again[1]:
+                cfi, found = again[0], again[1]
         out['cfi'][cfi] = out['cfi'].get(cfi, 0) + 1
-        key = cfi
-        if key not in quads:
-            quads[key] = pdcch_quads(pci, n_rb, ports, cfi, mib['phich_resource'], mib['phich_duration'])
-        q = quads[key]
-        ls = np.array([l for l, ks in q for _k in ks])
-        ks = np.array([k for _l, kk in q for k in kk])
-        r = g[ls, ks]
-        hh = h[:, ls, ks]
-        llr = soft_bits(r, hh[:ports], noise, ports) * (1.0 - 2.0 * pdcch_scrambling(pci, 5, 2 * len(r)))
-        n_cce = len(q) // 9
-        taken, found = set(), len(out['dcis'])
-        for level, cce0 in common_candidates(n_cce):
-            if set(range(cce0, cce0 + level)) & taken:
-                continue
-            seg = llr[72 * cce0:72 * (cce0 + level)]
-            for fmt, size in sizes:
-                a = decode_dci(seg, size, rnti)
-                if a is None:
-                    continue
-                fields = parse_dci_1a(a, n_rb) if fmt == '1A' else parse_dci_1c(a, n_rb)
-                if fmt == '1A' and not fields['format1a']:
-                    continue
-                if level == 4 and cce0 % 8 == 0 and 72 * (cce0 + 8) <= len(llr):
-                    more = encode_dci(a, rnti, 8)[288:]
-                    if codeword_score(llr[72 * (cce0 + 4):72 * (cce0 + 8)], 1.0 - 2.0 * more) > _WIDER:
-                        level = 8                          # CCEs 4-7 carry the continuation
-                taken |= set(range(cce0, cce0 + level))
-                sig = float(np.mean(np.abs(hh[0, 36 * cce0:36 * (cce0 + level)]) ** 2))
-                out['dcis'].append(dict(fields, sfn=sfn, level=level, cce=cce0, cfi=cfi,
-                                        bits=''.join(str(int(b)) for b in a),
-                                        snr_db=float(10 * np.log10(max(sig / noise, 1e-12)))))
-                break
-        if len(out['dcis']) == found:
-            power = np.abs(hh[0]) ** 2
-            power = np.array([np.mean(power[36 * c:36 * (c + 1)]) for c in range(n_cce)]) / noise
-            missed.append((sfn, llr[:72 * n_cce], power, cfi))
+        for d in found:
+            out['dcis'].append(dict(d, sfn=sfn, cfi=cfi))
+        if not found:
+            missed.append((sfn,) + miss + (cfi,))
     if combine and len(missed) > 1:
         out['dcis'] += _dci_sums(missed, sizes, n_rb, rnti)
         start = int(mib['sfn'])                           # the span's order: the SFN may wrap
@@ -1512,7 +1555,7 @@ def _sum_copies(items, ports, every=True):
 
 
 def sib1(iq, fs, cell, pbch_result, dci_result=None, center_offset_hz=0.0, carrier_hz=None, rnti=SI_RNTI,
-         combine=True):
+         combine=True, known=None):
     """SIB1 of one cell by our own PDSCH and DL-SCH decode (roadmap Round 29.3): each SIB1 DCI
     (``sib1_dcis``, run here when ``dci_result`` is None) decoded alone, in its subframe 5;
     then, with ``combine``, copies summed (29.4).
@@ -1530,11 +1573,11 @@ def sib1(iq, fs, cell, pbch_result, dci_result=None, center_offset_hz=0.0, carri
     result)."""
     mib = (pbch_result or {}).get('mib')
     if dci_result is None:
-        dci_result = sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz, carrier_hz, rnti)
+        dci_result = sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz, carrier_hz, rnti, known=known)
     if not dci_result:
         return None
     pci, n_rb, ports = int(cell['pci']), int(mib['n_rb']), int(pbch_result['ports'])
-    frames = _cell_frames(fs, cell, pbch_result, center_offset_hz, carrier_hz)
+    frames = _cell_frames(fs, cell, pbch_result, center_offset_hz, carrier_hz, known)
     out = {'blocks': [], 'decoded': 0, 'tried': 0, 'combined': [], 'sib1': None, 'dcis': dci_result}
     soft = []                                            # (sfn, tbs, rv, llr) of the copies that failed
     for d in dci_result['dcis']:
@@ -1590,3 +1633,175 @@ def sib1(iq, fs, cell, pbch_result, dci_result=None, center_offset_hz=0.0, carri
     if seen:
         out['sib1'] = max(seen, key=seen.get)
     return out
+
+
+# ----- cancellation (roadmap Round 29.5) -----------------------------------------------------
+
+#: How far apart (s) a known cell's frames and the reading cell's may start for the known cell
+#: to be taken out of its grids: sectors of one site start together, another site does not.
+_KNOWN_ALIGN_S = 1e-6
+
+
+def known_cell(fs, cell, pbch_result, dci_result=None, sib1_result=None, center_offset_hz=0.0,
+               carrier_hz=None):
+    """What a decoded cell is known to send, for cancelling it under a weaker one (roadmap Round
+    29.5): from its PCI and MIB its CRS, PSS, SSS and PBCH in every frame; from ``dci_result``
+    (``sib1_dcis``) its PCFICH and SIB1 DCI where a DCI passed its CRC; from ``sib1_result``
+    (``sib1``) its SIB1 PDSCH where that copy, alone or summed, passed. A DCI found only by
+    summing is left out unless its subframe's SIB1 passed alone: no CRC checked that subframe's
+    CFI. None without a MIB."""
+    mib = (pbch_result or {}).get('mib')
+    if not mib or mib.get('n_rb') not in _NFFT_FOR_RB:
+        return None
+    tbs, alone = {}, set()
+    for b in (sib1_result or {}).get('blocks', []):
+        if b.get('hex'):
+            tbs[int(b['sfn'])] = b['hex']
+            alone.add(int(b['sfn']))
+    dcis = {int(d['sfn']): d for d in (dci_result or {}).get('dcis', [])
+            if 'combined' not in d or int(d['sfn']) in alone}
+    for c in (sib1_result or {}).get('combined', []):
+        for sfn in c['sfns']:
+            tbs[int(sfn)] = c['hex']
+    return {'pci': int(cell['pci']), 'mib': mib, 'ports': int(pbch_result['ports']),
+            'frames': _cell_frames(fs, cell, pbch_result, center_offset_hz, carrier_hz),
+            'dcis': dcis, 'tbs': tbs, 'cache': {}}
+
+
+def _known_subframe(kc, sfn, sf):
+    """What a known cell sends in subframe ``sf`` of frame ``sfn``, each (14, 12 N_RB): per
+    antenna port its CRS, then per port the rest (PBCH, PCFICH and PDCCH, PDSCH), then the
+    synchronisation signals. The CRS is kept apart: a cell may send it at another power than the
+    rest (36.213 5.2), which ``_rest_ratio`` measures."""
+    key = (sfn, sf)
+    if key in kc['cache']:
+        return kc['cache'][key]
+    pci, mib, ports = kc['pci'], kc['mib'], kc['ports']
+    n_rb = int(mib['n_rb'])
+    out = [np.zeros((14, 12 * n_rb), dtype=np.complex128) for _ in range(2 * ports + 1)]
+    crs, rest, sync = out[:ports], out[ports:2 * ports], out[2 * ports]
+    for p in range(ports):
+        for l in range(14):
+            slot, s_ = divmod(l, 7)
+            if s_ not in crs_symbols(p):
+                continue
+            ns = 2 * sf + slot
+            k = 6 * np.arange(2 * n_rb) + (crs_shift(p, s_, ns) + pci % 6) % 6
+            crs[p][l, k] = crs_values(pci, ns, s_, n_rb)
+    mid = 6 * n_rb - 36
+    if sf in (0, 5):
+        nid1, nid2 = pci // 3, pci % 3
+        sync[6, mid + 5:mid + 67] = iqlte._pss_seqs()[nid2]
+        sync[5, mid + 5:mid + 67] = iqlte._sss_templates()[nid2, nid1, 0 if sf == 0 else 1]
+    if sf == 0:
+        y = encode_pbch(dict(mib, sfn=sfn - sfn % 4), pci, ports)[:, sfn % 4]
+        res = pbch_res(pci)
+        for p in range(ports):
+            rest[p][7 + res[:, 0], mid + res[:, 1]] = y[p]
+    d = kc['dcis'].get(sfn) if sf == 5 else None
+    if d is not None:
+        a = np.array([int(b) for b in d['bits']], dtype=np.uint8)
+        for p, l, ks, vals in control_res(pci, n_rb, ports, d['cfi'], mib['phich_resource'],
+                                          mib['phich_duration'], 5, [(a, d['level'], d['cce'])]):
+            rest[p][l, ks] = vals
+        hx, tbs = kc['tbs'].get(sfn), si_tbs(d)
+        if hx and tbs and len(hx) * 4 >= tbs:
+            tb = np.unpackbits(np.frombuffer(bytes.fromhex(hx), dtype=np.uint8))[:tbs]
+            rv = sib1_rv(sfn) if d['format'] == '1C' else int(d['rv'])
+            for p, ls, ks, vals in pdsch_res_values(tb, pci, n_rb, ports, d['cfi'], 5,
+                                                    si_allocation(d, n_rb), rv):
+                rest[p][ls, ks] = vals
+    kc['cache'][key] = out
+    return out
+
+
+def _fit_known(g, sources):
+    """The part of grid ``g`` the known ``sources`` (each g's shape) explain: per RB, a gain
+    a + b (l - mean l) for each source, by least squares on the REs any of them sends on."""
+    est = np.zeros(g.shape, dtype=np.complex128)
+    mask = np.zeros(g.shape, dtype=bool)
+    for q in sources:
+        mask |= q != 0
+    tl = np.arange(g.shape[0], dtype=float)[:, None] - (g.shape[0] - 1) / 2.0
+    tl = np.broadcast_to(tl, g.shape)
+    for c0 in range(0, g.shape[1], 12):
+        c = slice(c0, c0 + 12)
+        m = mask[:, c]
+        if not m.any():
+            continue
+        cols = []
+        for q in sources:
+            qq = q[:, c][m]
+            if np.any(qq != 0):
+                cols += [qq, qq * tl[:, c][m]]
+        a = np.stack(cols, axis=1)
+        coef, *_ = np.linalg.lstsq(a, g[:, c][m], rcond=None)
+        e = np.zeros(m.shape, dtype=np.complex128)
+        e[m] = a @ coef
+        est[:, c] = e
+    return est
+
+
+#: An RB shows a port's power ratio of the rest to its CRS (``_rest_ratio``) when it holds at least
+#: this many of the rest's REs (the PBCH's RBs, the PDSCH's), and 8 of its CRS.
+_RATIO_RES = 24
+
+
+def _rest_ratio(g, crs, rest):
+    """The amplitude ratio of a port's other REs to its CRS in grid ``g``: per RB dense enough
+    (``_RATIO_RES``) one gain fitted to each, their ratio, the median over those RBs; None when
+    no RB shows it."""
+    out = []
+    for c0 in range(0, g.shape[1], 12):
+        c = slice(c0, c0 + 12)
+        qc, qr, gc = crs[:, c], rest[:, c], g[:, c]
+        mc, mr = qc != 0, qr != 0
+        if mc.sum() < 8 or mr.sum() < _RATIO_RES:
+            continue
+        a = np.vdot(qc[mc], gc[mc]) / np.vdot(qc[mc], qc[mc])
+        b = np.vdot(qr[mr], gc[mr]) / np.vdot(qr[mr], qr[mr])
+        if abs(a) > 0:
+            out.append(float((b / a).real))
+    return float(np.median(out)) if out else None
+
+
+def _known_frame(kc, t):
+    """The known cell's frame starting at time ``t`` (s), as its SFN, or None when none starts
+    within ``_KNOWN_ALIGN_S``."""
+    fr = kc['frames']
+    j = int(round((t - fr.t0) / (0.010 * fr.scale)))
+    if abs(fr.start(j) - t) > _KNOWN_ALIGN_S:
+        return None
+    return (int(kc['mib']['sfn']) + j) % 1024
+
+
+def _cancel_grid(g, known, t, sf, n_symb, central=False):
+    """Grid ``g`` (``n_symb`` symbols of subframe ``sf`` of the frame at ``t``; the PBCH grid's
+    16 symbols on the central 72 subcarriers with ``central``) less each known cell, in turn."""
+    for kc in known or ():
+        sfn = _known_frame(kc, t)
+        if sfn is None:
+            continue
+        n_rb = int(kc['mib']['n_rb'])
+        if central:
+            nxt = _known_subframe(kc, sfn, 1)
+            mid = 6 * n_rb - 36
+            sources = [np.concatenate((a, b[:2]))[:, mid:mid + 72]
+                       for a, b in zip(_known_subframe(kc, sfn, 0), nxt)]
+        else:
+            if g.shape[1] != 12 * n_rb:
+                continue
+            sources = [q[:n_symb] for q in _known_subframe(kc, sfn, sf)]
+        # The rest rides on its port's CRS channel at the cell's own power ratio (one number a
+        # port, from every dense RB so far), not a gain of its own: fitted RB by RB on the few
+        # REs a PDCCH has there, it would follow the weaker cell on them and take it out too.
+        ports = kc['ports']
+        ratios = kc.setdefault('ratios', [[] for _ in range(ports)])
+        merged = []
+        for p in range(ports):
+            r = _rest_ratio(g, sources[p], sources[ports + p])
+            if r is not None and r > 0:
+                ratios[p].append(r)
+            merged.append(sources[p] + (float(np.median(ratios[p])) if ratios[p] else 1.0) * sources[ports + p])
+        g = g - _fit_known(g, merged + [sources[2 * ports]])
+    return g

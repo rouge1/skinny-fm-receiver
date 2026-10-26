@@ -58,18 +58,45 @@ def _missing(name):
     return 2
 
 
-def _own_sib1(sl, cell, block_hz):
-    """``own_sib1`` of a cell: our own SIB1 decode (``iqlte_phy.sib1``) without the DCIs it
-    used (``own_pdcch`` has them), and the fields pycrate reads from its bytes."""
-    got = iqlte_phy.sib1(sl.iq, sl.rate, cell, cell['own_mib'], cell.get('own_pdcch'), carrier_hz=block_hz)
+def _own_sib1(sl, cell, block_hz, known=None):
+    """``own_sib1`` of a cell: our own SIB1 decode (``iqlte_phy.sib1``, ``known`` cells taken
+    out), and the fields pycrate reads from its bytes; with the decode itself, which
+    ``iqlte_phy.known_cell`` takes, as the second value."""
+    got = iqlte_phy.sib1(sl.iq, sl.rate, cell, cell['own_mib'], cell.get('own_pdcch'), carrier_hz=block_hz,
+                         known=known)
     if got is None:
-        return None
+        return None, None
+    full = dict(got)
+    got = dict(got)
     got.pop('dcis', None)
     got['fields'], got['fields_reason'] = None, None
     if got['sib1']:
         got['fields'], got['fields_reason'] = iqlte_decode.parse_sib1(bytes.fromhex(got['sib1']),
                                                                       iqlte_decode.tools_dir())
-    return got
+    return got, full
+
+
+def _own_cells(sl, cells, block_hz, pdcch, pdsch):
+    """Our own decode of each FDD cell (``own_mib``, ``own_pdcch``, ``own_sib1``), strongest first,
+    each with the cells decoded before it taken out (roadmap Round 29.5: sectors of one site send
+    their broadcast on the same REs; ``own_known`` lists the PCIs taken out)."""
+    known = []
+    for cell in cells:
+        if not isinstance(cell, dict) or cell.get('duplex', 'FDD') != 'FDD':
+            continue
+        use = list(known) or None
+        cell['own_known'] = [k['pci'] for k in known]
+        cell['own_mib'] = iqlte_phy.pbch(sl.iq, sl.rate, cell, carrier_hz=block_hz, known=use)
+        if pdcch or pdsch:
+            cell['own_pdcch'] = iqlte_phy.sib1_dcis(sl.iq, sl.rate, cell, cell['own_mib'], carrier_hz=block_hz,
+                                                    known=use)
+        full = None
+        if pdsch:
+            cell['own_sib1'], full = _own_sib1(sl, cell, block_hz, use)
+        kc = iqlte_phy.known_cell(sl.rate, cell, cell['own_mib'], cell.get('own_pdcch'), full,
+                                  carrier_hz=block_hz)
+        if kc is not None:
+            known.append(kc)
 
 
 def _check_options(args):
@@ -381,14 +408,7 @@ def main(argv=None):
     fp, sss = _fingerprint(sl.iq, sl.rate)
     cells = _cells_of(fp)
     if args.mib or args.pdcch or args.pdsch:
-        for cell in cells:
-            if isinstance(cell, dict) and cell.get('duplex', 'FDD') == 'FDD':
-                cell['own_mib'] = iqlte_phy.pbch(sl.iq, sl.rate, cell, carrier_hz=block_hz)
-                if args.pdcch or args.pdsch:
-                    cell['own_pdcch'] = iqlte_phy.sib1_dcis(sl.iq, sl.rate, cell, cell['own_mib'],
-                                                            carrier_hz=block_hz)
-                if args.pdsch:
-                    cell['own_sib1'] = _own_sib1(sl, cell, block_hz)
+        _own_cells(sl, cells, block_hz, args.pdcch, args.pdsch)
     decode = None
     if args.decode:
         try:

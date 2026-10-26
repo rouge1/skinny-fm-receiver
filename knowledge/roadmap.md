@@ -1602,14 +1602,26 @@ sequences and the CRS check) is the start.
   signals at -12 dB (AL4) 2 of 17 DCIs alone, 15 with sums, all equal to the
   DCI sent; pure noise summed gives none. Not needed on real air yet: every
   SIB1 DCI on the pair, the weaker cell's too, decodes alone.
-- [ ] 29.5 Cancellation: the other cell's CRS (always on, known from its PCI)
-  taken out of every subframe first; then its decoded PDCCH and PDSCH, as
-  28.5's (cells strongest first, the strongest's frequency offset). Goal:
-  cells further under a stronger one than combining reaches (the 700 MHz
-  pair's weaker cell reads with combining alone, 29.4), such as the other
-  700 MHz carrier's second cell, whose MIB is not read yet.
+- [x] 29.5 Cancellation (2026-10-26: `iqlte_phy.known_cell`, `known=` on
+  `pbch`, `sib1_dcis` and `sib1`; `iq-lte` reads cells strongest first,
+  `own_known`). A decoded cell's CRS, PSS, SSS and PBCH (from its PCI and
+  MIB), PCFICH and SIB1 DCI, and SIB1 PDSCH (where each passed its CRC)
+  rebuilt, fitted per RB (a gain and a slope in time per port, the rest on
+  its port's CRS channel at the cell's measured power ratio, and the
+  synchronisation signals) and subtracted from the weaker cell's grids; only
+  frames starting within 1 us (one site). On real air: the 700 MHz pair's
+  weaker cell's SIB1 100 of 100 alone (none before); the other 700 MHz
+  carrier's second cell, 9 dB down and never read before, its MIB (40 of 199
+  frames), 98 of 99 SIB1 DCIs and SIB1 in all 25 periods (by summing, 29.4),
+  each stage needing the cancellation. A subframe with no DCI after cancelling is read
+  again as it is (a marginal PCFICH turned once). Synthetic: two sectors, the
+  weaker 6 dB down: SIB1 0 of 6 alone without, every copy with.
 - [ ] 29.6 The other SI (SIB2 onwards, SIB16's network time if a cell sends
   it) from SIB1's schedule; `iq-lte --own`, shaped as `--decode`.
+- [ ] Cancelling a cell of another timing (another site): the rebuilt signal
+  OFDM-modulated and subtracted from the samples, not fitted on the reading
+  cell's grid. A candidate: the other 700 MHz carrier's third PCI, about 9 dB
+  down, 5.045 ms off the site's frames, no MIB yet (perhaps a false SSS).
 
 Never on air yet, so tests only: 4 antenna ports, extended CP, TDD.
 

@@ -409,6 +409,73 @@ DCI on the pair, the weaker cell's too, decoded alone.
 
 Tests: `tools/tests/test_iqlte_pdsch.py`.
 
+## A weaker sector under a stronger one: cancellation (roadmap Round 29.5)
+
+Sectors of one site start their frames together and send their PBCH, SIB1
+DCI and SIB1 on the same resource elements, so the stronger sector's
+broadcast sits on top of the weaker one's. Once the stronger sector is
+decoded, what it sent is known. `iqlte_phy.known_cell` rebuilds it:
+- from its PCI and MIB, in every frame: the CRS of its ports, the PSS and
+  SSS, the PBCH;
+- where its SIB1 DCI passed its CRC: the PCFICH and the DCI's CCEs;
+- where its SIB1 passed (alone or summed): the SIB1 PDSCH, re-encoded.
+
+Each grid the weaker cell reads (`known=` on `pbch`, `sib1_dcis`, `sib1`)
+has this fitted per RB, a gain and a slope in time for each port and for the
+synchronisation signals, and subtracted. A SIB1 DCI found only by summing is
+not rebuilt unless its SIB1 copy then decoded alone: no CRC checked that
+subframe's CFI. Only a known cell whose frames start
+within 1 us of the reading cell's is taken out: another site's would not
+line up. A subframe in which no DCI is found after cancelling is read again
+as it is: once on the pair, taking the stronger cell out turned a marginal
+PCFICH (CFI 1 read as 3) and lost its DCI.
+
+`iq-lte --mib`, `--pdcch` and `--pdsch` read the cells strongest first, each
+with those decoded before it known; `own_known` lists the PCIs taken out.
+
+On real air (2026-10-26):
+
+| Cell | Without cancellation | With the stronger cell cancelled |
+|---|---|---|
+| 700 MHz pair, weaker cell (2 dB down) | SIB1 none of 100 alone (all 25 periods by combining, 29.4) | SIB1 100 of 100 alone, every DCI |
+| The other 700 MHz carrier, second cell (9 dB down) | no MIB in 199 frames | MIB in 40 frames of 199 (38 by summing a TTI); 98 of 99 SIB1 DCIs (19 by summing); SIB1 in all 25 periods by summing (0 alone) |
+
+Both over the same 2 s.
+
+On the other carrier each stage needed the stronger cell cancelled: with the
+MIB read that way but the PDCCH read as it is, no DCI; with the PDCCH
+cancelled but the PDSCH not, 98 DCIs and no SIB1. pycrate parses the
+second cell's SIB1: a different cell of the same site.
+
+**The CRS's power.** A cell may send its CRS at another power than its
+PBCH and data (36.213 5.2). The rest of each port is fitted on that port's
+CRS channel times one ratio for the cell, the median over every RB dense
+enough to show it (the PBCH's, the PDSCH's): on the other carrier the
+stronger cell sends the rest 1.5 and 2.9 dB above its CRS (ports 0 and 1),
+on the pair level. Fitting the rest a gain of its own in each RB was worse:
+on the few REs a PDCCH has in an RB, the fit follows the weaker cell too
+and takes it out (one DCI lost of 9 in the synthetic test). With the ratio,
+the second cell's DCIs went from 97 (45 by summing) to 98 (19 by summing),
+its MIB from 30 frames to 40.
+
+**How deep.** On the REs where both cells' transmissions are known (the
+PSS, SSS and PBCH), after taking out both cells, the power left is 3.7 dB
+above the noise of the reserved REs beside the PSS and SSS on the pair and
+5.8 dB above on the other carrier; on the synthetic pair, white noise only,
+2.5 dB. What the rest on air is (a misfit, or other sites of the network
+sending their own PSS, SSS and PBCH on the same REs, which no cell sends on
+the reserved ones) is not known.
+
+Limit: only cells whose frames line up are taken out, because the fit works
+on the reading cell's grid. On the other carrier `cells` also lists a third
+PCI about 9 dB down whose frames start 5.045 ms after the others' (not half
+a frame), with an SSS that only just clears the line. It gives no MIB either
+way: another site, or a false SSS. Cancelling a cell of another timing would
+need the rebuilt signal subtracted in time (a roadmap item).
+
+Tests: `tools/tests/test_iqlte_cancel.py` (two sectors at one timing, the
+weaker 6 dB down: its SIB1 0 of 6 alone without, every copy with).
+
 ## Several cells on one carrier: `cells`
 
 `iqlte.cells(iq, fs, max_cells=4)` lists every cell on the carrier whose SSS
