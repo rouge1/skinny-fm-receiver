@@ -220,7 +220,7 @@ def _crs_port(pci, slot, symbol, n_rb, port):
 
 
 def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True, duplex='fdd', idle=False,
-                 ports=1, port_gains=None, res=None):
+                 ports=1, port_gains=None, res=None, quiet=False):
     """One downlink at the native rate, after its seeded frame roll.
 
     ``duplex`` 'tdd' moves the PSS to symbol 2 of slots 2 and 12 (DwPTS) and the
@@ -229,7 +229,8 @@ def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True, duplex='fdd', 
 
     ``idle`` True keeps the QPSK only in the control region (the first three
     symbols of each subframe), as on a quiet real carrier: the other symbols
-    carry the reference and synchronisation signals alone.
+    carry the reference and synchronisation signals alone. ``quiet`` True leaves
+    no QPSK at all: only the reference and synchronisation signals and ``res``.
 
     ``ports`` 2 or 4: the other ports' CRS (36.211 6.10.1.2), the REs any port's CRS uses left
     empty on the others, each port through its gain in ``port_gains`` (default 1). ``res``
@@ -260,6 +261,8 @@ def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True, duplex='fdd', 
     grid[:, used] = qpsk
     if idle:
         grid[np.arange(n_sym) % (2 * _SYMS_PER_SLOT) >= 3] = 0
+    if quiet:
+        grid[:] = 0
 
     rows = np.arange(int(n_frames)) * (_SLOTS_PER_FRAME * _SYMS_PER_SLOT)
     if duplex not in ('fdd', 'tdd'):
@@ -348,7 +351,9 @@ def synth_lte_multi(cells, bw_mhz=10, n_frames=10, snr_db=20.0, seed=0, cfo_hz=0
     """Several FDD downlinks on one carrier, summed, then one noise draw.
 
     ``cells`` is a list of ``dict(pci, power_db, delay_samples)``, each with
-    ``ports``, ``port_gains`` and ``res`` too if wanted (``_cell_native``'s). Cell ``i`` is
+    ``ports``, ``port_gains``, ``res`` and ``quiet`` too if wanted (``_cell_native``'s), and
+    ``cfo_hz`` (its own offset, before the common ``cfo_hz``) and ``taps`` (``[(delay in native
+    samples, gain)]``, a multipath channel; default one tap of 1) applied at the native rate. Cell ``i`` is
     the same native-rate waveform as ``synth_lte`` with ``seed + i`` (so cell 0
     and ``synth_lte(..., seed=seed)`` share data and the random frame offset),
     with no per-cell noise. ``power_db`` 0 is that waveform's amplitude (about
@@ -379,7 +384,10 @@ def synth_lte_multi(cells, bw_mhz=10, n_frames=10, snr_db=20.0, seed=0, cfo_hz=0
     for i, cell in enumerate(cells):
         iq_i, native_i, offset, _rng = _cell_native(
             bw_mhz, n_frames, cell['pci'], int(seed) + i, duplex=duplex, idle=idle,
-            ports=cell.get('ports', 1), port_gains=cell.get('port_gains'), res=cell.get('res'))
+            ports=cell.get('ports', 1), port_gains=cell.get('port_gains'), res=cell.get('res'),
+            quiet=cell.get('quiet', False))
+        if cell.get('taps'):
+            iq_i = sum(g * np.roll(iq_i, int(d)) for d, g in cell['taps'])
         if native is None:
             native = native_i
         waves.append(iq_i)
@@ -390,7 +398,10 @@ def synth_lte_multi(cells, bw_mhz=10, n_frames=10, snr_db=20.0, seed=0, cfo_hz=0
     for i, cell in enumerate(cells):
         extra = base + int(cell['delay_samples']) - offsets[i]
         weight = 10.0 ** (float(cell['power_db']) / 20.0)
-        acc += np.roll(waves[i], extra) * weight
+        wave = np.roll(waves[i], extra) * weight
+        if cell.get('cfo_hz'):
+            wave = wave * np.exp(2j * np.pi * float(cell['cfo_hz']) * np.arange(len(wave)) / native)
+        acc += wave
 
     rate = native if fs is None else float(fs)
     if fs is not None and int(round(fs)) != int(round(native)):

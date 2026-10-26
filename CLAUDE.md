@@ -44,7 +44,7 @@ with no launcher.
     cancelling what the stronger was decoded sending (`iqnr.type0_pdcch(known=)`).
     Our own LTE decoder (`iqlte_phy`, Round 29) has the MIB, SIB1's
     DCI and SIB1 so far (`iq-lte --mib`, `--pdcch`, `--pdsch`), copies
-    combined and weaker sectors read by cancelling (`known=`); `iqlte.py` itself stays standalone (numpy and the
+    combined and weaker sectors read by cancelling (`known=`; another site's cells out of the samples); `iqlte.py` itself stays standalone (numpy and the
     standard library only: a test checks). Our own decoders are written from the 3GPP specs:
     srsRAN is AGPL and none of its code comes into this repo.
     Cellular decoding stays broadcast only (MIB, SIB1, other SI on the

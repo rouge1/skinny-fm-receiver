@@ -11,7 +11,8 @@ the stronger cancelled) are in the ops folder, not here. What the checks pin:
   alone; with the stronger cell known (its CRS, PSS, SSS, PBCH, PCFICH, SIB1 DCI and SIB1 PDSCH
   rebuilt and fitted) every copy decodes alone, byte-equal to what it sent; the stronger cell's own
   decode is the same either way;
-- a known cell whose frames do not line up (another site) is not taken out;
+- a known cell on another carrier is not taken out, and ``cancel=False`` reads the grid as it is
+  (one of another timing on the same carrier is: ``test_iqlte_timing.py``);
 - ``tools/iq-lte FILE --pdsch`` reads the cells strongest first, each with those before it known.
 
 Run:  PYTHONPATH=tools python tools/tests/test_iqlte_cancel.py   (about 10 s)
@@ -144,14 +145,16 @@ def check_pair():
         return s['decoded'] == s['tried'] and s['sib1'] == hexes[0], (s['decoded'], s['tried'])
     expect("the stronger cell read with the weaker one known: unchanged", strong_same)
 
-    def other_site():
-        far = dict(cells[STRONG], frame_offset_samples=cells[STRONG]['frame_offset_samples'] + 400)
+    def other_carrier():
         pb0, d0, s0 = state['strong']
-        kc = L.known_cell(fs, far, pb0, d0, s0, carrier_hz=700e6)
-        g_known = L._cell_frames(fs, cells[WEAK], state['strong'][0], 0.0, 700e6, [kc]).subframe(iq, 2, 5, 50)
-        g_plain = L._cell_frames(fs, cells[WEAK], state['strong'][0], 0.0, 700e6).subframe(iq, 2, 5, 50)
-        return np.array_equal(g_known, g_plain), ''
-    expect("a known cell whose frames do not line up (another site) is not taken out", other_site)
+        far = dict(cells[STRONG], frame_offset_samples=cells[STRONG]['frame_offset_samples'] + 400)
+        kc = L.known_cell(fs, far, pb0, d0, s0, center_offset_hz=1e6, carrier_hz=700e6)
+        reader = L._cell_frames(fs, cells[WEAK], pb0, 0.0, 700e6, [kc])
+        g_plain = L._cell_frames(fs, cells[WEAK], pb0, 0.0, 700e6).subframe(iq, 2, 5, 50)
+        g_raw = L._cell_frames(fs, cells[WEAK], pb0, 0.0, 700e6, [state['known']]).subframe(iq, 2, 5, 50, cancel=False)
+        return np.array_equal(reader.subframe(iq, 2, 5, 50), g_plain) and np.array_equal(g_raw, g_plain), ''
+    expect("a known cell on another carrier is not taken out; subframe(cancel=False) reads the samples as they are",
+           other_carrier)
     return iq, fs, hexes
 
 

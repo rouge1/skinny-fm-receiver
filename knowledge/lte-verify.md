@@ -424,9 +424,9 @@ Each grid the weaker cell reads (`known=` on `pbch`, `sib1_dcis`, `sib1`)
 has this fitted per RB, a gain and a slope in time for each port and for the
 synchronisation signals, and subtracted. A SIB1 DCI found only by summing is
 not rebuilt unless its SIB1 copy then decoded alone: no CRC checked that
-subframe's CFI. Only a known cell whose frames start
-within 1 us of the reading cell's is taken out: another site's would not
-line up. A subframe in which no DCI is found after cancelling is read again
+subframe's CFI. A known cell whose frames start
+within 1 us of the reading cell's is taken out of its grid this way; one of
+another timing is taken out of the samples (below). A subframe in which no DCI is found after cancelling is read again
 as it is: once on the pair, taking the stronger cell out turned a marginal
 PCFICH (CFI 1 read as 3) and lost its DCI.
 
@@ -466,15 +466,78 @@ above the noise of the reserved REs beside the PSS and SSS on the pair and
 sending their own PSS, SSS and PBCH on the same REs, which no cell sends on
 the reserved ones) is not known.
 
-Limit: only cells whose frames line up are taken out, because the fit works
-on the reading cell's grid. On the other carrier `cells` also lists a third
-PCI about 9 dB down whose frames start 5.045 ms after the others' (not half
-a frame), with an SSS that only just clears the line. It gives no MIB either
-way: another site, or a false SSS. Cancelling a cell of another timing would
-need the rebuilt signal subtracted in time (a roadmap item).
-
 Tests: `tools/tests/test_iqlte_cancel.py` (two sectors at one timing, the
 weaker 6 dB down: its SIB1 0 of 6 alone without, every copy with).
+
+### A cell of another timing (another site)
+
+Another site's frames do not start with the reading cell's, so its symbols
+straddle the reading cell's FFT windows and cannot be fitted on its grid.
+A known cell on the reading cell's carrier (shifts within 2 kHz) whose
+frames start more than 1 us away, modulo a frame, is taken out of the
+samples instead, inside the reader's cut (`_PbFrames.cut`), before any FFT:
+- each of its subframes the cut touches is read at its own timing, and what
+  it is known to send is fitted there (`_known_estimate`): per RB a gain, a
+  slope in time and a tilt across the RB's subcarriers. Known cells of one
+  timing (sectors of one site) are fitted together, on one grid: alone, one
+  sector's fit takes in the other's PBCH and SIB1 on the same REs;
+- the estimate is OFDM-modulated again (36.211 6.12) at the reader's sample
+  times (`_known_samples`): symbol l is sum_k a_k exp(j 2 pi k 15 kHz
+  (t - tau_l)) / N over its cyclic prefix and useful part, one inverse FFT
+  each with the fractional start as a phase ramp, moved by the two cells'
+  shift difference. A reader narrower than the cell (the PBCH's 1.92 MS/s)
+  gets it modulated at a multiple of its rate, then cut as the samples are,
+  so the leakage of the subcarriers outside its band goes out with them
+  (without that, 20 dB; with it, 30 to 43);
+- it is subtracted, frame by frame: nothing span-long is made, and a known
+  group keeps at most `_KNOWN_CACHE` subframe estimates.
+
+`subframe(cancel=False)` (the re-read when cancelling lost a DCI) reads the
+samples as they are.
+
+How deep, on synthetic signals: one cell read at a timing 2345.6 samples
+off its own, itself known, loses 27 to 44 dB of its grids (40 dB SNR). With
+a two-tap channel (0.6 us) 20 to 24 dB: the echo of each symbol runs into
+the next one's prefix, which a per-subcarrier model cannot rebuild. The
+tilt is worth 4 dB there; on the aligned path it would be worth 18 dB
+(22 to 40) on that channel, but on air it gained 0.3 dB and overfitted the
+pair (29.5), so the aligned fit keeps none.
+
+Synthetic results (`test_iqlte_timing.py`, cells with no random data):
+
+| Case | Without | With |
+|---|---|---|
+| a pair, the weaker 10 dB down, 2.3 symbols later, 180 Hz off | MIB in 4 of 17 frames, SIB1 0 of 9 alone | MIB in 17 of 17, every DCI, SIB1 9 of 9 alone |
+| two sectors (the second 4 dB down) and another site 10 dB down | no MIB | with one sector known: MIB, SIB1 0 of 9 alone; with both: 9 of 9 |
+
+Each known cell's power ratio of the rest to its CRS is kept apart here
+(measured on its own grid, each cell of a group with those before it taken
+out), not mixed with those measured on a reading cell's grid.
+
+`iq-lte` reads the cells strongest first. Another site's cell may be as
+strong as a site's second sector (on the other carrier they tie), so a cell
+left short (no MIB, or a SIB1 DCI or copy missed alone) is read once more
+with every other decoded cell known, and the second read is kept unless it
+is worse. On the synthetic signals that has not yet made a difference: with
+the other site's cell 5 dB down and the second sector 7, the other site's
+cell decodes 7 of 9 SIB1 copies alone either way. The site's estimate is made
+on its own grid with that cell still in it, 2 dB above the second sector,
+and one pass does not take it out first (successive passes would).
+
+On real air (2026-10-26), the other 700 MHz carrier: `cells` lists a third
+PCI about 9 dB down whose frames start 5.045 ms after the site's (not half a
+frame), with an SSS that only just clears the line. With the site's two
+cells cancelled from the samples it still gives no MIB, over 2 s and over
+6.3 s, with the tilt or without. At its timing, cancelling takes 1.5 dB out
+of its grid's CRS places (the site's signal goes), and after it no PCI of
+its PSS root, its own or any of the other 167, carries CRS energy above
+1.02 times the median, at either half-frame. Measured the same way at its
+own timing, the site's second cell (as strong, a cell for certain) stands
+at 1.42 times its root's median, the next PCI at 1.15. So no CRS is found at
+that timing, where a cell as strong as the second one would show: a false
+SSS, or something else on the PSS, not a cell sending CRS there. The other cells
+read as before (the second cell's MIB in 191 of 629 frames, 312 of 314
+DCIs, SIB1 in 73 sums; 1.4 minutes and 2.0 GB for 6.3 s).
 
 ## Several cells on one carrier: `cells`
 

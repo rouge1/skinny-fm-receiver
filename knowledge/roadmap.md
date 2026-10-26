@@ -1630,10 +1630,25 @@ sequences and the CRS check) is the start.
     to 1 s byte-equal).
   - [ ] The fingerprint's folds (CP alignment, PSS, `cells`) accumulated a
     frame at a time, if a bounded window is not enough.
-- [ ] Cancelling a cell of another timing (another site): the rebuilt signal
-  OFDM-modulated and subtracted from the samples, not fitted on the reading
-  cell's grid. A candidate: the other 700 MHz carrier's third PCI, about 9 dB
-  down, 5.045 ms off the site's frames, no MIB yet (perhaps a false SSS).
+- [x] Cancelling a cell of another timing (another site) (2026-10-26:
+  `iqlte_phy._PbFrames.cut`, `_known_estimate`, `_known_samples`): its
+  subframes read at its own timing, fitted there (cells of one timing
+  together), OFDM-modulated again at the reader's sample times and
+  subtracted from the samples before the reader's FFT. Synthetic: a cell
+  10 dB down, 2.3 symbols off, SIB1 0 of 9 alone without, 9 of 9 with; under
+  two sectors, both must be known. `iq-lte` reads a cell left short once
+  more with the others known. On real air the other 700 MHz carrier's third
+  PCI still gives no MIB, and with the site cancelled no PCI of its PSS root
+  carries CRS at its timing (the site's second cell, as strong, stands at
+  1.42 times the median that way; none there above 1.02): no cell sending
+  CRS there. Limits: multipath echoes into the next symbol's prefix (20 to
+  24 dB deep with a 0.6 us two-tap channel); one pass (a site's estimate is
+  made with the other site's cell still in it).
+  - [ ] The channel in time (an impulse response from the fit, the rebuilt
+    symbols convolved with it) if a real other-site cell needs deeper than
+    that.
+  - [ ] Successive passes (each timing's estimate made with the others
+    taken out), if a real other-site cell is as strong as a site's sector.
 
 Never on air yet, so tests only: 4 antenna ports, extended CP, TDD.
 

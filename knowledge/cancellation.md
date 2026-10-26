@@ -74,6 +74,13 @@ SIB1 in the same subframes.
 - **What it costs.** Taking a cell out can disturb a marginal read of the one
   under it (a PCFICH turned once), so a subframe that gives nothing after
   cancelling is read again as it is.
+- **Another site.** A cell whose frames start elsewhere straddles the
+  reading cell's FFT windows, so it is fitted at its own timing (with the
+  other cells of that timing: alone, one sector's fit takes in its
+  neighbour's broadcast), modulated again and subtracted from the samples.
+  On synthetic signals that reads a cell 10 dB down. The one candidate here,
+  a third PCI on the other carrier, shows no CRS at its timing with the
+  site gone, where a cell as strong as the site's second would.
 
 Unlike the NR site, combining helped on top of cancellation here (no copy
 of the second cell's SIB1 decoded alone; every period did summed). Likely

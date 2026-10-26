@@ -73,7 +73,10 @@ SSS and PBCH from its PCI and MIB; its PCFICH, SIB1 DCI and SIB1 PDSCH where eac
 CRC), fitted to the reading cell's grid per RB (a gain and a slope in time for each port and for
 the synchronisation signals; a port's PBCH and data on its CRS channel times the cell's own power
 ratio, ``_rest_ratio``) and subtracted before the weaker cell's grid is read (``known=`` on
-``pbch``, ``sib1_dcis`` and ``sib1``). Only cells whose frames start within 1 us are taken out.
+``pbch``, ``sib1_dcis`` and ``sib1``), when their frames start within 1 us. A known cell of another
+timing (another site) is taken out of the samples instead (``_PbFrames.cut``): its subframes read
+at its own timing, fitted there (with the other known cells of that timing), modulated again at the
+reader's sample times and subtracted before the reader's FFT (``_known_samples``).
 
 Wrong turns
 -----------
@@ -1142,6 +1145,7 @@ class _PbFrames:
 
     def __init__(self, fs, center_offset_hz, frame_offset, cfo_hz, carrier_hz, known=None):
         self.known = known                              # ``known_cell``s taken out of each grid
+        self.apart = None                               # those of other timings, by timing (``_apart``)
         self.fs = float(fs)
         self.shift = float(center_offset_hz) + float(cfo_hz)
         self.t0 = float(frame_offset) / self.fs
@@ -1153,6 +1157,17 @@ class _PbFrames:
     def count(self, n_total):
         return max(0, int((n_total / self.fs - self.t0 - 0.0012) / (0.010 * self.scale)))
 
+    def cut(self, x, i0, n_in, rate, cancel=True):
+        """``iqnr._cut`` of ``x[i0:i0 + n_in]`` to ``rate`` at this cell's shift, the known cells
+        of other timings taken out of it (unless not ``cancel``): ``_known_samples``."""
+        y = _cut(x, self.fs, i0, n_in, self.shift, rate)
+        if self.known and cancel:
+            if self.apart is None:
+                self.apart = _apart(self.known, self)
+            for group in self.apart:
+                y = y - _known_samples(group, x, i0 / self.fs, len(y), rate, self.shift)
+        return y
+
     def grid(self, x, f):
         """Frame ``f``'s first 16 symbols on the central 72 subcarriers, (16, 72), or None."""
         ratio = Fraction(int(round(_PB_RATE)), int(round(self.fs)))
@@ -1163,7 +1178,7 @@ class _PbFrames:
         n_in += (-n_in) % ratio.denominator
         if i0 < 0 or i0 + n_in > len(x):
             return None
-        y = _cut(x, self.fs, i0, n_in, self.shift, _PB_RATE)
+        y = self.cut(x, i0, n_in, _PB_RATE)
         out = np.zeros((_PB_SYMBOLS, 72), dtype=np.complex128)
         for l in range(_PB_SYMBOLS):
             cp = _PB_CP0 if l % 7 == 0 else _PB_CP
@@ -1190,7 +1205,7 @@ class _PbFrames:
         n_in += (-n_in) % ratio.denominator
         if i0 < 0 or i0 + n_in > len(x):
             return None
-        y = _cut(x, self.fs, i0, n_in, self.shift, rate)
+        y = self.cut(x, i0, n_in, rate, cancel)
         k = np.arange(12 * n_rb)
         bins = np.where(k < 6 * n_rb, k - 6 * n_rb, k - 6 * n_rb + 1)
         out = np.zeros((n_symb, 12 * n_rb), dtype=np.complex128)
@@ -1720,15 +1735,17 @@ def _known_subframe(kc, sfn, sf):
     return out
 
 
-def _fit_known(g, sources):
+def _fit_known(g, sources, tilt=False):
     """The part of grid ``g`` the known ``sources`` (each g's shape) explain: per RB, a gain
-    a + b (l - mean l) for each source, by least squares on the REs any of them sends on."""
+    a + b (l - mean l) for each source (with ``tilt``, + c (k - 5.5) across the RB's subcarriers
+    too), by least squares on the REs any of them sends on."""
     est = np.zeros(g.shape, dtype=np.complex128)
     mask = np.zeros(g.shape, dtype=bool)
     for q in sources:
         mask |= q != 0
     tl = np.arange(g.shape[0], dtype=float)[:, None] - (g.shape[0] - 1) / 2.0
     tl = np.broadcast_to(tl, g.shape)
+    tk = np.broadcast_to(np.arange(12, dtype=float)[None, :] - 5.5, (g.shape[0], 12))
     for c0 in range(0, g.shape[1], 12):
         c = slice(c0, c0 + 12)
         m = mask[:, c]
@@ -1738,7 +1755,7 @@ def _fit_known(g, sources):
         for q in sources:
             qq = q[:, c][m]
             if np.any(qq != 0):
-                cols += [qq, qq * tl[:, c][m]]
+                cols += [qq, qq * tl[:, c][m]] + ([qq * tk[m]] if tilt else [])
         a = np.stack(cols, axis=1)
         coef, *_ = np.linalg.lstsq(a, g[:, c][m], rcond=None)
         e = np.zeros(m.shape, dtype=np.complex128)
@@ -1797,16 +1814,137 @@ def _cancel_grid(g, known, t, sf, n_symb, central=False):
             if g.shape[1] != 12 * n_rb:
                 continue
             sources = [q[:n_symb] for q in _known_subframe(kc, sfn, sf)]
-        # The rest rides on its port's CRS channel at the cell's own power ratio (one number a
-        # port, from every dense RB so far), not a gain of its own: fitted RB by RB on the few
-        # REs a PDCCH has there, it would follow the weaker cell on them and take it out too.
-        ports = kc['ports']
-        ratios = kc.setdefault('ratios', [[] for _ in range(ports)])
-        merged = []
-        for p in range(ports):
-            r = _rest_ratio(g, sources[p], sources[ports + p])
-            if r is not None and r > 0:
-                ratios[p].append(r)
-            merged.append(sources[p] + (float(np.median(ratios[p])) if ratios[p] else 1.0) * sources[ports + p])
-        g = g - _fit_known(g, merged + [sources[2 * ports]])
+        g = g - _fit_known(g, _merged(kc, g, sources))
     return g
+
+
+def _merged(kc, g, sources, key='ratios'):
+    """A known cell's sources (``_known_subframe``'s, cut to grid ``g``) as it is fitted: per port
+    its CRS plus the rest at the cell's power ratio (kept on the cell under ``key``), then the
+    synchronisation signals."""
+    # The rest rides on its port's CRS channel at the cell's own power ratio (one number a
+    # port, from every dense RB so far), not a gain of its own: fitted RB by RB on the few
+    # REs a PDCCH has there, it would follow the weaker cell on them and take it out too.
+    ports = kc['ports']
+    ratios = kc.setdefault(key, [[] for _ in range(ports)])
+    merged = []
+    for p in range(ports):
+        r = _rest_ratio(g, sources[p], sources[ports + p])
+        if r is not None and r > 0:
+            ratios[p].append(r)
+        merged.append(sources[p] + (float(np.median(ratios[p])) if ratios[p] else 1.0) * sources[ports + p])
+    return merged + [sources[2 * ports]]
+
+
+# ----- known cells of another timing (another site): taken out of the samples ---------------
+
+#: A known cell of another timing is taken out only on the reading cell's carrier: their shifts
+#: (the carrier's offset and its CFO) within this (Hz), so the subcarriers line up.
+_KNOWN_CARRIER_HZ = 2e3
+
+
+def _apart(known, frames):
+    """The known cells on ``frames``' carrier whose frames start elsewhere (more than
+    ``_KNOWN_ALIGN_S`` off, modulo a frame), grouped by timing: cells of one site send their
+    broadcast on the same REs and are fitted together."""
+    def gap(a, b):
+        d = (a.t0 - b.t0) % 0.010
+        return min(d, 0.010 - d)
+    groups = []
+    for kc in known:
+        fr = kc['frames']
+        if abs(fr.shift - frames.shift) > _KNOWN_CARRIER_HZ or gap(fr, frames) <= _KNOWN_ALIGN_S:
+            continue
+        for grp in groups:
+            if gap(grp[0]['frames'], fr) <= _KNOWN_ALIGN_S and grp[0]['mib']['n_rb'] == kc['mib']['n_rb']:
+                grp.append(kc)
+                break
+        else:
+            groups.append([kc])
+    return groups
+
+
+#: The other-timing fit's tilt across each RB (``_fit_known``).
+_KNOWN_TILT = True
+
+
+def _known_estimate(group, x, j, sf):
+    """What a group of known cells (one timing) sends in their frame ``j``'s subframe ``sf`` as
+    received: their grid read at their own timing, their sources fitted together (``_fit_known``),
+    (14, 12 N_RB); None off the capture."""
+    lead = group[0]
+    key = (tuple(kc['pci'] for kc in group), j, sf)
+    cache = lead.setdefault('estimates', {})
+    if key in cache:
+        return cache[key]
+    n_rb = int(lead['mib']['n_rb'])
+    g = lead['frames'].subframe(x, j, sf, n_rb)
+    est = None
+    if g is not None:
+        # Fitted together; each cell's power ratio measured with those before it taken out (on
+        # their own grid, so kept apart from the ratios measured on a reading cell's).
+        sources, rest = [], g
+        for kc in group:
+            merged = _merged(kc, rest, _known_subframe(kc, (int(kc['mib']['sfn']) + j) % 1024, sf), 'apart_ratios')
+            sources += merged
+            if len(group) > 1:
+                rest = rest - _fit_known(rest, merged, _KNOWN_TILT)
+        est = _fit_known(g, sources, _KNOWN_TILT)
+    cache[key] = est
+    while len(cache) > _KNOWN_CACHE:
+        cache.pop(next(iter(cache)))
+    return est
+
+
+def _known_samples(group, x, t_a, n, rate, shift):
+    """What a group of known cells of another timing adds to a reader's cut: ``n`` samples at
+    ``rate`` (a multiple of 15 kHz) from time ``t_a`` (s), mixed by -``shift``. Each of their
+    subframes the span touches is estimated at their own timing (``_known_estimate``) and
+    modulated again (36.211 6.12) at the reader's sample times: symbol l is
+    sum_k a_k exp(j 2 pi k 15 kHz (t - tau_l)) / nfft over its cyclic prefix and useful part, tau_l
+    its useful part's start. A reader's band narrower than theirs (the PBCH's 1.92 MS/s) is
+    modulated at a multiple of its rate holding all their subcarriers, then cut as ``iqnr._cut``
+    cuts the samples: the leakage of the subcarriers outside goes out with them."""
+    fr = group[0]['frames']
+    n_rb = int(group[0]['mib']['n_rb'])
+    nfft = _NFFT_FOR_RB[n_rb]
+    rate_k = nfft * 15e3
+    cp0, cp1 = 160 * nfft // 2048, 144 * nfft // 2048
+    n_r = int(round(rate / 15e3))
+    up = nfft // n_r if nfft > n_r and nfft % n_r == 0 else 1
+    n_r, rate, n_out, n = n_r * up, rate * up, n, n * up
+    k = np.arange(12 * n_rb)
+    bins = np.where(k < 6 * n_rb, k - 6 * n_rb, k - 6 * n_rb + 1)
+    keep = np.abs(bins) < n_r // 2
+    bins = bins[keep]
+    out = np.zeros(n, dtype=np.complex128)
+    sub = 1e-3 * fr.scale
+    s0 = max(0, int(np.floor((t_a - fr.t0) / sub)))
+    s1 = int(np.floor((t_a + n / rate - fr.t0) / sub))
+    for s in range(s0, s1 + 1):
+        j, sf = divmod(s, 10)
+        est = _known_estimate(group, x, j, sf)
+        if est is None:
+            continue
+        t_sf = fr.start(j) + sf * sub
+        for l in range(14):
+            slot, s_ = divmod(l, 7)
+            u = slot * (7 * nfft + cp0 + 6 * cp1) + (cp0 + nfft + (s_ - 1) * (cp1 + nfft) + cp1 if s_ else cp0)
+            cp = cp0 if s_ == 0 else cp1
+            jt = (t_sf + u / rate_k - t_a) * rate            # tau_l in reader samples
+            ja = max(0, int(np.ceil(jt - cp * rate / rate_k - 1e-9)))
+            jb = min(n, int(np.ceil(jt + n_r - 1e-9)))
+            if ja >= jb or not np.any(est[l]):
+                continue
+            a = int(np.floor(jt))
+            spec = np.zeros(n_r, dtype=np.complex128)
+            spec[bins % n_r] = est[l, keep] * np.exp(-2j * np.pi * bins * (jt - a) / n_r)
+            w = np.fft.ifft(spec) * (n_r / nfft)
+            out[ja:jb] += w[(np.arange(ja, jb) - a) % n_r]
+    d = fr.shift - shift
+    if abs(d) >= 1e-3 and out.any():
+        out *= np.exp(2j * np.pi * ((d * (t_a + np.arange(n) / rate)) % 1.0))
+    if up > 1:
+        q = np.arange(-(n_out // 2), n_out - n_out // 2)
+        out = np.fft.ifft(np.roll(np.fft.fft(out).take(q, mode='wrap'), -(n_out // 2))) * (n_out / float(n))
+    return out

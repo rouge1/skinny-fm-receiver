@@ -1329,7 +1329,10 @@ tools/iq-lte CAPTURE.cfile --pdsch --t1 6                 # 6 s: the fingerprint
   and the SIB1 DCI and SIB1 where those passed their CRC) is rebuilt,
   fitted and subtracted. `own_known` lists the PCIs taken out. It reads
   sectors of one site that send their broadcast on the same REs: on real air
-  a sector 9 dB under another, unread without it.
+  a sector 9 dB under another, unread without it. A cell of another site
+  (frames starting elsewhere) is taken out of the samples, rebuilt at its own
+  timing; a cell left short (no MIB, a DCI or SIB1 copy missed alone) is
+  read once more with the others known.
 - `--decode` runs when the fingerprint's verdict is `lte` or `possible` (a
   possible carrier may well be one: a 700 MHz carrier read `possible` while
   both decoders read its MIB), not when it is `not-lte` or `unknown`.

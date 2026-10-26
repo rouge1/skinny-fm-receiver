@@ -85,24 +85,59 @@ def _own_cells(iq, rate, cells, block_hz, pdcch, pdsch):
     """Our own decode of each FDD cell (``own_mib``, ``own_pdcch``, ``own_sib1``) over ``iq`` (the
     whole span, an ``iqmeasure.IQView``), strongest first,
     each with the cells decoded before it taken out (roadmap Round 29.5: sectors of one site send
-    their broadcast on the same REs; ``own_known`` lists the PCIs taken out)."""
-    known = []
+    their broadcast on the same REs; a cell of another site is taken out of the samples), a cell
+    left short (no MIB, a DCI or SIB1 copy missed alone) read once more with the others known; ``own_known`` lists the PCIs taken
+    out."""
+    def read(cell, use):
+        cell['own_known'] = [k['pci'] for k in use]
+        cell['own_mib'] = iqlte_phy.pbch(iq, rate, cell, carrier_hz=block_hz, known=use or None)
+        if pdcch or pdsch:
+            cell['own_pdcch'] = iqlte_phy.sib1_dcis(iq, rate, cell, cell['own_mib'], carrier_hz=block_hz,
+                                                    known=use or None)
+        full = None
+        if pdsch:
+            cell['own_sib1'], full = _own_sib1(iq, rate, cell, block_hz, use or None)
+        return iqlte_phy.known_cell(rate, cell, cell['own_mib'], cell.get('own_pdcch'), full,
+                                    carrier_hz=block_hz)
+
+    def short(cell):
+        mib, dcis, s1 = cell['own_mib'], cell.get('own_pdcch') or {}, cell.get('own_sib1') or {}
+        return (not mib.get('mib') or ((pdcch or pdsch) and len(dcis.get('dcis', [])) < (dcis.get('subframes') or 0))
+                or (pdsch and (s1.get('decoded') or 0) < (s1.get('tried') or 0)))
+
+    def score(cell):
+        mib, dcis, s1 = cell['own_mib'], cell.get('own_pdcch') or {}, cell.get('own_sib1') or {}
+        return (bool(s1.get('sib1')), bool(mib.get('mib')), s1.get('decoded') or 0, len(dcis.get('dcis', [])),
+                mib.get('decoded') or 0)
+
+    keys = ('own_known', 'own_mib', 'own_pdcch', 'own_sib1')
+
+    known, order = [], []
     for cell in cells:
         if not isinstance(cell, dict) or cell.get('duplex', 'FDD') != 'FDD':
             continue
-        use = list(known) or None
-        cell['own_known'] = [k['pci'] for k in known]
-        cell['own_mib'] = iqlte_phy.pbch(iq, rate, cell, carrier_hz=block_hz, known=use)
-        if pdcch or pdsch:
-            cell['own_pdcch'] = iqlte_phy.sib1_dcis(iq, rate, cell, cell['own_mib'], carrier_hz=block_hz,
-                                                    known=use)
-        full = None
-        if pdsch:
-            cell['own_sib1'], full = _own_sib1(iq, rate, cell, block_hz, use)
-        kc = iqlte_phy.known_cell(rate, cell, cell['own_mib'], cell.get('own_pdcch'), full,
-                                  carrier_hz=block_hz)
+        kc = read(cell, list(known))
+        order.append((cell, kc))
         if kc is not None:
             known.append(kc)
+    # A cell of another site as strong as a sector may come before it: a cell left short (no MIB, a
+    # SIB1 DCI or a SIB1 copy missed alone) is read once more with every other cell known, those decoded after it too (cells
+    # of one timing are fitted together); the second read is kept unless it is worse.
+    for cell, kc in order:
+        others = [k for k in known if k is not kc]
+        if not short(cell) or len(others) <= len(cell['own_known']):
+            continue
+        before = {k: cell[k] for k in keys if k in cell}
+        new = read(cell, others)
+        if score(cell) < score(before):
+            for k in keys:
+                cell.pop(k, None)
+            cell.update(before)
+        else:
+            if kc is not None:
+                known.remove(kc)
+            if new is not None:
+                known.append(new)
 
 
 def _check_options(args):
