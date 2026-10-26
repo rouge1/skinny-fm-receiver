@@ -196,12 +196,14 @@ def _skip_decode(fp, pci):
 
     Every cell is gated on the capture-level fingerprint verdict (and on
     that fingerprint's FFT size), not on a per-cell verdict. A cell list
-    on a capture that is not ``lte``, or not 10 MHz, is not decoded.
+    on a capture whose verdict is ``not-lte`` or ``unknown``, or that is not
+    10 or 15 MHz, is not decoded. ``possible`` is decoded: a real carrier
+    read ``possible`` while both decoders read its MIB (2026-10-25).
     """
     verdict = fp.get('verdict')
     if fp.get('duplex') == 'TDD':
         return {'ran': False, 'reason': 'TDD: the srsRAN wrapper decodes FDD only'}
-    if verdict != 'lte' or pci is None:
+    if verdict not in ('lte', 'possible') or pci is None:
         why = 'verdict is %s' % verdict
         if pci is None:
             why = 'no PCI (verdict %s)' % verdict

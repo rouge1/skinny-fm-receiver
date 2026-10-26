@@ -1290,8 +1290,10 @@ tools/iq-lte CAPTURE.cfile --mib --t1 1                   # each cell's MIB by o
   settings, antenna ports and SFN, from our own numpy PBCH decoder. It reads
   every frame of the span (0.2 s by default, so 20 frames; `--t1` for more),
   and reports a MIB only when two separate decodes agree. On real air it read
-  every frame of three 700 MHz cells, the outside decoder agreeing. `--decode`
-  skips a cell unless the fingerprint's verdict is `lte`; `--mib` does not.
+  every frame of three 700 MHz cells, the outside decoder agreeing.
+- `--decode` runs when the fingerprint's verdict is `lte` or `possible` (a
+  possible carrier may well be one: a 700 MHz carrier read `possible` while
+  both decoders read its MIB), not when it is `not-lte` or `unknown`.
 
 - Numpy only, and it classifies: the verdict is `lte`, `possible`, `not-lte` or
   `unknown`, and each check in `checks` has its score and chance estimate.

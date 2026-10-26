@@ -301,7 +301,7 @@ On real air (2026-10-25, against `pdsch_ue`):
 |---|---|---|
 | Band 13 cell | 4 ports, 50 RB, every frame alone (580 of 580 in 6 s) | same ports and bandwidth; its SFN is the TTI's first frame, ours the capture's |
 | 700 MHz pair, both cells (2 dB apart) | 2 ports, 50 RB, every frame alone | both MIBs, same fields |
-| The other 700 MHz carrier | the stronger cell's MIB | the same, once run there: `--decode` had skipped it, the fingerprint saying only `possible` |
+| The other 700 MHz carrier | the stronger cell's MIB | the same, once run there: `--decode` had skipped it, the fingerprint saying only `possible` (since 2026-10-25 it runs on `possible` too) |
 
 So the pair's PBCH is fine, and SIB1 fails further along. The PHICH
 duration and resources, which the PDCCH decode will need, equal what

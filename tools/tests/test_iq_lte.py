@@ -728,6 +728,21 @@ def group_decode():
     expect('E  --decode on a not-lte file: decode {ran: false, reason}, exit 0, stub not called',
            not_lte)
 
+    def gate():
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader('iq_lte_tool', TOOL)
+        spec = importlib.util.spec_from_loader('iq_lte_tool', loader)
+        tool = importlib.util.module_from_spec(spec)
+        loader.exec_module(tool)
+        got = {v: tool._skip_decode({'verdict': v, 'nfft': 1024, 'duplex': 'FDD'}, 123)
+               for v in ('lte', 'possible', 'not-lte', 'unknown')}
+        ok = (got['lte'] is None and got['possible'] is None and got['not-lte']['ran'] is False
+              and got['unknown']['ran'] is False
+              and tool._skip_decode({'verdict': 'possible', 'nfft': 1024}, None)['ran'] is False)
+        return ok, got
+    expect('E  --decode runs on lte and possible verdicts, not on not-lte or unknown, nor without a PCI', gate)
+
     def decoded_mib():
         r, c, _, _ = default_decode()
         if r.timed_out or r.code != 0 or c is None:

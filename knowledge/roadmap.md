@@ -1552,10 +1552,10 @@ sequences and the CRS check) is the start.
   Checked against `pdsch_ue`'s MIBs on every recording.
 - [ ] The fingerprint says `possible` on the other 700 MHz carrier (2026-10-25),
   where our decoder reads the stronger cell's MIB in every frame and
-  `pdsch_ue` reads it too; `--decode` skips a cell unless the verdict is
-  `lte`, which is how that carrier went unread on 2026-10-23. Find which
-  check fails there, and whether `--decode` should gate on a cell's own
-  evidence (its SSS, CRS or MIB) instead.
+  `pdsch_ue` reads it too. `--decode` used to skip a cell unless the verdict
+  was `lte`, which is how that carrier went unread on 2026-10-23; since
+  2026-10-25 it runs on `possible` too (the user: "it's possible"). Still
+  to find: which check fails there.
 - [ ] 29.2 PCFICH and PDCCH: the CFI (32-bit code, 3 hypotheses), the REGs
   left after PCFICH and PHICH (from the MIB's PHICH config), the REG
   interleaver (sub-block interleaver, cyclic shift by PCI), the common search
