@@ -698,6 +698,30 @@ are not recorded here: they are kept with the recordings. See
   `lte_synth`'s `idle=True` (QPSK in the control region only) reproduces it,
   and `test_iqlte_idle.py` fails every check with the old spacing. Still
   missed: echoes spread over 40 samples at 3 dB SNR.
+- **A quiet cell beside a busy signal of another timing (fixed 2026-10-26).**
+  The other 700 MHz carrier read `possible` with no PCI (PSS 0.445, chance
+  0.06), while `cells` found its cells and both decoders read the stronger
+  one's MIB. Its stronger cells are lightly loaded: of their seven prefixes
+  only the two CRS symbols fold strongly (0.50), the PSS symbol's barely above
+  the bulk (0.15). A busy signal at the third cell's timing folds evenly at
+  0.15 to 0.18, so its prefixes took five of the seven peaks, one of them
+  within half a symbol of the PSS symbol's. A brute-force search found the
+  PSS at 0.74. The PSS is now also tried on the symbols of the best slot
+  alignment, and of a second one when it stands well clear of the bulk (an
+  idle cell can lose every peak to a busy one), each at the grid's start or
+  the long prefix's 8 extra samples either way (bin ramps, from a window
+  started early inside the prefix). The wider ramps reach 1/63 of a cycle a
+  bin, where cyclic shifts 5, 13, 49 and 57 of the Zadoff-Chu roots are a
+  root at another timing: those are left out of the scrambled null, which
+  otherwise matches the real PSS (chance 0.01). The ramp's sign was also
+  backwards (a window starting later, not earlier), which put the SSS
+  timing a few samples off: the fingerprint's frame timing is now within 3
+  samples of `cells`'s on the Band 13 and pair carriers (was 5). On air:
+  that carrier `lte`, its strongest cell's PCI, SSS and CRS checks passing;
+  the other two carriers unchanged but for those few samples, every
+  decode the same. Synthetic (`test_iqlte_idle.py` group E, fails before):
+  an idle cell and a loaded one 6 dB down 700 and 9000 samples later.
+  Normal carriers try the same phases as before, at the same cost.
 - **Draw the block before trusting its width.** A carrier 2.3 MHz off the file
   centre read as 15 MHz; centred, it read 10 MHz and its MIB said 50 PRB. Step 3
   of [workflow.md](workflow.md) (`tools/iq-picture`) shows the occupied edges and

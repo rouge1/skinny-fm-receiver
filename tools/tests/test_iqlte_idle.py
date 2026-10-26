@@ -9,6 +9,14 @@ three symbols, the PSS symbol was never tried, and a quiet carrier came out
 The peaks are now kept half a symbol apart. Every check here fails with the
 old spacing.
 
+The same happened beside a busy signal of another timing (2026-10-26, on air):
+its prefixes outscore the quiet cell's in the folded profile, and the peaks
+spent on it leave out the PSS symbol, or the quiet cell's whole grid. The PSS is
+now tried on the symbols of the best slot alignment and of a clear second one
+too (``_pss_phases``), and the scrambled null leaves out the cyclic shifts that
+are a root at a timing the search ramped to (``_ramp_shifts``). Group E fails
+before that (``possible``, no PCI).
+
 Signals: ``tests/lte_synth.py`` with ``idle=True`` (QPSK in the first three
 symbols of each subframe only). Made-up PCIs.
 
@@ -18,8 +26,10 @@ Groups:
   C  two idle cells (0 and -10 dB) at one timing, and 24 samples apart (-8 dB),
      at 10 and 3 dB: lte, pci 123, and cells has both
   D  one idle cell with echoes at 20 and 40 samples, 10 dB: lte, pci 123
+  E  one idle cell and a loaded cell 6 dB down at another timing (700 and
+     9000 samples later), 10 dB: lte, pci 123, the SSS and CRS checks passed
 
-Run:  PYTHONPATH=tools python tools/tests/test_iqlte_idle.py   (about 30 s)
+Run:  PYTHONPATH=tools python tools/tests/test_iqlte_idle.py   (about 40 s)
 """
 
 import os
@@ -33,6 +43,7 @@ from tests import lte_synth  # noqa: E402
 
 PCI = 123
 PCI_B = 200
+PCI_W = 322
 FS = 20e6
 RESULTS = []
 
@@ -106,7 +117,19 @@ def group_echoes():
     expect(f'D  one idle cell with echoes at 20 and 40 samples, 10 dB: lte, pci {PCI}', case)
 
 
-GROUPS = [group_peaks, group_one_cell, group_two_cells, group_echoes]
+def group_other_timing():
+    for delay in (700, 9000):
+        def case(delay=delay):
+            cells = [dict(pci=PCI, power_db=0, delay_samples=0, idle=True),
+                     dict(pci=PCI_W, power_db=-6, delay_samples=delay)]
+            iq, fs = lte_synth.synth_lte_multi(cells, 10, 10, 10, seed=4, fs=FS)
+            fp = iqlte.fingerprint(iq, fs)
+            passed = {c['name'] for c in fp['checks'] if c['passed']}
+            return (fp['verdict'] == 'lte' and fp['pci'] == PCI and {'sss', 'crs'} <= passed), verdict(fp)
+        expect(f'E  an idle cell and a loaded one 6 dB down, {delay} samples later, 10 dB: lte, pci {PCI}', case)
+
+
+GROUPS = [group_peaks, group_one_cell, group_two_cells, group_echoes, group_other_timing]
 
 
 def main():

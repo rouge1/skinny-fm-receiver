@@ -633,7 +633,25 @@ def _bandwidth(iq, n_fft, phase0, fs_capture):
     return _class_from_width(n_used, fs_capture), n_used
 
 
-def _pss_chance(peak, obs):
+_RAMP_SHIFTS = {}
+
+
+def _ramp_shifts(span):
+    """Cyclic shifts of the 62 PSS bins that correlate above one half with a root times a
+    timing ramp of at most ``span`` cycles per bin (shifts 5 and 57 are a root 1/63 off)."""
+    key = round(float(span), 6)
+    if key not in _RAMP_SHIFTS:
+        refs = _pss_seqs()
+        refs = refs / np.linalg.norm(refs, axis=1, keepdims=True)
+        bins = np.concatenate((np.arange(-31, 0), np.arange(1, 32)))
+        slopes = np.linspace(-key, key, 2 * int(np.ceil(key * 62 * 8)) + 1)
+        ramped = np.concatenate([refs * np.exp(2j * np.pi * a * bins) for a in slopes])
+        _RAMP_SHIFTS[key] = {s for s in range(1, 62)
+                             if float(np.max(np.abs(np.roll(refs, s, axis=1).conj() @ ramped.T))) > 0.5}
+    return _RAMP_SHIFTS[key]
+
+
+def _pss_chance(peak, obs, span=0.0):
     """Chance the best correlation is a Zadoff-Chu root, from this capture.
 
     The null is the same centre-bin vectors correlated against the three roots
@@ -649,6 +667,10 @@ def _pss_chance(peak, obs):
     used, with the scale held at least a few hundredths so a lucky gap of one
     scramble cannot pretend to be 1e-30. A true PSS sits near 1 and the
     scrambles near 0.4, so the tail is still far below 1e-6.
+
+    ``span`` is the widest timing ramp the search applied, in cycles per bin
+    (samples over the FFT size): a cyclic shift of a Zadoff-Chu root is a
+    root times a ramp, so the shifts within it are left out of the null.
     """
     if obs is None or obs.ndim != 2 or obs.shape[0] < 4 or not np.isfinite(peak):
         return 1.0
@@ -656,8 +678,12 @@ def _pss_chance(peak, obs):
     refs = _pss_seqs()
     refs = refs / np.linalg.norm(refs, axis=1, keepdims=True)
     null_max = []
-    # Shifts of 0 are the real roots; they are the hypothesis, not the null.
+    # Shifts of 0 are the real roots; they are the hypothesis, not the null. So are the
+    # shifts that are a root at another timing the search ramped to (``_ramp_shifts``).
+    same = _ramp_shifts(span)
     for shift in range(1, 62):
+        if shift in same:
+            continue
         templ = np.roll(refs, shift, axis=1)
         corr = np.abs(obs @ templ.conj().T)
         null_max.append(float(corr.max()))
@@ -715,6 +741,60 @@ def _symbol_guard(n_fft, cp):
     return (n_fft + cp) // 2
 
 
+#: A second slot alignment's grid is tried for the PSS when it stands this far above the bulk
+#: of the alignments (robust z, the first grid's symbols left out). One cell's second best is
+#: its own grid's shoulders, z 4 to 15 (synthetic, 10 to -5 dB, idle or loaded); noise 2.5;
+#: two cells at different timings 66 to 99. Only the cost turns on it: the scrambled null sees
+#: every phase tried, so more phases cannot make a chance smaller.
+_PSS_GRID2_Z = 20.0
+
+
+def _pss_phases(folded, n_fft, cp):
+    """Prefix starts to try the PSS at, each with how much later its window may start: ``[(phase, late)]``.
+
+    First the strongest prefixes. They are not always the PSS symbol's: a
+    lightly loaded cell has strong prefixes only where its CRS are, so an
+    evenly loaded signal at another timing (another site) outscores the rest
+    and the half-symbol guard throws the PSS symbol's prefix away; an idle
+    cell can lose every peak to one. Then the symbols of the best slot
+    alignment, and of the second best (``_PSS_GRID2_Z``, its first grid's
+    symbols left out), that no start already listed covers. The comb can
+    lock a symbol off, so such a prefix is where the grid says or the long
+    prefix's extra samples either way: the window starts at the earliest,
+    and every start up to two extras later is a ramp across the bins, exact
+    because a window that starts early inside a prefix is a circular shift.
+    """
+    peaks = _prefix_peaks(folded, 7, _symbol_guard(n_fft, cp))
+    out = [(p, 0) for p in peaks]
+    starts, _lens, slot, _cp = _slot_layout(n_fft)
+    if folded.size != slot or not peaks:
+        return out
+    kernel = np.zeros(slot, dtype=np.float64)
+    for s in starts:
+        kernel[(-s) % slot] += 1.0 / 7.0
+    align = np.fft.ifft(np.fft.fft(folded) * np.fft.fft(kernel)).real
+    extra = _cp_lengths(n_fft)[0] - cp
+    dist = np.arange(slot)
+    p0 = int(np.argmax(align))
+    grid = [(p0 + s) % slot for s in starts]
+    near = np.zeros(slot, dtype=bool)
+    for g in grid:
+        d = np.abs(dist - g)
+        near |= np.minimum(d, slot - d) <= cp
+    rest = align[~near]
+    med = float(np.median(rest))
+    mad = 1.4826 * float(np.median(np.abs(rest - med)))
+    p1 = int(np.argmax(np.where(near, -np.inf, align)))
+    if mad > 0.0 and (align[p1] - med) / mad >= _PSS_GRID2_Z:
+        grid += [(p1 + s) % slot for s in starts]
+    covered = list(peaks)
+    for g in grid:
+        if all(min(abs(g - q), slot - abs(g - q)) > extra + 2 for q in covered):
+            out.append(((g - extra) % slot, 2 * extra))
+            covered.append(g)
+    return out
+
+
 def _bodies_at(iq, n_fft, slot, useful_phase):
     """One OFDM body per slot, starting at ``useful_phase`` inside the slot."""
     phase = int(useful_phase) % int(slot)
@@ -730,7 +810,7 @@ def _bodies_at(iq, n_fft, slot, useful_phase):
 
 
 def _pss_on_grid(iq, fs, n_fft, folded, slot, cp):
-    """Best PSS correlation at the prefix peaks.
+    """Best PSS correlation at the prefix peaks and the slot's symbol grid (``_pss_phases``).
 
     The slot comb can lock one symbol off, because six of the seven prefixes
     are the same length; the folded profile still has a peak on every prefix,
@@ -738,9 +818,9 @@ def _pss_on_grid(iq, fs, n_fft, folded, slot, cp):
     A couple of samples of timing error (the peak jitters at low SNR, and a
     CFO walks the bin phase) is a ramp across the FFT bins, not a new FFT.
     """
-    peaks = _prefix_peaks(folded, 7, _symbol_guard(n_fft, cp))
+    peaks = _pss_phases(folded, n_fft, cp)
     if not peaks:
-        return 0.0, None, 0.0, np.zeros((0, 62), dtype=np.complex128), 0
+        return 0.0, None, 0.0, np.zeros((0, 62), dtype=np.complex128), 0, 0.0
     refs = _pss_seqs()
     ref_m = (refs / np.linalg.norm(refs, axis=1, keepdims=True)).conj().T
     bins = np.concatenate((np.arange(-31, 0), np.arange(1, 32))) % n_fft
@@ -753,18 +833,17 @@ def _pss_on_grid(iq, fs, n_fft, folded, slot, cp):
     kept = []
     n_sym = 0
     t = k / float(fs)
-    for phase in peaks:
+    for phase, late in peaks:
         base = _bodies_at(iq, n_fft, slot, phase + cp)
         if base.shape[0] < 2:
             continue
         n_sym = base.shape[0]
         for f in _CFO_HZ:
             ramp_t = np.exp(-2j * np.pi * float(f) * t)
-            spec = np.fft.fft(base * ramp_t, axis=1)
-            for d in offsets:
-                # Window starting d samples earlier, still inside the prefix.
-                spec_d = spec * np.exp(2j * np.pi * d * k / n_fft)
-                obs = spec_d[:, bins]
+            spec = np.fft.fft(base * ramp_t, axis=1)[:, bins]
+            for d in range(offsets[0], offsets[-1] + 1 + late):
+                # The window d samples later (earlier when d < 0), still inside the prefix.
+                obs = spec * np.exp(2j * np.pi * d * bins / n_fft)
                 norms = np.linalg.norm(obs, axis=1)
                 good = norms > 1e-12
                 obs_n = np.zeros_like(obs)
@@ -780,8 +859,9 @@ def _pss_on_grid(iq, fs, n_fft, folded, slot, cp):
                     best_root = int(flat % 3)
                     best_cfo = float(f)
     if not kept:
-        return 0.0, None, 0.0, np.zeros((0, 62), dtype=np.complex128), 0
-    return best, best_root, best_cfo, np.concatenate(kept, axis=0), n_sym
+        return 0.0, None, 0.0, np.zeros((0, 62), dtype=np.complex128), 0, 0.0
+    span = max(max(-offsets[0], offsets[-1] + late) for _p, late in peaks) / float(n_fft)
+    return best, best_root, best_cfo, np.concatenate(kept, axis=0), n_sym, span
 
 
 #: While ``fingerprint`` runs, the class-rate block of each input it has resampled, so its
@@ -871,8 +951,8 @@ def pss_search(iq, fs):
         return {'score': 0.0, 'chance': 1.0, 'detail': 'no symbol grid to search',
                 'passed': False, 'nid2': None}
     align, slot, cp, _n_slots, folded = found
-    peak, root, cfo, obs, _n = _pss_on_grid(block, rate, n_fft, folded, slot, cp)
-    chance = _floor_chance(_pss_chance(peak, obs))
+    peak, root, cfo, obs, _n, span = _pss_on_grid(block, rate, n_fft, folded, slot, cp)
+    chance = _floor_chance(_pss_chance(peak, obs, span))
     passed = chance <= _PASS
     return {
         'score': float(peak),
@@ -916,11 +996,11 @@ def _pss_body_offset(n_fft):
 def _locate_pss(block, rate, n_fft, folded, slot, cp):
     """Best PSS root, CFO and body start, plus the per-slot correlation.
 
-    Same grid as ``_pss_on_grid``: every prefix peak, the coarse CFO trials,
+    Same grid as ``_pss_on_grid``: ``_pss_phases``, the coarse CFO trials,
     and a few samples of timing (a ramp across the bins, not a new FFT). The
     body start is the sample, inside a slot, of the window that won.
     """
-    peaks = _prefix_peaks(folded, 7, _symbol_guard(n_fft, cp))
+    peaks = _pss_phases(folded, n_fft, cp)
     if not peaks:
         return None
     refs = _pss_seqs()
@@ -931,15 +1011,14 @@ def _locate_pss(block, rate, n_fft, folded, slot, cp):
     best = -1.0
     best_hit = None
     t = k / float(rate)
-    ramp_d = [np.exp(2j * np.pi * d * k / n_fft) for d in offsets]
-    for phase in peaks:
+    for phase, late in peaks:
         base = _bodies_at(block, n_fft, slot, phase + cp)
         if base.shape[0] < 2:
             continue
         for f in _CFO_HZ:
-            spec = np.fft.fft(base * np.exp(-2j * np.pi * float(f) * t), axis=1)
-            for d, ramp in zip(offsets, ramp_d):
-                obs = (spec * ramp)[:, bins]
+            spec = np.fft.fft(base * np.exp(-2j * np.pi * float(f) * t), axis=1)[:, bins]
+            for d in range(offsets[0], offsets[-1] + 1 + late):
+                obs = spec * np.exp(2j * np.pi * d * bins / n_fft)
                 norms = np.linalg.norm(obs, axis=1)
                 good = norms > 1e-12
                 obs_n = np.zeros_like(obs)
@@ -960,8 +1039,8 @@ def _locate_pss(block, rate, n_fft, folded, slot, cp):
                     }
     if best_hit is None or best < 0.25:
         return None
-    # The winning ramp starts the window ``d`` samples earlier than phase+cp.
-    best_hit['body'] = int(best_hit['phase'] + cp - best_hit['d'])
+    # The winning ramp starts the window ``d`` samples later than phase+cp.
+    best_hit['body'] = int(best_hit['phase'] + cp + best_hit['d'])
     return best_hit
 
 
@@ -2104,8 +2183,8 @@ def _fingerprint(iq, fs):
             f'prefix correlation {score:.3f} over {cp_len} samples, '
             f'about {n_used} subcarriers in use',
         )
-        peak, root, cfo, obs, _n = _pss_on_grid(block, rate, n_fft, folded, slot, cp_len)
-        pss_chance = _pss_chance(peak, obs)
+        peak, root, cfo, obs, _n, span = _pss_on_grid(block, rate, n_fft, folded, slot, cp_len)
+        pss_chance = _pss_chance(peak, obs, span)
         pss = _check(
             'pss', True, peak, pss_chance,
             f'best root {root} correlation {peak:.3f} at {cfo:.0f} Hz',

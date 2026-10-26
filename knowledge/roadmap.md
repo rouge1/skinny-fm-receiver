@@ -1550,12 +1550,15 @@ sequences and the CRS check) is the start.
   CRC 16 masked by the number of ports (which finds the port count), the
   four 10 ms parts of the 40 ms TTI (which gives the SFN's low bits).
   Checked against `pdsch_ue`'s MIBs on every recording.
-- [ ] The fingerprint says `possible` on the other 700 MHz carrier (2026-10-25),
+- [x] The fingerprint says `possible` on the other 700 MHz carrier (2026-10-25),
   where our decoder reads the stronger cell's MIB in every frame and
   `pdsch_ue` reads it too. `--decode` used to skip a cell unless the verdict
   was `lte`, which is how that carrier went unread on 2026-10-23; since
-  2026-10-25 it runs on `possible` too (the user: "it's possible"). Still
-  to find: which check fails there.
+  2026-10-25 it runs on `possible` too (the user: "it's possible"). Found
+  and fixed 2026-10-26: the PSS check, which never tried the PSS symbol (a
+  busy signal at another timing took the prefix peaks); now `lte`, its
+  strongest cell's PCI, every check passing
+  ([lte-verify.md](lte-verify.md)).
 - [x] 29.2 PCFICH and PDCCH (2026-10-25: `iqlte_phy.sib1_dcis`, `iq-lte --pdcch`;
   the Band 13 cell's 50 SIB1 DCIs equal to `pdsch_ue`'s; every SIB1 DCI of
   the three 700 MHz cells. Go: the pair's two cells send SIB1 on the same

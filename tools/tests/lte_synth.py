@@ -351,7 +351,7 @@ def synth_lte_multi(cells, bw_mhz=10, n_frames=10, snr_db=20.0, seed=0, cfo_hz=0
     """Several FDD downlinks on one carrier, summed, then one noise draw.
 
     ``cells`` is a list of ``dict(pci, power_db, delay_samples)``, each with
-    ``ports``, ``port_gains``, ``res`` and ``quiet`` too if wanted (``_cell_native``'s), and
+    ``ports``, ``port_gains``, ``res``, ``quiet`` and ``idle`` too if wanted (``_cell_native``'s), and
     ``cfo_hz`` (its own offset, before the common ``cfo_hz``) and ``taps`` (``[(delay in native
     samples, gain)]``, a multipath channel; default one tap of 1) applied at the native rate. Cell ``i`` is
     the same native-rate waveform as ``synth_lte`` with ``seed + i`` (so cell 0
@@ -372,7 +372,7 @@ def synth_lte_multi(cells, bw_mhz=10, n_frames=10, snr_db=20.0, seed=0, cfo_hz=0
     signal power over noise power is ``snr_db`` (non-finite adds none). The
     noise generator is ``SeedSequence([seed, 1])``, not a cell seed. ``cfo_hz``
     then rotates the output exactly as in ``synth_lte``. ``idle`` is passed to
-    every cell.
+    every cell that has no ``idle`` of its own.
 
     Returns ``(iq complex64, fs)`` and nothing else.
     """
@@ -383,7 +383,7 @@ def synth_lte_multi(cells, bw_mhz=10, n_frames=10, snr_db=20.0, seed=0, cfo_hz=0
     native = None
     for i, cell in enumerate(cells):
         iq_i, native_i, offset, _rng = _cell_native(
-            bw_mhz, n_frames, cell['pci'], int(seed) + i, duplex=duplex, idle=idle,
+            bw_mhz, n_frames, cell['pci'], int(seed) + i, duplex=duplex, idle=cell.get('idle', idle),
             ports=cell.get('ports', 1), port_gains=cell.get('port_gains'), res=cell.get('res'),
             quiet=cell.get('quiet', False))
         if cell.get('taps'):
