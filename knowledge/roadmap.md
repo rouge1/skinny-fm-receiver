@@ -1623,14 +1623,11 @@ sequences and the CRS check) is the start.
   - [x] `iqlte._resample` lean, the same to the bit; `fingerprint` resampling
     once, not once a check; no copies for length checks; cancellation's cache
     bounded (2026-10-26: 1.9 GB a second, from 4.5; output byte-equal).
-  - [ ] The fingerprint on a bounded window (say the first second), the
-    decoders on the whole span: memory then flat in the span but for the
-    samples themselves. Changes what `cells` sees on a long span: check the
-    cell lists stay the same on the recordings.
-  - [ ] The decoders reading the file through a memmap, the carrier's offset
-    passed to them (`center_offset_hz`) instead of mixing the whole span:
-    no copy of the span at all. Then `MAX_SPAN_S` can grow (6 to 10 s for
-    the other SI).
+  - [x] The fingerprint on the span's first second (`FINGERPRINT_S`), our own
+    decoders on the whole span read from the file as they go
+    (`iqmeasure.IQView`, mixed per slice, the same samples to the bit);
+    `MAX_SPAN_S` 2 -> 10 s (2026-10-26: 2.0 GB at 1 s and at 6 s; output up
+    to 1 s byte-equal).
   - [ ] The fingerprint's folds (CP alignment, PSS, `cells`) accumulated a
     frame at a time, if a bounded window is not enough.
 - [ ] Cancelling a cell of another timing (another site): the rebuilt signal

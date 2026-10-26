@@ -32,9 +32,14 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fm_receiver import iqmeasure, iqlte, iqlte_decode, iqlte_phy  # noqa: E402
 
-# Default look, and the longest look. A longer request is cut to the cap.
+# Default look, and the longest look. A longer request is cut to the cap. Our own
+# decoders (--mib, --pdcch, --pdsch) read the whole span from the file as they go
+# (iqmeasure.IQView), so it costs no memory; the fingerprint, which holds what it
+# reads several times over (about 1.9 GB a second at 20 MS/s), looks at its first
+# FINGERPRINT_S only.
 DEFAULT_SPAN_S = 0.2
-MAX_SPAN_S = 2.0
+MAX_SPAN_S = 10.0
+FINGERPRINT_S = 1.0
 # What --decode reads from t0: SIB24 repeats every 512 frames (5.12 s), so 6 s
 # holds one of every SI message; a longer request is cut to the cap.
 DEFAULT_SI_S = 6.0
@@ -58,11 +63,11 @@ def _missing(name):
     return 2
 
 
-def _own_sib1(sl, cell, block_hz, known=None):
+def _own_sib1(iq, rate, cell, block_hz, known=None):
     """``own_sib1`` of a cell: our own SIB1 decode (``iqlte_phy.sib1``, ``known`` cells taken
     out), and the fields pycrate reads from its bytes; with the decode itself, which
     ``iqlte_phy.known_cell`` takes, as the second value."""
-    got = iqlte_phy.sib1(sl.iq, sl.rate, cell, cell['own_mib'], cell.get('own_pdcch'), carrier_hz=block_hz,
+    got = iqlte_phy.sib1(iq, rate, cell, cell['own_mib'], cell.get('own_pdcch'), carrier_hz=block_hz,
                          known=known)
     if got is None:
         return None, None
@@ -76,8 +81,9 @@ def _own_sib1(sl, cell, block_hz, known=None):
     return got, full
 
 
-def _own_cells(sl, cells, block_hz, pdcch, pdsch):
-    """Our own decode of each FDD cell (``own_mib``, ``own_pdcch``, ``own_sib1``), strongest first,
+def _own_cells(iq, rate, cells, block_hz, pdcch, pdsch):
+    """Our own decode of each FDD cell (``own_mib``, ``own_pdcch``, ``own_sib1``) over ``iq`` (the
+    whole span, an ``iqmeasure.IQView``), strongest first,
     each with the cells decoded before it taken out (roadmap Round 29.5: sectors of one site send
     their broadcast on the same REs; ``own_known`` lists the PCIs taken out)."""
     known = []
@@ -86,14 +92,14 @@ def _own_cells(sl, cells, block_hz, pdcch, pdsch):
             continue
         use = list(known) or None
         cell['own_known'] = [k['pci'] for k in known]
-        cell['own_mib'] = iqlte_phy.pbch(sl.iq, sl.rate, cell, carrier_hz=block_hz, known=use)
+        cell['own_mib'] = iqlte_phy.pbch(iq, rate, cell, carrier_hz=block_hz, known=use)
         if pdcch or pdsch:
-            cell['own_pdcch'] = iqlte_phy.sib1_dcis(sl.iq, sl.rate, cell, cell['own_mib'], carrier_hz=block_hz,
+            cell['own_pdcch'] = iqlte_phy.sib1_dcis(iq, rate, cell, cell['own_mib'], carrier_hz=block_hz,
                                                     known=use)
         full = None
         if pdsch:
-            cell['own_sib1'], full = _own_sib1(sl, cell, block_hz, use)
-        kc = iqlte_phy.known_cell(sl.rate, cell, cell['own_mib'], cell.get('own_pdcch'), full,
+            cell['own_sib1'], full = _own_sib1(iq, rate, cell, block_hz, use)
+        kc = iqlte_phy.known_cell(rate, cell, cell['own_mib'], cell.get('own_pdcch'), full,
                                   carrier_hz=block_hz)
         if kc is not None:
             known.append(kc)
@@ -137,7 +143,7 @@ def _json_num(value):
 
 
 def _span(args):
-    """``(t0, t1)`` in seconds. The default is 0.2 s from ``t0``; longer than 2 s is cut."""
+    """``(t0, t1)`` in seconds. The default is 0.2 s from ``t0``; longer than ``MAX_SPAN_S`` is cut."""
     t0 = 0.0 if args.t0 is None else float(args.t0)
     if args.t1 is None:
         t1 = t0 + DEFAULT_SPAN_S
@@ -187,7 +193,7 @@ def _cells_of(fp):
     return out
 
 
-def _card(path, block_hz, sl, fp, sss, decode, cells):
+def _card(path, block_hz, sl, fp, sss, decode, cells, seconds):
     nfft = fp.get('nfft')
     nfft = None if nfft is None else int(nfft)
     pci = fp.get('pci')
@@ -219,7 +225,8 @@ def _card(path, block_hz, sl, fp, sss, decode, cells):
         'file': path,
         'block_center_hz': _json_num(block_hz),
         'rate_sps': _json_num(sl.rate),
-        'duration_s': _json_num(sl.t1 - sl.t0),
+        'duration_s': _json_num(seconds),
+        'fingerprint_s': _json_num(sl.t1 - sl.t0),
         'verdict': fp.get('verdict'),
         'nid2': nid2,
         'nid1': nid1,
@@ -352,7 +359,7 @@ def main(argv=None):
                     help='Hz of the LTE carrier (default: the file centre)')
     ap.add_argument('--t0', type=float, metavar='S', help='start of the span, seconds (default 0)')
     ap.add_argument('--t1', type=float, metavar='S',
-                    help='end of the span, seconds (default t0+0.2; at most 2 s is read)')
+                    help='end of the span, seconds (default t0+0.2; at most 10 s; the fingerprint reads its first 1 s)')
     ap.add_argument('--rate', type=float, metavar='R',
                     help='samples/s, for a .cfile with no .sigmf-meta')
     ap.add_argument('--center', type=float, metavar='HZ',
@@ -394,12 +401,17 @@ def main(argv=None):
         src = iqmeasure.open_iq(args.file, rate=args.rate, center_hz=args.center)
         block_hz = src.center_hz if args.block_center is None else float(args.block_center)
         # max_rate at the file rate: extract reads the span in chunks and does
-        # not decimate. The mix below is what centres the block.
+        # not decimate. The mix below is what centres the block. The fingerprint
+        # holds its span: only the first FINGERPRINT_S of it.
         sl = iqmeasure.extract(
-            args.file, t0=t0, t1=t1, band=None,
+            args.file, t0=t0, t1=min(t1, t0 + FINGERPRINT_S), band=None,
             max_rate=float(src.rate),
             rate=args.rate, center_hz=args.center)
         sl = sl._replace(iq=iqlte.mix_to_dc(sl.iq, sl.rate, block_hz - float(src.center_hz)))
+        # Our own decoders read the whole span, from the file as they go, mixed alike.
+        i0 = int(round(sl.t0 * float(src.rate)))
+        span = src.view(i0, min(int(src.samples), int(round(t1 * float(src.rate)))),
+                        block_hz - float(src.center_hz))
     except iqmeasure.IQSourceError as exc:
         return _refuse(exc)
     except OSError as exc:
@@ -408,7 +420,7 @@ def main(argv=None):
     fp, sss = _fingerprint(sl.iq, sl.rate)
     cells = _cells_of(fp)
     if args.mib or args.pdcch or args.pdsch:
-        _own_cells(sl, cells, block_hz, args.pdcch, args.pdsch)
+        _own_cells(span, sl.rate, cells, block_hz, args.pdcch, args.pdsch)
     decode = None
     if args.decode:
         try:
@@ -417,7 +429,7 @@ def main(argv=None):
             return _refuse(exc)
         if isinstance(decode, int):
             return decode
-    card = _card(args.file, block_hz, sl, fp, sss, decode, cells)
+    card = _card(args.file, block_hz, sl, fp, sss, decode, cells, len(span) / float(src.rate))
     json.dump(card, sys.stdout, indent=2, allow_nan=False)
     sys.stdout.write('\n')
     return 0

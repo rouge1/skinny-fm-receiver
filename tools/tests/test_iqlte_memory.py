@@ -11,13 +11,21 @@ Synthetic only (PCI 123). What the checks pin:
 - ``fingerprint`` resamples a 20 MS/s capture once, not once a check, and gives the same result
   as with no sharing (``_fingerprint`` called alone); the shared blocks are read-only and gone
   after the call;
-- a known cell keeps at most ``_KNOWN_CACHE`` rebuilt subframes, however long the span.
+- a known cell keeps at most ``_KNOWN_CACHE`` rebuilt subframes, however long the span;
+- ``iqmeasure.IQView`` (what ``iq-lte`` hands our own decoders): its slices equal the span
+  extracted and mixed with ``iqlte.mix_to_dc``, to the bit, off-centre too;
+- ``tools/iq-lte FILE --mib`` on a 1.5 s 1.4 MHz cell: the fingerprint reads 1 s
+  (``fingerprint_s``), the MIB decoder all 1.5 s (150 frames).
 
 Run:  PYTHONPATH=tools python tools/tests/test_iqlte_memory.py   (about 10 s)
 """
 
+import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import tracemalloc
 
 import numpy as np
@@ -26,7 +34,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from tests import lte_synth, test_iqlte_cancel as C  # noqa: E402
-from fm_receiver import iqlte, iqlte_phy as L  # noqa: E402
+from fm_receiver import iqlte, iqlte_phy as L, iqmeasure  # noqa: E402
 
 RESULTS = []
 
@@ -158,10 +166,65 @@ def check_known_cache():
     expect("a known cell keeps at most _KNOWN_CACHE rebuilt subframes over a 24-frame span", bounded)
 
 
+def mib_cell(seconds, fs=1.92e6):
+    """A 1.4 MHz cell (PCI 123, 1 port) sending its MIB in every frame for ``seconds``."""
+    res_k = L.pbch_res(123)
+    mib = dict(dl_bandwidth=0, phich_duration=0, phich_resource=0)
+
+    def res(f):
+        sfn = f % 1024
+        y = L.encode_pbch(dict(mib, sfn=sfn - sfn % 4), 123, 1)[:, sfn % 4]
+        return [(0, 7 + l, res_k[res_k[:, 0] == l, 1], y[0, res_k[:, 0] == l]) for l in range(4)]
+    return lte_synth.synth_lte(bw_mhz=1.4, n_frames=int(round(seconds * 100)), pci=123, snr_db=15.0, seed=8,
+                               fs=fs, res=res)
+
+
+def check_view():
+    folder = tempfile.mkdtemp(prefix='iqlte-memory-')
+    try:
+        iq, fs = mib_cell(1.5)
+        base = os.path.join(folder, 'lte')
+        iq.astype(np.complex64).tofile(base + '.cfile')
+        centre = 700e6
+        with open(base + '.sigmf-meta', 'w') as fh:
+            json.dump({'global': {'core:datatype': 'cf32_le', 'core:sample_rate': fs},
+                       'captures': [{'core:sample_start': 0, 'core:frequency': centre}]}, fh)
+
+        def same():
+            src = iqmeasure.open_iq(base + '.cfile')
+            bad = []
+            for mix in (0.0, 123456.7, -250e3):
+                sl = iqmeasure.extract(base + '.cfile', t0=0.2, t1=1.1, band=None, max_rate=fs)
+                whole = iqlte.mix_to_dc(sl.iq, sl.rate, mix)
+                v = src.view(int(round(0.2 * fs)), int(round(1.1 * fs)), mix)
+                for a, b in ((0, 1000), (12345, 67890), (len(v) - 500, len(v) + 50), (len(v), len(v) + 5)):
+                    if not np.array_equal(v[a:b], whole[a:b]):
+                        bad.append((mix, a, b))
+                if len(v) != len(whole):
+                    bad.append(('len', len(v), len(whole)))
+            return not bad, bad
+        expect("IQView: slices equal the extracted span mixed by mix_to_dc, to the bit, off-centre too", same)
+
+        def cli():
+            env = dict(os.environ, FMRX_LTE_TOOLS=folder)
+            r = subprocess.run([sys.executable, os.path.join(os.path.dirname(HERE), 'iq-lte'), base + '.cfile',
+                                '--mib', '--t1', '1.5'], capture_output=True, text=True, timeout=300, env=env)
+            out = json.loads(r.stdout) if r.returncode == 0 else {}
+            own = [(c.get('own_mib') or {}) for c in out.get('cells', []) if c.get('pci') == 123]
+            return (r.returncode == 0 and abs(out.get('fingerprint_s', 0) - 1.0) < 0.005
+                    and abs(out.get('duration_s', 0) - 1.5) < 0.005 and own and own[0].get('mib')
+                    and own[0].get('frames', 0) >= 148), (r.stderr[-300:], out.get('fingerprint_s'),
+                                                          out.get('duration_s'), own[:1] and own[0].get('frames'))
+        expect("iq-lte --mib on 1.5 s: the fingerprint reads 1 s, the MIB decoder all 1.5 s", cli)
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def main():
     check_resample()
     check_fingerprint()
     check_known_cache()
+    check_view()
     failed = [n for n, ok in RESULTS if not ok]
     print(f"{len(RESULTS) - len(failed)} ok, {len(failed)} FAIL of {len(RESULTS)}")
     return 1 if failed else 0

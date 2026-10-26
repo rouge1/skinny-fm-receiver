@@ -74,7 +74,7 @@ PCI = 123
 FRAME = 153600            # samples per 10 ms frame at 15.36 MS/s
 HALF = 76800
 RATE_DEC = 15.36e6        # what pdsch_ue reads (10 MHz)
-KEYS = ('file', 'block_center_hz', 'rate_sps', 'duration_s', 'verdict', 'nid2', 'nid1',
+KEYS = ('file', 'block_center_hz', 'rate_sps', 'duration_s', 'fingerprint_s', 'verdict', 'nid2', 'nid1',
         'pci', 'nfft', 'bandwidth_mhz', 'half_frame', 'frame_offset_samples', 'checks',
         'decode')
 MIB_KEYS = ('pci', 'ports', 'prb', 'type', 'cp', 'sfn')
@@ -603,16 +603,16 @@ def group_structure():
     expect('A  --t0 0.1 --t1 0.2: duration 0.1 s, still lte', span)
 
     def long_span():
-        """A 3 s request on a 3 s file at 1 MS/s: the span is limited to 2 s (the spec
-        says a longer span is allowed up to 2 s). Exit 0 and duration_s <= 2 is the
-        expected behaviour here; a refusal would also be a reading of the spec."""
+        """A 12 s request on a 12 s file at 1 MS/s: the span is cut to 10 s (MAX_SPAN_S,
+        2026-10-26: our own decoders read it from the file as they go), and the
+        fingerprint reads its first 1 s (FINGERPRINT_S). Exit 0."""
         path = once('long-noise', lambda: write_recording(
-            'long-noise', lte_negatives.synth_noise(seed=0, fs=1e6, dur=3.0)[0], 1e6, CENTRE))
-        r = run_tool([path, '--t0', '0', '--t1', '3'])
+            'long-noise', lte_negatives.synth_noise(seed=0, fs=1e6, dur=12.0)[0], 1e6, CENTRE))
+        r = run_tool([path, '--t0', '0', '--t1', '12'])
         return printed(r, lambda c: (
-            isinstance(c.get('duration_s'), (int, float)) and 0 < c['duration_s'] <= 2.0 + 0.005,
-            f"duration_s {c.get('duration_s')!r}"))
-    expect('A  a span asked as 3 s: exit 0, duration_s <= 2', long_span)
+            near(c.get('duration_s'), 10.0, 0.005)[0] and near(c.get('fingerprint_s'), 1.0, 0.005)[0],
+            f"duration_s {c.get('duration_s')!r}, fingerprint_s {c.get('fingerprint_s')!r}"))
+    expect('A  a span asked as 12 s: exit 0, duration_s 10, fingerprint_s 1', long_span)
 
     def sdvr_iq():
         r = run_tool([lte_sdvr(), '--block-center', BLOCK_S])

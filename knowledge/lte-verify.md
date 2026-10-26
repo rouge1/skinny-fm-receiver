@@ -63,7 +63,7 @@ Uplink, bursty, and wideband OFDM that is not LTE come out as not `lte`.
 ```sh
 tools/iq-lte CAPTURE.cfile                                # the structure, as JSON
 tools/iq-lte CAPTURE.cfile --block-center 751000000       # the LTE carrier is not at the file centre
-tools/iq-lte CAPTURE.cfile --t0 1 --t1 1.2                # a span (default 0.2 s from 0; at most 2 s)
+tools/iq-lte CAPTURE.cfile --t0 1 --t1 1.2                # a span (default 0.2 s from 0; at most 10 s, the fingerprint on its first 1 s)
 tools/iq-lte CAPTURE.cfile --rate 20000000 --center 751000000   # a bare .cfile with no .sigmf-meta
 tools/iq-lte CAPTURE.sdvr                                 # an IQ Sceptre DVR works too
 tools/iq-lte CAPTURE.cfile --decode                       # also the MIB and SIB1 (needs srsRAN, below)
@@ -548,6 +548,7 @@ the 5 ms half-frame, so the decode tries both boundaries.
 | 1 s | 4.5 GB, 35 s | 2.0 GB, 21 s |
 | 2 s | 9.0 GB, 66 s | 3.8 GB, 43 s |
 | 6 s (fingerprint alone) | over 12 GB | over 12 GB |
+| 6 s, the fingerprint on its first second, the decoders reading the file | (2 s at most) | 2.0 GB, 96 s |
 
 Where it went: the fingerprint (`iqlte`), never our own decoders, which
 read the span in small cuts. `iqlte._resample` took the whole span to a
@@ -561,10 +562,16 @@ length checks no longer copy the span. `iq-lte`'s output on the three
 recordings is byte-for-byte the same. Cancellation's rebuilt subframes are
 kept for the last few frames only (`_KNOWN_CACHE`), not the span.
 
-What is left grows at about 1.9 GB a second of span, from the fingerprint's
-own steps (the CP alignment and `cells` each take about four times the
-resampled block for a moment). Spans of several seconds (the other SI, 29.6,
-needs 6 s) need one of the steps in the roadmap's memory item.
+What is left of the fingerprint grows at about 1.9 GB a second (the CP
+alignment and `cells` each take about four times the resampled block for a
+moment), so it reads the first second of the span only (`FINGERPRINT_S`,
+`fingerprint_s` in the card). Our own decoders read the whole span, up to
+10 s, through `iqmeasure.IQView`: slices read from the file when the decoder
+cuts them (a cfile is a memmap), mixed as `mix_to_dc` mixes, the same samples
+to the bit. Memory is then flat in the span: 2.0 GB at 1 s and at 6 s. On
+the other 700 MHz carrier's 6.3 s recording the second cell read in every
+part of it (MIB in 193 frames, 311 of 314 SIB1 DCIs, SIB1 in 72 periods by
+summing). The output for spans up to 1 s is what it was, byte for byte.
 
 Tests: `tools/tests/test_iqlte_memory.py`.
 

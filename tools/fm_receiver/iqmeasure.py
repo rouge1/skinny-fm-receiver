@@ -128,6 +128,45 @@ class IQSource:
             return np.empty(0, dtype=np.complex64)
         return np.array(self._fetch(first, stop), dtype=np.complex64)
 
+    def view(self, i0, i1, mix_hz=0.0):
+        """Samples ``i0`` to ``i1`` as an :class:`IQView`: read when sliced, not held."""
+        return IQView(self, i0, i1, mix_hz)
+
+
+class IQView:
+    """Samples ``i0`` to ``i1`` of an :class:`IQSource`, read from the file only when sliced
+    (``x[a:b]``; ``len(x)``), so a decoder can walk seconds of a recording without holding them
+    (a cfile is a memmap). Each slice is mixed by -``mix_hz`` with its phase from the view's
+    first sample, as ``iqlte.mix_to_dc`` mixes a whole span: the same samples to the bit."""
+
+    ndim = 1
+    dtype = np.dtype(np.complex64)
+
+    def __init__(self, src, i0, i1, mix_hz=0.0):
+        self.src = src
+        self.i0 = min(max(0, int(i0)), src.samples)
+        self.n = max(0, min(int(i1), src.samples) - self.i0)
+        self.mix_hz = float(mix_hz)
+
+    def __len__(self):
+        return self.n
+
+    @property
+    def shape(self):
+        return (self.n,)
+
+    def __getitem__(self, key):
+        if not isinstance(key, slice) or key.step not in (None, 1):
+            raise TypeError('an IQView is read by plain slices, x[a:b]')
+        a, b, _step = key.indices(self.n)
+        if b <= a:
+            return np.empty(0, dtype=np.complex64)
+        y = self.src.read(self.i0 + a, b - a)
+        if abs(self.mix_hz) >= 1e-3:
+            t = np.arange(a, a + y.size) / self.src.rate
+            y = (y * np.exp(-2j * np.pi * self.mix_hz * t)).astype(np.complex64)
+        return y
+
 
 def _sidecar_meta(path):
     meta = os.path.splitext(path)[0] + '.sigmf-meta'

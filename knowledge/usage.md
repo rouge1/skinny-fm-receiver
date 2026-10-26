@@ -1279,15 +1279,24 @@ replies with the same document.
 ```sh
 tools/iq-lte CAPTURE.cfile                                # verdict, PCI, class, checks
 tools/iq-lte CAPTURE.cfile --block-center 751000000       # the carrier is not at the file centre
-tools/iq-lte CAPTURE.cfile --t0 1 --t1 1.2                # seconds 1 to 1.2 (at most 2 s is read)
+tools/iq-lte CAPTURE.cfile --t0 1 --t1 1.2                # seconds 1 to 1.2 (at most 10 s)
 tools/iq-lte CAPTURE.cfile --rate 20000000 --center 751000000   # a bare .cfile, no .sigmf-meta
 tools/iq-lte CAPTURE.cfile --decode --ports 4 2 1         # also the MIB and every SIB (outside srsRAN)
 tools/iq-lte CAPTURE.cfile --decode --si-seconds 2        # decode 2 s instead of 6 (slow SIBs may be missed)
 tools/iq-lte CAPTURE.cfile --mib --t1 1                   # each cell's MIB by our own decoder (no srsRAN)
 tools/iq-lte CAPTURE.cfile --pdcch --t1 1                 # and its SIB1 DCIs (CFI, format, allocation, MCS, RV)
 tools/iq-lte CAPTURE.cfile --pdsch --t1 1                 # and SIB1 itself, by our own decoder
+tools/iq-lte CAPTURE.cfile --pdsch --t1 6                 # 6 s: the fingerprint reads 1 s, the decoders 6
 ```
 
+- The span is at most 10 s. The fingerprint (verdict, checks, `cells`)
+  reads its first second only (`fingerprint_s`; `duration_s` is the span):
+  it holds what it reads several times over, about 2 GB a second at
+  20 MS/s. Our own decoders (`--mib`, `--pdcch`, `--pdsch`) read the whole
+  span from the file as they go, so a long span costs time (about 15 s a
+  second on a two-cell 10 MHz carrier with `--pdsch`), not memory: 2 GB at
+  1 s and at 6 s alike. A cell that only shows after the first second is not
+  found.
 - `--mib` adds `own_mib` to each FDD cell: its bandwidth (`n_rb`), PHICH
   settings, antenna ports and SFN, from our own numpy PBCH decoder. It reads
   every frame of the span (0.2 s by default, so 20 frames; `--t1` for more),
