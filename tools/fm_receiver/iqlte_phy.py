@@ -1665,7 +1665,8 @@ def known_cell(fs, cell, pbch_result, dci_result=None, sib1_result=None, center_
     """What a decoded cell is known to send, for cancelling it under a weaker one (roadmap Round
     29.5): from its PCI and MIB its CRS, PSS, SSS and PBCH in every frame; from ``dci_result``
     (``sib1_dcis``) its PCFICH and SIB1 DCI where a DCI passed its CRC; from ``sib1_result``
-    (``sib1``) its SIB1 PDSCH where that copy, alone or summed, passed. A DCI found only by
+    (``sib1``) its SIB1 PDSCH where that copy, alone or summed, passed, and the other copies of
+    the same 80 ms TTI (one transport block) where their DCI passed. A DCI found only by
     summing is left out unless its subframe's SIB1 passed alone: no CRC checked that subframe's
     CFI. None without a MIB."""
     mib = (pbch_result or {}).get('mib')
@@ -1681,6 +1682,16 @@ def known_cell(fs, cell, pbch_result, dci_result=None, sib1_result=None, center_
     for c in (sib1_result or {}).get('combined', []):
         for sfn in c['sfns']:
             tbs[int(sfn)] = c['hex']
+    # SIB1's four copies in an 80 ms TTI are one transport block (36.331 5.2.1.2): one known
+    # copy rebuilds the others whose DCI passed, where that DCI's size is the block's. Left
+    # in the samples, a weaker cell's failed copies held a third cell's under them.
+    by_tti = {}
+    for sfn, hx in tbs.items():
+        by_tti.setdefault(sfn // 8, hx)
+    for sfn, d in dcis.items():
+        hx = by_tti.get(sfn // 8)
+        if sfn not in tbs and hx and si_tbs(d) == len(hx) * 4:
+            tbs[sfn] = hx
     return {'pci': int(cell['pci']), 'mib': mib, 'ports': int(pbch_result['ports']),
             'frames': _cell_frames(fs, cell, pbch_result, center_offset_hz, carrier_hz),
             'dcis': dcis, 'tbs': tbs, 'cache': {}}

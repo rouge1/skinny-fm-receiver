@@ -16,9 +16,14 @@ cancelling). What the checks pin:
   together, one timing) every copy decodes alone;
 - ``tools/iq-lte FILE --pdsch`` on those three: the other site's cell read with both sectors known;
   with it listed before the second sector (5 dB down, the sector 7) and some SIB1 copy missed
-  alone, read once more with both known, every cell's SIB1 its own.
+  alone, read once more with both known, every cell's SIB1 its own;
+- the second sector and the other site's cell both 6 dB down: each read with the other known
+  (and the stronger sector), every SIB1 copy alone, because a known cell's failed copies are
+  rebuilt from a copy of the same 80 ms TTI that passed (the second sector 4 of 9 and the
+  other site's cell 5 of 9 before, the failed copies left in the samples); the known cell's
+  blocks cover every SFN whose DCI passed in a TTI with a block known.
 
-Run:  PYTHONPATH=tools python tools/tests/test_iqlte_timing.py   (about 40 s)
+Run:  PYTHONPATH=tools python tools/tests/test_iqlte_timing.py   (about 60 s)
 """
 
 import json
@@ -199,10 +204,40 @@ def check_sites():
            first)
 
 
+def check_equal():
+    tbs, hexes = blocks(3)
+    iq, fs = sites_iq(-6.0, -6.0, tbs)
+    cells = {c['pci']: c for c in iqlte.cells(iq, fs)}
+    state = {}
+
+    def tti():
+        ra = C.decode(iq, fs, cells[A])
+        ka = L.known_cell(fs, cells[A], *ra, carrier_hz=700e6)
+        rw = C.decode(iq, fs, cells[W], known=[ka])
+        kw = L.known_cell(fs, cells[W], *rw, carrier_hz=700e6)
+        tti_known = {s // 8 for s in kw['tbs']}
+        want = {s for s in kw['dcis'] if s // 8 in tti_known}
+        state['known'] = (ka, kw)
+        passed = {b['sfn'] for b in rw[2]['blocks'] if b.get('hex')}
+        return set(kw['tbs']) == want and len(want) > len(passed), (sorted(kw['tbs']), sorted(want), sorted(passed))
+    expect("a known cell: its SIB1 block on every SFN of a TTI with one known, where the DCI passed", tti)
+
+    def both():
+        ka, kw = state['known']
+        rb = C.decode(iq, fs, cells[B], known=[ka, kw])
+        kb = L.known_cell(fs, cells[B], *rb, carrier_hz=700e6)
+        sw = C.decode(iq, fs, cells[W], known=[ka, kb])[2]
+        return alone(rb[2], hexes[1]) and alone(sw, hexes[2]), \
+            (rb[2] and (rb[2]['decoded'], rb[2]['tried']), sw and (sw['decoded'], sw['tried']))
+    expect("the second sector and the other site's cell both 6 dB down: each read with the other known, "
+           "every SIB1 copy alone", both)
+
+
 def main():
     check_rebuild()
     check_pair()
     check_sites()
+    check_equal()
     failed = [n for n, ok in RESULTS if not ok]
     print(f"{len(RESULTS) - len(failed)} ok, {len(failed)} FAIL of {len(RESULTS)}")
     return 1 if failed else 0

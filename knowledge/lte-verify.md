@@ -518,11 +518,18 @@ out), not mixed with those measured on a reading cell's grid.
 strong as a site's second sector (on the other carrier they tie), so a cell
 left short (no MIB, or a SIB1 DCI or copy missed alone) is read once more
 with every other decoded cell known, and the second read is kept unless it
-is worse. On the synthetic signals that has not yet made a difference: with
-the other site's cell 5 dB down and the second sector 7, the other site's
-cell decodes 7 of 9 SIB1 copies alone either way. The site's estimate is made
-on its own grid with that cell still in it, 2 dB above the second sector,
-and one pass does not take it out first (successive passes would).
+is worse. What held such a pair back (2026-10-26) was not the order of the
+estimates: a second pass, each cell re-read with the others known, gained one
+copy of nine. It was the copies that failed: a known cell rebuilt only the
+SIB1 copies that passed their CRC, alone or summed, so each weaker cell's
+failed copies stayed in the samples, on the same RBs as the other's. SIB1's
+four copies in an 80 ms TTI are one transport block (36.331 5.2.1.2, the
+redundancy versions from 36.321 5.3.1), so a known cell now rebuilds every
+copy of a TTI in which one is known, where that copy's own DCI passed and
+gives the block's size. Synthetic, with the second sector and the other
+site's cell both 6 dB down: 4 and 5 of 9 copies alone before, 9 and 9 now in
+one pass; with the other site's cell 5 dB down and the second sector 7, 7 and
+8 of 9 before, 9 and 9 now (`test_iqlte_timing.py`).
 
 On real air (2026-10-26), the other 700 MHz carrier: `cells` lists a third
 PCI about 9 dB down whose frames start 5.045 ms after the site's (not half a

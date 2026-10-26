@@ -1645,13 +1645,20 @@ sequences and the CRS check) is the start.
   carries CRS at its timing (the site's second cell, as strong, stands at
   1.42 times the median that way; none there above 1.02): no cell sending
   CRS there. Limits: multipath echoes into the next symbol's prefix (20 to
-  24 dB deep with a 0.6 us two-tap channel); one pass (a site's estimate is
-  made with the other site's cell still in it).
+  24 dB deep with a 0.6 us two-tap channel); a known cell's SIB1 copies
+  that failed (now rebuilt from a copy of the same TTI, below).
   - [ ] The channel in time (an impulse response from the fit, the rebuilt
     symbols convolved with it) if a real other-site cell needs deeper than
     that.
-  - [ ] Successive passes (each timing's estimate made with the others
-    taken out), if a real other-site cell is as strong as a site's sector.
+  - [x] Successive passes (each timing's estimate made with the others
+    taken out), if a real other-site cell is as strong as a site's sector
+    (2026-10-26: tried, and not the limit: a second pass gained one copy of
+    nine. The limit was a weaker known cell's failed SIB1 copies, left in
+    the samples over a third cell's. SIB1's four copies in an 80 ms TTI are
+    one transport block, so `known_cell` now rebuilds every copy of a TTI
+    with one known, where its DCI passed: the second sector and the other
+    site's cell both 6 dB down read 4 and 5 of 9 copies alone before, 9 and 9
+    in one pass now. The real recordings' 1 s spans are unchanged.)
 
 Never on air yet, so tests only: 4 antenna ports, extended CP, TDD.
 
