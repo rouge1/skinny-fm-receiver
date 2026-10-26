@@ -21,9 +21,12 @@ cells' SIB1 where ``pdsch_ue`` reads none) are in the ops folder, not here. What
   and distributed on 1, 2 and 4 ports, RV cycling; 1C): ``sib1`` decodes every one, byte-equal;
 - combining (29.4): a weak cell whose copies mostly fail alone gives SIB1 summed within an
   80 ms period and across periods; SIB1 changing partway, no summed decode is ever wrong;
+- the PDCCH summed (29.4): a cell whose SIB1 DCIs (AL4) mostly fail alone gives most of them by
+  sums of copies with the same k = (SFN / 2) mod 4 (DCI 1A carries the RV), each equal to the
+  DCI sent; pure noise summed gives none;
 - ``tools/iq-lte FILE --pdsch`` adds ``own_sib1``.
 
-Run:  PYTHONPATH=tools python tools/tests/test_iqlte_pdsch.py   (about 10 s)
+Run:  PYTHONPATH=tools python tools/tests/test_iqlte_pdsch.py   (about 15 s)
 """
 
 import json
@@ -49,6 +52,8 @@ RESULTS = []
 #: sum across periods appears; at -9 dB every sum stays in its period, at -12 dB none decodes.
 COMBINE_RIV = 50 * 1 + 10
 COMBINE_SNR_DB = -10.0
+#: The PDCCH summing check's SNR: AL4 DCIs decode alone in 2 of 17 subframes there, 15 with sums.
+PDCCH_SUM_SNR_DB = -12.0
 
 
 def report(name, ok, detail=''):
@@ -247,6 +252,28 @@ def check_end_to_end():
                 and across and all(h in hexes for h in reported)), detail
     expect("combining: copies summed within an 80 ms period, then across periods; SIB1 changing, never a wrong block",
            combining)
+
+    def pdcch_sums():
+        tb = rng.integers(0, 2, 256).astype(np.uint8)
+        make = dci_1a(COMBINE_RIV, 6, 0)
+        iq, fs = cell_iq(2, make, tb, snr_db=PDCCH_SUM_SNR_DB, n_frames=34, level=4, cce=4, seed=8)
+        cell = next(c for c in iqlte.cells(iq, fs) if c['pci'] == PCI)
+        pb = L.pbch(iq, fs, cell, carrier_hz=700e6)
+        alone = L.sib1_dcis(iq, fs, cell, pb, carrier_hz=700e6, combine=False)
+        got = L.sib1_dcis(iq, fs, cell, pb, carrier_hz=700e6)
+        summed = [d for d in got['dcis'] if 'combined' in d]
+        wrong = [d['sfn'] for d in got['dcis'] if d['bits'] != ''.join(map(str, make(d['sfn'])[0]))]
+        same_k = all(len({(s // 2) % 4 for s in d['combined']}) == 1 for d in summed)
+        noise = np.random.default_rng(14)
+        sizes = (('1A', L.dci_1a_bits(50)), ('1C', L.dci_1c_bits(50)))
+        false = sum(len(L._dci_sums([(2 * i, noise.normal(0, 1, 72 * 16), np.ones(16), 1) for i in range(16)],
+                                    sizes, 50, L.SI_RNTI)) for _ in range(20))
+        return (got['subframes'] >= 16 and len(alone['dcis']) <= got['subframes'] // 4
+                and len(got['dcis']) >= 3 * got['subframes'] // 4 and not wrong and same_k
+                and any(len(d['combined']) >= 3 for d in summed) and false == 0), \
+            (got['subframes'], len(alone['dcis']), len(got['dcis']), wrong, false)
+    expect("PDCCH summed: SIB1 DCIs by sums of copies of one k, each the DCI sent; none from noise",
+           pdcch_sums)
 
     def cli():
         tb = rng.integers(0, 2, 256).astype(np.uint8)

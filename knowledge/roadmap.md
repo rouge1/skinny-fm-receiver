@@ -1595,9 +1595,13 @@ sequences and the CRS check) is the start.
   signals about 4 to 6 dB (copies alone all fail by -7 dB a RE, sums decode
   to -11 dB); the test, at -10 dB, has no copy alone and three sums, one
   across periods, with SIB1 changing midway.
-  Not done, not needed so far: the PDCCH summed (grouped by k = (SFN/2) mod 4,
-  as DCI 1A carries the RV): every SIB1 DCI on the pair, the weaker cell's
-  too, decoded alone.
+  The PDCCH summed too (`iqlte_phy.sib1_dcis(combine=True)`, `combined` on a
+  DCI): subframes with no DCI alone, copies with the same k = (SFN/2) mod 4
+  (DCI 1A carries the RV; 1C's across all k), up to four in a row, kept when
+  the CRC passes and the soft bits hold the re-encoded DCI. On synthetic
+  signals at -12 dB (AL4) 2 of 17 DCIs alone, 15 with sums, all equal to the
+  DCI sent; pure noise summed gives none. Not needed on real air yet: every
+  SIB1 DCI on the pair, the weaker cell's too, decodes alone.
 - [ ] 29.5 Cancellation: the other cell's CRS (always on, known from its PCI)
   taken out of every subframe first; then its decoded PDCCH and PDSCH, as
   28.5's (cells strongest first, the strongest's frequency offset). Goal:

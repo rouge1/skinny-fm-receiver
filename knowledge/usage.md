@@ -1293,6 +1293,14 @@ tools/iq-lte CAPTURE.cfile --pdsch --t1 1                 # and SIB1 itself, by 
   every frame of the span (0.2 s by default, so 20 frames; `--t1` for more),
   and reports a MIB only when two separate decodes agree. On real air it read
   every frame of three 700 MHz cells, the outside decoder agreeing.
+- `--pdcch` (implies `--mib`) adds `own_pdcch`: SIB1's DCIs in subframe 5 of
+  each even frame, from our own PCFICH and PDCCH decoder. `cfi` counts the
+  CFIs read, `subframes` the subframes tried, and `dcis` gives one entry per
+  DCI: `sfn`, `cfi`, aggregation `level`, first `cce`, `format` (1A or 1C)
+  and its fields, the payload `bits` and `snr_db`. Subframes where no DCI is
+  found alone are summed (copies with the same k = (SFN/2) mod 4, as DCI 1A
+  carries the RV; 1C's across all k). A DCI found that way has `combined`,
+  the SFNs summed.
 - `--pdsch` (implies `--pdcch` and `--mib`) adds `own_sib1`: SIB1 from our
   own PDSCH and turbo decoder, each SIB1 subframe of the span decoded alone
   (one every 20 ms). `blocks` gives each one's `sfn`, `rv`, `tbs`, `n_prb`,

@@ -399,8 +399,13 @@ A span can hold two SIB1s, and each block and sum keeps its own bytes.
 The gain, on the synthetic cell (2 PRBs, AL8): copies alone mostly fail
 at -5 dB a RE and all fail at -7 dB; sums still decode at -11 dB and stop
 at -12 dB, so about 4 to 6 dB. Cancellation (29.5) is left for cells further under a
-stronger one than this. The PDCCH is not summed: every SIB1 DCI on the
-pair, the weaker cell's too, decoded alone.
+stronger one than this. The PDCCH is summed the same way when a
+subframe's DCI fails alone, copies grouped by k = (SFN/2) mod 4 because
+DCI 1A carries the RV (1C's across all k). A summed DCI must pass the CRC
+and its soft bits must hold the re-encoded DCI, a guard on the 16-bit CRC
+tried many times over. On synthetic signals at -12 dB (AL4), 2 of 17 DCIs
+decode alone and 15 with sums. On real air nothing needed it: every SIB1
+DCI on the pair, the weaker cell's too, decoded alone.
 
 Tests: `tools/tests/test_iqlte_pdsch.py`.
 

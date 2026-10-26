@@ -1361,21 +1361,72 @@ def _cell_frames(fs, cell, pbch_result, center_offset_hz, carrier_hz):
     return _PbFrames(fs, center_offset_hz, offset, pbch_result['cfo_hz'], carrier_hz)
 
 
-def sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz=0.0, carrier_hz=None, rnti=SI_RNTI):
+def _dci_sum(run, use, n_rb, rnti):
+    """The DCI (format, payload bits, fields, level, first CCE) the soft bits of ``run`` hold
+    summed, candidate by candidate, or None."""
+    n_cce = min(len(m[1]) for m in run) // 72
+    for level, cce0 in common_candidates(n_cce):
+        seg = sum(m[1][72 * cce0:72 * (cce0 + level)] for m in run)
+        for fmt, size in use:
+            a = decode_dci(seg, size, rnti)
+            if a is None or codeword_score(seg, 1.0 - 2.0 * encode_dci(a, rnti, level)) < _DCI_SUM_SCORE:
+                continue
+            fields = parse_dci_1a(a, n_rb) if fmt == '1A' else parse_dci_1c(a, n_rb)
+            if fmt == '1A' and not fields['format1a']:
+                continue
+            return fmt, a, fields, level, cce0
+    return None
+
+
+def _dci_sums(missed, sizes, n_rb, rnti):
+    """SIB1 DCIs from the subframes none was found in, ``missed`` [(sfn, llr, power, cfi)] (the
+    descrambled PDCCH soft bits in CCE order, each CCE's mean |h|^2 / noise, the CFI), their
+    candidates summed (roadmap Round 29.4). Format 1A carries the RV, which follows
+    k = (SFN / 2) mod 4, so its copies are summed by k; 1C's by k, then all together. Up to
+    ``_COMBINE_PERIODS`` copies in a row, a decode after each; a sum is kept when its CRC passes
+    and its soft bits hold the re-encoded DCI (``_DCI_SUM_SCORE``). Returns DCI dicts, one per
+    subframe of a sum (``combined``: the sum's SFNs)."""
+    groups = [(sizes, [[m for m in missed if (m[0] // 2) % 4 == k] for k in range(4)]),
+              ([s for s in sizes if s[0] == '1C'], [missed])]
+    out, done = [], set()
+    for use, runs in groups:
+        for items in runs:
+            run = []
+            for item in items:
+                if item[0] in done:
+                    continue
+                run = run[-(_COMBINE_PERIODS - 1):] + [item]
+                got = _dci_sum(run, use, n_rb, rnti) if len(run) > 1 else None
+                if got is None:
+                    continue
+                _fmt, a, fields, level, cce0 = got
+                sfns = [m[0] for m in run]
+                for m in run:
+                    out.append(dict(fields, sfn=m[0], level=level, cce=cce0, cfi=m[3],
+                                    bits=''.join(str(int(b)) for b in a), combined=sfns,
+                                    snr_db=float(10 * np.log10(max(np.mean(m[2][cce0:cce0 + level]), 1e-12)))))
+                done.update(sfns)
+                run = []
+    return out
+
+
+def sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz=0.0, carrier_hz=None, rnti=SI_RNTI, combine=True):
     """SIB1's DCIs (formats 1A and 1C with CRC scrambled by SI-RNTI) of one cell, in subframe 5
-    of every even frame, by our own PCFICH and PDCCH decode (roadmap Round 29.2).
+    of every even frame, by our own PCFICH and PDCCH decode (roadmap Round 29.2); with
+    ``combine``, the subframes none was found in summed (``_dci_sums``, 29.4).
 
     ``pbch_result`` is ``pbch``'s for the cell (its MIB: bandwidth, PHICH, ports, SFN). Each
     subframe: the CFI from the PCFICH, then the common search space's candidates (level 8,
     then 4) for both sizes. Returns a dict: ``cfi`` (counts), ``subframes`` (read) and ``dcis``,
-    one per DCI: ``sfn``, ``level``, ``cce``, ``format`` and its fields, ``bits``, ``snr_db``."""
+    one per DCI: ``sfn``, ``level``, ``cce``, ``format`` and its fields, ``bits``, ``snr_db``
+    (``combined``, the SFNs summed, on one found by summing), in SFN order of the span."""
     mib = (pbch_result or {}).get('mib')
     if not mib or not mib.get('n_rb') or mib['n_rb'] not in _NFFT_FOR_RB:
         return None
     pci, n_rb, ports = int(cell['pci']), int(mib['n_rb']), int(pbch_result['ports'])
     frames = _cell_frames(fs, cell, pbch_result, center_offset_hz, carrier_hz)
     sizes = (('1A', dci_1a_bits(n_rb)), ('1C', dci_1c_bits(n_rb)))
-    quads = {}
+    quads, missed = {}, []
     out = {'cfi': {}, 'subframes': 0, 'dcis': []}
     for f in range(frames.count(len(iq))):
         sfn = (int(mib['sfn']) + f) % 1024
@@ -1401,7 +1452,7 @@ def sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz=0.0, carrier_hz=None, 
         hh = h[:, ls, ks]
         llr = soft_bits(r, hh[:ports], noise, ports) * (1.0 - 2.0 * pdcch_scrambling(pci, 5, 2 * len(r)))
         n_cce = len(q) // 9
-        taken = set()
+        taken, found = set(), len(out['dcis'])
         for level, cce0 in common_candidates(n_cce):
             if set(range(cce0, cce0 + level)) & taken:
                 continue
@@ -1423,11 +1474,23 @@ def sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz=0.0, carrier_hz=None, 
                                         bits=''.join(str(int(b)) for b in a),
                                         snr_db=float(10 * np.log10(max(sig / noise, 1e-12)))))
                 break
+        if len(out['dcis']) == found:
+            power = np.abs(hh[0]) ** 2
+            power = np.array([np.mean(power[36 * c:36 * (c + 1)]) for c in range(n_cce)]) / noise
+            missed.append((sfn, llr[:72 * n_cce], power, cfi))
+    if combine and len(missed) > 1:
+        out['dcis'] += _dci_sums(missed, sizes, n_rb, rnti)
+        start = int(mib['sfn'])                           # the span's order: the SFN may wrap
+        out['dcis'].sort(key=lambda d: (d['sfn'] - start) % 1024)
     return out
 
 
-#: The most 80 ms periods summed across (``sib1``), so a SIB1 that changed drops out of the sum.
+#: The most 80 ms periods summed across (``sib1``; copies of one k for the PDCCH, ``_dci_sums``),
+#: so a SIB1 or DCI that changed drops out of the sum.
 _COMBINE_PERIODS = 4
+#: How strongly a summed candidate's soft bits must hold its re-encoded DCI (``codeword_score``,
+#: about 0 +/- 1 where none is sent): a guard on the 16-bit CRC, tried many times over in sums.
+_DCI_SUM_SCORE = 5.0
 
 
 def _sum_copies(items, ports, every=True):
