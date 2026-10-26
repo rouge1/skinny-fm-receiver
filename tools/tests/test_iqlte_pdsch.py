@@ -1,4 +1,4 @@
-"""Roadmap Round 29.3: our own LTE PDSCH and DL-SCH decoder for SIB1 (``iqlte_phy.turbo_encode``,
+"""Roadmap Rounds 29.3 and 29.4: our own LTE PDSCH and DL-SCH decoder for SIB1 (``iqlte_phy.turbo_encode``,
 ``turbo_decode``, ``tc_rate_match``, ``segmentation``, ``si_allocation``, ``si_tbs``, ``pdsch_res``,
 ``dlsch_decode``, ``sib1``) and ``iq-lte --pdsch``.
 
@@ -19,6 +19,8 @@ cells' SIB1 where ``pdsch_ue`` reads none) are in the ops folder, not here. What
   without the synchronisation signals;
 - end to end: a synthetic 10 MHz cell sending SIB1 in subframe 5 of even frames (1A localized
   and distributed on 1, 2 and 4 ports, RV cycling; 1C): ``sib1`` decodes every one, byte-equal;
+- combining (29.4): a weak cell whose copies mostly fail alone gives SIB1 summed within an
+  80 ms period and across periods; SIB1 changing partway, no summed decode is ever wrong;
 - ``tools/iq-lte FILE --pdsch`` adds ``own_sib1``.
 
 Run:  PYTHONPATH=tools python tools/tests/test_iqlte_pdsch.py   (about 10 s)
@@ -43,6 +45,10 @@ PCI = 123
 SFN0 = 516
 MIB = dict(dl_bandwidth=3, phich_duration=0, phich_resource=2, sib1_br=0)     # 50 RB, PHICH 1
 RESULTS = []
+#: The combining check's SIB1: 2 PRBs at a per-RE SNR where a copy alone fails. At -10 and -11 dB a
+#: sum across periods appears; at -9 dB every sum stays in its period, at -12 dB none decodes.
+COMBINE_RIV = 50 * 1 + 10
+COMBINE_SNR_DB = -10.0
 
 
 def report(name, ok, detail=''):
@@ -162,9 +168,11 @@ def check_mapping():
     expect("PDSCH REs per PRB: 120 (2 ports, CFI 3), 136 (4 ports, CFI 1); central 96, subframe 0 52", res)
 
 
-def cell_iq(ports, dcis, tb, snr_db=3.0, n_frames=12):
-    """A synthetic cell whose subframe 5 of even frames carries ``dcis(sfn)``'s DCI and ``tb``."""
+def cell_iq(ports, dcis, tb, snr_db=3.0, n_frames=12, level=4, cce=4, seed=6):
+    """A synthetic cell whose subframe 5 of even frames carries ``dcis(sfn)``'s DCI and ``tb``
+    (or ``tb(sfn)``)."""
     res_k = L.pbch_res(PCI)
+    tb_of = tb if callable(tb) else (lambda _sfn: tb)
 
     def res(f):
         sfn = (SFN0 + f) % 1024
@@ -174,14 +182,14 @@ def cell_iq(ports, dcis, tb, snr_db=3.0, n_frames=12):
         if sfn % 2 == 0:
             cfi = 1 + (sfn // 2) % 3
             a, fields, rv = dcis(sfn)
-            for p, l, ks, vals in L.control_res(PCI, 50, ports, cfi, '1', 'normal', 5, [(a, 4, 4)]):
+            for p, l, ks, vals in L.control_res(PCI, 50, ports, cfi, '1', 'normal', 5, [(a, level, cce)]):
                 out.append((p, 70 + l, ks, vals))
-            for p, ls, ks, vals in L.pdsch_res_values(tb, PCI, 50, ports, cfi, 5, L.si_allocation(fields, 50), rv):
+            for p, ls, ks, vals in L.pdsch_res_values(tb_of(sfn), PCI, 50, ports, cfi, 5, L.si_allocation(fields, 50), rv):
                 for l in np.unique(ls):
                     out.append((p, 70 + int(l), ks[ls == l], vals[ls == l]))
         return out
     gains = [1.0, 0.7 * np.exp(1.1j), 0.6 * np.exp(-2.0j), 0.8 * np.exp(0.4j)][:ports]
-    return lte_synth.synth_lte(bw_mhz=10, n_frames=n_frames, pci=PCI, snr_db=snr_db, seed=6, cfo_hz=250.0,
+    return lte_synth.synth_lte(bw_mhz=10, n_frames=n_frames, pci=PCI, snr_db=snr_db, seed=seed, cfo_hz=250.0,
                                ports=ports, port_gains=gains, res=res, idle=True)
 
 
@@ -217,6 +225,28 @@ def check_end_to_end():
                          sorted({b['rv'] for b in got['blocks'] if b['crc']}))
         return all(d >= t - 1 and t >= 5 and same and rvs == [0, 1, 2, 3] for d, t, same, rvs in out.values()), out
     expect("SF 5 SIB1 (1A localized/distributed on 1, 2, 4 ports, 1C; RV cycling): decoded, byte-equal", decode)
+
+    def combining():
+        tbs = [rng.integers(0, 2, 256).astype(np.uint8) for _ in range(2)]
+        hexes = [np.packbits(t).tobytes().hex() for t in tbs]
+        first = SFN0 // 8 + 2                              # SIB1 changes after two periods
+
+        def tb(sfn):
+            return tbs[0] if sfn // 8 < first else tbs[1]
+        iq, fs = cell_iq(2, dci_1a(COMBINE_RIV, 6, 0), tb, snr_db=COMBINE_SNR_DB, n_frames=34, level=8, cce=0,
+                         seed=7)
+        cell = next(c for c in iqlte.cells(iq, fs) if c['pci'] == PCI)
+        pb = L.pbch(iq, fs, cell, carrier_hz=700e6)
+        alone = L.sib1(iq, fs, cell, pb, carrier_hz=700e6, combine=False)
+        got = L.sib1(iq, fs, cell, pb, alone['dcis'], carrier_hz=700e6)
+        reported = [b['hex'] for b in got['blocks'] + got['combined'] if b.get('hex')]
+        detail = (alone['decoded'], alone['tried'], [(c['sfns'], hexes.index(c['hex']) if c['hex'] in hexes else None)
+                                                     for c in got['combined']])
+        across = [c for c in got['combined'] if len({s // 8 for s in c['sfns']}) > 1]
+        return (alone['tried'] >= 14 and alone['decoded'] <= alone['tried'] // 2 and len(got['combined']) >= 2
+                and across and all(h in hexes for h in reported)), detail
+    expect("combining: copies summed within an 80 ms period, then across periods; SIB1 changing, never a wrong block",
+           combining)
 
     def cli():
         tb = rng.integers(0, 2, 256).astype(np.uint8)

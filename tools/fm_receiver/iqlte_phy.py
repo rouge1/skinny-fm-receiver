@@ -917,21 +917,31 @@ def dlsch_encode(tb, e_len, rv, ports=1):
     return np.concatenate(out)
 
 
-def dlsch_decode(llr, tbs, rv, buffers=None, ports=1):
-    """A transport block of ``tbs`` bits from its descrambled soft bits (sent with ``rv``), or
-    None when the CRC fails; ``buffers`` (a list, one soft buffer a code block) is filled in
-    place for combining. Returns ``(bits or None, buffers)``."""
+def dlsch_buffers(llr, tbs, rv, buffers=None, ports=1):
+    """The code blocks' soft buffers (a list, one (3, K + 4) array a block) of a transport block
+    of ``tbs`` bits, its descrambled soft bits ``llr`` (sent with ``rv``) added into
+    ``buffers`` when given (soft combining)."""
     llr = np.asarray(llr, dtype=np.float64)
-    c, sizes, f, l = segmentation(int(tbs) + 24)
+    c, sizes, f, _l = segmentation(int(tbs) + 24)
     unit = 2 if ports == 1 else 4
-    if buffers is None:
-        buffers = [None] * c
-    blocks, at = [], 0
+    buffers = [None] * c if buffers is None else list(buffers)
+    at = 0
     for r, kr in enumerate(sizes):
         e = _block_e(len(llr), c, r, unit)
-        fr = f if r == 0 else 0
-        buffers[r] = tc_rate_recover(llr[at:at + e], kr, rv, buffers[r], fr)
+        buffers[r] = tc_rate_recover(llr[at:at + e], kr, rv, buffers[r], f if r == 0 else 0)
         at += e
+    return buffers
+
+
+def dlsch_decode(llr, tbs, rv, buffers=None, ports=1):
+    """A transport block of ``tbs`` bits from its descrambled soft bits (sent with ``rv``), or
+    None when the CRC fails, after adding them into ``buffers`` (``dlsch_buffers``; None for a
+    copy alone). Returns ``(bits or None, buffers)``."""
+    _c, sizes, f, l = segmentation(int(tbs) + 24)
+    buffers = dlsch_buffers(llr, tbs, rv, buffers, ports)
+    blocks = []
+    for r, kr in enumerate(sizes):
+        fr = f if r == 0 else 0
         kind = '24B' if l else '24A'
         check = (lambda x, fr=fr, kind=kind: np.array_equal(_crc(x[fr:-24], kind), x[-24:]))
         bits, _it, ok = turbo_decode(buffers[r], kr, check, filler=fr)
@@ -1416,15 +1426,45 @@ def sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz=0.0, carrier_hz=None, 
     return out
 
 
-def sib1(iq, fs, cell, pbch_result, dci_result=None, center_offset_hz=0.0, carrier_hz=None, rnti=SI_RNTI):
+#: The most 80 ms periods summed across (``sib1``), so a SIB1 that changed drops out of the sum.
+_COMBINE_PERIODS = 4
+
+
+def _sum_copies(items, ports, every=True):
+    """One transport block from copies ``items`` [(sfn, tbs, rv, llr)] of the same TBS, their
+    soft buffers summed: a decode after each copy (``every``) or once at the end. Returns
+    ``{'sfns', 'tbs', 'hex'}`` or None."""
+    buffers = None
+    for i, (_sfn, tbs, rv, llr) in enumerate(items):
+        if tbs != items[0][1]:
+            return None
+        if not every and i < len(items) - 1:
+            buffers = dlsch_buffers(llr, tbs, rv, buffers, ports)
+            continue
+        bits, buffers = dlsch_decode(llr, tbs, rv, buffers, ports)
+        if bits is not None and i > 0:
+            return {'sfns': [it[0] for it in items[:i + 1]], 'tbs': int(tbs),
+                    'hex': np.packbits(bits).tobytes().hex()}
+    return None
+
+
+def sib1(iq, fs, cell, pbch_result, dci_result=None, center_offset_hz=0.0, carrier_hz=None, rnti=SI_RNTI,
+         combine=True):
     """SIB1 of one cell by our own PDSCH and DL-SCH decode (roadmap Round 29.3): each SIB1 DCI
-    (``sib1_dcis``, run here when ``dci_result`` is None) decoded alone, in its subframe 5.
+    (``sib1_dcis``, run here when ``dci_result`` is None) decoded alone, in its subframe 5;
+    then, with ``combine``, copies summed (29.4).
 
     The DCI gives the PRBs (type 2, localized or distributed), the TBS (I_TBS = I_MCS: 1A's
     column N_PRB^1A, 1C's table) and the redundancy version (1A's field; 1C's from the SFN).
+    Combining: SIB1 is one transport block for 80 ms (frames SFN mod 8 = 0 .. 7, four copies
+    in their redundancy versions), so the soft buffers of a period none of whose copies passed
+    are summed, a decode tried after each; the periods that still fail are then summed in turn,
+    up to the last ``_COMBINE_PERIODS``, while the TBS holds (SIB1 changes rarely; the CRC is
+    the guard).
     Returns a dict: ``blocks``, one per DCI (``sfn``, ``rv``, ``tbs``, ``n_prb``, ``crc``, ``hex``
-    when it passed), ``decoded``, ``tried``, ``sib1`` (the hex most blocks agree on, or None),
-    ``dcis`` (the DCI result)."""
+    when it passed), ``decoded``, ``tried``, ``combined`` (one per summed decode: ``sfns``,
+    ``tbs``, ``hex``), ``sib1`` (the hex most decodes agree on, or None), ``dcis`` (the DCI
+    result)."""
     mib = (pbch_result or {}).get('mib')
     if dci_result is None:
         dci_result = sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz, carrier_hz, rnti)
@@ -1432,7 +1472,8 @@ def sib1(iq, fs, cell, pbch_result, dci_result=None, center_offset_hz=0.0, carri
         return None
     pci, n_rb, ports = int(cell['pci']), int(mib['n_rb']), int(pbch_result['ports'])
     frames = _cell_frames(fs, cell, pbch_result, center_offset_hz, carrier_hz)
-    out = {'blocks': [], 'decoded': 0, 'tried': 0, 'sib1': None, 'dcis': dci_result}
+    out = {'blocks': [], 'decoded': 0, 'tried': 0, 'combined': [], 'sib1': None, 'dcis': dci_result}
+    soft = []                                            # (sfn, tbs, rv, llr) of the copies that failed
     for d in dci_result['dcis']:
         tbs = si_tbs(d)
         if tbs is None:
@@ -1453,9 +1494,34 @@ def sib1(iq, fs, cell, pbch_result, dci_result=None, center_offset_hz=0.0, carri
         if bits is not None:
             block['hex'] = np.packbits(bits).tobytes().hex()
             out['decoded'] += 1
+        else:
+            soft.append((sfn, tbs, rv, llr))
         out['blocks'].append(block)
+    if combine:
+        passed = {b['sfn'] // 8 for b in out['blocks'] if b['crc']}
+        periods = {}
+        for item in soft:
+            if item[0] // 8 not in passed:
+                periods.setdefault(item[0] // 8, []).append(item)
+        left = []
+        for items in periods.values():                   # in time order, across the SFN wrap too
+            got = _sum_copies(items, ports)
+            if got:
+                out['combined'].append(got)
+            else:
+                left.append(items)
+        run = []
+        for items in left:                               # periods that failed even summed, in turn
+            if run and run[0][0][1] != items[0][1]:
+                run = []
+            run = run[-(_COMBINE_PERIODS - 1):] + [items]  # the last few: SIB1 may have changed
+            if len(run) > 1:
+                got = _sum_copies([it for period in run for it in period], ports, every=False)
+                if got:
+                    out['combined'].append(got)
+                    run = []
     seen = {}
-    for b in out['blocks']:
+    for b in out['blocks'] + out['combined']:
         if b.get('hex'):
             seen[b['hex']] = seen.get(b['hex'], 0) + 1
     if seen:

@@ -1559,7 +1559,7 @@ sequences and the CRS check) is the start.
 - [x] 29.2 PCFICH and PDCCH (2026-10-25: `iqlte_phy.sib1_dcis`, `iq-lte --pdcch`;
   the Band 13 cell's 50 SIB1 DCIs equal to `pdsch_ue`'s; every SIB1 DCI of
   the three 700 MHz cells. Go: the pair's two cells send SIB1 on the same
-  RBs in the same subframes, 2 dB apart, so 29.5 is needed there; the other
+  RBs in the same subframes, 2 dB apart, so 29.5 looked needed there (29.4's combining was enough); the other
   carrier's stronger cell uses format 1C with its neighbours 9 dB down): the CFI (32-bit code, 3 hypotheses), the REGs
   left after PCFICH and PHICH (from the MIB's PHICH config), the REG
   interleaver (sub-block interleaver, cyclic shift by PCI), the common search
@@ -1573,7 +1573,7 @@ sequences and the CRS check) is the start.
   Band 13 cell's SIB1 in 50 of 50 subframes, byte-equal to `pdsch_ue`'s; the
   stronger cell of each 700 MHz carrier in every subframe (100/100, 99/99),
   where `pdsch_ue` reads none, so their operator is known; the pair's weaker
-  cell none, under the stronger one's SIB1: 29.5. The turbo code went in
+  cell none, under the stronger one's SIB1 (29.4's combining read it). The turbo code went in
   `iqlte_phy`, not a separate `iqlte_turbo`): allocation type 2 (1A, 1C: N_PRB^1A from the TPC
   bit), TBS (36.213 7.1.7), REs around the CRS, the control region, and the
   PSS and SSS in the central 6 PRBs of subframe 5 (the PBCH in subframe 0 for
@@ -1583,14 +1583,27 @@ sequences and the CRS check) is the start.
   max-log-MAP decoder, CRC 24A and segmentation. SIB1 is in subframe 5 of
   even frames, 80 ms TTI, redundancy versions from 36.321 5.3.1 (0, 2, 3, 1).
   Checked: the Band 13 cell's SIB1 byte-equal to `pdsch_ue`'s.
-- [ ] 29.4 Combining: SIB1's four copies per 80 ms (known RVs) and across
-  periods while the content holds (`SoftCombiner`'s rules), the PDCCH summed
-  as 28.5's, but grouped by k = (SFN/2) mod 4: DCI 1A carries the RV, so its
-  payload differs across the four copies. Gain measured on synthetic signals, then on the 700 MHz pair.
+- [x] 29.4 Combining (2026-10-26: `iqlte_phy.sib1(combine=True)`, `own_sib1`'s
+  `combined`; the 700 MHz pair's weaker cell, none of 100 copies alone, read
+  in all 25 of its 80 ms periods, two or three copies summed in each; Band 13 and the
+  stronger cells unchanged, needing none). SIB1's four copies per 80 ms (known
+  RVs) summed when none passes alone, a decode after each; the periods that
+  still fail summed in turn, up to four, while the TBS holds; a sum kept only
+  when its CRC passes. Both cells of the pair changed SIB1 at the SFN wrap
+  inside the 2 s recording (`hyperSFN-r13`, which counts the wraps), so a
+  span may hold two SIB1s: each sum keeps its own bytes. Gain on synthetic
+  signals about 4 to 6 dB (copies alone all fail by -7 dB a RE, sums decode
+  to -11 dB); the test, at -10 dB, has no copy alone and three sums, one
+  across periods, with SIB1 changing midway.
+  Not done, not needed so far: the PDCCH summed (grouped by k = (SFN/2) mod 4,
+  as DCI 1A carries the RV): every SIB1 DCI on the pair, the weaker cell's
+  too, decoded alone.
 - [ ] 29.5 Cancellation: the other cell's CRS (always on, known from its PCI)
   taken out of every subframe first; then its decoded PDCCH and PDSCH, as
   28.5's (cells strongest first, the strongest's frequency offset). Goal:
-  both 700 MHz cells' SIB1, and their operator from it.
+  cells further under a stronger one than combining reaches (the 700 MHz
+  pair's weaker cell reads with combining alone, 29.4), such as the other
+  700 MHz carrier's second cell, whose MIB is not read yet.
 - [ ] 29.6 The other SI (SIB2 onwards, SIB16's network time if a cell sends
   it) from SIB1's schedule; `iq-lte --own`, shaped as `--decode`.
 

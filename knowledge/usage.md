@@ -1296,12 +1296,17 @@ tools/iq-lte CAPTURE.cfile --pdsch --t1 1                 # and SIB1 itself, by 
 - `--pdsch` (implies `--pdcch` and `--mib`) adds `own_sib1`: SIB1 from our
   own PDSCH and turbo decoder, each SIB1 subframe of the span decoded alone
   (one every 20 ms). `blocks` gives each one's `sfn`, `rv`, `tbs`, `n_prb`,
-  `crc` and its `hex`; `decoded` and `tried` count them; `sib1` is the bytes
-  most blocks agree on, and `fields` what pycrate reads from them (operators,
+  `crc` and its `hex`; `decoded` and `tried` count them. Copies that fail
+  alone are summed (`combined`: each sum's `sfns`, `tbs` and `hex`), first
+  the up to four of one 80 ms period, then periods in turn (up to four)
+  while the size holds; a sum is kept only when its CRC passes. `sib1` is the bytes most
+  blocks and sums agree on (a cell may change SIB1 mid-span: each block and
+  sum keeps its own), and `fields` what pycrate reads from them (operators,
   tracking area, cell identity, band, barring), or null with a
   `fields_reason` when pycrate is not under `$FMRX_LTE_TOOLS`. On real air
-  it read SIB1 on two 700 MHz carriers where the outside decoder reads none.
-  About 0.1 s a subframe.
+  it read SIB1 on two 700 MHz carriers where the outside decoder reads none,
+  the weaker cell of the pair by summing copies only. About 0.1 s a
+  subframe.
 - `--decode` runs when the fingerprint's verdict is `lte` or `possible` (a
   possible carrier may well be one: a 700 MHz carrier read `possible` while
   both decoders read its MIB), not when it is `not-lte` or `unknown`.

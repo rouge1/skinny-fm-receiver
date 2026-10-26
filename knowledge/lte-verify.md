@@ -340,7 +340,8 @@ On real air (2026-10-25):
 
 So the 700 MHz SIB1 does not fail at the PDCCH:
 - On the pair, the two cells' SIB1 PDSCHs land on the same RBs, 2 dB apart.
-  That is the case for cancellation (29.5).
+  That looked like the case for cancellation (29.5); combining (29.4) was
+  enough.
 - On the other carrier, the PDSCH itself (29.3) will show what stops
   `pdsch_ue`.
 
@@ -371,13 +372,35 @@ On real air (2026-10-26), each subframe decoded alone:
 |---|---|---|
 | Band 13 | 50 of 50 SIB1s in 1 s, every RV alone (TBS 256 on 18 PRBs) | the same 32 bytes, byte for byte |
 | 700 MHz pair, stronger cell | 100 of 100 in 2 s (TBS 256 on 5 PRBs); its operators, tracking area and cell identity | no SIB1 |
-| 700 MHz pair, weaker cell (2 dB down, same RBs) | none | no SIB1 |
+| 700 MHz pair, weaker cell (2 dB down, same RBs) | none alone; with combining (29.4), every 80 ms period | no SIB1 |
 | The other 700 MHz carrier, stronger cell | 99 of 99 (format 1C, TBS 208 on 4 PRBs) | no SIB1 |
 
 So the stronger cells' SIB1 was never too weak, and their operator is
-known now. The weaker cell of the pair is under the stronger one's SIB1,
-which is 29.5's case (cancellation). Why `pdsch_ue` fails on the two
-stronger cells is not known; it is not the signal.
+known now. Why `pdsch_ue` fails on the two stronger cells is not known; it
+is not the signal.
+
+**Combining (roadmap Round 29.4).** SIB1 is one transport block for 80 ms,
+sent four times (frames with SFN mod 8 = 0, 2, 4, 6) in redundancy versions
+0, 2, 3, 1. When no copy of a period passes alone, `sib1` adds the copies'
+soft buffers (every code block's, after rate recovery) and tries a decode
+after each. Periods that still fail are summed in turn, up to four, while
+the TBS holds. The CRC decides: a sum that fails is never reported, so a
+SIB1 that changed between periods costs a decode, not wrong bytes. Each sum
+is in `combined` (its `sfns`, `tbs`, `hex`).
+
+The weaker cell of the 700 MHz pair, under the stronger one's SIB1 on the
+same RBs, decoded in none of its 100 copies alone and in all 25 of its
+periods with two or three copies summed. Its SIB1 differs from the
+stronger cell's in the cell identity. In the same 2 s, both cells changed
+SIB1 at the SFN wrap: its release 13 extension carries `hyperSFN`, which
+counts the wraps, so SIB1 changes every 10.24 s (the value tag does not).
+A span can hold two SIB1s, and each block and sum keeps its own bytes.
+
+The gain, on the synthetic cell (2 PRBs, AL8): copies alone mostly fail
+at -5 dB a RE and all fail at -7 dB; sums still decode at -11 dB and stop
+at -12 dB, so about 4 to 6 dB. Cancellation (29.5) is left for cells further under a
+stronger one than this. The PDCCH is not summed: every SIB1 DCI on the
+pair, the weaker cell's too, decoded alone.
 
 Tests: `tools/tests/test_iqlte_pdsch.py`.
 
