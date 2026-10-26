@@ -1155,6 +1155,11 @@ tools/iq-decode FILE -R 19                                  # only rtl_433 proto
 tools/iq-decode FILE --keep /tmp/slice.cf32                 # keep the scaled cf32 that rtl_433 read
 ```
 
+Run rtl_433 on a kept file yourself from inside its folder (`cd /tmp; rtl_433 -r
+cf32:slice.cf32 ...`): it reads format hints out of the whole path, so a folder
+named with a token such as `fm`, `am`, `ook` or `2k` (this repository's own
+`skinny-fm-receiver`) makes it decode nothing. `iq-decode` does this itself.
+
 The span defaults to the whole file in time (`--t0` and `--t1` cut it). The
 band defaults to the whole file when the file's rate is at most 1 MS/s; above
 that it is ±250 kHz about the file's centre, so give `--band` for a wider or

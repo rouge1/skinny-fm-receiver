@@ -381,7 +381,7 @@ def main(argv=None):
     ap.add_argument('--max-bursts', type=int, default=200, metavar='N',
                     help="with --bursts, the first N bursts (default 200)")
     ap.add_argument('--keep', metavar='PATH',
-                    help="write the cf32 file to PATH instead of a temporary file")
+                    help="keep a copy of the cf32 file rtl_433 read at PATH")
     ap.add_argument('--timeout', type=float, default=DEFAULT_TIMEOUT, metavar='S',
                     help="seconds to let rtl_433 run (default: 120)")
     try:
@@ -426,17 +426,19 @@ def main(argv=None):
 
     rate_sps = float(sl.rate)
 
-    # mkdtemp honours TMPDIR. The name stays one alphanumeric token plus a suffix so rtl_433,
-    # which reads format hints out of the whole path, does not see a stray parameter.
+    # mkdtemp honours TMPDIR. rtl_433 reads format hints out of the whole path it is given
+    # (any token of it split at '-', '_', '/' and '.': "fm" or "am" a demodulated file, "ook",
+    # "logic", "vcd" other formats, "2k" a sample rate, overriding -s), and both mkdtemp's
+    # random letters and a folder such as this repository's can hold one: such a run
+    # decodes nothing. So rtl_433 runs inside the folder and is given the bare name.
     tmp = tempfile.mkdtemp(prefix='iqdecode-')
     try:
         try:
+            cf32 = os.path.join(tmp, 'slice.cf32')
+            with open(cf32, 'wb') as fh:
+                sl.iq.tofile(fh)
             if args.keep:
-                cf32 = _publish(sl.iq, args.keep)
-            else:
-                cf32 = os.path.join(tmp, 'slice.cf32')
-                with open(cf32, 'wb') as fh:
-                    sl.iq.tofile(fh)
+                _publish(sl.iq, args.keep)
         except OSError as exc:
             return _refuse(exc)
         out_path = os.path.join(tmp, 'rtl433.json')
@@ -448,9 +450,9 @@ def main(argv=None):
         try:
             with open(out_path, 'w') as out_fh, open(err_path, 'w') as err_fh:
                 proc = subprocess.run(
-                    ['rtl_433', '-r', 'cf32:' + cf32, '-s', str(_json_num(rate_sps)),
+                    ['rtl_433', '-r', 'cf32:' + os.path.basename(cf32), '-s', str(_json_num(rate_sps)),
                      '-f', str(_json_num(sl.center_hz)), '-F', 'json', '-M', 'level'] + extra,
-                    stdout=out_fh, stderr=err_fh, timeout=args.timeout)
+                    stdout=out_fh, stderr=err_fh, timeout=args.timeout, cwd=tmp)
         except subprocess.TimeoutExpired:
             return _refuse(f"rtl_433 timed out after {args.timeout:g} s.")
         except OSError:

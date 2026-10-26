@@ -14,6 +14,9 @@ What the checks pin:
 - a noise-only file decodes 0 packets; a missing file and a Sceptre .sdvr of garbage exit
   1 with a message; rtl_433 absent exits 2 with an install hint;
 - ``--keep`` keeps the cf32 file, and without it the temp folder is left empty;
+- a temp folder and a ``--keep`` path whose names hold tokens rtl_433 takes as format
+  hints ("fm", "am", "2k": it reads hints out of the whole path) still decode (2026-10-26:
+  mkdtemp's random letters made one now and then, and the decode came back empty);
 - rtl_433's stdout goes to a file (no pipe), the decode is reproducible, and 5 s at 2 MS/s
   decodes in under 10 s.
 
@@ -407,6 +410,24 @@ def check_keep():
            'beside the input (no cf32 left behind)', no_keep)
 
 
+def check_paths():
+    def hinted_tmp():
+        env = clean_env()
+        env['TMPDIR'] = fresh('tmp-fm-am_2k')
+        r = run([FRAME, '-R', '19'], WORK, env=env)
+        return printed(r, nexus_ok)
+    expect('7 TMPDIR named with rtl_433 hint tokens (fm, am, 2k): still decodes Nexus-TH id 181',
+           hinted_tmp)
+
+    def hinted_keep():
+        path = os.path.join(fresh('keep_fm'), 'kept-am.cf32')
+        r = run([FRAME, '--keep', path], WORK)
+        ok, detail = printed(r, nexus_ok)
+        return ok and os.path.getsize(path) > 0, detail
+    expect('7 --keep into a path with hint tokens (fm, am): still decodes, the file kept',
+           hinted_keep)
+
+
 def _name_of(node):
     """The name a Name or Attribute node refers to (``x`` or ``m.x`` gives ``x``)."""
     return node.id if isinstance(node, ast.Name) else node.attr
@@ -522,7 +543,7 @@ def check_flags():
            '433920000 and Nexus-TH id 181 decoded', bare)
 
 
-GROUPS = [check_frame, check_scaled, check_wide, check_noise, check_refusals, check_keep,
+GROUPS = [check_frame, check_scaled, check_wide, check_noise, check_refusals, check_keep, check_paths,
           check_source, check_flags, check_speed]
 
 
