@@ -1556,7 +1556,11 @@ sequences and the CRS check) is the start.
   was `lte`, which is how that carrier went unread on 2026-10-23; since
   2026-10-25 it runs on `possible` too (the user: "it's possible"). Still
   to find: which check fails there.
-- [ ] 29.2 PCFICH and PDCCH: the CFI (32-bit code, 3 hypotheses), the REGs
+- [x] 29.2 PCFICH and PDCCH (2026-10-25: `iqlte_phy.sib1_dcis`, `iq-lte --pdcch`;
+  the Band 13 cell's 50 SIB1 DCIs equal to `pdsch_ue`'s; every SIB1 DCI of
+  the three 700 MHz cells. Go: the pair's two cells send SIB1 on the same
+  RBs in the same subframes, 2 dB apart, so 29.5 is needed there; the other
+  carrier's stronger cell uses format 1C with its neighbours 9 dB down): the CFI (32-bit code, 3 hypotheses), the REGs
   left after PCFICH and PHICH (from the MIB's PHICH config), the REG
   interleaver (sub-block interleaver, cyclic shift by PCI), the common search
   space (CCEs 0-15, aggregation 4 and 8), DCI formats 1A and 1C with CRC

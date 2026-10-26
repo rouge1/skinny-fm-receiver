@@ -310,6 +310,42 @@ duration and resources, which the PDCCH decode will need, equal what
 Tests: `tools/tests/test_iqlte_phy.py`. `lte_synth` now takes `ports`,
 `port_gains` and `res`, with its default output unchanged.
 
+## Our own SIB1 DCI decoder: `--pdcch` (roadmap Round 29.2)
+
+`tools/iq-lte FILE --pdcch` adds `own_pdcch` to each cell:
+`iqlte_phy.sib1_dcis`, our own PCFICH and PDCCH, numpy only, on the MIB
+`--mib` gives. In subframe 5 of every even frame:
+- **The grid.** The whole bandwidth, with a CRS channel for each port: a
+  delay slope, the pilots averaged across five neighbours, linear in time.
+- **The CFI.** From the PCFICH: 32 bits, three code words.
+- **The REGs left for the PDCCH.** Those not taken by the PCFICH and the
+  PHICH (its groups and places from the MIB's PHICH settings), in 36.211
+  6.8.5's order, through the 32-column sub-block interleaver and turned by
+  the PCI.
+- **The candidates.** The common search space (AL4 then AL8), for format
+  1A and 1C sizes, with CRC 16 scrambled by SI-RNTI. A level-8 candidate
+  holds the level-4 one at its start, so a decode is called level 8 only
+  when the next four CCEs carry the codeword's continuation.
+
+Written from ETSI's PDFs of 36.211, 36.212 and 36.213 (pages read as
+images where the equations are).
+
+On real air (2026-10-25):
+
+| Cell | Ours | `pdsch_ue` |
+|---|---|---|
+| Band 13 | 50 of 50 SIB1 DCIs in 1 s: CFI 3, format 1A, AL4, CCE 0, its allocation and MCS | the same 50, field for field. Its 350 REGs and 8/19/36 CCEs for CFI 1/2/3 match ours |
+| 700 MHz pair, both cells (2 dB apart) | 100 of 100 each in 2 s: CFI varying 1-3 per subframe, format 1A on CCE 4 or 12; both cells use the same allocation and MCS in the same subframes | no SIB1 |
+| The other 700 MHz carrier, stronger cell | 99 of 99, format 1C, the other cells 9 dB down | no SIB1 |
+
+So the 700 MHz SIB1 does not fail at the PDCCH:
+- On the pair, the two cells' SIB1 PDSCHs land on the same RBs, 2 dB apart.
+  That is the case for cancellation (29.5).
+- On the other carrier, the PDSCH itself (29.3) will show what stops
+  `pdsch_ue`.
+
+Tests: `tools/tests/test_iqlte_pdcch.py`.
+
 ## Several cells on one carrier: `cells`
 
 `iqlte.cells(iq, fs, max_cells=4)` lists every cell on the carrier whose SSS

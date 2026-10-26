@@ -1,4 +1,5 @@
-"""LTE broadcast decoding, numpy only: the PBCH and its MIB (roadmap Round 29.1).
+"""LTE broadcast decoding, numpy only: the PBCH and its MIB (roadmap Round 29.1), and the
+PCFICH and PDCCH that schedule SIB1 (29.2).
 
 Written from the 3GPP specifications (TS 36.211, 36.212 and 36.331 V19, read in ETSI's PDFs,
 which keep the equations the 3GPP Word files hold as pictures). No srsRAN code is used: srsRAN
@@ -40,9 +41,19 @@ found from the repeats: after descrambling with the right quarter, the four copi
 bit in the frame agree (``quarter_scores``). Then the bits are rate-recovered, Viterbi decoded
 (wrap-around) and the CRC with each port mask says the port count.
 
+The control region (29.2): REGs (36.211 6.2.4) of four symbol REs; the PCFICH's four in symbol 0
+at k = 6 (PCI mod 2 N_RB) + floor(i N_RB / 2) 6 (6.7.4), its 32 bits scrambled with c_init =
+(subframe + 1)(2 PCI + 1) 2^9 + PCI; the PHICH's 3 REGs per group, ceil(N_g N_RB / 8) groups
+(6.9, 6.9.3); the rest, k first then l, take the PDCCH's symbol quadruplets after the
+sub-block interleaver (36.212 5.1.4.2.1) and a cyclic shift by the PCI (6.8.5); the PDCCH's
+bits are scrambled with c_init = subframe 2^9 + PCI (6.8.2), 72 to a CCE. A DCI is CRC 16 whose
+last 16 bits are XORed with the RNTI (36.212 5.3.3.2), then the PBCH's code and rate matching.
+
 Wrong turns
 -----------
-(none yet)
+- A level-8 candidate passed the CRC where the cell sent level 4 (Band 13, 2026-10-25): the
+  circular buffer read on puts the level-4 bits first in the level-8 ones. Level 4 is tried
+  first, and level 8 only when CCEs 4-7 carry the continuation.
 """
 
 from fractions import Fraction
@@ -367,6 +378,261 @@ def decode_pbch_frame(r, h, noise, pci, hypotheses=(2, 1, 4)):
     return None
 
 
+# ----- the control region: PCFICH, PHICH's REGs, PDCCH (36.211 6.2.4, 6.7-6.9; 36.212 5.3.3-4)
+
+#: CFI code words (36.212 table 5.3.4-1), CFI 1, 2, 3.
+CFI_CODEWORDS = {cfi: np.array([int(b) for b in word], dtype=np.uint8) for cfi, word in (
+    (1, '01101101101101101101101101101101'),
+    (2, '10110110110110110110110110110110'),
+    (3, '11011011011011011011011011011011'))}
+SI_RNTI = 0xFFFF
+#: The common search space (36.213 9.1.1, table 9.1.1-1; Y = 0): aggregation level, candidates.
+#: Level 4 is tried first: a level-8 candidate holds the level-4 one at its start (the circular
+#: buffer read on), so it passes the CRC too; ``wider`` tells them apart.
+COMMON_SEARCH = ((4, 4), (8, 2))
+#: Ambiguous DCI sizes (36.212 table 5.3.3.1.2-1): one zero bit is appended to a 1A of these.
+_AMBIGUOUS = (12, 14, 16, 20, 24, 26, 32, 40, 44, 56)
+#: N_gap,1 by bandwidth (36.211 table 6.2.3.2-1): (lowest N_RB of the row, gap).
+_GAP1 = ((6, None), (11, 4), (20, 8), (27, 12), (45, 18), (50, 27), (64, 32), (80, 48))
+
+
+def _riv_bits(n):
+    return int(np.ceil(np.log2(n * (n + 1) / 2)))
+
+
+def n_gap1(n_rb):
+    """N_gap,1 (36.211 table 6.2.3.2-1; 6-10 RB: ceil(N_RB / 2))."""
+    if n_rb <= 10:
+        return -(-n_rb // 2)
+    return [g for lo, g in _GAP1 if n_rb >= lo][-1]
+
+
+def dci_1a_bits(n_rb, n_rb_ul=None):
+    """DCI format 1A's size (36.212 5.3.3.1.3) for a common search space, FDD, no carrier
+    indicator: grown to format 0's size (5.3.3.1.1) and past the ambiguous sizes."""
+    ul = n_rb if n_rb_ul is None else n_rb_ul
+    a = 1 + 1 + _riv_bits(n_rb) + 5 + 3 + 1 + 2 + 2
+    f0 = 1 + 1 + _riv_bits(ul) + 5 + 1 + 2 + 3 + 1 + (1 if ul <= n_rb else 0)
+    a = max(a, f0)
+    return a + 1 if a in _AMBIGUOUS else a
+
+
+def dci_1c_bits(n_rb):
+    """DCI format 1C's size (36.212 5.3.3.1.4) for scheduling one PDSCH codeword."""
+    step = 2 if n_rb < 50 else 4
+    g = n_gap1(n_rb)
+    nvrb = 2 * min(g, n_rb - g)
+    m = nvrb // step
+    return (1 if n_rb >= 50 else 0) + int(np.ceil(np.log2(m * (m + 1) / 2))) + 5
+
+
+def regs(n_rb, ports, n_symb):
+    """The REGs of the first ``n_symb`` symbols (36.211 6.2.4), as (l, k of the lowest RE, the
+    four REs that carry symbols): with 1 or 2 ports the CRS of ports 0 and 1 in symbol 0; with 4,
+    also ports 2 and 3 in symbol 1. ``v`` (the CRS's k mod 3) is filled in by ``cell_regs``."""
+    out = []
+    for l in range(n_symb):
+        six = l == 0 or (l == 1 and ports == 4)
+        for rb in range(n_rb):
+            k0 = 12 * rb
+            for start in ((k0, k0 + 6) if six else (k0, k0 + 4, k0 + 8)):
+                out.append((l, start, six))
+    return out
+
+
+def cell_regs(pci, n_rb, ports, n_symb):
+    """``regs`` with each REG's data REs: [(l, k_lowest, [k of its four symbols])]."""
+    v = pci % 3
+    out = []
+    for l, start, six in regs(n_rb, ports, n_symb):
+        ks = [k for k in range(start, start + (6 if six else 4)) if not (six and k % 3 == v)]
+        out.append((l, start, ks))
+    return out
+
+
+def pcfich_starts(pci, n_rb):
+    """The lowest k of the PCFICH's four REGs in symbol 0 (36.211 6.7.4)."""
+    kbar = 6 * (pci % (2 * n_rb))
+    return [(kbar + (i * n_rb // 2) * 6) % (12 * n_rb) for i in range(4)]
+
+
+def phich_groups(n_rb, ng):
+    """N_PHICH^group for normal CP (36.211 6.9): ceil(N_g N_RB / 8), N_g one of 1/6, 1/2, 1, 2."""
+    from fractions import Fraction
+    g = {'1/6': Fraction(1, 6), '1/2': Fraction(1, 2), '1': Fraction(1), '2': Fraction(2)}[ng]
+    return int(-(-g * n_rb // 8))
+
+
+def phich_starts(pci, n_rb, ports, ng, duration='normal'):
+    """(l, lowest k) of the PHICH's REGs (36.211 6.9.3, normal CP, a normal subframe)."""
+    taken = set(pcfich_starts(pci, n_rb))
+    per = {}
+    for l in range(3 if duration == 'extended' else 1):
+        per[l] = [start for ll, start, _ks in cell_regs(pci, n_rb, ports, l + 1) if ll == l
+                  and not (l == 0 and start in taken)]
+    n0 = len(per[0])
+    out = []
+    for m in range(phich_groups(n_rb, ng)):
+        for i in range(3):
+            l = i if duration == 'extended' else 0
+            n_l = len(per[l])
+            nbar = ((pci * n_l) // n0 + m + (i * n_l) // 3) % n_l
+            out.append((l, per[l][nbar]))
+    return out
+
+
+def pdcch_quads(pci, n_rb, ports, cfi, ng, duration='normal'):
+    """For each PDCCH symbol quadruplet z(i), the REs it is sent on, [(l, [k x 4])]: the REGs
+    of the first ``cfi`` symbols left by the PCFICH and PHICH, taken k first then l (36.211
+    6.8.5 steps 1-10), the quadruplets through the sub-block interleaver (36.212 5.1.4.2.1)
+    and turned by the PCI."""
+    used = {(0, k) for k in pcfich_starts(pci, n_rb)} | set(phich_starts(pci, n_rb, ports, ng, duration))
+    free = [(l, start, ks) for l, start, ks in cell_regs(pci, n_rb, ports, cfi) if (l, start) not in used]
+    free.sort(key=lambda r: (r[1], r[0]))
+    m = len(free)
+    w = _subblock_positions(m)
+    w = w[w >= 0]                                     # w(j): which z the j-th output carries
+    out = [None] * m
+    for mp in range(m):                               # REG m' holds w((m' + PCI) mod M)
+        out[w[(mp + pci) % m]] = (free[mp][0], free[mp][2])
+    return out
+
+
+def encode_dci(a, rnti, level):
+    """The 72 x ``level`` bits a DCI ``a`` is sent as: CRC 16 with its last 16 bits XORed with
+    the RNTI (36.212 5.3.3.2), the tail-biting code and rate matching."""
+    a = np.asarray(a, dtype=np.uint8)
+    x = np.array([(int(rnti) >> (15 - i)) & 1 for i in range(16)], dtype=np.uint8)
+    c = np.concatenate((a, _crc(a, '16') ^ x))
+    return cc_rate_match(tbcc_encode(c), 72 * int(level))
+
+
+def decode_dci(llr, size, rnti):
+    """The ``size`` payload bits from a candidate's descrambled soft bits, or None."""
+    k = int(size) + 16
+    c = viterbi_tbcc(cc_rate_recover(llr, k))
+    x = np.array([(int(rnti) >> (15 - i)) & 1 for i in range(16)], dtype=np.uint8)
+    a = c[:size]
+    return a if np.array_equal(_crc(a, '16') ^ x, c[size:]) else None
+
+
+def parse_dci_1a(a, n_rb):
+    """DCI format 1A with CRC scrambled by SI-RNTI (36.212 5.3.3.1.3)."""
+    w = _riv_bits(n_rb)
+    names = (('format1a', 1), ('distributed', 1), ('riv', w), ('mcs', 5), ('harq', 3), ('ndi', 1),
+             ('rv', 2), ('tpc', 2))
+    out, at = {'format': '1A'}, 0
+    for name, width in names:
+        v = 0
+        for b in a[at:at + width]:
+            v = (v << 1) | int(b)
+        out[name] = v
+        at += width
+    out['n_prb_1a'] = 3 if out['tpc'] & 1 else 2
+    out['gap2'] = bool(out['ndi']) if out['distributed'] and n_rb >= 50 else False
+    return out
+
+
+def parse_dci_1c(a, n_rb):
+    """DCI format 1C (very compact scheduling, 36.212 5.3.3.1.4)."""
+    out, at = {'format': '1C', 'gap2': False}, 0
+    if n_rb >= 50:
+        out['gap2'] = bool(a[0])
+        at = 1
+    w = dci_1c_bits(n_rb) - at - 5
+    v = 0
+    for b in a[at:at + w]:
+        v = (v << 1) | int(b)
+    out['riv'] = v
+    t = 0
+    for b in a[at + w:at + w + 5]:
+        t = (t << 1) | int(b)
+    out['tbs_index'] = t
+    return out
+
+
+def pdcch_scrambling(pci, subframe, nbits):
+    """The PDCCH's scrambling sequence (36.211 6.8.2): c_init = subframe 2^9 + PCI."""
+    return _gold(int(subframe) * 512 + int(pci), nbits)
+
+
+def pcfich_scrambling(pci, subframe):
+    """The PCFICH's scrambling (36.211 6.7.1): c_init = (subframe + 1)(2 PCI + 1) 2^9 + PCI."""
+    return _gold((int(subframe) + 1) * (2 * int(pci) + 1) * 512 + int(pci), 32)
+
+
+def decode_pcfich(r, h, noise, pci, subframe, ports):
+    """``(cfi, score)`` from the PCFICH's 16 REs (``pcfich_starts`` order), 1-3, its correlation
+    with the code words (1 perfect)."""
+    llr = soft_bits(r, h[:ports], noise, ports) * (1.0 - 2.0 * pcfich_scrambling(pci, subframe))
+    scores = {cfi: float(np.dot(llr, 1.0 - 2.0 * w)) / max(float(np.sum(np.abs(llr))), 1e-12)
+              for cfi, w in CFI_CODEWORDS.items()}
+    cfi = max(scores, key=scores.get)
+    return cfi, scores[cfi]
+
+
+#: Score (``codeword_score``, about 0 +/- 1 where nothing of it is sent) over which the CCEs
+#: after a level-4 decode are taken to carry its level-8 continuation.
+_WIDER = 5.0
+
+
+def codeword_score(llr, signs):
+    """How strongly soft bits ``llr`` hold the codeword ``signs``: their correlation over its
+    spread, about 0 +/- 1 where it is not sent."""
+    llr = np.asarray(llr, dtype=np.float64)
+    spread = float(np.sqrt(np.sum(llr ** 2)))
+    return float(np.dot(llr, signs)) / spread if spread > 0 else 0.0
+
+
+def common_candidates(n_cce):
+    """(level, first CCE) of the common search space (36.213 9.1.1, Y = 0), level 4 first."""
+    out = []
+    for level, count in COMMON_SEARCH:
+        n = n_cce // level
+        for m in range(min(count, n)):
+            out.append((level, level * (m % n)))
+    return out
+
+
+def control_res(pci, n_rb, ports, cfi, ng, duration, subframe, pdcchs, rnti=SI_RNTI):
+    """The transmitter of a subframe's PCFICH and PDCCHs, for the tests: per port, the REs and
+    symbols, [(port, l, k array, values)]. ``pdcchs`` is [(DCI bits, level, first CCE)]; the
+    other CCEs are left empty (<NIL>)."""
+    out = []
+    pk = [(0, k + j) for k in pcfich_starts(pci, n_rb) for j in range(6) if (k + j) % 3 != pci % 3]
+    b = CFI_CODEWORDS[cfi] ^ pcfich_scrambling(pci, subframe)
+    d = ((1 - 2.0 * b[0::2]) + 1j * (1 - 2.0 * b[1::2])) / np.sqrt(2.0)
+    y = sfbc_encode(d, ports)
+    for p in range(ports):
+        out.append((p, 0, np.array([k for _l, k in pk]), y[p]))
+    q = pdcch_quads(pci, n_rb, ports, cfi, ng, duration)
+    n_bits = 8 * len(q)
+    bits = np.zeros(n_bits)
+    sent = np.zeros(n_bits, dtype=bool)
+    for a, level, cce0 in pdcchs:
+        e = encode_dci(a, rnti, level)
+        bits[72 * cce0:72 * cce0 + len(e)] = e
+        sent[72 * cce0:72 * cce0 + len(e)] = True
+    bits = (bits.astype(np.uint8) ^ pdcch_scrambling(pci, subframe, n_bits)) * sent
+    d = ((1 - 2.0 * bits[0::2]) + 1j * (1 - 2.0 * bits[1::2])) / np.sqrt(2.0) * sent[0::2]
+    y = sfbc_encode(d, ports)
+    for p in range(ports):
+        for l in range(cfi):
+            idx = [(4 * i + j, k) for i, (ll, ks) in enumerate(q) if ll == l for j, k in enumerate(ks)]
+            if idx:
+                out.append((p, l, np.array([k for _i, k in idx]), y[p, [i for i, _k in idx]]))
+    return out
+
+
+def dci_1a_si(n_rb, riv, mcs, rv, n_prb_1a=3, distributed=0):
+    """A DCI 1A payload for SI-RNTI with these fields (36.212 5.3.3.1.3), for the tests."""
+    size = dci_1a_bits(n_rb)
+    fields = ((1, 1), (distributed, 1), (riv, _riv_bits(n_rb)), (mcs, 5), (0, 3), (0, 1), (rv, 2),
+              (1 if n_prb_1a == 3 else 0, 2))
+    a = [(v >> (w - 1 - i)) & 1 for v, w in fields for i in range(w)]
+    return np.array(a + [0] * (size - len(a)), dtype=np.uint8)
+
+
 # ----- a capture's frames: the PBCH's grid, its channel, the MIB ---------------------------
 
 #: The PBCH's band is read at 1.92 MS/s: a 128-point FFT, its central 72 subcarriers.
@@ -446,6 +712,87 @@ class _PbFrames:
             d = start + cp / 2 - p                         # the window opens d samples early
             out[l] = spec[_PB_BINS % _PB_N] * np.exp(2j * np.pi * _PB_BINS * d / _PB_N)
         return out
+
+    def subframe(self, x, f, sf, n_rb, n_symb=14):
+        """Frame ``f``'s subframe ``sf``: its first ``n_symb`` symbols on every subcarrier,
+        (n_symb, 12 n_rb), k = 0 lowest (DC not counted), or None."""
+        nfft = _NFFT_FOR_RB[n_rb]
+        rate = nfft * 15e3
+        cp0, cp1 = 160 * nfft // 2048, 144 * nfft // 2048
+        ratio = Fraction(int(round(rate)), int(round(self.fs)))
+        t_sf = self.start(f) + sf * 1e-3 * self.scale
+        i0 = int(np.floor((t_sf - 32 / rate) * self.fs))
+        n_in = int(np.ceil(((n_symb + 1) * (nfft + cp1) + cp0 + 64) / rate * self.fs))
+        n_in += (-n_in) % ratio.denominator
+        if i0 < 0 or i0 + n_in > len(x):
+            return None
+        y = _cut(x, self.fs, i0, n_in, self.shift, rate)
+        k = np.arange(12 * n_rb)
+        bins = np.where(k < 6 * n_rb, k - 6 * n_rb, k - 6 * n_rb + 1)
+        out = np.zeros((n_symb, 12 * n_rb), dtype=np.complex128)
+        for l in range(n_symb):
+            slot, s_ = divmod(l, 7)
+            u = slot * (7 * nfft + cp0 + 6 * cp1) + (cp0 + nfft + (s_ - 1) * (cp1 + nfft) + cp1 if s_ else cp0)
+            cp = cp0 if s_ == 0 else cp1
+            start = (t_sf - i0 / self.fs) * rate + u - cp / 2
+            p = int(np.floor(start))
+            if p < 0 or p + nfft > len(y):
+                return None
+            spec = np.fft.fft(y[p:p + nfft])
+            d = start + cp / 2 - p
+            out[l] = spec[bins % nfft] * np.exp(2j * np.pi * bins * d / nfft)
+        return out
+
+
+#: The FFT size of each bandwidth (36.104): N_RB -> nfft.
+_NFFT_FOR_RB = {6: 128, 15: 256, 25: 512, 50: 1024, 75: 1536, 100: 2048}
+
+
+def subframe_channel(g, pci, sf, ports, symbols, smooth=5):
+    """The channel of ports 0 .. ``ports`` - 1 on ``symbols`` of a subframe grid
+    (``_PbFrames.subframe``), (4, len(symbols), 12 N_RB), and the noise per RE: a delay slope
+    from the CRS, then each CRS symbol's pilots averaged over ``smooth`` neighbours and
+    interpolated across the band, linear in time between CRS symbols of the port."""
+    n_sc = g.shape[1]
+    n_rb = n_sc // 12
+    k_all = np.arange(n_sc)
+    pilots = []                                         # (port, l, k, z)
+    for port in range(ports):
+        for l in range(g.shape[0]):
+            slot, s_ = divmod(l, 7)
+            if s_ not in crs_symbols(port):
+                continue
+            ns = 2 * sf + slot
+            shift = (crs_shift(port, s_, ns) + pci % 6) % 6
+            k = 6 * np.arange(2 * n_rb) + shift
+            pilots.append((port, l, k, g[l, k] * np.conj(crs_values(pci, ns, s_, n_rb))))
+    score = np.zeros(len(_PB_SLOPES))
+    for _p, _l, k, z in pilots:
+        score += np.abs(np.exp(-1j * np.outer(_PB_SLOPES, k)) @ z) ** 2
+    slope = float(_PB_SLOPES[int(np.argmax(score))])
+    kernel = np.ones(smooth) / smooth
+    rows, resid, dof = {}, 0.0, 0
+    for port, l, k, z in pilots:
+        zf = z * np.exp(-1j * slope * k)
+        num = np.convolve(zf, kernel, mode='same')
+        den = np.convolve(np.ones(len(zf)), kernel, mode='same')
+        sm = num / den
+        resid += float(np.sum(np.abs(zf - sm) ** 2))
+        dof += len(zf) * (1 - 1.0 / smooth)
+        h = (np.interp(k_all, k, sm.real) + 1j * np.interp(k_all, k, sm.imag)) * np.exp(1j * slope * k_all)
+        rows.setdefault(port, []).append((l, h))
+    out = np.zeros((4, len(symbols), n_sc), dtype=np.complex128)
+    for port, rr in rows.items():
+        ls = np.array([l for l, _h in rr], dtype=float)
+        hs = np.array([h for _l, h in rr])
+        for i, l in enumerate(symbols):
+            if len(ls) == 1:
+                out[port, i] = hs[0]
+                continue
+            j = int(np.clip(np.searchsorted(ls, l), 1, len(ls) - 1))
+            w = (l - ls[j - 1]) / (ls[j] - ls[j - 1])
+            out[port, i] = (1 - w) * hs[j - 1] + w * hs[j]
+    return out, max(resid / max(dof, 1.0), 1e-12)
 
 
 def _pb_channel(g, pci, ports=4):
@@ -565,4 +912,73 @@ def pbch(iq, fs, cell, center_offset_hz=0.0, carrier_hz=None, cfo_hz=None):
     mib['sfn'] = int((m0['sfn'] - f0) % 1024)                       # frame 0's SFN
     out.update(mib=mib, ports=m0['ports'], alone=sum(1 for _f, m in best if m['how'] == 'alone'),
                summed=sum(1 for _f, m in best if m['how'] == 'summed'))
+    return out
+
+
+def sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz=0.0, carrier_hz=None, rnti=SI_RNTI):
+    """SIB1's DCIs (formats 1A and 1C with CRC scrambled by SI-RNTI) of one cell, in subframe 5
+    of every even frame, by our own PCFICH and PDCCH decode (roadmap Round 29.2).
+
+    ``pbch_result`` is ``pbch``'s for the cell (its MIB: bandwidth, PHICH, ports, SFN). Each
+    subframe: the CFI from the PCFICH, then the common search space's candidates (level 8,
+    then 4) for both sizes. Returns a dict: ``cfi`` (counts), ``subframes`` (read) and ``dcis``,
+    one per DCI: ``sfn``, ``level``, ``cce``, ``format`` and its fields, ``bits``, ``snr_db``."""
+    mib = (pbch_result or {}).get('mib')
+    if not mib or not mib.get('n_rb') or mib['n_rb'] not in _NFFT_FOR_RB:
+        return None
+    pci, n_rb, ports = int(cell['pci']), int(mib['n_rb']), int(pbch_result['ports'])
+    offset = float(cell['frame_offset_samples'])
+    if int(cell.get('half_frame') or 0) == 1:
+        offset -= 0.005 * float(fs)
+    offset %= 0.010 * float(fs)
+    frames = _PbFrames(fs, center_offset_hz, offset, pbch_result['cfo_hz'], carrier_hz)
+    sizes = (('1A', dci_1a_bits(n_rb)), ('1C', dci_1c_bits(n_rb)))
+    quads = {}
+    out = {'cfi': {}, 'subframes': 0, 'dcis': []}
+    for f in range(frames.count(len(iq))):
+        sfn = (int(mib['sfn']) + f) % 1024
+        if sfn % 2:
+            continue
+        g = frames.subframe(iq, f, 5, n_rb, n_symb=9)
+        if g is None:
+            continue
+        out['subframes'] += 1
+        h, noise = subframe_channel(g, pci, 5, ports, list(range(4)))
+        pk = [(0, k + j) for k in pcfich_starts(pci, n_rb) for j in range(6) if (k + j) % 3 != pci % 3]
+        r = np.array([g[l, k] for l, k in pk])
+        hh = np.array([[h[p, l, k] for l, k in pk] for p in range(4)])
+        cfi, _score = decode_pcfich(r, hh, noise, pci, 5, ports)
+        out['cfi'][cfi] = out['cfi'].get(cfi, 0) + 1
+        key = cfi
+        if key not in quads:
+            quads[key] = pdcch_quads(pci, n_rb, ports, cfi, mib['phich_resource'], mib['phich_duration'])
+        q = quads[key]
+        ls = np.array([l for l, ks in q for _k in ks])
+        ks = np.array([k for _l, kk in q for k in kk])
+        r = g[ls, ks]
+        hh = h[:, ls, ks]
+        llr = soft_bits(r, hh[:ports], noise, ports) * (1.0 - 2.0 * pdcch_scrambling(pci, 5, 2 * len(r)))
+        n_cce = len(q) // 9
+        taken = set()
+        for level, cce0 in common_candidates(n_cce):
+            if set(range(cce0, cce0 + level)) & taken:
+                continue
+            seg = llr[72 * cce0:72 * (cce0 + level)]
+            for fmt, size in sizes:
+                a = decode_dci(seg, size, rnti)
+                if a is None:
+                    continue
+                fields = parse_dci_1a(a, n_rb) if fmt == '1A' else parse_dci_1c(a, n_rb)
+                if fmt == '1A' and not fields['format1a']:
+                    continue
+                if level == 4 and cce0 % 8 == 0 and 72 * (cce0 + 8) <= len(llr):
+                    more = encode_dci(a, rnti, 8)[288:]
+                    if codeword_score(llr[72 * (cce0 + 4):72 * (cce0 + 8)], 1.0 - 2.0 * more) > _WIDER:
+                        level = 8                          # CCEs 4-7 carry the continuation
+                taken |= set(range(cce0, cce0 + level))
+                sig = float(np.mean(np.abs(hh[0, 36 * cce0:36 * (cce0 + level)]) ** 2))
+                out['dcis'].append(dict(fields, sfn=sfn, level=level, cce=cce0, cfi=cfi,
+                                        bits=''.join(str(int(b)) for b in a),
+                                        snr_db=float(10 * np.log10(max(sig / noise, 1e-12)))))
+                break
     return out

@@ -1284,6 +1284,7 @@ tools/iq-lte CAPTURE.cfile --rate 20000000 --center 751000000   # a bare .cfile,
 tools/iq-lte CAPTURE.cfile --decode --ports 4 2 1         # also the MIB and every SIB (outside srsRAN)
 tools/iq-lte CAPTURE.cfile --decode --si-seconds 2        # decode 2 s instead of 6 (slow SIBs may be missed)
 tools/iq-lte CAPTURE.cfile --mib --t1 1                   # each cell's MIB by our own decoder (no srsRAN)
+tools/iq-lte CAPTURE.cfile --pdcch --t1 1                 # and its SIB1 DCIs (CFI, format, allocation, MCS, RV)
 ```
 
 - `--mib` adds `own_mib` to each FDD cell: its bandwidth (`n_rb`), PHICH
