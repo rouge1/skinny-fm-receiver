@@ -286,8 +286,11 @@ How it reads a frame:
 - **Decoding.** Viterbi for the tail-biting code (wrap-around), then CRC 16.
 
 A frame that fails alone is summed with the others of its TTI. A MIB is
-reported only when two or more frames agree, their SFNs one apart per frame:
-the 16-bit CRC passes by chance about once in 5000 tries.
+reported only when two separate decodes agree (a frame alone, or a TTI
+summed, counts once), their SFNs one apart per frame. The 16-bit CRC passes
+by chance once in 65536 checks, about once in 20000 frames over the three
+port hypotheses. The channel and noise come from the hypothesis's own ports:
+on a 2-port cell, ports 2 and 3's places hold control data.
 
 There is no per-symbol phase term as in NR (36.211 6.13 upconverts
 continuously).
@@ -298,9 +301,11 @@ On real air (2026-10-25, against `pdsch_ue`):
 |---|---|---|
 | Band 13 cell | 4 ports, 50 RB, every frame alone (580 of 580 in 6 s) | same ports and bandwidth; its SFN is the TTI's first frame, ours the capture's |
 | 700 MHz pair, both cells (2 dB apart) | 2 ports, 50 RB, every frame alone | both MIBs, same fields |
-| The other 700 MHz carrier | the stronger cell's MIB | none: it never reached a MIB there |
+| The other 700 MHz carrier | the stronger cell's MIB | the same, once run there: `--decode` had skipped it, the fingerprint saying only `possible` |
 
-So the pair's PBCH is fine, and SIB1 fails further along.
+So the pair's PBCH is fine, and SIB1 fails further along. The PHICH
+duration and resources, which the PDCCH decode will need, equal what
+`pdsch_ue` prints in its cell summary on all four cells read.
 
 Tests: `tools/tests/test_iqlte_phy.py`. `lte_synth` now takes `ports`,
 `port_gains` and `res`, with its default output unchanged.

@@ -1541,7 +1541,8 @@ sequences and the CRS check) is the start.
 
 - [x] 29.1 PBCH and the MIB (2026-10-25: `iqlte_phy.pbch`, `iq-lte --mib`; every
   frame of the Band 13 cell and of both 700 MHz cells of the pair, equal to
-  `pdsch_ue`; the other 700 MHz carrier's stronger cell, which it never read):
+  `pdsch_ue`, PHICH settings included; the other 700 MHz carrier's stronger
+  cell too, once `pdsch_ue` was run there past the fingerprint's gate):
   CRS channel estimates (1, 2 or 4 ports, which the
   CRC mask gives),
   SFBC (Alamouti) for 2 ports, PBCH descrambling, the tail-biting
@@ -1549,6 +1550,12 @@ sequences and the CRS check) is the start.
   CRC 16 masked by the number of ports (which finds the port count), the
   four 10 ms parts of the 40 ms TTI (which gives the SFN's low bits).
   Checked against `pdsch_ue`'s MIBs on every recording.
+- [ ] The fingerprint says `possible` on the other 700 MHz carrier (2026-10-25),
+  where our decoder reads the stronger cell's MIB in every frame and
+  `pdsch_ue` reads it too; `--decode` skips a cell unless the verdict is
+  `lte`, which is how that carrier went unread on 2026-10-23. Find which
+  check fails there, and whether `--decode` should gate on a cell's own
+  evidence (its SSS, CRS or MIB) instead.
 - [ ] 29.2 PCFICH and PDCCH: the CFI (32-bit code, 3 hypotheses), the REGs
   left after PCFICH and PHICH (from the MIB's PHICH config), the REG
   interleaver (sub-block interleaver, cyclic shift by PCI), the common search

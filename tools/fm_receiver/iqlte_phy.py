@@ -350,12 +350,12 @@ def decode_bch(e_llr):
     return None
 
 
-def decode_pbch_frame(r, h, noise, pci):
+def decode_pbch_frame(r, h, noise, pci, hypotheses=(2, 1, 4)):
     """One frame's MIB: ``r`` the 240 PBCH REs (``pbch_res`` order), ``h`` (4, 240) the
-    channel of ports 0..3 there, ``noise`` per RE. Tries 2 ports, then 1 and 4 (the CRC mask
-    must agree with the hypothesis). Returns None or a dict: the MIB's fields, ``ports``,
+    channel of ports 0..3 there, ``noise`` per RE. Tries each port count of ``hypotheses`` (the
+    CRC mask must agree with it). Returns None or a dict: the MIB's fields, ``ports``,
     ``quarter``, ``agreement`` (its ``quarter_scores``), ``llr`` (the frame's 480 soft bits)."""
-    for ports in (2, 1, 4):
+    for ports in hypotheses:
         llr = soft_bits(r, h[:ports], noise, ports)
         scores = quarter_scores(llr, pci)
         q = int(np.argmax(scores))
@@ -448,12 +448,14 @@ class _PbFrames:
         return out
 
 
-def _pb_channel(g, pci):
-    """Ports 0..3's channel on symbols 7..10 of a frame grid (``_PbFrames.grid``), (4, 4, 72),
-    and the noise per RE: one delay slope from every CRS, then per port and CRS symbol a gain
-    and a tilt across the 72 subcarriers, linear in time between CRS symbols."""
+def _pb_channel(g, pci, ports=4):
+    """The channel of ports 0 .. ``ports`` - 1 on symbols 7..10 of a frame grid
+    (``_PbFrames.grid``), (4, 4, 72) (zeros for the others), and the noise per RE: one delay
+    slope from their CRS, then per port and CRS symbol a gain and a tilt across the 72
+    subcarriers, linear in time between CRS symbols. Only the hypothesis's own ports: on a
+    2-port cell, ports 2 and 3's places hold the control region's data, not pilots."""
     pilots = []                                         # (port, symbol, k', z)
-    for port in range(4):
+    for port in range(ports):
         for l in range(_PB_SYMBOLS):
             slot, s = divmod(l, 7)
             if s not in crs_symbols(port):
@@ -491,13 +493,15 @@ def pbch(iq, fs, cell, center_offset_hz=0.0, carrier_hz=None, cfo_hz=None):
     ``center_offset_hz`` is the carrier's offset from the capture's centre, ``carrier_hz`` its
     frequency (for the clock's drift), ``cfo_hz`` the frequency offset (measured from the cyclic
     prefixes when None). Each frame is decoded alone; frames of one 40 ms TTI that fail alone
-    are summed. A MIB is reported only when two or more frames agree on its fields with their
-    SFNs one apart per frame (a 16-bit CRC passes by chance about once in 5000 tries).
+    are summed. A MIB is reported only when two or more separate decodes (a frame alone, or one
+    TTI summed) agree on its fields with their SFNs one apart per frame: a 16-bit CRC passes by
+    chance once in 65536 checks, about once in 20000 frames over the three port hypotheses.
 
     Returns a dict: ``mib`` (the agreed fields: ``n_rb``, ``phich_duration``, ``phich_resource``,
     ``sfn`` of the first frame, the Rel-13 to 17 fields; or None), ``ports``, ``frames`` (read),
     ``decoded`` (frames agreeing), ``alone`` and ``summed`` (how those decoded), ``cfo_hz``,
-    ``snr_db`` (median per-RE SNR of the CRS fits), ``reason``."""
+    ``snr_db`` (median per-RE SNR of the CRS fits, on the frames decoded alone, with the
+    decoded port count's own CRS), ``reason``."""
     pci = int(cell['pci'])
     offset = float(cell['frame_offset_samples'])
     if int(cell.get('half_frame') or 0) == 1:
@@ -514,41 +518,50 @@ def pbch(iq, fs, cell, center_offset_hz=0.0, carrier_hz=None, cfo_hz=None):
         g = frames.grid(iq, f)
         if g is None:
             continue
-        h, noise = _pb_channel(g, pci)
-        snrs.append(10 * np.log10(max(float(np.mean(np.abs(h[0]) ** 2)) / noise, 1e-12)))
         r = g[7 + res[:, 0], res[:, 1]]
-        hh = h[:, res[:, 0], res[:, 1]]
-        one = decode_pbch_frame(r, hh, noise, pci)
+        hyp = {}
+        one = None
+        for ports in (2, 1, 4):
+            h, noise = _pb_channel(g, pci, ports)
+            hyp[ports] = (h[:, res[:, 0], res[:, 1]], noise)
+            one = decode_pbch_frame(r, hyp[ports][0], noise, pci, (ports,))
+            if one is not None:
+                snrs.append(10 * np.log10(max(float(np.mean(np.abs(h[0]) ** 2)) / noise, 1e-12)))
+                got.append((f, dict(one, how='alone', trial=('frame', f))))
+                break
         if one is not None:
-            got.append((f, dict(one, how='alone')))
             continue
-        llr = soft_bits(r, hh[:2], noise, 2)              # summed below as 2 ports first
+        llr = soft_bits(r, hyp[2][0][:2], hyp[2][1], 2)       # the TTI quarter, as 2 ports
         q = int(np.argmax(quarter_scores(llr, pci)))
-        tti.setdefault(f - q, []).append((f, q, hh, r, noise))
+        tti.setdefault(f - q, []).append((f, q, r, hyp))
     for start, items in tti.items():
         if len(items) < 2:
             continue
         for ports in (2, 1, 4):
-            e = sum(frame_llrs(soft_bits(r, hh[:ports], nz, ports), pci, q) for _f, q, hh, r, nz in items)
+            e = sum(frame_llrs(soft_bits(r, hyp[ports][0][:ports], hyp[ports][1], ports), pci, q)
+                    for _f, q, r, hyp in items)
             dec = decode_bch(e)
             if dec is not None and dec[1] == ports:
                 for f, q, *_rest in items:
                     got.append((f, dict(parse_mib(dec[0], q), ports=ports, quarter=q, how='summed',
-                                        bits=''.join(str(int(b)) for b in dec[0]))))
+                                        bits=''.join(str(int(b)) for b in dec[0]), trial=('tti', start))))
                 break
     groups = {}
     for f, m in got:
         key = (m['bits'][:6] + m['bits'][14:], m['ports'], (m['sfn'] - f) % 1024)
         groups.setdefault(key, []).append((f, m))
-    best = max(groups.values(), key=len) if groups else []
+    # Agreement counts separate CRC passes: a summed TTI is one pass however many frames it fills.
+    best = max(groups.values(), key=lambda v: len({m['trial'] for _f, m in v})) if groups else []
+    passes = len({m['trial'] for _f, m in best})
     out = {'mib': None, 'ports': None, 'frames': n, 'decoded': len(best), 'alone': 0, 'summed': 0,
            'cfo_hz': float(cfo_hz), 'snr_db': float(np.median(snrs)) if snrs else None, 'reason': None}
-    if len(best) < 2:
+    if passes < 2:
         out['reason'] = ('no MIB in %d frames' % n if not got else
-                         'no two frames agree on a MIB (%d decoded)' % len(got))
+                         'no two separate decodes agree on a MIB (%d frames decoded)' % len(got))
         return out
     f0, m0 = min(best, key=lambda t: t[0])
-    mib = {k: v for k, v in m0.items() if k not in ('llr', 'bits', 'how', 'quarter', 'agreement', 'ports', 'sfn_msb')}
+    mib = {k: v for k, v in m0.items() if k not in ('llr', 'bits', 'how', 'quarter', 'agreement', 'ports', 'sfn_msb',
+                                                     'trial')}
     mib['sfn'] = int((m0['sfn'] - f0) % 1024)                       # frame 0's SFN
     out.update(mib=mib, ports=m0['ports'], alone=sum(1 for _f, m in best if m['how'] == 'alone'),
                summed=sum(1 for _f, m in best if m['how'] == 'summed'))
