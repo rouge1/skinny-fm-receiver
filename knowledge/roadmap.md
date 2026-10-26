@@ -1569,7 +1569,12 @@ sequences and the CRS check) is the start.
   and the power budget on its SIB1's REs (as 28.5's), say whether the two
   overlap or the signal is just weak. (The pair's CRS do not collide on ports
   0 and 1: each cell's CRS sits on the other's data REs.)
-- [ ] 29.3 PDSCH and DL-SCH: allocation type 2 (1A, 1C: N_PRB^1A from the TPC
+- [x] 29.3 PDSCH and DL-SCH (2026-10-26: `iqlte_phy.sib1`, `iq-lte --pdsch`; the
+  Band 13 cell's SIB1 in 50 of 50 subframes, byte-equal to `pdsch_ue`'s; the
+  stronger cell of each 700 MHz carrier in every subframe (100/100, 99/99),
+  where `pdsch_ue` reads none, so their operator is known; the pair's weaker
+  cell none, under the stronger one's SIB1: 29.5. The turbo code went in
+  `iqlte_phy`, not a separate `iqlte_turbo`): allocation type 2 (1A, 1C: N_PRB^1A from the TPC
   bit), TBS (36.213 7.1.7), REs around the CRS, the control region, and the
   PSS and SSS in the central 6 PRBs of subframe 5 (the PBCH in subframe 0 for
   other SI), SFBC

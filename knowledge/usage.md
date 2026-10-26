@@ -1285,6 +1285,7 @@ tools/iq-lte CAPTURE.cfile --decode --ports 4 2 1         # also the MIB and eve
 tools/iq-lte CAPTURE.cfile --decode --si-seconds 2        # decode 2 s instead of 6 (slow SIBs may be missed)
 tools/iq-lte CAPTURE.cfile --mib --t1 1                   # each cell's MIB by our own decoder (no srsRAN)
 tools/iq-lte CAPTURE.cfile --pdcch --t1 1                 # and its SIB1 DCIs (CFI, format, allocation, MCS, RV)
+tools/iq-lte CAPTURE.cfile --pdsch --t1 1                 # and SIB1 itself, by our own decoder
 ```
 
 - `--mib` adds `own_mib` to each FDD cell: its bandwidth (`n_rb`), PHICH
@@ -1292,6 +1293,15 @@ tools/iq-lte CAPTURE.cfile --pdcch --t1 1                 # and its SIB1 DCIs (C
   every frame of the span (0.2 s by default, so 20 frames; `--t1` for more),
   and reports a MIB only when two separate decodes agree. On real air it read
   every frame of three 700 MHz cells, the outside decoder agreeing.
+- `--pdsch` (implies `--pdcch` and `--mib`) adds `own_sib1`: SIB1 from our
+  own PDSCH and turbo decoder, each SIB1 subframe of the span decoded alone
+  (one every 20 ms). `blocks` gives each one's `sfn`, `rv`, `tbs`, `n_prb`,
+  `crc` and its `hex`; `decoded` and `tried` count them; `sib1` is the bytes
+  most blocks agree on, and `fields` what pycrate reads from them (operators,
+  tracking area, cell identity, band, barring), or null with a
+  `fields_reason` when pycrate is not under `$FMRX_LTE_TOOLS`. On real air
+  it read SIB1 on two 700 MHz carriers where the outside decoder reads none.
+  About 0.1 s a subframe.
 - `--decode` runs when the fingerprint's verdict is `lte` or `possible` (a
   possible carrier may well be one: a 700 MHz carrier read `possible` while
   both decoders read its MIB), not when it is `not-lte` or `unknown`.

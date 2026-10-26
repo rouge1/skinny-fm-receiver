@@ -3,7 +3,7 @@
 
     tools/iq-lte FILE [--block-center HZ] [--t0 S --t1 S] [--rate R --center HZ]
     tools/iq-lte FILE --decode [--ports N ...]
-    tools/iq-lte FILE --mib [--pdcch]
+    tools/iq-lte FILE --mib [--pdcch | --pdsch]
 
 The block is mixed to 0 Hz and read with ``iqmeasure.extract`` (band-limited,
 in chunks). Stdout is one JSON document: the fingerprint (verdict, PSS root,
@@ -11,7 +11,9 @@ PCI, frame timing, bandwidth class) and, with ``--decode``, the MIB and the
 SIB1 from an outside ``pdsch_ue`` (``$FMRX_LTE_TOOLS/run_pdsch.sh``). With
 ``--mib`` each FDD cell gains ``own_mib``: its MIB from our own PBCH decoder
 (``iqlte_phy.pbch``, numpy only, roadmap Round 29.1); ``--pdcch`` adds
-``own_pdcch``, its SIB1 DCIs (``iqlte_phy.sib1_dcis``, Round 29.2). Only the
+``own_pdcch``, its SIB1 DCIs (``iqlte_phy.sib1_dcis``, Round 29.2), and
+``--pdsch`` both and ``own_sib1``, SIB1 itself (``iqlte_phy.sib1``, Round 29.3:
+its bytes, and its fields when pycrate is under ``$FMRX_LTE_TOOLS``). Only the
 broadcast channel is decoded. Numpy only; the outside tools are subprocesses.
 
 Exit 0 when the run completed, whatever the verdict. Exit 1 for a bad option,
@@ -54,6 +56,20 @@ def _missing(name):
                      'run_pdsch.sh, pdsch_ue and pyc/bin/python live in that directory.\n'
                      % (name, tools))
     return 2
+
+
+def _own_sib1(sl, cell, block_hz):
+    """``own_sib1`` of a cell: our own SIB1 decode (``iqlte_phy.sib1``) without the DCIs it
+    used (``own_pdcch`` has them), and the fields pycrate reads from its bytes."""
+    got = iqlte_phy.sib1(sl.iq, sl.rate, cell, cell['own_mib'], cell.get('own_pdcch'), carrier_hz=block_hz)
+    if got is None:
+        return None
+    got.pop('dcis', None)
+    got['fields'], got['fields_reason'] = None, None
+    if got['sib1']:
+        got['fields'], got['fields_reason'] = iqlte_decode.parse_sib1(bytes.fromhex(got['sib1']),
+                                                                      iqlte_decode.tools_dir())
+    return got
 
 
 def _check_options(args):
@@ -325,6 +341,10 @@ def main(argv=None):
     ap.add_argument('--pdcch', action='store_true',
                     help="with --mib's MIB, decode each cell's SIB1 DCIs (PCFICH and PDCCH, "
                          "SI-RNTI) with our own decoder (roadmap 29.2): each cell gains own_pdcch")
+    ap.add_argument('--pdsch', action='store_true',
+                    help="with --pdcch's DCIs, decode each cell's SIB1 (PDSCH, turbo DL-SCH) with "
+                         "our own decoder (roadmap 29.3): each cell gains own_sib1 (pycrate, if "
+                         "present, parses it)")
     ap.add_argument('--ports', type=int, nargs='+', metavar='N',
                     help='antenna port counts to try, in order (default: 4 2 1)')
     ap.add_argument('--si-seconds', type=float, metavar='S',
@@ -360,13 +380,15 @@ def main(argv=None):
 
     fp, sss = _fingerprint(sl.iq, sl.rate)
     cells = _cells_of(fp)
-    if args.mib or args.pdcch:
+    if args.mib or args.pdcch or args.pdsch:
         for cell in cells:
             if isinstance(cell, dict) and cell.get('duplex', 'FDD') == 'FDD':
                 cell['own_mib'] = iqlte_phy.pbch(sl.iq, sl.rate, cell, carrier_hz=block_hz)
-                if args.pdcch:
+                if args.pdcch or args.pdsch:
                     cell['own_pdcch'] = iqlte_phy.sib1_dcis(sl.iq, sl.rate, cell, cell['own_mib'],
                                                             carrier_hz=block_hz)
+                if args.pdsch:
+                    cell['own_sib1'] = _own_sib1(sl, cell, block_hz)
     decode = None
     if args.decode:
         try:

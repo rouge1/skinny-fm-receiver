@@ -1,5 +1,5 @@
-"""LTE broadcast decoding, numpy only: the PBCH and its MIB (roadmap Round 29.1), and the
-PCFICH and PDCCH that schedule SIB1 (29.2).
+"""LTE broadcast decoding, numpy only: the PBCH and its MIB (roadmap Round 29.1), the
+PCFICH and PDCCH that schedule SIB1 (29.2), and SIB1's PDSCH and DL-SCH (29.3).
 
 Written from the 3GPP specifications (TS 36.211, 36.212 and 36.331 V19, read in ETSI's PDFs,
 which keep the equations the 3GPP Word files hold as pictures). No srsRAN code is used: srsRAN
@@ -48,6 +48,21 @@ at k = 6 (PCI mod 2 N_RB) + floor(i N_RB / 2) 6 (6.7.4), its 32 bits scrambled w
 sub-block interleaver (36.212 5.1.4.2.1) and a cyclic shift by the PCI (6.8.5); the PDCCH's
 bits are scrambled with c_init = subframe 2^9 + PCI (6.8.2), 72 to a CCE. A DCI is CRC 16 whose
 last 16 bits are XORed with the RNTI (36.212 5.3.3.2), then the PBCH's code and rate matching.
+
+The PDSCH and DL-SCH (29.3): the DCI's RIV gives the VRBs (36.213 7.1.6.3; 1C in steps of 2
+or 4), localized or distributed (36.211 6.2.3.2: a 4-column interleaver with nulls, the second
+slot moved by half, then the gap), and its MCS the TBS (36.213 7.1.7.2, I_TBS = I_MCS: 1A's
+column N_PRB^1A, 1C's own table). The REs from the CFI's symbol on, k first over the PRBs, then
+l, skip the CRS of the cell's ports, the synchronisation signals' central 72 subcarriers and
+the PBCH's (6.3.5, 6.4). SFBC as the PBCH; scrambling c_init = RNTI 2^14 + subframe 2^9 + PCI
+(6.3.1). The transport block: CRC 24A, segmentation into code blocks of the turbo sizes
+(36.212 5.1.2, CRC 24B on each when more than one), the rate 1/3 turbo code (5.1.3.2: two
+8-state constituent codes 13 and 15 octal, the QPP interleaver of table 5.1.3-3, 12 tail
+bits), rate matching (5.1.4.1: the 32-column sub-block interleaver, d(2)'s shifted by one, the
+parity streams interlaced into a circular buffer read from k0 by the redundancy version). The
+decoder is max-log-MAP with its extrinsic scaled by 0.75, up to 8 iterations, stopping when
+the CRC passes. SIB1's RV is 1A's field or, for 1C, ceil(3 k / 2) mod 4 with k = (SFN / 2)
+mod 4 (36.321 5.3.1).
 
 Wrong turns
 -----------
@@ -633,6 +648,419 @@ def dci_1a_si(n_rb, riv, mcs, rv, n_prb_1a=3, distributed=0):
     return np.array(a + [0] * (size - len(a)), dtype=np.uint8)
 
 
+def dci_1c_si(n_rb, riv, tbs_index, gap2=0):
+    """A DCI 1C payload with these fields (36.212 5.3.3.1.4), for the tests."""
+    size = dci_1c_bits(n_rb)
+    w = size - 5 - (1 if n_rb >= 50 else 0)
+    fields = ((gap2, 1),) if n_rb >= 50 else ()
+    fields += ((riv, w), (tbs_index, 5))
+    return np.array([(v >> (n - 1 - i)) & 1 for v, n in fields for i in range(n)], dtype=np.uint8)
+
+
+# ----- the PDSCH and DL-SCH: SIB1 (36.211 6.2.3, 6.3-6.4; 36.212 5.1.1-5.1.4.1, 5.3.2; 36.213 7.1.6-7.1.7)
+
+#: Turbo code internal interleaver parameters f1, f2 (36.212 table 5.1.3-3), for K = 40 .. 6144
+#: in the table's order (``turbo_k``).
+_QPP_F1 = (3, 7, 19, 7, 7, 11, 5, 11, 7, 41, 103, 15, 9, 17, 9, 21, 101, 21, 57, 23, 13, 27, 11, 27,
+           85, 29, 33, 15, 17, 33, 103, 19, 19, 37, 19, 21, 21, 115, 193, 21, 133, 81, 45, 23, 243, 151,
+           155, 25, 51, 47, 91, 29, 29, 247, 29, 89, 91, 157, 55, 31, 17, 35, 227, 65, 19, 37, 41, 39, 185,
+           43, 21, 155, 79, 139, 23, 217, 25, 17, 127, 25, 239, 17, 137, 215, 29, 15, 147, 29, 59, 65, 55,
+           31, 17, 171, 67, 35, 19, 39, 19, 199, 21, 211, 21, 43, 149, 45, 49, 71, 13, 17, 25, 183, 55,
+           127, 27, 29, 29, 57, 45, 31, 59, 185, 113, 31, 17, 171, 209, 253, 367, 265, 181, 39, 27, 127,
+           143, 43, 29, 45, 157, 47, 13, 111, 443, 51, 51, 451, 257, 57, 313, 271, 179, 331, 363, 375, 127,
+           31, 33, 43, 33, 477, 35, 233, 357, 337, 37, 71, 71, 37, 39, 127, 39, 39, 31, 113, 41, 251, 43,
+           21, 43, 45, 45, 161, 89, 323, 47, 23, 47, 263)
+_QPP_F2 = (10, 12, 42, 16, 18, 20, 22, 24, 26, 84, 90, 32, 34, 108, 38, 120, 84, 44, 46, 48, 50, 52,
+           36, 56, 58, 60, 62, 32, 198, 68, 210, 36, 74, 76, 78, 120, 82, 84, 86, 44, 90, 46, 94, 48, 98,
+           40, 102, 52, 106, 72, 110, 168, 114, 58, 118, 180, 122, 62, 84, 64, 66, 68, 420, 96, 74, 76,
+           234, 80, 82, 252, 86, 44, 120, 92, 94, 48, 98, 80, 102, 52, 106, 48, 110, 112, 114, 58, 118, 60,
+           122, 124, 84, 64, 66, 204, 140, 72, 74, 76, 78, 240, 82, 252, 86, 88, 60, 92, 846, 48, 28, 80,
+           102, 104, 954, 96, 110, 112, 114, 116, 354, 120, 610, 124, 420, 64, 66, 136, 420, 216, 444, 456,
+           468, 80, 164, 504, 172, 88, 300, 92, 188, 96, 28, 240, 204, 104, 212, 192, 220, 336, 228, 232,
+           236, 120, 244, 248, 168, 64, 130, 264, 134, 408, 138, 280, 142, 480, 146, 444, 120, 152, 462,
+           234, 158, 80, 96, 902, 166, 336, 170, 86, 174, 176, 178, 120, 182, 184, 186, 94, 190, 480)
+#: Sub-block interleaver column permutation for turbo codes (36.212 table 5.1.4-1).
+_P_TC = (0, 16, 8, 24, 4, 20, 12, 28, 2, 18, 10, 26, 6, 22, 14, 30,
+         1, 17, 9, 25, 5, 21, 13, 29, 3, 19, 11, 27, 7, 23, 15, 31)
+#: TBS for P-RNTI, RA-RNTI and SI-RNTI: format 1A's columns N_PRB = N_PRB^1A = 2 and 3 of 36.213
+#: table 7.1.7.2.1-1 (I_TBS = I_MCS, 0 .. 26), and format 1C's table 7.1.7.2.3-1.
+TBS_1A = {2: (32, 56, 72, 104, 120, 144, 176, 224, 256, 296, 328, 376, 440, 488, 552, 600, 632, 696, 776,
+              840, 904, 1000, 1064, 1128, 1192, 1256, 1480),
+          3: (56, 88, 144, 176, 208, 224, 256, 328, 392, 456, 504, 584, 680, 744, 840, 904, 968, 1064, 1160,
+              1288, 1384, 1480, 1608, 1736, 1800, 1864, 2216)}
+TBS_1C = (40, 56, 72, 120, 136, 144, 176, 208, 224, 256, 280, 296, 328, 336, 392, 488,
+          552, 600, 632, 696, 776, 840, 904, 1000, 1064, 1128, 1224, 1288, 1384, 1480, 1608, 1736)
+#: N_gap,2 by bandwidth (36.211 table 6.2.3.2-1), 50 RB and up.
+_GAP2 = ((50, 9), (64, 16), (80, 16))
+#: Extrinsic information is scaled by this between the two max-log-MAP decoders.
+_EXTRINSIC = 0.75
+_TURBO_ITERATIONS = 8
+
+
+def turbo_k():
+    """The turbo code's block sizes K (36.212 table 5.1.3-3), 40 .. 6144."""
+    return np.concatenate((np.arange(40, 512, 8), np.arange(512, 1024, 16), np.arange(1024, 2048, 32),
+                           np.arange(2048, 6145, 64)))
+
+
+def qpp(k):
+    """The turbo code internal interleaver Pi(i) = (f1 i + f2 i^2) mod K (36.212 5.1.3.2.3)."""
+    j = int(np.searchsorted(turbo_k(), k))
+    i = np.arange(k, dtype=np.int64)
+    return (_QPP_F1[j] * i + _QPP_F2[j] * i * i) % k
+
+
+def segmentation(b):
+    """Code block segmentation of ``b`` bits (36.212 5.1.2): (C, [K_r], F, L)."""
+    z = 6144
+    if b <= z:
+        c, l, bp = 1, 0, b
+    else:
+        l = 24
+        c = -(-b // (z - l))
+        bp = b + c * l
+    ks = turbo_k()
+    kp = int(ks[np.searchsorted(ks, -(-bp // c))])
+    if c == 1:
+        sizes = [kp]
+    else:
+        km = int(ks[ks < kp][-1])
+        cm = (c * kp - bp) // (kp - km)
+        sizes = [km] * cm + [kp] * (c - cm)
+    return c, sizes, sum(sizes) - bp, l
+
+
+_RSC_NEXT = np.zeros((8, 2), dtype=np.int64)       # state r1 r2 r3 (r1 the newest, bit 2)
+_RSC_PARITY = np.zeros((8, 2), dtype=np.int64)
+for _s in range(8):
+    _r1, _r2, _r3 = (_s >> 2) & 1, (_s >> 1) & 1, _s & 1
+    for _u in (0, 1):
+        _a = _u ^ _r2 ^ _r3                              # g0 = 1 + D^2 + D^3, the feedback
+        _RSC_NEXT[_s, _u] = (_a << 2) | (_r1 << 1) | _r2
+        _RSC_PARITY[_s, _u] = _a ^ _r1 ^ _r3             # g1 = 1 + D + D^3
+_RSC_PRED = [np.array([(s, u) for s in range(8) for u in (0, 1) if _RSC_NEXT[s, u] == n]) for n in range(8)]
+_RSC_PS = np.array([p[:, 0] for p in _RSC_PRED])      # (8, 2): the two states before n
+_RSC_PU = np.array([p[:, 1] for p in _RSC_PRED])      # and their inputs
+
+
+def _rsc(c):
+    """One constituent encoder (36.212 5.1.3.2.1): the parity bits z of ``c``, then the three
+    tail steps' (x, z)."""
+    s, z = 0, np.zeros(len(c), dtype=np.uint8)
+    for i, u in enumerate(c):
+        z[i] = _RSC_PARITY[s, int(u)]
+        s = _RSC_NEXT[s, int(u)]
+    tail = []
+    for _ in range(3):
+        u = ((s >> 1) ^ s) & 1                           # the feedback: the register fills with 0
+        tail.append((u, int(_RSC_PARITY[s, u])))
+        s = _RSC_NEXT[s, u]
+    return z, tail
+
+
+def turbo_encode(c):
+    """The rate 1/3 turbo code (36.212 5.1.3.2): d(0), d(1), d(2) of K + 4 bits each, the tail
+    as 5.1.3.2.2 (filler bits given as 0)."""
+    c = np.asarray(c, dtype=np.uint8)
+    k = len(c)
+    z, t1 = _rsc(c)
+    z2, t2 = _rsc(c[qpp(k)])
+    d = np.zeros((3, k + 4), dtype=np.uint8)
+    d[0, :k], d[1, :k], d[2, :k] = c, z, z2
+    (x0, z0), (x1, z1), (x2, z2_) = t1
+    (y0, w0), (y1, w1), (y2, w2) = t2
+    d[:, k] = x0, z0, x1
+    d[:, k + 1] = z1, x2, z2_
+    d[:, k + 2] = y0, w0, y1
+    d[:, k + 3] = w1, y2, w2
+    return d
+
+
+def _tc_subblock(d, third):
+    """For each of the turbo sub-block interleaver's R x 32 outputs (36.212 5.1.4.1.1), the
+    input index or -1 (dummy); ``third`` the d(2) stream's rule."""
+    r = -(-d // 32)
+    kp = 32 * r
+    nd = kp - d
+    k = np.arange(kp)
+    if third:
+        y = (np.array(_P_TC)[k // r] + 32 * (k % r) + 1) % kp
+    else:
+        y = (k % r) * 32 + np.array(_P_TC)[k // r]
+    return np.where(y < nd, -1, y - nd)
+
+
+def _tc_buffer(k, filler=0):
+    """The circular buffer w of a code block of K bits (36.212 5.1.4.1.2): for each of its
+    K_w = 3 K_Pi bits, stream * (K + 4) + index, or -1 for a <NULL> (dummies and filler)."""
+    d = k + 4
+    v = [_tc_subblock(d, i == 2) for i in range(3)]
+    w = np.empty(3 * len(v[0]), dtype=np.int64)
+    kp = len(v[0])
+    w[:kp] = v[0]
+    w[kp::2] = np.where(v[1] < 0, -1, d + v[1])
+    w[kp + 1::2] = np.where(v[2] < 0, -1, 2 * d + v[2])
+    if filler:
+        w[(w >= 0) & (w % d < filler) & (w < 2 * d)] = -1   # d(0) and d(1)'s filler are <NULL>
+    return w
+
+
+def _tc_selection(k, e_len, rv, filler=0):
+    """Which coded bit (stream * (K + 4) + index) each of the ``e_len`` bits sent with
+    redundancy version ``rv`` carries (36.212 5.1.4.1.2, N_cb = K_w)."""
+    w = _tc_buffer(k, filler)
+    r = len(w) // 96
+    k0 = r * (2 * int(np.ceil(len(w) / (8 * r))) * int(rv) + 2)
+    order = np.roll(w, -k0)
+    valid = order[order >= 0]
+    return valid[np.arange(e_len) % len(valid)]
+
+
+def tc_rate_match(d, e_len, rv, filler=0):
+    """The ``e_len`` bits sent of a turbo code block ``d`` (3, K + 4) with redundancy version ``rv``."""
+    d = np.asarray(d, dtype=np.uint8)
+    return d.reshape(-1)[_tc_selection(d.shape[1] - 4, e_len, rv, filler)]
+
+
+def tc_rate_recover(llr_e, k, rv, buffer=None, filler=0):
+    """A code block's soft bits (3, K + 4) from rate-matched ``llr_e``, added into ``buffer``
+    (soft combining of redundancy versions) when given."""
+    llr_e = np.asarray(llr_e, dtype=np.float64)
+    out = np.zeros(3 * (k + 4)) if buffer is None else np.asarray(buffer, dtype=np.float64).reshape(-1).copy()
+    np.add.at(out, _tc_selection(k, len(llr_e), rv, filler), llr_e)
+    return out.reshape(3, k + 4)
+
+
+def _max_log_map(ls, lp, la, tail_s, tail_p):
+    """A posteriori LLRs of a constituent code's K inputs (max-log-MAP; positive means 0)."""
+    k = len(ls)
+    xs = np.array([1.0, -1.0])
+    xp = 1.0 - 2.0 * _RSC_PARITY
+    sys_ = np.concatenate((ls + la, tail_s))
+    par = np.concatenate((lp, tail_p))
+    gamma = 0.5 * (sys_[:, None, None] * xs[None, None, :] + par[:, None, None] * xp[None, :, :])
+    n = k + 3
+    alpha = np.full((n + 1, 8), -1e30)
+    alpha[0, 0] = 0.0
+    for i in range(n):
+        a = alpha[i][_RSC_PS] + gamma[i][_RSC_PS, _RSC_PU]
+        m = a.max(axis=1)
+        alpha[i + 1] = m - m.max()
+    beta = np.full(8, -1e30)
+    beta[0] = 0.0
+    out = np.empty(k)
+    for i in range(n - 1, -1, -1):
+        b = gamma[i] + beta[_RSC_NEXT]                 # (8, 2)
+        if i < k:
+            t = alpha[i][:, None] + b
+            out[i] = t[:, 0].max() - t[:, 1].max()
+        m = b.max(axis=1)
+        beta = m - m.max()
+    return out
+
+
+def turbo_decode(llr, k, check=None, iterations=_TURBO_ITERATIONS, filler=0):
+    """The K bits of a turbo code block from its soft bits (3, K + 4) (positive means 0):
+    iterated max-log-MAP. ``check(bits)`` (a CRC, say) stops early when true. Returns
+    ``(bits, iterations used, passed)``."""
+    llr = np.asarray(llr, dtype=np.float64)
+    ls, lp1, lp2 = llr[0, :k].copy(), llr[1, :k], llr[2, :k]
+    if filler:
+        ls[:filler] = 1e3                                # known zeros
+    t = llr[:, k:]
+    t1s, t1p = np.array([t[0, 0], t[2, 0], t[1, 1]]), np.array([t[1, 0], t[0, 1], t[2, 1]])
+    t2s, t2p = np.array([t[0, 2], t[2, 2], t[1, 3]]), np.array([t[1, 2], t[0, 3], t[2, 3]])
+    pi = qpp(k)
+    la = np.zeros(k)
+    bits = (ls < 0).astype(np.uint8)
+    for it in range(1, iterations + 1):
+        l1 = _max_log_map(ls, lp1, la, t1s, t1p)
+        e1 = (l1 - ls - la) * _EXTRINSIC
+        la2 = e1[pi]
+        l2 = _max_log_map(ls[pi], lp2, la2, t2s, t2p)
+        e2 = (l2 - ls[pi] - la2) * _EXTRINSIC
+        la = np.empty(k)
+        la[pi] = e2
+        app = np.empty(k)
+        app[pi] = l2
+        bits = (app < 0).astype(np.uint8)
+        if check is not None and check(bits):
+            return bits, it, True
+    return bits, iterations, check is None
+
+
+def _block_e(g, c, r, unit):
+    """E of code block ``r`` of ``c`` from G bits, in units of N_L Q_m bits (36.212 5.1.4.1.2)."""
+    gp = g // unit
+    return unit * (gp // c if r <= c - (gp % c) - 1 else -(-gp // c))
+
+
+def dlsch_encode(tb, e_len, rv, ports=1):
+    """The ``e_len`` bits a transport block ``tb`` is sent as (36.212 5.3.2: CRC 24A,
+    segmentation, turbo code, rate matching with ``rv``), QPSK on ``ports`` (N_L 2 for
+    transmit diversity)."""
+    tb = np.asarray(tb, dtype=np.uint8)
+    b = np.concatenate((tb, _crc(tb, '24A')))
+    c, sizes, f, l = segmentation(len(b))
+    out, at = [], 0
+    unit = 2 if ports == 1 else 4
+    for r, kr in enumerate(sizes):
+        n = kr - l - (f if r == 0 else 0)
+        blk = b[at:at + n]
+        at += n
+        if r == 0 and f:
+            blk = np.concatenate((np.zeros(f, dtype=np.uint8), blk))
+        if l:
+            blk = np.concatenate((blk, _crc(blk, '24B')))
+        e = _block_e(e_len, c, r, unit)
+        out.append(tc_rate_match(turbo_encode(blk), e, rv, f if r == 0 else 0))
+    return np.concatenate(out)
+
+
+def dlsch_decode(llr, tbs, rv, buffers=None, ports=1):
+    """A transport block of ``tbs`` bits from its descrambled soft bits (sent with ``rv``), or
+    None when the CRC fails; ``buffers`` (a list, one soft buffer a code block) is filled in
+    place for combining. Returns ``(bits or None, buffers)``."""
+    llr = np.asarray(llr, dtype=np.float64)
+    c, sizes, f, l = segmentation(int(tbs) + 24)
+    unit = 2 if ports == 1 else 4
+    if buffers is None:
+        buffers = [None] * c
+    blocks, at = [], 0
+    for r, kr in enumerate(sizes):
+        e = _block_e(len(llr), c, r, unit)
+        fr = f if r == 0 else 0
+        buffers[r] = tc_rate_recover(llr[at:at + e], kr, rv, buffers[r], fr)
+        at += e
+        kind = '24B' if l else '24A'
+        check = (lambda x, fr=fr, kind=kind: np.array_equal(_crc(x[fr:-24], kind), x[-24:]))
+        bits, _it, ok = turbo_decode(buffers[r], kr, check, filler=fr)
+        if not ok:
+            return None, buffers
+        blocks.append(bits[fr:kr - l])
+    b = np.concatenate(blocks)
+    if not np.array_equal(_crc(b[:-24], '24A'), b[-24:]):
+        return None, buffers
+    return b[:-24], buffers
+
+
+def riv_decode(riv, n):
+    """(RB_start, L_CRBs) from a type 2 resource indication value over ``n`` RBs (36.213 7.1.6.3)."""
+    a, b = divmod(int(riv), int(n))
+    if a + b < n:
+        return b, a + 1
+    return n - 1 - b, n - a + 1
+
+
+def n_gap2(n_rb):
+    """N_gap,2 (36.211 table 6.2.3.2-1), 50 RB and up."""
+    return [g for lo, g in _GAP2 if n_rb >= lo][-1]
+
+
+def n_vrb(n_rb, gap2=False):
+    """N_VRB^DL of distributed VRBs (36.211 6.2.3.2) with the first or second gap."""
+    if not gap2:
+        g = n_gap1(n_rb)
+        return 2 * min(g, n_rb - g)
+    g = n_gap2(n_rb)
+    return (n_rb // (2 * g)) * 2 * g
+
+
+def rbg_size(n_rb):
+    """P, the resource block group size (36.213 table 7.1.6.1-1)."""
+    return 1 if n_rb <= 10 else 2 if n_rb <= 26 else 3 if n_rb <= 63 else 4
+
+
+def distributed_prb(v, n_rb, gap2, slot):
+    """The PRB distributed VRB ``v`` is sent on in slot ``slot`` (0 or 1) of the subframe
+    (36.211 6.2.3.2)."""
+    ngap = n_gap2(n_rb) if gap2 else n_gap1(n_rb)
+    nt = 2 * ngap if gap2 else n_vrb(n_rb, False)
+    p = rbg_size(n_rb)
+    n_row = -(-nt // (4 * p)) * p
+    n_null = 4 * n_row - nt
+    vt = v % nt
+    base = nt * (v // nt)
+    p1 = 2 * n_row * (vt % 2) + vt // 2 + base
+    p2 = n_row * (vt % 4) + vt // 4 + base
+    if n_null and vt >= nt - n_null:
+        x = p1 - n_row + (n_null // 2 if vt % 2 == 0 else 0)
+    elif n_null and vt % 4 >= 2:
+        x = p2 - n_null // 2
+    else:
+        x = p2
+    if slot:
+        x = (x + nt // 2) % nt + base
+    return x if x < nt // 2 else x + ngap - nt // 2
+
+
+def si_allocation(dci, n_rb):
+    """A SIB or SI DCI's PRBs in each slot, ([slot 0 PRBs], [slot 1 PRBs]) (36.213 7.1.6.3)."""
+    if dci['format'] == '1C':
+        step = 2 if n_rb < 50 else 4
+        nv = n_vrb(n_rb, dci['gap2'])
+        start, length = riv_decode(dci['riv'], nv // step)
+        vrbs, dist = range(start * step, (start + length) * step), True
+    else:
+        start, length = riv_decode(dci['riv'], n_rb)
+        vrbs, dist = range(start, start + length), bool(dci['distributed'])
+    if not dist:
+        return list(vrbs), list(vrbs)
+    return tuple(sorted(distributed_prb(v, n_rb, dci['gap2'], s) for v in vrbs) for s in (0, 1))
+
+
+def si_tbs(dci):
+    """The transport block size of a SIB or SI DCI (36.213 7.1.7.2: I_TBS = I_MCS)."""
+    if dci['format'] == '1C':
+        return TBS_1C[dci['tbs_index']]
+    return TBS_1A[dci['n_prb_1a']][dci['mcs']] if dci['mcs'] < 27 else None
+
+
+def sib1_rv(sfn):
+    """SIB1's redundancy version by its frame for format 1C (36.321 5.3.1): ceil(3 k / 2) mod 4,
+    k = (SFN / 2) mod 4."""
+    k = (int(sfn) // 2) % 4
+    return (-(-3 * k // 2)) % 4
+
+
+def pdsch_res(pci, n_rb, ports, cfi, subframe, prbs):
+    """The REs a PDSCH is sent on, in mapping order (36.211 6.3.5, 6.4), (l array, k array):
+    k first over the PRBs of each symbol's slot (``prbs``, one list a slot), then l, from
+    symbol ``cfi`` (more than 10 RB), leaving out the CRS of the cell's ports, the
+    synchronisation signals' 72 subcarriers in symbols 5 and 6 of subframes 0 and 5, and the
+    PBCH's in symbols 7 to 10 of subframe 0."""
+    ls, ks = [], []
+    lo, hi = 6 * n_rb - 36, 6 * n_rb + 36
+    start = cfi if n_rb > 10 else cfi + 1
+    for l in range(start, 14):
+        slot, s_ = divmod(l, 7)
+        crs = set()
+        for port in range(ports):
+            if s_ in crs_symbols(port):
+                crs.add((crs_shift(port, s_, 2 * subframe + slot) + pci % 6) % 6)
+        k = np.concatenate([12 * p + np.arange(12) for p in prbs[slot]]) if len(prbs[slot]) else np.zeros(0, int)
+        keep = ~np.isin(k % 6, list(crs))
+        if (subframe in (0, 5) and l in (5, 6)) or (subframe == 0 and 7 <= l <= 10):
+            keep &= (k < lo) | (k >= hi)
+        ks.append(k[keep])
+        ls.append(np.full(int(keep.sum()), l))
+    return np.concatenate(ls).astype(int), np.concatenate(ks).astype(int)
+
+
+def pdsch_scrambling(pci, subframe, rnti, nbits, q=0):
+    """The PDSCH's scrambling (36.211 6.3.1): c_init = n_RNTI 2^14 + q 2^13 + subframe 2^9 + PCI."""
+    return _gold(int(rnti) * 16384 + int(q) * 8192 + int(subframe) * 512 + int(pci), nbits)
+
+
+def pdsch_res_values(tb, pci, n_rb, ports, cfi, subframe, prbs, rv, rnti=SI_RNTI):
+    """The transmitter of a SIB's PDSCH, for the tests: [(port, l array, k array, values)]."""
+    ls, ks = pdsch_res(pci, n_rb, ports, cfi, subframe, prbs)
+    e = dlsch_encode(tb, 2 * len(ls), rv, ports) ^ pdsch_scrambling(pci, subframe, rnti, 2 * len(ls))
+    d = ((1 - 2.0 * e[0::2]) + 1j * (1 - 2.0 * e[1::2])) / np.sqrt(2.0)
+    y = sfbc_encode(d, ports)
+    return [(p, ls, ks, y[p]) for p in range(ports)]
+
+
 # ----- a capture's frames: the PBCH's grid, its channel, the MIB ---------------------------
 
 #: The PBCH's band is read at 1.92 MS/s: a 128-point FFT, its central 72 subcarriers.
@@ -915,6 +1343,14 @@ def pbch(iq, fs, cell, center_offset_hz=0.0, carrier_hz=None, cfo_hz=None):
     return out
 
 
+def _cell_frames(fs, cell, pbch_result, center_offset_hz, carrier_hz):
+    offset = float(cell['frame_offset_samples'])
+    if int(cell.get('half_frame') or 0) == 1:
+        offset -= 0.005 * float(fs)
+    offset %= 0.010 * float(fs)
+    return _PbFrames(fs, center_offset_hz, offset, pbch_result['cfo_hz'], carrier_hz)
+
+
 def sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz=0.0, carrier_hz=None, rnti=SI_RNTI):
     """SIB1's DCIs (formats 1A and 1C with CRC scrambled by SI-RNTI) of one cell, in subframe 5
     of every even frame, by our own PCFICH and PDCCH decode (roadmap Round 29.2).
@@ -927,11 +1363,7 @@ def sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz=0.0, carrier_hz=None, 
     if not mib or not mib.get('n_rb') or mib['n_rb'] not in _NFFT_FOR_RB:
         return None
     pci, n_rb, ports = int(cell['pci']), int(mib['n_rb']), int(pbch_result['ports'])
-    offset = float(cell['frame_offset_samples'])
-    if int(cell.get('half_frame') or 0) == 1:
-        offset -= 0.005 * float(fs)
-    offset %= 0.010 * float(fs)
-    frames = _PbFrames(fs, center_offset_hz, offset, pbch_result['cfo_hz'], carrier_hz)
+    frames = _cell_frames(fs, cell, pbch_result, center_offset_hz, carrier_hz)
     sizes = (('1A', dci_1a_bits(n_rb)), ('1C', dci_1c_bits(n_rb)))
     quads = {}
     out = {'cfi': {}, 'subframes': 0, 'dcis': []}
@@ -981,4 +1413,51 @@ def sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz=0.0, carrier_hz=None, 
                                         bits=''.join(str(int(b)) for b in a),
                                         snr_db=float(10 * np.log10(max(sig / noise, 1e-12)))))
                 break
+    return out
+
+
+def sib1(iq, fs, cell, pbch_result, dci_result=None, center_offset_hz=0.0, carrier_hz=None, rnti=SI_RNTI):
+    """SIB1 of one cell by our own PDSCH and DL-SCH decode (roadmap Round 29.3): each SIB1 DCI
+    (``sib1_dcis``, run here when ``dci_result`` is None) decoded alone, in its subframe 5.
+
+    The DCI gives the PRBs (type 2, localized or distributed), the TBS (I_TBS = I_MCS: 1A's
+    column N_PRB^1A, 1C's table) and the redundancy version (1A's field; 1C's from the SFN).
+    Returns a dict: ``blocks``, one per DCI (``sfn``, ``rv``, ``tbs``, ``n_prb``, ``crc``, ``hex``
+    when it passed), ``decoded``, ``tried``, ``sib1`` (the hex most blocks agree on, or None),
+    ``dcis`` (the DCI result)."""
+    mib = (pbch_result or {}).get('mib')
+    if dci_result is None:
+        dci_result = sib1_dcis(iq, fs, cell, pbch_result, center_offset_hz, carrier_hz, rnti)
+    if not dci_result:
+        return None
+    pci, n_rb, ports = int(cell['pci']), int(mib['n_rb']), int(pbch_result['ports'])
+    frames = _cell_frames(fs, cell, pbch_result, center_offset_hz, carrier_hz)
+    out = {'blocks': [], 'decoded': 0, 'tried': 0, 'sib1': None, 'dcis': dci_result}
+    for d in dci_result['dcis']:
+        tbs = si_tbs(d)
+        if tbs is None:
+            continue
+        sfn = int(d['sfn'])
+        rv = int(d['rv']) if d['format'] == '1A' else sib1_rv(sfn)
+        prbs = si_allocation(d, n_rb)
+        g = frames.subframe(iq, (sfn - int(mib['sfn'])) % 1024, 5, n_rb, 14)
+        if g is None:
+            continue
+        out['tried'] += 1
+        h, noise = subframe_channel(g, pci, 5, ports, list(range(14)))
+        ls, ks = pdsch_res(pci, n_rb, ports, int(d['cfi']), 5, prbs)
+        llr = soft_bits(g[ls, ks], h[:ports, ls, ks], noise, ports)
+        llr *= 1.0 - 2.0 * pdsch_scrambling(pci, 5, rnti, len(llr))
+        bits, _buf = dlsch_decode(llr, tbs, rv, ports=ports)
+        block = {'sfn': sfn, 'rv': rv, 'tbs': tbs, 'n_prb': len(prbs[0]), 'crc': bits is not None}
+        if bits is not None:
+            block['hex'] = np.packbits(bits).tobytes().hex()
+            out['decoded'] += 1
+        out['blocks'].append(block)
+    seen = {}
+    for b in out['blocks']:
+        if b.get('hex'):
+            seen[b['hex']] = seen.get(b['hex'], 0) + 1
+    if seen:
+        out['sib1'] = max(seen, key=seen.get)
     return out

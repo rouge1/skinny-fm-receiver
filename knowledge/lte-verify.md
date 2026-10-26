@@ -346,6 +346,41 @@ So the 700 MHz SIB1 does not fail at the PDCCH:
 
 Tests: `tools/tests/test_iqlte_pdcch.py`.
 
+## Our own SIB1 decoder: `--pdsch` (roadmap Round 29.3)
+
+`tools/iq-lte FILE --pdsch` adds `own_sib1` to each cell: `iqlte_phy.sib1`,
+our own PDSCH and DL-SCH decoder, numpy only, on the DCIs `--pdcch` finds.
+For each SIB1 DCI, in its subframe:
+- **The PRBs.** Allocation type 2 from the RIV: localized, or distributed
+  (36.211 6.2.3.2's interleaver, the gap from the DCI, the PRBs hopping
+  between the slots). Format 1C counts in steps of 2 or 4 RBs.
+- **The size.** The TBS with I_TBS = I_MCS: format 1A's column N_PRB^1A (2
+  or 3, from the TPC field's low bit), format 1C's own table.
+- **The REs.** From the CFI's symbol on, k first then l, leaving out the CRS
+  of the cell's ports, the synchronisation signals' 72 subcarriers in
+  symbols 5 and 6 (and the PBCH's in subframe 0).
+- **The bits.** SFBC undone with the CRS channel, descrambled (c_init from
+  SI-RNTI, the subframe and the PCI), rate matching undone for the redundancy
+  version (1A's field; 1C's from the SFN, 36.321 5.3.1), the turbo code
+  decoded (max-log-MAP, up to 8 iterations, stopping when CRC 24A passes).
+- **The fields.** pycrate (outside, as `--decode`'s) parses the bytes.
+
+On real air (2026-10-26), each subframe decoded alone:
+
+| Cell | Ours | `pdsch_ue` |
+|---|---|---|
+| Band 13 | 50 of 50 SIB1s in 1 s, every RV alone (TBS 256 on 18 PRBs) | the same 32 bytes, byte for byte |
+| 700 MHz pair, stronger cell | 100 of 100 in 2 s (TBS 256 on 5 PRBs); its operators, tracking area and cell identity | no SIB1 |
+| 700 MHz pair, weaker cell (2 dB down, same RBs) | none | no SIB1 |
+| The other 700 MHz carrier, stronger cell | 99 of 99 (format 1C, TBS 208 on 4 PRBs) | no SIB1 |
+
+So the stronger cells' SIB1 was never too weak, and their operator is
+known now. The weaker cell of the pair is under the stronger one's SIB1,
+which is 29.5's case (cancellation). Why `pdsch_ue` fails on the two
+stronger cells is not known; it is not the signal.
+
+Tests: `tools/tests/test_iqlte_pdsch.py`.
+
 ## Several cells on one carrier: `cells`
 
 `iqlte.cells(iq, fs, max_cells=4)` lists every cell on the carrier whose SSS
