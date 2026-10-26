@@ -1539,7 +1539,10 @@ Band 13 cell it reads in full (the Band 13 recordings), and its MIBs on the
 700 MHz pair. What `iqlte` already has (PSS, SSS, PCI, frame timing, CRS
 sequences and the CRS check) is the start.
 
-- [ ] 29.1 PBCH and the MIB: CRS channel estimates (1, 2 or 4 ports, which the
+- [x] 29.1 PBCH and the MIB (2026-10-25: `iqlte_phy.pbch`, `iq-lte --mib`; every
+  frame of the Band 13 cell and of both 700 MHz cells of the pair, equal to
+  `pdsch_ue`; the other 700 MHz carrier's stronger cell, which it never read):
+  CRS channel estimates (1, 2 or 4 ports, which the
   CRC mask gives),
   SFBC (Alamouti) for 2 ports, PBCH descrambling, the tail-biting
   convolutional code (36.212 5.1.3.1) with a Viterbi decoder, rate matching,

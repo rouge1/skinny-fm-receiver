@@ -1283,7 +1283,15 @@ tools/iq-lte CAPTURE.cfile --t0 1 --t1 1.2                # seconds 1 to 1.2 (at
 tools/iq-lte CAPTURE.cfile --rate 20000000 --center 751000000   # a bare .cfile, no .sigmf-meta
 tools/iq-lte CAPTURE.cfile --decode --ports 4 2 1         # also the MIB and every SIB (outside srsRAN)
 tools/iq-lte CAPTURE.cfile --decode --si-seconds 2        # decode 2 s instead of 6 (slow SIBs may be missed)
+tools/iq-lte CAPTURE.cfile --mib --t1 1                   # each cell's MIB by our own decoder (no srsRAN)
 ```
+
+- `--mib` adds `own_mib` to each FDD cell: its bandwidth (`n_rb`), PHICH
+  settings, antenna ports and SFN, from our own numpy PBCH decoder. It reads
+  every frame of the span (0.2 s by default, so 20 frames; `--t1` for more),
+  and reports a MIB only when two or more frames agree. On real air it read
+  every frame of three 700 MHz cells, including one the outside decoder never
+  read.
 
 - Numpy only, and it classifies: the verdict is `lte`, `possible`, `not-lte` or
   `unknown`, and each check in `checks` has its score and chance estimate.

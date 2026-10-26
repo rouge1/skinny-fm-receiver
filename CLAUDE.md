@@ -41,12 +41,15 @@ with no launcher.
     `iqnr_ldpc`: MIB, SIB1, other SI; `iq-nr --mib`, `--pdcch`, `--pdsch`)
     runs beside it, with `nr_si` kept as the referee; only the RRC parse is
     outside (pycrate). It reads weaker sectors under a stronger one by
-    cancelling what the stronger was decoded sending (`iqnr.type0_pdcch(known=)`). Our own decoders are written from the 3GPP specs:
+    cancelling what the stronger was decoded sending (`iqnr.type0_pdcch(known=)`).
+    Our own LTE decoder (`iqlte_phy`, Round 29) has the MIB so far
+    (`iq-lte --mib`); `iqlte.py` itself stays standalone (numpy and the
+    standard library only: a test checks). Our own decoders are written from the 3GPP specs:
     srsRAN is AGPL and none of its code comes into this repo.
     Cellular decoding stays broadcast only (MIB, SIB1, other SI on the
     SI-RNTI): no paging, random access or user traffic, and nothing sent.
   - `sceptre_dvr`, `iqmeasure`, `iqburst`, `iqframes`, `iqcatalog`,
-    `iqlte`, `iqnr`, `iqnr_phy` and `iqnr_ldpc` stay numpy only, so their tools run anywhere
+    `iqlte`, `iqlte_phy`, `iqnr`, `iqnr_phy` and `iqnr_ldpc` stay numpy only, so their tools run anywhere
     (`iq-picture` needs matplotlib; the LTE test helpers use scipy).
   - `knowledge/catalogs.md` is kept equal to `iqcatalog.py` by a test.
 - Knowledge: `knowledge/capabilities.md` is the living capability list.

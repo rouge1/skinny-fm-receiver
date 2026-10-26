@@ -259,6 +259,52 @@ EARFCNs become MHz through TS 36.101's table for the bands in
 `iqlte_decode._EARFCN_DL` (the US ones and a few others; `band` and `mhz`
 are null outside it), NR-ARFCNs through TS 38.104's global raster.
 
+## Our own MIB decoder: `--mib` (roadmap Round 29.1)
+
+`tools/iq-lte FILE --mib` reads each FDD cell's MIB with our own decoder
+(`iqlte_phy.pbch`, numpy only), no outside program. Each cell gains
+`own_mib`: `mib` (`n_rb`, `phich_duration`, `phich_resource`, `sfn` of the
+capture's first frame, and the Rel-13 to 17 fields), `ports`, `frames`,
+`decoded`, `alone`, `summed`, `cfo_hz`, `snr_db`, `reason`.
+
+It is written from 36.211, 36.212 and 36.331. 3GPP's Word files keep the
+LTE equations as pictures, so they were read in ETSI's PDFs (TS 136 211,
+136 212, 136 331), and the convolutional code's figure as an image.
+
+How it reads a frame:
+- **The grid.** Subframe 0 is read on its central 72 subcarriers, at
+  1.92 MS/s, with the frequency offset from the cyclic prefixes. The clock
+  is scaled by that offset, as for NR.
+- **The channel.** It comes from the CRS of all four ports: one delay slope,
+  then per port and CRS symbol a gain and a tilt, linear in time.
+- **SFBC.** 2 and 4 ports are tried, and the CRC mask has to agree with the
+  hypothesis.
+- **Which quarter of the 40 ms TTI.** The frame carries every coded bit four
+  times, so after descrambling with the right quarter of the sequence the
+  four copies agree. That gives the SFN's two low bits before any Viterbi
+  run.
+- **Decoding.** Viterbi for the tail-biting code (wrap-around), then CRC 16.
+
+A frame that fails alone is summed with the others of its TTI. A MIB is
+reported only when two or more frames agree, their SFNs one apart per frame:
+the 16-bit CRC passes by chance about once in 5000 tries.
+
+There is no per-symbol phase term as in NR (36.211 6.13 upconverts
+continuously).
+
+On real air (2026-10-25, against `pdsch_ue`):
+
+| Recording | Ours | `pdsch_ue` |
+|---|---|---|
+| Band 13 cell | 4 ports, 50 RB, every frame alone (580 of 580 in 6 s) | same ports and bandwidth; its SFN is the TTI's first frame, ours the capture's |
+| 700 MHz pair, both cells (2 dB apart) | 2 ports, 50 RB, every frame alone | both MIBs, same fields |
+| The other 700 MHz carrier | the stronger cell's MIB | none: it never reached a MIB there |
+
+So the pair's PBCH is fine, and SIB1 fails further along.
+
+Tests: `tools/tests/test_iqlte_phy.py`. `lte_synth` now takes `ports`,
+`port_gains` and `res`, with its default output unchanged.
+
 ## Several cells on one carrier: `cells`
 
 `iqlte.cells(iq, fs, max_cells=4)` lists every cell on the carrier whose SSS

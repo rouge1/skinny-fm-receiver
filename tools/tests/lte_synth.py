@@ -1,6 +1,7 @@
 """LTE FDD downlink test signal (phase l1), and a TDD one (``duplex='tdd'``).
 
-One antenna port, normal cyclic prefix, from the bandwidth-class table in
+One antenna port by default (``ports`` 2 or 4 add the other ports' CRS, and ``res`` puts given
+symbols on any port, e.g. a real PBCH), normal cyclic prefix, from the bandwidth-class table in
 ``tools/swarm-records/specs/l1.md``. PSS, SSS and the port-0 cell-specific
 reference signal follow 3GPP TS 36.211 clauses 6.11.1, 6.11.2 and 6.10.1.
 Every other used resource element is random QPSK (the PBCH included). The
@@ -200,7 +201,26 @@ def _tdd_mask(n_frames):
     return np.tile(one, int(n_frames))
 
 
-def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True, duplex='fdd', idle=False):
+def _crs_port(pci, slot, symbol, n_rb, port):
+    """Port ``port``'s CRS in one symbol (6.10.1.2): resource-element index k and values."""
+    if port == 0:
+        v = 0 if symbol == 0 else 3
+    elif port == 1:
+        v = 3 if symbol == 0 else 0
+    else:
+        v = 3 * (slot % 2) if port == 2 else 3 + 3 * (slot % 2)
+    shift = (v + pci % 6) % 6
+    m = np.arange(2 * n_rb)
+    c_init = ((1 << 10) * (7 * (slot + 1) + symbol + 1) * (2 * pci + 1) + 2 * pci + 1)
+    c = _gold(c_init, 2 * (2 * _N_RB_MAX))
+    mp = m + (_N_RB_MAX - n_rb)
+    r = ((1 - 2 * c[2 * mp].astype(np.float64))
+         + 1j * (1 - 2 * c[2 * mp + 1].astype(np.float64))) / np.sqrt(2.0)
+    return 6 * m + shift, r
+
+
+def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True, duplex='fdd', idle=False,
+                 ports=1, port_gains=None, res=None):
     """One downlink at the native rate, after its seeded frame roll.
 
     ``duplex`` 'tdd' moves the PSS to symbol 2 of slots 2 and 12 (DwPTS) and the
@@ -210,6 +230,11 @@ def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True, duplex='fdd', 
     ``idle`` True keeps the QPSK only in the control region (the first three
     symbols of each subframe), as on a quiet real carrier: the other symbols
     carry the reference and synchronisation signals alone.
+
+    ``ports`` 2 or 4: the other ports' CRS (36.211 6.10.1.2), the REs any port's CRS uses left
+    empty on the others, each port through its gain in ``port_gains`` (default 1). ``res``
+    (frame_no) -> [(port, symbol of the frame, used-subcarrier indices, values)] writes those
+    REs on that port (port 0's random QPSK there replaced). Defaults leave the waveform as before.
 
     Not normalised and with no noise. Returns ``(iq, native_fs, frame_offset, rng)``.
     ``rng`` has already drawn the offset and the QPSK bits, which is the point
@@ -263,6 +288,20 @@ def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True, duplex='fdd', 
             idx = rows + slot * _SYMS_PER_SLOT + symbol
             grid[np.ix_(idx, used[k])] = r
 
+    if ports > 1 or res is not None:
+        grids = [grid] + [np.zeros_like(grid) for _ in range(int(ports) - 1)]
+        for slot in range(_SLOTS_PER_FRAME):
+            for p in range(int(ports)):
+                for symbol in ((0, 4) if p < 2 else (1,)):
+                    k, r = _crs_port(pci, slot, symbol, n_rb, p)
+                    idx = rows + slot * _SYMS_PER_SLOT + symbol
+                    for q in range(int(ports)):
+                        grids[q][np.ix_(idx, used[k])] = r if q == p else 0
+        for f in range(int(n_frames)) if res is not None else ():
+            for p, symbol, k, values in res(f):
+                grids[p][f * _SLOTS_PER_FRAME * _SYMS_PER_SLOT + symbol, used[np.asarray(k)]] = values
+        gains = list(port_gains) if port_gains is not None else [1.0] * int(ports)
+        grid = sum(g * w for g, w in zip(grids, gains))
     if duplex == 'tdd':
         grid[~_tdd_mask(n_frames)] = 0
     iq = _assemble(grid, n_fft, n_sc)
@@ -271,7 +310,7 @@ def _cell_native(bw_mhz, n_frames, pci, seed, pss=True, sss=True, duplex='fdd', 
 
 
 def synth_lte(bw_mhz=10, n_frames=10, pci=123, snr_db=20.0, seed=0, cfo_hz=0.0,
-              fs=None, pss=True, sss=True, duplex='fdd', idle=False):
+              fs=None, pss=True, sss=True, duplex='fdd', idle=False, ports=1, port_gains=None, res=None):
     """FDD downlink, one port, normal CP.
 
     Returns ``(iq complex64, fs)``. ``fs`` None keeps the native rate of the
@@ -281,10 +320,12 @@ def synth_lte(bw_mhz=10, n_frames=10, pci=123, snr_db=20.0, seed=0, cfo_hz=0.0,
     output. ``pss`` False zeroes the primary synchronisation signal. ``sss``
     False zeroes the secondary synchronisation signal. ``duplex`` 'tdd' makes a
     TDD downlink (see ``_cell_native``); its silent symbols get noise only.
-    ``idle`` True leaves the data symbols empty (see ``_cell_native``).
+    ``idle`` True leaves the data symbols empty (see ``_cell_native``). ``ports``,
+    ``port_gains`` and ``res`` as ``_cell_native``'s.
     """
     iq, native, _offset, rng = _cell_native(
-        bw_mhz, n_frames, pci, seed, pss=pss, sss=sss, duplex=duplex, idle=idle)
+        bw_mhz, n_frames, pci, seed, pss=pss, sss=sss, duplex=duplex, idle=idle, ports=ports,
+        port_gains=port_gains, res=res)
 
     rate = native if fs is None else float(fs)
     if fs is not None and int(round(fs)) != int(round(native)):

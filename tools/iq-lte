@@ -3,12 +3,15 @@
 
     tools/iq-lte FILE [--block-center HZ] [--t0 S --t1 S] [--rate R --center HZ]
     tools/iq-lte FILE --decode [--ports N ...]
+    tools/iq-lte FILE --mib
 
 The block is mixed to 0 Hz and read with ``iqmeasure.extract`` (band-limited,
 in chunks). Stdout is one JSON document: the fingerprint (verdict, PSS root,
 PCI, frame timing, bandwidth class) and, with ``--decode``, the MIB and the
-SIB1 from an outside ``pdsch_ue`` (``$FMRX_LTE_TOOLS/run_pdsch.sh``). Only the
-broadcast channel is decoded. Numpy only; the outside tools are subprocesses.
+SIB1 from an outside ``pdsch_ue`` (``$FMRX_LTE_TOOLS/run_pdsch.sh``). With
+``--mib`` each FDD cell gains ``own_mib``: its MIB from our own PBCH decoder
+(``iqlte_phy.pbch``, numpy only, roadmap Round 29.1). Only the broadcast channel
+is decoded. Numpy only; the outside tools are subprocesses.
 
 Exit 0 when the run completed, whatever the verdict. Exit 1 for a bad option,
 a file that cannot be read, or a sweep file. Exit 2 when ``--decode`` needs a
@@ -24,7 +27,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fm_receiver import iqmeasure, iqlte, iqlte_decode  # noqa: E402
+from fm_receiver import iqmeasure, iqlte, iqlte_decode, iqlte_phy  # noqa: E402
 
 # Default look, and the longest look. A longer request is cut to the cap.
 DEFAULT_SPAN_S = 0.2
@@ -313,6 +316,9 @@ def main(argv=None):
                          '$FMRX_LTE_TOOLS/run_pdsch.sh, strongest cell first. '
                          'A cell offset is only known modulo a 5 ms half-frame '
                          '(cells report half_frame 0), so both boundaries are tried')
+    ap.add_argument('--mib', action='store_true',
+                    help="decode each cell's MIB with our own numpy PBCH decoder (iqlte_phy, "
+                         "roadmap 29.1): no outside program; each cell gains own_mib")
     ap.add_argument('--ports', type=int, nargs='+', metavar='N',
                     help='antenna port counts to try, in order (default: 4 2 1)')
     ap.add_argument('--si-seconds', type=float, metavar='S',
@@ -348,6 +354,10 @@ def main(argv=None):
 
     fp, sss = _fingerprint(sl.iq, sl.rate)
     cells = _cells_of(fp)
+    if args.mib:
+        for cell in cells:
+            if isinstance(cell, dict) and cell.get('duplex', 'FDD') == 'FDD':
+                cell['own_mib'] = iqlte_phy.pbch(sl.iq, sl.rate, cell, carrier_hz=block_hz)
     decode = None
     if args.decode:
         try:
