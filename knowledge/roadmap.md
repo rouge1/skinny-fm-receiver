@@ -1653,6 +1653,13 @@ sequences and the CRS check) is the start.
   - [x] The SI DCIs summed when none is found alone, as SIB1's (29.7: by
     the place in the window, across windows; the other carrier's second
     cell, 9 dB down, every scheduled SIB, was none).
+- [x] The speed of `--own` (2026-10-27): the DCI candidates' Viterbi run
+  together (`viterbi_tbcc_many`, `decode_dci_many`), `subframe_channel`'s
+  slope tables kept, an SI subframe's channel made once, and one BLAS thread
+  in `iq-lte`. A 6 s span took 24, 47 and 115 s for one, two and three cells,
+  where it took 60, 112 and 188 s (and 20 to 40 times the CPU), with the
+  output byte for byte the same
+  ([lte-verify.md](lte-verify.md#our-own-si-decoder---own-roadmap-round-296)).
 - [ ] Memory for long LTE spans (`iq-lte` was 4.5 GB a second of span at 20 MS/s;
   `lte-verify.md`'s Memory section).
   - [x] `iqlte._resample` lean, the same to the bit; `fingerprint` resampling

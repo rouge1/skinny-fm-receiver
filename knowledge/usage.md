@@ -1352,8 +1352,12 @@ tools/iq-lte CAPTURE.cfile --own                          # every SIB by our own
   schedule: `si` is null with a reason. On the Band 13 cell it equals the
   outside decoder's SI (the same distinct blocks, SIB counts and values); on the 700 MHz carriers it reads what
   the outside decoder cannot. Every subframe of every window is read for
-  each cell: 52 s for the one-cell Band 13 carrier's 6 s, 127 s for the
-  two-cell 700 MHz pair (1.9 GB).
+  each cell: 24 s for the one-cell Band 13 carrier's 6 s, 47 s for the
+  two-cell 700 MHz pair and 115 s for the three cells of the other 700 MHz
+  carrier (1.9 GB; 2026-10-27, from 60, 112 and 188 s). `iq-lte` runs numpy
+  on one BLAS thread unless `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS` or
+  `MKL_NUM_THREADS` says otherwise. Its products are small, and a thread pool
+  fighting over them cost 20 to 40 times the CPU and more time.
 - `--decode` runs when the fingerprint's verdict is `lte` or `possible` (a
   possible carrier may well be one: a 700 MHz carrier read `possible` while
   both decoders read its MIB), not when it is `not-lte` or `unknown`.

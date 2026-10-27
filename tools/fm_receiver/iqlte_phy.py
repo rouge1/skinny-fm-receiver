@@ -221,6 +221,41 @@ def _trellis():
 _NEXT, _OUTS = _trellis()
 
 
+#: Each state's and input's three output bits as a pattern 0..7 (4 o0 + 2 o1 + o2), and the
+#: signs of the eight patterns: a step's branch metrics are eight sums, not 128.
+_PATTERN = (4 * _OUTS[..., 0] + 2 * _OUTS[..., 1] + _OUTS[..., 2]).astype(np.int64)
+_PATTERN_SIGNS = 1.0 - 2.0 * np.array([[(p >> 2) & 1, (p >> 1) & 1, p & 1] for p in range(8)])
+
+
+def viterbi_tbcc_many(llrs):
+    """``viterbi_tbcc`` of several codewords of one length at once, (C, 3, K) -> (C, K): the
+    same steps, each on every codeword together."""
+    llr = np.asarray(llrs, dtype=np.float64)
+    n_c, _three, k = llr.shape
+    seq = np.concatenate((llr, llr, llr), axis=2)
+    ns = np.arange(64)
+    b = ns & 1                                         # the input that leads to state ns
+    pred = np.stack((ns >> 1, (ns >> 1) | 32))         # its two predecessors
+    pat = np.stack((_PATTERN[pred[0], b], _PATTERN[pred[1], b]))
+    bm = np.einsum('pi,cin->ncp', _PATTERN_SIGNS, seq)  # (3K, C, 8)
+    metric = np.zeros((n_c, 64))
+    back = np.zeros((3 * k, n_c, 64), dtype=bool)
+    for n in range(3 * k):
+        m0 = metric[:, pred[0]] + bm[n][:, pat[0]]
+        m1 = metric[:, pred[1]] + bm[n][:, pat[1]]
+        pick = m1 > m0
+        new = np.where(pick, m1, m0)
+        back[n] = pick
+        metric = new - new.max(axis=1, keepdims=True)
+    st = np.argmax(metric, axis=1)
+    rows = np.arange(n_c)
+    bits = np.zeros((n_c, 3 * k), dtype=np.uint8)
+    for n in range(3 * k - 1, -1, -1):
+        bits[:, n] = st & 1
+        st = pred[back[n, rows, st].astype(np.int64), st]
+    return bits[:, k:2 * k]
+
+
 def viterbi_tbcc(llr):
     """The K bits of a tail-biting code from its soft streams ``llr`` (3 x K, positive means
     0): wrap-around Viterbi over three turns, the middle turn kept."""
@@ -563,6 +598,16 @@ def decode_dci(llr, size, rnti):
     x = np.array([(int(rnti) >> (15 - i)) & 1 for i in range(16)], dtype=np.uint8)
     a = c[:size]
     return a if np.array_equal(_crc(a, '16') ^ x, c[size:]) else None
+
+
+def decode_dci_many(segs, size, rnti):
+    """``decode_dci`` of several candidates' soft bits at once (one Viterbi run for all)."""
+    k = int(size) + 16
+    if not segs:
+        return []
+    cs = viterbi_tbcc_many(np.stack([cc_rate_recover(sg, k) for sg in segs]))
+    x = np.array([(int(rnti) >> (15 - i)) & 1 for i in range(16)], dtype=np.uint8)
+    return [c[:size] if np.array_equal(_crc(c[:size], '16') ^ x, c[size:]) else None for c in cs]
 
 
 def parse_dci_1a(a, n_rb):
@@ -1143,6 +1188,17 @@ _PB_CP0, _PB_CP = 10, 9
 _PB_SYMBOLS = 16
 _PB_BINS = np.concatenate((np.arange(-36, 0), np.arange(1, 37)))      # k' 0..71, DC skipped
 _PB_SLOPES = np.linspace(-0.4, 0.4, 161)                                 # rad per subcarrier
+_TURNS = {}
+
+
+def _slope_turns(k):
+    """exp(-j s k) for every slope s of ``_PB_SLOPES``, (161, len(k)): the slope search's matrix,
+    kept per set of pilot subcarriers (a cell's are one of six combs and the PBCH's few)."""
+    key = (int(k[0]), len(k), int(k[-1]))
+    m = _TURNS.get(key)
+    if m is None or not np.array_equal(m[1], k):
+        m = _TURNS[key] = (np.exp(-1j * np.outer(_PB_SLOPES, k)), np.array(k))
+    return m[0]
 
 
 def _pb_start(l):
@@ -1281,7 +1337,7 @@ def subframe_channel(g, pci, sf, ports, symbols, smooth=5):
             pilots.append((port, l, k, g[l, k] * np.conj(crs_values(pci, ns, s_, n_rb))))
     score = np.zeros(len(_PB_SLOPES))
     for _p, _l, k, z in pilots:
-        score += np.abs(np.exp(-1j * np.outer(_PB_SLOPES, k)) @ z) ** 2
+        score += np.abs(_slope_turns(k) @ z) ** 2
     slope = float(_PB_SLOPES[int(np.argmax(score))])
     kernel = np.ones(smooth) / smooth
     rows, resid, dof = {}, 0.0, 0
@@ -1324,7 +1380,7 @@ def _pb_channel(g, pci, ports=4):
             pilots.append((port, l, kp, g[l, kp] * np.conj(r)))
     score = np.zeros(len(_PB_SLOPES))
     for _p, _l, kp, z in pilots:
-        score += np.abs(np.exp(-1j * np.outer(_PB_SLOPES, kp)) @ z) ** 2
+        score += np.abs(_slope_turns(kp) @ z) ** 2
     slope = float(_PB_SLOPES[int(np.argmax(score))])
     k = np.arange(72)
     fits, resid, dof = {}, 0.0, 0
@@ -1485,12 +1541,13 @@ def _dci_sums(missed, sizes, n_rb, rnti):
     return out
 
 
-def _read_control(g, pci, n_rb, ports, mib, quads, sizes, rnti, sf=5):
+def _read_control(g, pci, n_rb, ports, mib, quads, sizes, rnti, sf=5, chan=None):
     """Subframe ``sf``'s control region (``g``, its first symbols): the CFI from the PCFICH, then
     the common search space's candidates for both ``sizes``. Returns ``(cfi, dcis, miss)``:
     each DCI's fields with ``level``, ``cce``, ``bits``, ``snr_db``; ``miss`` the soft bits in
-    CCE order and each CCE's |h|^2 / noise, for summing (``_dci_sums``)."""
-    h, noise = subframe_channel(g, pci, sf, ports, list(range(4)))
+    CCE order and each CCE's |h|^2 / noise, for summing (``_dci_sums``). ``chan``: the
+    subframe's ``subframe_channel`` on its first 4 symbols or more, when already made."""
+    h, noise = chan if chan is not None else subframe_channel(g, pci, sf, ports, list(range(4)))
     pk = [(0, k + j) for k in pcfich_starts(pci, n_rb) for j in range(6) if (k + j) % 3 != pci % 3]
     r = np.array([g[l, k] for l, k in pk])
     hh = np.array([[h[p, l, k] for l, k in pk] for p in range(4)])
@@ -1505,12 +1562,14 @@ def _read_control(g, pci, n_rb, ports, mib, quads, sizes, rnti, sf=5):
     llr = soft_bits(r, hh[:ports], noise, ports) * (1.0 - 2.0 * pdcch_scrambling(pci, sf, 2 * len(r)))
     n_cce = len(q) // 9
     taken, found = set(), []
-    for level, cce0 in common_candidates(n_cce):
+    cands = common_candidates(n_cce)
+    segs = [llr[72 * cce0:72 * (cce0 + level)] for level, cce0 in cands]
+    decoded = {fmt: decode_dci_many(segs, size, rnti) for fmt, size in sizes}   # all at once
+    for j, (level, cce0) in enumerate(cands):
         if set(range(cce0, cce0 + level)) & taken:
             continue
-        seg = llr[72 * cce0:72 * (cce0 + level)]
         for fmt, size in sizes:
-            a = decode_dci(seg, size, rnti)
+            a = decoded[fmt][j]
             if a is None:
                 continue
             fields = parse_dci_1a(a, n_rb) if fmt == '1A' else parse_dci_1c(a, n_rb)
@@ -1684,15 +1743,16 @@ def sib1(iq, fs, cell, pbch_result, dci_result=None, center_offset_hz=0.0, carri
     return out
 
 
-def _si_block(g, pci, n_rb, ports, cfi, sf, d, i, rnti):
+def _si_block(g, pci, n_rb, ports, cfi, sf, d, i, rnti, chan=None):
     """One SI DCI's PDSCH in subframe grid ``g``: ``(block, llr)``, the block's ``hex`` when it
-    passed, or None when the DCI gives no TBS."""
+    passed, or None when the DCI gives no TBS. ``chan``: the subframe's ``subframe_channel`` on
+    its 14 symbols, when already made."""
     tbs = si_tbs(d)
     if tbs is None:
         return None
     rv = int(d['rv']) if d['format'] == '1A' else si_rv(i)
     prbs = si_allocation(d, n_rb)
-    h, noise = subframe_channel(g, pci, sf, ports, list(range(14)))
+    h, noise = chan if chan is not None else subframe_channel(g, pci, sf, ports, list(range(14)))
     ls, ks = pdsch_res(pci, n_rb, ports, cfi, sf, prbs)
     llr = soft_bits(g[ls, ks], h[:ports, ls, ks], noise, ports)
     llr *= 1.0 - 2.0 * pdsch_scrambling(pci, sf, rnti, len(llr))
@@ -1760,9 +1820,10 @@ def si_messages(iq, fs, cell, pbch_result, messages, window_ms, center_offset_hz
             if g is None:
                 continue
             out['subframes'] += 1
-            cfi, found, miss = _read_control(g, pci, n_rb, ports, mib, quads, sizes, rnti, sf)
+            chan = subframe_channel(g, pci, sf, ports, list(range(14)))
+            cfi, found, miss = _read_control(g, pci, n_rb, ports, mib, quads, sizes, rnti, sf, chan)
             for d in found:
-                got = _si_block(g, pci, n_rb, ports, cfi, sf, d, i, rnti)
+                got = _si_block(g, pci, n_rb, ports, cfi, sf, d, i, rnti, chan)
                 if got is not None:
                     add(sfn, sf, si, i, start, got)
             if not found:

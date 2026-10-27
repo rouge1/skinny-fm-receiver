@@ -32,7 +32,14 @@ import math
 import os
 import sys
 
-import numpy as np
+# One BLAS thread unless the caller sets one: the decoders' products are small (a slope
+# search's 161 x 200, a DCI candidate's few hundred bits), and a thread pool fighting over
+# them took a 6 s --own run to 38 s and 513 s of CPU, against 24 s and 21 s on one thread
+# (2026-10-27). Set before numpy loads, which reads them once.
+for _var in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
+    os.environ.setdefault(_var, '1')
+
+import numpy as np  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fm_receiver import iqmeasure, iqlte, iqlte_decode, iqlte_phy  # noqa: E402

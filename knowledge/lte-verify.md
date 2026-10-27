@@ -610,6 +610,30 @@ Tests: `tools/tests/test_iqlte_own_si.py` (synthetic: windows and RVs, 1A and
 with only the first's signals and SIB1 known, 16 of 16 with its SI; DCIs
 found by summing at -13 dB).
 
+**Time (2026-10-27).** Profiled on the Band 13 recording, 6 s, one cell: 60 s
+wall and 921 s of CPU. A third of it was the DCI candidates' Viterbi decode,
+one candidate at a time (11,397 of them), a quarter `subframe_channel` (its
+delay-slope search rebuilt a 161-row phase table on every call), and the
+CPU was numpy's BLAS threads fighting over small products. Now:
+- `viterbi_tbcc_many` and `decode_dci_many` decode every candidate of a
+  subframe and size in one run, the same steps as before (the same bits,
+  ties included: `test_iqlte_phy.py`);
+- `_slope_turns` keeps the phase tables, one per comb of pilots;
+- an SI subframe's channel is made once, for its control region and each
+  PDSCH;
+- `iq-lte` sets one BLAS thread before numpy loads, unless the environment
+  sets one.
+
+| Recording (6 s) | Cells | Before (wall, CPU) | After |
+|---|---|---|---|
+| Band 13 | 1 | 60 s, 921 s | 24 s, 21 s |
+| The 700 MHz pair | 2 | 112 s, 1974 s | 47 s, 45 s |
+| The other 700 MHz carrier | 3 | 188 s, 2328 s | 115 s, 112 s |
+
+The output was byte for byte the same on all three. One fingerprint chance on
+the pair differed in its 15th digit, from the thread count alone: the old code
+on one thread gives the new output exactly.
+
 ## Several cells on one carrier: `cells`
 
 `iqlte.cells(iq, fs, max_cells=4)` lists every cell on the carrier whose SSS

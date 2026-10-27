@@ -6,7 +6,10 @@ Synthetic only, with made-up values (PCIs 123 and 321, random MIB fields). The r
 ``pdsch_ue``'s ports, bandwidth and SFN) are in the ops folder, not here. What the checks pin:
 
 - the tail-biting code: Viterbi gives the bits back clean and through noise, and the register
-  starts as the last six bits (encoding a rotated input rotates the output);
+  starts as the last six bits (encoding a rotated input rotates the output); the batched
+  Viterbi and DCI decode (``viterbi_tbcc_many``, ``decode_dci_many``) give the same bits;
+- ``subframe_channel``: the same channel whatever symbols are asked for, and with the slope
+  tables cached;
 - rate matching: 120 coded bits each sent 16 times in 1920, and recovered;
 - the CRC mask names the port count (1, 2, 4);
 - SFBC on 2 and 4 ports undone exactly through random channels;
@@ -72,6 +75,41 @@ def check_codes():
         return bad == 0 and rotated, (bad, rotated)
     expect("tail-biting code: Viterbi clean and through noise; tail biting (a rotated input rotates the output)",
            viterbi)
+
+    def batched():
+        bad = n = 0
+        for k, sd in ((43, 0.5), (47, 2.0), (56, 5.0)):
+            c = rng.integers(0, 2, (12, k)).astype(np.uint8)
+            x = np.stack([(1 - 2.0 * L.tbcc_encode(ci)) + rng.standard_normal((3, k)) * sd for ci in c])
+            x[0], x[1] = 0.0, np.round(x[1])           # ties: none, and many
+            many = L.viterbi_tbcc_many(x)
+            bad += sum(not np.array_equal(m, L.viterbi_tbcc(xi)) for m, xi in zip(many, x))
+            n += len(x)
+        a = rng.integers(0, 2, 27).astype(np.uint8)
+        segs = [(1 - 2.0 * L.encode_dci(a, L.SI_RNTI, lv)) * 0.7 + rng.standard_normal(72 * lv) for lv in (4, 8, 4)]
+        segs.append(rng.standard_normal(288))
+        one = [L.decode_dci(sg, 27, L.SI_RNTI) for sg in segs]
+        many = L.decode_dci_many(segs, 27, L.SI_RNTI)
+        same = all((p is None and q is None) or (p is not None and q is not None and np.array_equal(p, q))
+                   for p, q in zip(one, many))
+        return bad == 0 and same and one[0] is not None and one[-1] is None, (bad, n, same)
+    expect("viterbi_tbcc_many and decode_dci_many: the same bits as one at a time, ties too", batched)
+
+    def channel():
+        n_rb, pci = 50, 123
+        g = rng.standard_normal((14, 12 * n_rb)) + 1j * rng.standard_normal((14, 12 * n_rb))
+        old_turns = L._slope_turns
+        h14, n14 = L.subframe_channel(g, pci, 3, 2, list(range(14)))
+        h4, n4 = L.subframe_channel(g, pci, 3, 2, list(range(4)))
+        L._slope_turns = lambda k: np.exp(-1j * np.outer(L._PB_SLOPES, k))       # no cache
+        try:
+            h_fresh, n_fresh = L.subframe_channel(g, pci, 3, 2, list(range(14)))
+        finally:
+            L._slope_turns = old_turns
+        return (np.array_equal(h14[:, :4], h4) and n14 == n4 and np.array_equal(h14, h_fresh)
+                and n14 == n_fresh), (n14, n4, n_fresh)
+    expect("subframe_channel: its first 4 symbols of 14 equal the 4 alone; the cached slope tables change nothing",
+           channel)
 
     def rate_match():
         d = rng.integers(0, 2, (3, 40)).astype(np.uint8)
