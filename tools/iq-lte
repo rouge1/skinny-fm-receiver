@@ -4,6 +4,7 @@
     tools/iq-lte FILE [--block-center HZ] [--t0 S --t1 S] [--rate R --center HZ]
     tools/iq-lte FILE --decode [--ports N ...]
     tools/iq-lte FILE --mib [--pdcch | --pdsch]
+    tools/iq-lte FILE --own
 
 The block is mixed to 0 Hz and read with ``iqmeasure.extract`` (band-limited,
 in chunks). Stdout is one JSON document: the fingerprint (verdict, PSS root,
@@ -13,7 +14,11 @@ SIB1 from an outside ``pdsch_ue`` (``$FMRX_LTE_TOOLS/run_pdsch.sh``). With
 (``iqlte_phy.pbch``, numpy only, roadmap Round 29.1); ``--pdcch`` adds
 ``own_pdcch``, its SIB1 DCIs (``iqlte_phy.sib1_dcis``, Round 29.2), and
 ``--pdsch`` both and ``own_sib1``, SIB1 itself (``iqlte_phy.sib1``, Round 29.3:
-its bytes, and its fields when pycrate is under ``$FMRX_LTE_TOOLS``). Only the
+its bytes, and its fields when pycrate is under ``$FMRX_LTE_TOOLS``). ``--own``
+reads all of it and the SI messages SIB1 schedules (``iqlte_phy.si_messages``,
+Round 29.6; pycrate reads the schedule and the SIBs), each cell gaining ``own``,
+shaped as ``--decode``'s ``decode`` (the card's ``own`` the strongest cell's), and
+``own_si``, the blocks; its span defaults to ``DEFAULT_SI_S``. Only the
 broadcast channel is decoded. Numpy only; the outside tools are subprocesses.
 
 Exit 0 when the run completed, whatever the verdict. Exit 1 for a bad option,
@@ -81,13 +86,64 @@ def _own_sib1(iq, rate, cell, block_hz, known=None):
     return got, full
 
 
-def _own_cells(iq, rate, cells, block_hz, pdcch, pdsch):
+def _dump(records):
+    """``[(subframe, hex)]`` as the outside decoder's dump (``iqlte_decode.dump_payloads``)."""
+    out = bytearray()
+    for sub, hx in records:
+        data = bytes.fromhex(hx)
+        out += bytes((iqlte_decode._DUMP_MARK, int(sub) & 0xFF, len(data) & 0xFF, len(data) >> 8)) + data
+    return bytes(out)
+
+
+def _own_si(iq, rate, cell, block_hz, known=None):
+    """``(own, own_si)`` of a cell (``--own``, roadmap Round 29.6): ``own`` shaped as ``--decode``'s
+    ``decode`` (``ran``, ``mib``, ``sib1``, ``si``, a ``*_reason`` beside each that is None) from our
+    own decoders, ``own_si`` the SI blocks (``iqlte_phy.si_messages``) or None.
+
+    pycrate reads SIB1's schedule from our SIB1 (``iqlte_decode.read_si``), the SI messages are
+    read in their windows with ``known`` taken out, and every block that passed (SIB1's copies
+    and sums, then the SI's) goes to ``read_si`` as the outside decoder's dump would."""
+    mib, s1 = cell.get('own_mib') or {}, cell.get('own_sib1') or {}
+    out = {'ran': True, 'mib': None, 'sib1': None, 'si': None}
+    if not mib.get('mib'):
+        out.update(reason='MIB not decoded', sib1_reason='MIB not decoded', si_reason='MIB not decoded')
+        return out, None
+    m = mib['mib']
+    out['mib'] = {'pci': int(cell['pci']), 'ports': int(mib['ports']), 'prb': int(m['n_rb']), 'type': 'FDD',
+                  'cp': 'Normal', 'sfn': int(m['sfn'])}
+    records = [(5, b['hex']) for b in s1.get('blocks', []) if b.get('hex')]
+    records += [(5, c['hex']) for c in s1.get('combined', [])]
+    if not records:
+        out['sib1_reason'] = out['si_reason'] = 'SIB1 not decoded'
+        return out, None
+    out['sib1'] = s1.get('fields')
+    if out['sib1'] is None:
+        out['sib1_reason'] = s1.get('fields_reason')
+    tools, frames = iqlte_decode.tools_dir(), int(mib.get('frames') or 0)
+    first, why = iqlte_decode.read_si(_dump(records), tools, frames)
+    if first is None or not first.get('schedule'):
+        out['si'], out['si_reason'] = first, why or 'SIB1 schedules no SI message'
+        return out, None
+    got = iqlte_phy.si_messages(iq, rate, cell, mib, first['schedule'], first.get('window_ms'),
+                                carrier_hz=block_hz, known=known)
+    records += [(b['subframe'], b['hex']) for b in (got or {}).get('blocks', []) if b.get('hex')]
+    records += [(c['subframes'][0] % 10, c['hex']) for c in (got or {}).get('combined', [])]
+    si, why = iqlte_decode.read_si(_dump(records), tools, frames)
+    if si and si.get('note'):
+        si['note'] = 'no SI message besides SIB1 was decoded in the windows SIB1 schedules'
+    out['si'] = si
+    if si is None:
+        out['si_reason'] = why
+    return out, got
+
+
+def _own_cells(iq, rate, cells, block_hz, pdcch, pdsch, si=False):
     """Our own decode of each FDD cell (``own_mib``, ``own_pdcch``, ``own_sib1``) over ``iq`` (the
     whole span, an ``iqmeasure.IQView``), strongest first,
     each with the cells decoded before it taken out (roadmap Round 29.5: sectors of one site send
     their broadcast on the same REs; a cell of another site is taken out of the samples), a cell
     left short (no MIB, a DCI or SIB1 copy missed alone) read once more with the others known; ``own_known`` lists the PCIs taken
-    out."""
+    out. With ``si``, each cell's SI messages too, the same cells taken out (``_own_si``)."""
     def read(cell, use):
         cell['own_known'] = [k['pci'] for k in use]
         cell['own_mib'] = iqlte_phy.pbch(iq, rate, cell, carrier_hz=block_hz, known=use or None)
@@ -138,6 +194,11 @@ def _own_cells(iq, rate, cells, block_hz, pdcch, pdsch):
                 known.remove(kc)
             if new is not None:
                 known.append(new)
+    if si:
+        by_pci = {k['pci']: k for k in known}
+        for cell, _kc in order:
+            use = [by_pci[p] for p in cell['own_known'] if p in by_pci]
+            cell['own'], cell['own_si'] = _own_si(iq, rate, cell, block_hz, use or None)
 
 
 def _check_options(args):
@@ -178,10 +239,11 @@ def _json_num(value):
 
 
 def _span(args):
-    """``(t0, t1)`` in seconds. The default is 0.2 s from ``t0``; longer than ``MAX_SPAN_S`` is cut."""
+    """``(t0, t1)`` in seconds. The default is 0.2 s from ``t0`` (``DEFAULT_SI_S`` with ``--own``, for
+    the SI messages that repeat slowly); longer than ``MAX_SPAN_S`` is cut."""
     t0 = 0.0 if args.t0 is None else float(args.t0)
     if args.t1 is None:
-        t1 = t0 + DEFAULT_SPAN_S
+        t1 = t0 + (DEFAULT_SI_S if args.own else DEFAULT_SPAN_S)
     else:
         t1 = float(args.t1)
     if t1 - t0 > MAX_SPAN_S:
@@ -414,6 +476,11 @@ def main(argv=None):
                     help="with --pdcch's DCIs, decode each cell's SIB1 (PDSCH, turbo DL-SCH) with "
                          "our own decoder (roadmap 29.3): each cell gains own_sib1 (pycrate, if "
                          "present, parses it)")
+    ap.add_argument('--own', action='store_true',
+                    help="read each cell's broadcast with our own decoders: --pdsch, then the SI "
+                         "messages SIB1 schedules (roadmap 29.6); each cell gains own, shaped as "
+                         "--decode's decode, and own_si; pycrate under $FMRX_LTE_TOOLS reads the "
+                         "schedule and the SIBs. The span defaults to %g s" % DEFAULT_SI_S)
     ap.add_argument('--ports', type=int, nargs='+', metavar='N',
                     help='antenna port counts to try, in order (default: 4 2 1)')
     ap.add_argument('--si-seconds', type=float, metavar='S',
@@ -454,8 +521,8 @@ def main(argv=None):
 
     fp, sss = _fingerprint(sl.iq, sl.rate)
     cells = _cells_of(fp)
-    if args.mib or args.pdcch or args.pdsch:
-        _own_cells(span, sl.rate, cells, block_hz, args.pdcch, args.pdsch)
+    if args.mib or args.pdcch or args.pdsch or args.own:
+        _own_cells(span, sl.rate, cells, block_hz, args.pdcch or args.own, args.pdsch or args.own, args.own)
     decode = None
     if args.decode:
         try:
@@ -465,6 +532,9 @@ def main(argv=None):
         if isinstance(decode, int):
             return decode
     card = _card(args.file, block_hz, sl, fp, sss, decode, cells, len(span) / float(src.rate))
+    if args.own:
+        own = [c for c in cells if isinstance(c, dict) and 'own' in c]
+        card['own'] = own[0]['own'] if own else {'ran': False, 'reason': 'no FDD cell to read'}
     json.dump(card, sys.stdout, indent=2, allow_nan=False)
     sys.stdout.write('\n')
     return 0

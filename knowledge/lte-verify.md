@@ -546,6 +546,58 @@ SSS, or something else on the PSS, not a cell sending CRS there. The other cells
 read as before (the second cell's MIB in 191 of 629 frames, 312 of 314
 DCIs, SIB1 in 73 sums; 1.4 minutes and 2.0 GB for 6.3 s).
 
+## Our own SI decoder: `--own` (roadmap Round 29.6)
+
+`tools/iq-lte FILE --own` reads each cell's whole broadcast with our own
+decoders: `--pdsch` (MIB, SIB1's DCIs, SIB1, the cells strongest first with
+cancellation), then the SI messages SIB1 schedules (`iqlte_phy.si_messages`).
+Each cell gains `own`, shaped as `--decode`'s `decode` (`ran`, `mib`, `sib1`,
+`si`, a `*_reason` beside any that is null), and `own_si`, the blocks; the
+card's `own` is the strongest cell's. The span defaults to 6 s (`--t1`), as
+`--decode`'s `--si-seconds`, for the messages that repeat slowly.
+
+- **The schedule.** pycrate (outside) parses our SIB1: `schedulingInfoList`
+  (and the Rel-12 extension), `si-WindowLength`. Without pycrate there is no
+  schedule, and `si` is null with the reason, as for `--decode`.
+- **The windows.** Message n's window opens x = (n - 1) w subframes into each
+  of its periods (36.331 5.2.3), leaving out subframe 5 of even frames.
+- **Each subframe of a window.** The PCFICH and the common search space for
+  the SI-RNTI (formats 1A and 1C), as for SIB1, with that subframe's
+  scrambling; then the PDSCH (around the PBCH and the synchronisation signals
+  in subframes 0 and 5). The redundancy version is 1A's field, or for 1C
+  ceil(3k/2) mod 4 with k the subframe's place in the window mod 4 (36.321
+  5.3.1: counted in the window, not by the SFN as for SIB1).
+- **Combining.** The copies of a window that fail are summed (one transport
+  block a window), then a message's windows in turn while the size holds.
+- **The SIBs.** Every block that passed, SIB1's included, goes to
+  `iqlte_decode.read_si` as the outside decoder's dump would: the schedule,
+  each SIB heard and how often, the summaries, SIB16's time.
+
+On real air (2026-10-26, 6 s):
+
+| Cell | Ours | `pdsch_ue` (`PDSCH_ALL_SF`) |
+|---|---|---|
+| Band 13 | 7 messages scheduled, all covered; SIB2 36, SIB3 18, SIB4 9, SIB5 9, SIB15 4, SIB24 1; 77 of 78 blocks alone | the same 7 distinct blocks, the same counts, every SIB's value equal |
+| 700 MHz pair, stronger cell | SIB2 76, SIB3 38, SIB4 1, SIB5 10 (every scheduled SIB); 125 of 126 alone | none (no SIB1) |
+| 700 MHz pair, weaker cell (stronger cancelled) | SIB2 37 (33 by summing), SIB3 4; SIB4 and SIB5 not | none |
+| The other 700 MHz carrier, stronger cell | SIB2 74, SIB3 37, SIB5 9 (every scheduled SIB); 120 of 120 | none |
+| The other 700 MHz carrier, second cell (9 dB down) | one SI DCI found, not decoded | none |
+
+None of them schedules SIB16, so no network time. The one block that fails on
+Band 13 and on the pair's stronger cell is, both times, a format 1C DCI on a
+cell that sends its SI in 1A, of another size: a 16-bit CRC passing by
+chance (about 0.2 expected over a thousand subframes of candidates), which
+the PDSCH's CRC rejects.
+
+Not yet: a known cell's SI DCIs and PDSCH are not rebuilt outside subframe
+5, so a weaker sector reads its SI under the stronger one's (the second cell
+on the other carrier finds one DCI; the pair's weaker cell reads SIB2 and
+SIB3 by summing, not SIB4 or SIB5); and the SI DCIs are not summed as
+SIB1's are.
+
+Tests: `tools/tests/test_iqlte_own_si.py` (synthetic: windows and RVs, 1A and
+1C, a copy in subframe 0, sums; `iq-lte --own` end to end through pycrate).
+
 ## Several cells on one carrier: `cells`
 
 `iqlte.cells(iq, fs, max_cells=4)` lists every cell on the carrier whose SSS

@@ -90,7 +90,9 @@ schedules SIB16; ATSC's system time table.
 
 ## Reading them from a recording
 
-`tools/iq-lte FILE --decode` does all of this (2026-10-22): it reads
+`tools/iq-lte FILE --own` does it with our own decoders (2026-10-26, roadmap
+29.6; the same `si`, and on the Band 13 cell the same SIBs, block for
+block); `tools/iq-lte FILE --decode` with the outside one (2026-10-22): it reads
 `--si-seconds` (default 6) and reports SIB1's schedule, every SIB heard, and
 the summaries and time described in [lte-verify.md](lte-verify.md#decoding-the-broadcast---decode).
 On the real cell checked, a 6 s capture heard every scheduled message,
@@ -164,6 +166,7 @@ Sni5Gect's broadcast worker (AGPL); its other parts are out of scope.
 
 | Tool | Decodes | Input | Licence |
 |---|---|---|---|
+| ours: `tools/iq-lte FILE --own` (`iqlte_phy`, numpy; roadmap 29.6) | MIB, SIB1, other SI, in the windows SIB1 schedules | file | this repo's |
 | srsRAN 4G `pdsch_ue` (outside build, with the changes above) | MIB, SIB1, other SI | file or radio | AGPL-3.0 |
 | srsRAN 4G `npdsch_ue` | NB-IoT MIB-NB, SIB1-NB, SIB2-NB | radio (file unchecked) | AGPL-3.0 |
 | pycrate (`pycrate_asn1dir.RRCLTE`, in the outside venv) | `BCCH-DL-SCH-Message` UPER | bytes | LGPL-2.1 |

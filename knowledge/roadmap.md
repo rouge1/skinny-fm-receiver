@@ -1619,8 +1619,20 @@ sequences and the CRS check) is the start.
   each stage needing the cancellation. A subframe with no DCI after cancelling is read
   again as it is (a marginal PCFICH turned once). Synthetic: two sectors, the
   weaker 6 dB down: SIB1 0 of 6 alone without, every copy with.
-- [ ] 29.6 The other SI (SIB2 onwards, SIB16's network time if a cell sends
-  it) from SIB1's schedule; `iq-lte --own`, shaped as `--decode`.
+- [x] 29.6 The other SI (SIB2 onwards, SIB16's network time if a cell sends
+  it) from SIB1's schedule; `iq-lte --own`, shaped as `--decode` (2026-10-26:
+  `iqlte_phy.si_messages`, `si_window`, `si_rv`; pycrate reads the schedule
+  from our SIB1 and the SIBs from our blocks through `read_si`). The Band 13
+  cell: the same 7 distinct blocks and SIB counts as `pdsch_ue`, every SIB's
+  value equal. Both 700 MHz carriers' stronger cells: every scheduled SIB
+  (SIB2 to SIB5 on the pair's), where `pdsch_ue` reads none; the pair's
+  weaker cell SIB2 and SIB3 by summing. None schedules SIB16.
+  ([lte-verify.md](lte-verify.md#our-own-si-decoder---own-roadmap-round-296))
+  - [ ] A known cell's SI DCIs and PDSCH rebuilt in their subframes (today
+    only subframe 5's), so a weaker sector's SI is read with the stronger
+    one's taken out; one copy of a window rebuilds the others, as SIB1's
+    TTI does.
+  - [ ] The SI DCIs summed when none is found alone, as SIB1's.
 - [ ] Memory for long LTE spans (`iq-lte` was 4.5 GB a second of span at 20 MS/s;
   `lte-verify.md`'s Memory section).
   - [x] `iqlte._resample` lean, the same to the bit; `fingerprint` resampling

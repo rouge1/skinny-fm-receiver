@@ -1,5 +1,6 @@
 """LTE broadcast decoding, numpy only: the PBCH and its MIB (roadmap Round 29.1), the
-PCFICH and PDCCH that schedule SIB1 (29.2), and SIB1's PDSCH and DL-SCH (29.3).
+PCFICH and PDCCH that schedule SIB1 (29.2), SIB1's PDSCH and DL-SCH (29.3), and the SI
+messages after it (29.6).
 
 Written from the 3GPP specifications (TS 36.211, 36.212 and 36.331 V19, read in ETSI's PDFs,
 which keep the equations the 3GPP Word files hold as pictures). No srsRAN code is used: srsRAN
@@ -66,6 +67,12 @@ mod 4 (36.321 5.3.1).
 
 Combining (29.4): SIB1's copies of one 80 ms period (and then of a few periods) summed in the
 soft buffers; SIB1's DCIs summed by k = (SFN / 2) mod 4, as DCI 1A carries the RV.
+
+The other SI (29.6, ``si_messages``): SI message n in the window opening (n - 1) w subframes
+into each of its periods (36.331 5.2.3; the schedule from SIB1, which pycrate reads outside),
+subframe 5 of even frames left out; each subframe's control region and PDSCH as SIB1's, with
+that subframe's scrambling; 1C's RV ceil(3 k / 2) mod 4 with k the subframe's place in the
+window mod 4 (36.321 5.3.1); a window's copies summed, then a message's windows.
 
 Cancellation (29.5): sectors of one site start their frames together and send their PBCH, SIB1
 DCI and SIB1 on the same REs. What a decoded cell sent is rebuilt (``known_cell``: its CRS, PSS,
@@ -1060,6 +1067,33 @@ def sib1_rv(sfn):
     return (-(-3 * k // 2)) % 4
 
 
+def si_rv(i):
+    """An SI message's redundancy version for format 1C (36.321 5.3.1): ceil(3 k / 2) mod 4,
+    k = i mod 4, ``i`` the subframe's number within its SI window (every subframe counted)."""
+    k = int(i) % 4
+    return (-(-3 * k // 2)) % 4
+
+
+def si_window(messages, window_ms, sfn, sf):
+    """Which SI message's window holds subframe ``sf`` of frame ``sfn`` (36.331 5.2.3, FDD):
+    ``(si, i, start)``, ``i`` the subframe's number in the window and ``start`` the window's
+    first subframe (SFN 10 + subframe), or None. ``messages`` are SIB1's schedule in order
+    (``iqlte_decode.si_schedule``: ``si``, ``period_frames``); message n's window opens x = (n - 1)
+    w subframes into each period. Subframe 5 of even frames is SIB1's: None."""
+    if not window_ms or (sf == 5 and sfn % 2 == 0):
+        return None
+    s = int(sfn) * 10 + int(sf)
+    for msg in messages:
+        period = msg.get('period_frames')
+        if not period:
+            continue
+        x = (int(msg['si']) - 1) * int(window_ms)
+        i = (s - x) % (10 * int(period))
+        if i < int(window_ms):
+            return int(msg['si']), i, (s - i) % 10240
+    return None
+
+
 def pdsch_res(pci, n_rb, ports, cfi, subframe, prbs):
     """The REs a PDSCH is sent on, in mapping order (36.211 6.3.5, 6.4), (l array, k array):
     k first over the PRBs of each symbol's slot (``prbs``, one list a slot), then l, from
@@ -1451,16 +1485,16 @@ def _dci_sums(missed, sizes, n_rb, rnti):
     return out
 
 
-def _read_control(g, pci, n_rb, ports, mib, quads, sizes, rnti):
-    """One subframe's control region (``g``, its first symbols): the CFI from the PCFICH, then
+def _read_control(g, pci, n_rb, ports, mib, quads, sizes, rnti, sf=5):
+    """Subframe ``sf``'s control region (``g``, its first symbols): the CFI from the PCFICH, then
     the common search space's candidates for both ``sizes``. Returns ``(cfi, dcis, miss)``:
     each DCI's fields with ``level``, ``cce``, ``bits``, ``snr_db``; ``miss`` the soft bits in
     CCE order and each CCE's |h|^2 / noise, for summing (``_dci_sums``)."""
-    h, noise = subframe_channel(g, pci, 5, ports, list(range(4)))
+    h, noise = subframe_channel(g, pci, sf, ports, list(range(4)))
     pk = [(0, k + j) for k in pcfich_starts(pci, n_rb) for j in range(6) if (k + j) % 3 != pci % 3]
     r = np.array([g[l, k] for l, k in pk])
     hh = np.array([[h[p, l, k] for l, k in pk] for p in range(4)])
-    cfi, _score = decode_pcfich(r, hh, noise, pci, 5, ports)
+    cfi, _score = decode_pcfich(r, hh, noise, pci, sf, ports)
     if cfi not in quads:
         quads[cfi] = pdcch_quads(pci, n_rb, ports, cfi, mib['phich_resource'], mib['phich_duration'])
     q = quads[cfi]
@@ -1468,7 +1502,7 @@ def _read_control(g, pci, n_rb, ports, mib, quads, sizes, rnti):
     ks = np.array([k for _l, kk in q for k in kk])
     r = g[ls, ks]
     hh = h[:, ls, ks]
-    llr = soft_bits(r, hh[:ports], noise, ports) * (1.0 - 2.0 * pdcch_scrambling(pci, 5, 2 * len(r)))
+    llr = soft_bits(r, hh[:ports], noise, ports) * (1.0 - 2.0 * pdcch_scrambling(pci, sf, 2 * len(r)))
     n_cce = len(q) // 9
     taken, found = set(), []
     for level, cce0 in common_candidates(n_cce):
@@ -1647,6 +1681,90 @@ def sib1(iq, fs, cell, pbch_result, dci_result=None, center_offset_hz=0.0, carri
             seen[b['hex']] = seen.get(b['hex'], 0) + 1
     if seen:
         out['sib1'] = max(seen, key=seen.get)
+    return out
+
+
+def si_messages(iq, fs, cell, pbch_result, messages, window_ms, center_offset_hz=0.0, carrier_hz=None,
+                rnti=SI_RNTI, combine=True, known=None):
+    """The SI messages after SIB1 (SIB2 onwards) of one cell, by our own decode (roadmap Round
+    29.6), in the windows SIB1's schedule gives (``messages``, ``window_ms``: ``si_window``).
+
+    Each subframe of a window: its control region (PCFICH, then the common search space for
+    the SI-RNTI's formats 1A and 1C), then the PDSCH each DCI gives (1A's redundancy version from
+    the DCI, 1C's from the subframe's place in the window, ``si_rv``). With ``combine``, the
+    copies of a window none of which passed are summed (one transport block a window), then
+    the windows of a message that still fail, in turn, up to the last ``_COMBINE_PERIODS``,
+    while the TBS holds (``sib1``'s rule). ``known`` cells are taken out as for ``sib1``: their
+    reference and synchronisation signals and PBCH; their SI DCIs and PDSCH are not rebuilt.
+
+    Returns a dict: ``subframes`` (read), ``blocks``, one per DCI (``sfn``, ``subframe``, ``si``,
+    ``i``, ``format``, ``rv``, ``tbs``, ``n_prb``, ``crc``, ``hex`` when it passed), ``decoded``,
+    ``tried``, ``combined`` (one per summed decode: ``si``, ``subframes`` as SFN 10 + subframe,
+    ``tbs``, ``hex``); None without a MIB or a window."""
+    mib = (pbch_result or {}).get('mib')
+    if not mib or mib.get('n_rb') not in _NFFT_FOR_RB or not window_ms or not messages:
+        return None
+    pci, n_rb, ports = int(cell['pci']), int(mib['n_rb']), int(pbch_result['ports'])
+    frames = _cell_frames(fs, cell, pbch_result, center_offset_hz, carrier_hz, known)
+    sizes = (('1A', dci_1a_bits(n_rb)), ('1C', dci_1c_bits(n_rb)))
+    quads = {}
+    out = {'subframes': 0, 'blocks': [], 'decoded': 0, 'tried': 0, 'combined': []}
+    windows = {}                                         # (si, start) -> the copies that failed
+    for f in range(frames.count(len(iq))):
+        sfn = (int(mib['sfn']) + f) % 1024
+        for sf in range(10):
+            hit = si_window(messages, window_ms, sfn, sf)
+            if hit is None:
+                continue
+            si, i, start = hit
+            g = frames.subframe(iq, f, sf, n_rb, 14)
+            if g is None:
+                continue
+            out['subframes'] += 1
+            cfi, found, _miss = _read_control(g, pci, n_rb, ports, mib, quads, sizes, rnti, sf)
+            for d in found:
+                tbs = si_tbs(d)
+                if tbs is None:
+                    continue
+                rv = int(d['rv']) if d['format'] == '1A' else si_rv(i)
+                prbs = si_allocation(d, n_rb)
+                out['tried'] += 1
+                h, noise = subframe_channel(g, pci, sf, ports, list(range(14)))
+                ls, ks = pdsch_res(pci, n_rb, ports, cfi, sf, prbs)
+                llr = soft_bits(g[ls, ks], h[:ports, ls, ks], noise, ports)
+                llr *= 1.0 - 2.0 * pdsch_scrambling(pci, sf, rnti, len(llr))
+                bits, _buf = dlsch_decode(llr, tbs, rv, ports=ports)
+                block = {'sfn': sfn, 'subframe': sf, 'si': si, 'i': i, 'format': d['format'], 'rv': rv,
+                         'tbs': tbs, 'n_prb': len(prbs[0]), 'crc': bits is not None}
+                if bits is not None:
+                    block['hex'] = np.packbits(bits).tobytes().hex()
+                    out['decoded'] += 1
+                else:
+                    windows.setdefault((si, start), []).append((10 * sfn + sf, tbs, rv, llr))
+                out['blocks'].append(block)
+    if combine:
+        passed = {(b['si'], (10 * b['sfn'] + b['subframe'] - b['i']) % 10240) for b in out['blocks'] if b['crc']}
+        left = {}
+        for (si, start), items in windows.items():       # in time order, across the SFN wrap too
+            if (si, start) in passed:
+                continue
+            got = _sum_copies(items, ports) if len(items) > 1 else None
+            if got:
+                out['combined'].append({'si': si, 'subframes': got['sfns'], 'tbs': got['tbs'], 'hex': got['hex']})
+            else:
+                left.setdefault(si, []).append(items)
+        for si, periods in left.items():                 # windows that failed even summed, in turn
+            run = []
+            for items in periods:
+                if run and run[0][0][1] != items[0][1]:
+                    run = []
+                run = run[-(_COMBINE_PERIODS - 1):] + [items]
+                if len(run) > 1:
+                    got = _sum_copies([it for period in run for it in period], ports, every=False)
+                    if got:
+                        out['combined'].append({'si': si, 'subframes': got['sfns'], 'tbs': got['tbs'],
+                                                'hex': got['hex']})
+                        run = []
     return out
 
 

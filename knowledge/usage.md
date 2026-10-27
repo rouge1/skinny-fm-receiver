@@ -1292,6 +1292,7 @@ tools/iq-lte CAPTURE.cfile --mib --t1 1                   # each cell's MIB by o
 tools/iq-lte CAPTURE.cfile --pdcch --t1 1                 # and its SIB1 DCIs (CFI, format, allocation, MCS, RV)
 tools/iq-lte CAPTURE.cfile --pdsch --t1 1                 # and SIB1 itself, by our own decoder
 tools/iq-lte CAPTURE.cfile --pdsch --t1 6                 # 6 s: the fingerprint reads 1 s, the decoders 6
+tools/iq-lte CAPTURE.cfile --own                          # every SIB by our own decoders, 6 s, shaped as --decode
 ```
 
 - The span is at most 10 s. The fingerprint (verdict, checks, `cells`)
@@ -1338,6 +1339,19 @@ tools/iq-lte CAPTURE.cfile --pdsch --t1 6                 # 6 s: the fingerprint
   (frames starting elsewhere) is taken out of the samples, rebuilt at its own
   timing; a cell left short (no MIB, a DCI or SIB1 copy missed alone) is
   read once more with the others known.
+- `--own` (implies `--pdsch`) reads every SIB with our own decoders: the SI
+  messages SIB1 schedules, in their windows, then what pycrate reads from
+  all the blocks. Each cell gains `own`, shaped as `--decode`'s `decode`
+  (`mib`, `sib1`, `si`: the schedule, each SIB heard and how often, the
+  summaries and `time`), and `own_si` (each block's `sfn`, `subframe`,
+  message `si`, place `i` in its window, `format`, `rv`, `tbs`, `crc`, `hex`;
+  `combined` the sums). The card's `own` is the strongest cell's. The span
+  defaults to 6 s, for the slow messages. Without pycrate there is no
+  schedule: `si` is null with a reason. On the Band 13 cell it equals the
+  outside decoder's SI, SIB for SIB; on the 700 MHz carriers it reads what
+  the outside decoder cannot. Every subframe of every window is read for
+  each cell: 52 s for the one-cell Band 13 carrier's 6 s (1.9 GB), minutes
+  for a carrier of two or three cells.
 - `--decode` runs when the fingerprint's verdict is `lte` or `possible` (a
   possible carrier may well be one: a 700 MHz carrier read `possible` while
   both decoders read its MIB), not when it is `not-lte` or `unknown`.
