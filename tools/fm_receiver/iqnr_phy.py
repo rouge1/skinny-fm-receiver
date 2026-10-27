@@ -331,42 +331,66 @@ def polar_encode(c, n, e):
 
 
 class _SCL:
-    """Successive-cancellation list decoding of one polar codeword, LLRs in natural order."""
+    """Successive-cancellation list decoding of a batch of polar codewords with the same frozen
+    set, LLRs in natural order: arrays are (codeword, path, ...), and each codeword's sums are
+    the ones it would get decoded alone."""
 
-    def __init__(self, frozen, size):
+    def __init__(self, frozen, size, batch):
         self.frozen = frozen
         self.size = size
-        self.pm = np.full(size, 1e12)
-        self.pm[0] = 0.0
-        self.u = np.zeros((size, len(frozen)), dtype=np.uint8)
+        self.pm = np.full((batch, size), 1e12)
+        self.pm[:, 0] = 0.0
+        self.u = np.zeros((batch, size, len(frozen)), dtype=np.uint8)
         self.i = 0
+        self.keep = np.broadcast_to(np.arange(size), (batch, size))
+        # info[j]: how many information bits come before bit j, to spot all-frozen subtrees
+        self.info = np.concatenate(([0], np.cumsum(~np.asarray(frozen, dtype=bool))))
+
+    def frozen_node(self, llr):
+        """An all-frozen subtree in one pass: the same leaf LLRs, and metric sums in the same
+        order, as the leaf-by-leaf recursion, so the result is bit for bit the same."""
+        x = llr[:, :, None, :]
+        while x.shape[3] > 1:
+            h = x.shape[3] // 2
+            a, b = x[..., :h], x[..., h:]
+            left = np.sign(a) * np.sign(b) * np.minimum(np.abs(a), np.abs(b))
+            x = np.stack((left, b + a), axis=3).reshape(x.shape[0], self.size, -1, h)
+        lam = x[..., 0]
+        pen = np.where(lam < 0, np.abs(lam), 0.0)
+        self.pm = np.add.accumulate(np.concatenate((self.pm[..., None], pen), axis=2), axis=2)[..., -1]
+        self.i += lam.shape[2]
+        return np.zeros(lam.shape, dtype=np.uint8), self.keep
 
     def leaf(self, lam):
         i = self.i
         self.i += 1
         if self.frozen[i]:
             self.pm += np.where(lam < 0, np.abs(lam), 0.0)
-            return np.zeros((self.size, 1), dtype=np.uint8), np.arange(self.size)
+            return np.zeros(lam.shape + (1,), dtype=np.uint8), self.keep
         both = np.concatenate((self.pm + np.where(lam < 0, np.abs(lam), 0.0),
-                               self.pm + np.where(lam > 0, np.abs(lam), 0.0)))
-        pick = np.argsort(both, kind='stable')[:self.size]
+                               self.pm + np.where(lam > 0, np.abs(lam), 0.0)), axis=1)
+        pick = np.argsort(both, axis=1, kind='stable')[:, :self.size]
         parent, bit = pick % self.size, (pick // self.size).astype(np.uint8)
-        self.pm = both[pick]
-        self.u = self.u[parent]
-        self.u[:, i] = bit
-        return bit[:, None], parent
+        self.pm = np.take_along_axis(both, pick, axis=1)
+        self.u = np.take_along_axis(self.u, parent[..., None], axis=1)
+        self.u[:, :, i] = bit
+        return bit[..., None], parent
 
     def node(self, llr):
         """(the re-encoded bits of this subtree per path, the path order it leaves behind)."""
-        if llr.shape[1] == 1:
-            return self.leaf(llr[:, 0])
-        h = llr.shape[1] // 2
-        a, b = llr[:, :h], llr[:, h:]
+        if llr.shape[2] == 1:
+            return self.leaf(llr[..., 0])
+        if self.info[self.i + llr.shape[2]] == self.info[self.i]:
+            return self.frozen_node(llr)
+        h = llr.shape[2] // 2
+        a, b = llr[..., :h], llr[..., h:]
         left = np.sign(a) * np.sign(b) * np.minimum(np.abs(a), np.abs(b))
         xl, p1 = self.node(left)
-        a, b = a[p1], b[p1]
+        a = np.take_along_axis(a, p1[..., None], axis=1)
+        b = np.take_along_axis(b, p1[..., None], axis=1)
         xr, p2 = self.node(b + (1.0 - 2.0 * xl) * a)
-        return np.concatenate((xl[p2] ^ xr, xr), axis=1), p1[p2]
+        return (np.concatenate((np.take_along_axis(xl, p2[..., None], axis=1) ^ xr, xr), axis=2),
+                np.take_along_axis(p1, p2, axis=1))
 
 
 #: The LLR given a shortened bit, known to be 0.
@@ -377,35 +401,47 @@ def polar_decode(llr_e, k, n, list_size=LIST, check=None):
     """``(c, metric)``: the ``k`` bits whose CRC checks, from the ``e`` rate-matched LLRs
     (positive means 0), or ``(None, None)``. The list's paths are tried best first. ``check``
     takes the ``k`` bits and says whether they pass; by default the last 24 are their CRC 24C."""
-    llr_e = np.asarray(llr_e, dtype=np.float64)
-    e = len(llr_e)
-    y = np.zeros(n)
+    return polar_decode_many([llr_e], k, n, list_size, check)[0]
+
+
+def polar_decode_many(llrs, k, n, list_size=LIST, check=None):
+    """``polar_decode`` of several codewords of the same length at once, each result the same
+    as decoding it alone: a list of ``(c, metric)``."""
+    llrs = np.asarray(llrs, dtype=np.float64)
+    e = llrs.shape[1]
+    y = np.zeros((len(llrs), n))
     if e >= n:
-        np.add.at(y, np.arange(e) % n, llr_e)
+        for row, llr_e in zip(y, llrs):
+            np.add.at(row, np.arange(e) % n, llr_e)
     elif _punctured(k, n, e):
-        y[n - e:] = llr_e                                         # the punctured bits stay at 0
+        y[:, n - e:] = llrs                                       # the punctured bits stay at 0
     else:
-        y[:e] = llr_e
-        y[e:] = _SURE
-    d = np.zeros(n)
-    d[_subblock(n)] = y
+        y[:, :e] = llrs
+        y[:, e:] = _SURE
+    d = np.zeros((len(llrs), n))
+    d[:, _subblock(n)] = y
     info = _info_set(k, n, e)
     frozen = np.ones(n, dtype=bool)
     frozen[info] = False
-    dec = _SCL(frozen, list_size)
-    dec.node(np.tile(d, (list_size, 1)))
+    dec = _SCL(frozen, list_size, len(llrs))
+    dec.node(np.repeat(d[:, None, :], list_size, axis=1))
     pi = _input_interleaver(k)
     if check is None:
         def check(bits):
             return np.array_equal(crc24c(bits[:k - L_CRC]), bits[k - L_CRC:])
-    for p in np.argsort(dec.pm, kind='stable'):
-        if dec.pm[p] >= 1e11:
-            break
-        c = np.zeros(k, dtype=np.uint8)
-        c[pi] = dec.u[p, info]
-        if check(c):
-            return c, float(dec.pm[p])
-    return None, None
+    out = []
+    for pm, u in zip(dec.pm, dec.u):
+        got = (None, None)
+        for p in np.argsort(pm, kind='stable'):
+            if pm[p] >= 1e11:
+                break
+            c = np.zeros(k, dtype=np.uint8)
+            c[pi] = u[p, info]
+            if check(c):
+                got = (c, float(pm[p]))
+                break
+        out.append(got)
+    return out
 
 
 # ----- the PBCH payload (38.212 7.1.1, 7.1.2) ---------------------------------------------
@@ -686,10 +722,14 @@ def pdcch_dmrs(pci, slot, symbol, n_rb):
 
 def _candidate_res(rbs, n_symb):
     """(data RE (l, k) pairs in mapping order: k first, then l; DM-RS (l, k, m) triples)."""
-    rbs = sorted(rbs)
-    data = [(l, 12 * rb + k) for l in range(n_symb) for rb in rbs for k in _REG_DATA]
-    dmrs = [(l, 12 * rb + k, 3 * rb + j) for l in range(n_symb) for rb in rbs for j, k in enumerate(_REG_DMRS)]
-    return np.array(data), np.array(dmrs)
+    rbs = np.sort(np.asarray(rbs, dtype=np.int64))
+    def grid_of(ks):
+        l, rb, j = np.meshgrid(np.arange(n_symb), rbs, np.arange(len(ks)), indexing='ij')
+        return l.ravel(), rb.ravel(), j.ravel()
+    l, rb, j = grid_of(_REG_DATA)
+    data = np.stack((l, 12 * rb + _REG_DATA[j]), axis=1)
+    l, rb, j = grid_of(_REG_DMRS)
+    return data, np.stack((l, 12 * rb + _REG_DMRS[j], 3 * rb + j), axis=1)
 
 
 # ----- DCI (38.212 7.3) -------------------------------------------------------------------
@@ -749,12 +789,13 @@ def pdcch_llrs(grid, pci, slot, first_symbol, n_rb, n_symb, level, cce0):
     bundles = [rbs_of[j] for j in range(cce0, cce0 + level)]
     rbs = [rb for b in bundles for rb in b]
     data, dmrs = _candidate_res(rbs, n_symb)
-    dm = [pdcch_dmrs(pci, slot, first_symbol + l, n_rb) for l in range(n_symb)]
-    z = grid[dmrs[:, 0], dmrs[:, 1]] * np.conj([dm[l][m] for l, _k, m in dmrs])
+    dm = np.array([pdcch_dmrs(pci, slot, first_symbol + l, n_rb) for l in range(n_symb)])
+    z = grid[dmrs[:, 0], dmrs[:, 1]] * np.conj(dm[dmrs[:, 0], dmrs[:, 2]])
     k_dm = dmrs[:, 1].astype(np.float64)
-    group = np.array([(l, rb) for l, k, _m in dmrs for rb in [k // 12]])
-    bundle_of = {rb: i for i, b in enumerate(bundles) for rb in b}
-    gid = np.array([l * len(bundles) + bundle_of[rb] for l, rb in group])
+    bundle_of = np.zeros(max(rbs) + 1, dtype=np.int64)            # RB -> its bundle
+    for i, b in enumerate(bundles):
+        bundle_of[b] = i
+    gid = dmrs[:, 0] * len(bundles) + bundle_of[dmrs[:, 1] // 12]
     n_g = n_symb * len(bundles)
     turn = np.exp(-1j * np.outer(_PD_SLOPES, k_dm))
     sums = np.zeros((len(_PD_SLOPES), n_g), dtype=np.complex128)
@@ -774,7 +815,7 @@ def pdcch_llrs(grid, pci, slot, first_symbol, n_rb, n_symb, level, cce0):
     per = len(zf) / n_g
     noise = max(float(np.mean(np.abs(resid) ** 2)) * per / max(per - 1, 1), 1e-12)
     l_d, k_d = data[:, 0], data[:, 1]
-    gid_d = np.array([l * len(bundles) + bundle_of[k // 12] for l, k in data])
+    gid_d = l_d * len(bundles) + bundle_of[k_d // 12]
     h = h_g[gid_d] * np.exp(1j * slope * k_d)
     zz = grid[l_d, k_d] * np.conj(h)
     scale = 2.0 * np.sqrt(2.0) / noise
@@ -830,21 +871,27 @@ def decode_pdcch(grid, pci, slot, first_symbol, n_rb, n_symb, rnti=SI_RNTI, payl
         return np.array_equal(dci_crc(c[:a_len], rnti), c[a_len:])
     found = []
     taken = set()
-    for level, cce0 in sorted(type0_candidates(n_rb * n_symb // 6, counts), key=lambda t: -t[0]):
-        cces = set(range(cce0, cce0 + level))
-        if cces & taken:
+    candidates = sorted(type0_candidates(n_rb * n_symb // 6, counts), key=lambda t: -t[0])
+    for lv in sorted({level for level, _c in candidates}, reverse=True):
+        # one level's candidates share no CCEs, so they are decoded together; only a larger
+        # one that decoded rules any out
+        tried = [cce0 for level, cce0 in candidates
+                 if level == lv and not set(range(cce0, cce0 + level)) & taken]
+        if not tried:
             continue
-        llr, snr, slope = pdcch_llrs(grid, pci, slot, first_symbol, n_rb, n_symb, level, cce0)
-        c, metric = polar_decode(llr, k, polar_n(k, len(llr), N_MAX_DCI), list_size, check)
-        if c is None:
-            continue
-        taken |= cces
-        a = c[:a_len]
-        out = {'level': level, 'cce': cce0, 'bits': ''.join(str(int(b)) for b in a)}
-        if payload_bits is None:
-            out.update(parse_dci_1_0_si(a, n_rb))
-        out.update(snr_db=float(snr), slope=slope, metric=metric)
-        found.append(out)
+        soft = [pdcch_llrs(grid, pci, slot, first_symbol, n_rb, n_symb, lv, cce0) for cce0 in tried]
+        n = polar_n(k, len(soft[0][0]), N_MAX_DCI)
+        decoded = polar_decode_many([llr for llr, _s, _sl in soft], k, n, list_size, check)
+        for cce0, (_llr, snr, slope), (c, metric) in zip(tried, soft, decoded):
+            if c is None:
+                continue
+            taken |= set(range(cce0, cce0 + lv))
+            a = c[:a_len]
+            out = {'level': lv, 'cce': cce0, 'bits': ''.join(str(int(b)) for b in a)}
+            if payload_bits is None:
+                out.update(parse_dci_1_0_si(a, n_rb))
+            out.update(snr_db=float(snr), slope=slope, metric=metric)
+            found.append(out)
     return found
 
 
@@ -1230,8 +1277,31 @@ def known_grid(pci, slot, n_rb, n_symb, first_symbol, dci, data, dmrs_typea_posi
     return q, parts
 
 
-def _sums(t, ids):
-    return float(np.sum(np.abs(np.bincount(ids, t.real) + 1j * np.bincount(ids, t.imag)) ** 2))
+def _best(z, turns, ids):
+    """The first of the rows ``turns(rows)`` that gives z, so turned, the most power summed
+    by ``ids``: the same sums as one bincount per row, done a block of rows at a time."""
+    n_bins = int(ids.max()) + 1
+    n_rows = len(turns.grid)
+    step = max(1, (1 << 21) // max(len(z), 1))
+    score = np.empty(n_rows)
+    for r0 in range(0, n_rows, step):
+        rows = np.arange(r0, min(r0 + step, n_rows))
+        t = z * turns(rows)
+        at = (np.arange(len(rows))[:, None] * n_bins + ids).ravel()
+        sums = (np.bincount(at, t.real.ravel(), len(rows) * n_bins)
+                + 1j * np.bincount(at, t.imag.ravel(), len(rows) * n_bins)).reshape(len(rows), n_bins)
+        score[rows] = np.sum(np.abs(sums) ** 2, axis=1)
+    return turns.grid[int(np.argmax(score))]
+
+
+class _Turns:
+    """Row r: exp(f(grid[r])) over the REs, as the one-row expression would compute it."""
+
+    def __init__(self, grid, f):
+        self.grid, self.f = grid, f
+
+    def __call__(self, rows):
+        return np.exp(self.f(self.grid[rows][:, None]))
 
 
 def _fit_turn(grid, q, m):
@@ -1240,10 +1310,10 @@ def _fit_turn(grid, q, m):
     z = grid[m] * np.conj(q[m])
     pi = ki // 12
     _u, per_symbol = np.unique(li * 4096 + pi, return_inverse=True)
-    slope = max(_FIT_SLOPES, key=lambda s: _sums(z * np.exp(-1j * s * ki), per_symbol))
+    slope = _best(z, _Turns(_FIT_SLOPES, lambda s: -1j * s * ki), per_symbol)
     t = z * np.exp(-1j * slope * ki)
     _u, per_prb = np.unique(pi, return_inverse=True)
-    freq = max(_FIT_FREQS, key=lambda f: _sums(t * np.exp(-2j * np.pi * f * li * _T_SYMBOL), per_prb))
+    freq = _best(t, _Turns(_FIT_FREQS, lambda f: -2j * np.pi * f * li * _T_SYMBOL), per_prb)
     return slope, freq
 
 

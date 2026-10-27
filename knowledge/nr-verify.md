@@ -649,9 +649,32 @@ On real air (2026-10-27, the same 6 s recording):
 - Not adopted: the channel from the decoder's own soft output (decision
   directed, iterated). A message decoded from one 8-copy run in three, not
   reliably from 8.
-- Time: about 4 minutes for the three cells (195 s before).
+- Time: about 4 minutes for the three cells (195 s before); about 2 since
+  the next paragraph.
 
 Tests: `tools/tests/test_iqnr_shared.py`.
+
+**Time (2026-10-27).** Profiled on the 850 MHz site's recording, three cells, 6 s:
+202 s wall and 205 s of CPU (numpy's threads were not the problem here: one
+thread gave 199 s). Half of it was the polar decoder of the DCI candidates,
+19,047 decodes walked one tree node at a time (17 million Python calls). Now:
+- `_SCL` does an all-frozen subtree in one pass, with the same leaf LLRs and
+  the metric summed in the same order;
+- `polar_decode_many` decodes a batch of codewords of one length together,
+  and `decode_pdcch` hands it each aggregation level's candidates (their
+  CCEs never overlap, so only a larger candidate that decoded rules one out,
+  as before); `polar_decode` is a batch of one;
+- LDPC's check update takes the two smallest magnitudes by `partition`
+  instead of sorting each check (on a tie for the smallest the two are
+  equal, so the choice of edge changes nothing);
+- `_fit_turn` scores every slope and frequency in one `bincount` per block
+  of rows, `pdcch_llrs` and `_candidate_res` index with arrays.
+
+The same bits and metrics as before (`test_iqnr_phy.py`: a batch against
+each alone, the subtree pass against leaf by leaf), and the JSON byte for
+byte the same: 126 s wall, 129 s of CPU. What is left is spread: LDPC 32 s
+(layered, so sequential), the channel fits 20 s (mostly `exp`), the PDCCH
+soft bits 17 s (measured before the polar batching).
 
 ## Decoding a listed SSB (`--decode`)
 

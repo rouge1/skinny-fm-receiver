@@ -515,15 +515,16 @@ def decode(buffer, bg, zc, i_ls, k_prime, k, iterations=50, check=None):
             continue                                       # an extension row with nothing received
         layers.append(cols[:, None] * zc + (base[None, :] + shifts[:, None]) % zc)
     msgs = [np.zeros(ix.shape) for ix in layers]
+    rank = [np.arange(len(ix))[:, None] for ix in layers]
     for it in range(1, iterations + 1):
-        for ix, r in zip(layers, msgs):
+        for ix, r, row in zip(layers, msgs, rank):
             t = llr[ix] - r
             sign = np.where(t < 0, -1.0, 1.0)
             mag = np.abs(t)
-            order = np.argsort(mag, axis=0)
-            m1 = np.take_along_axis(mag, order[:1], axis=0)
-            m2 = np.take_along_axis(mag, order[1:2], axis=0)
-            new = np.where(np.arange(len(ix))[:, None] == order[:1], m2, m1)
+            # the smallest and next smallest |t| per check; on a tie for the smallest the two
+            # are equal, so which edge counts as the smallest changes nothing
+            m12 = np.partition(mag, 1, axis=0)
+            new = np.where(row == np.argmin(mag, axis=0), m12[1:2], m12[:1])
             new = _ALPHA * new * sign * np.prod(sign, axis=0)
             r[:] = new
             llr[ix] = t + new

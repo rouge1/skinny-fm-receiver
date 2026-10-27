@@ -19,6 +19,8 @@ the ops folder, not here. What the checks pin:
   occasion (n0, SFN parity, first symbol) for four table rows;
 - polar N (38.212 5.3.1) and rate matching by puncturing (DCI at AL4: K 63, E 432 < N 512),
   shortening (K 63, E 100) and repetition: noiseless codewords decode;
+- polar decoding in a batch gives each codeword's result alone, and an all-frozen subtree done in
+  one pass the same metrics and bits as leaf by leaf;
 - CCE-to-REG interleaving: each CCE one REG bundle, all bundles used once, the PCI shifting every
   CCE one bundle along; a hand-worked CCE; candidates (7 in 16 CCEs, 3 in 8, repeats dropped);
 - DCI 1_0 with SI-RNTI: 39 bits in 48 RBs, 37 in 24; RIVs invert for every allocation in 24 RBs;
@@ -258,6 +260,32 @@ def check_coreset():
                  P._punctured(63, 128, 100))
         return not bad and sizes == (512, 128, 512, True, False), (bad, sizes)
     expect("polar N and rate matching: puncturing (E 432 < N 512), shortening, repetition round trip", rate_matching)
+
+    def polar_batched():
+        rng = np.random.default_rng(6)
+        bad = []
+        for k, e in ((63, 432), (63, 100), (61, 1728), (P.K_PBCH, 864)):
+            n = P.polar_n(k, e, P.N_MAX_DCI)
+            llrs = [rng.normal(0, 1 + 3 * rng.random(), e) + rng.normal(1, 1, e) for _ in range(5)]
+
+            def check(bits):
+                return int(bits.sum()) % 3 == 0                   # passes some paths, not others
+            many = P.polar_decode_many(llrs, k, n, check=check)
+            for llr, (c, m) in zip(llrs, many):
+                one, m1 = P.polar_decode(llr, k, n, check=check)
+                if (c is None) != (one is None) or m != m1 or (c is not None and not np.array_equal(c, one)):
+                    bad.append(('batch', k, e))
+            frozen = np.ones(n, dtype=bool)
+            frozen[P._info_set(k, n, e)] = False
+            d = rng.normal(0, 2, (3, n))
+            fast, slow = P._SCL(frozen, P.LIST, 3), P._SCL(frozen, P.LIST, 3)
+            slow.info = np.arange(n + 1)                          # no all-frozen shortcut: leaf by leaf
+            for dec in (fast, slow):
+                dec.node(np.repeat(d[:, None, :], P.LIST, axis=1))
+            if not (np.array_equal(fast.pm, slow.pm) and np.array_equal(fast.u, slow.u)):
+                bad.append(('frozen', k, e))
+        return not bad, bad
+    expect("polar: a batch decodes as each alone; an all-frozen subtree as its leaves one by one", polar_batched)
 
     def dci_fields():
         sizes = (P.dci_1_0_si_bits(48), P.dci_1_0_si_bits(24))

@@ -1468,7 +1468,7 @@ tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead o
   left missing, and the third, whose other SI was never read before, had
   three of its five messages matched. A SIB still missing under a stronger
   cell sets `si.missing_unsure`, and the reason says so. Three cells take
-  about 4 minutes.
+  about 2 minutes.
 - `--decode` needs srsRAN 4G's NR library behind `run_nr.sh`, built by you
   (AGPL, not part of this repo), and pycrate under `$FMRX_LTE_TOOLS/pyc`. Only
   the broadcast (SI-RNTI) is read. Each entry gets a `decode`: the MIB, SIB1

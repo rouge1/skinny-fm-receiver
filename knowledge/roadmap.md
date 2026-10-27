@@ -1534,6 +1534,12 @@ Phases, each one checked before the next:
   the fifth message: nothing missing. The third sector, whose other SI was
   never read, matched three of its five messages; SIB2 and SIB3 stay unsure
   ([nr-verify.md](nr-verify.md#sectors-sending-the-same-si-roadmap-round-287)).
+- [x] `iq-nr --pdsch` faster (2026-10-27): 202 s to 126 s for three cells' 6 s,
+  the output byte for byte the same. The polar decoder does all-frozen
+  subtrees in one pass and a level's DCI candidates as one batch; LDPC's
+  check update, the channel fit's search and the PDCCH indexing vectorised.
+  numpy's threads were not the cost here, unlike `iq-lte`
+  ([nr-verify.md](nr-verify.md#sectors-sending-the-same-si-roadmap-round-287)).
 - [ ] LTE: Round 29 below.
 
 ## Round 29: our own LTE broadcast decoder (planned 2026-10-25)
