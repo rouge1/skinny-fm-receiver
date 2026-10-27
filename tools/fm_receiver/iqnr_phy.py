@@ -1234,14 +1234,8 @@ def _sums(t, ids):
     return float(np.sum(np.abs(np.bincount(ids, t.real) + 1j * np.bincount(ids, t.imag)) ** 2))
 
 
-def fit_known(grid, q, symbols, prbs):
-    """The part of ``grid`` that the known grid ``q`` explains on ``symbols`` and ``prbs``: q
-    turned by a delay slope and a frequency, then per PRB a gain a + b (l - mean l)."""
-    m = np.zeros(q.shape, dtype=bool)
-    m[list(symbols)] = q[list(symbols)] != 0
-    est = np.zeros(grid.shape, dtype=np.complex128)
-    if not m.any():
-        return est
+def _fit_turn(grid, q, m):
+    """``fit_known``'s searched delay slope and frequency of the known grid ``q`` on mask ``m``."""
     li, ki = np.nonzero(m)
     z = grid[m] * np.conj(q[m])
     pi = ki // 12
@@ -1250,6 +1244,18 @@ def fit_known(grid, q, symbols, prbs):
     t = z * np.exp(-1j * slope * ki)
     _u, per_prb = np.unique(pi, return_inverse=True)
     freq = max(_FIT_FREQS, key=lambda f: _sums(t * np.exp(-2j * np.pi * f * li * _T_SYMBOL), per_prb))
+    return slope, freq
+
+
+def fit_known(grid, q, symbols, prbs):
+    """The part of ``grid`` that the known grid ``q`` explains on ``symbols`` and ``prbs``: q
+    turned by a delay slope and a frequency, then per PRB a gain a + b (l - mean l)."""
+    m = np.zeros(q.shape, dtype=bool)
+    m[list(symbols)] = q[list(symbols)] != 0
+    est = np.zeros(grid.shape, dtype=np.complex128)
+    if not m.any():
+        return est
+    slope, freq = _fit_turn(grid, q, m)
     turned = (q * np.exp(1j * slope * np.arange(q.shape[1]))[None, :]
               * np.exp(2j * np.pi * freq * np.arange(q.shape[0]) * _T_SYMBOL)[:, None])
     mid = float(np.mean(list(symbols)))
@@ -1266,6 +1272,70 @@ def fit_known(grid, q, symbols, prbs):
         e[mm] = a @ coef
         est[:, c] += e
     return est
+
+
+def known_channel(grid, q, symbols, prbs):
+    """``(h, noise)``: ``fit_known``'s model of the channel (per RE, on every RE of ``symbols``
+    and ``prbs``) fitted to the known grid ``q``, and the variance ``grid`` leaves about h q on
+    q's REs. With q a hypothesis of what was sent on all of them, data REs included, it is a
+    far better estimate than the DM-RS alone give (Round 28.7)."""
+    m = np.zeros(q.shape, dtype=bool)
+    m[list(symbols)] = q[list(symbols)] != 0
+    h = np.zeros(grid.shape, dtype=np.complex128)
+    if not m.any():
+        return h, 1.0
+    slope, freq = _fit_turn(grid, q, m)
+    turn = (np.exp(1j * slope * np.arange(q.shape[1]))[None, :]
+            * np.exp(2j * np.pi * freq * np.arange(q.shape[0]) * _T_SYMBOL)[:, None])
+    mid = float(np.mean(list(symbols)))
+    rows = np.zeros(q.shape[0], dtype=bool)
+    rows[list(symbols)] = True
+    tl_all = np.arange(q.shape[0])[:, None] - mid
+    for p in prbs:
+        c = slice(12 * p, 12 * p + 12)
+        mm = m[:, c]
+        if not mm.any():
+            continue
+        qq = (q * turn)[:, c][mm]
+        tl = np.nonzero(mm)[0] - mid
+        a = np.stack([qq, qq * tl], axis=1) if np.ptp(tl) > 0 else qq[:, None]
+        coef, *_ = np.linalg.lstsq(a, grid[:, c][mm], rcond=None)
+        gain = coef[0] + (coef[1] * tl_all if len(coef) > 1 else 0.0)
+        h[:, c] = np.where(rows[:, None], gain * turn[:, c], 0.0)
+    noise = max(float(np.mean(np.abs(grid[m] - h[m] * q[m]) ** 2)), 1e-12)
+    return h, noise
+
+
+def pdsch_llrs_known(grid, q, alloc, pci, rnti=SI_RNTI):
+    """``pdsch_llrs``' descrambled soft bits, with the channel fitted to ``q`` (``known_channel``):
+    a hypothesis of the whole PDSCH, DM-RS and data (``pdsch_grid`` of bytes another cell was
+    decoded sending in this slot). The bits are still the samples' own: a CRC that passes on
+    them is this cell's block, whichever bytes the hypothesis held."""
+    sy = list(range(alloc['S'], alloc['S'] + alloc['L']))
+    h, noise = known_channel(grid, q, sy, alloc['prbs'])
+    soft = []
+    for l in alloc['data_symbols']:
+        sc = (12 * np.array(alloc['prbs'])[:, None] + np.arange(12)[None, :]).ravel()
+        if alloc.get('shared_dmrs') and l in alloc['dmrs']:
+            sc = sc[sc % 2 == 1]
+        hd = h[l, sc] * _DATA_GAIN
+        soft.append(_qam_llr(grid[l, sc] * np.conj(hd), np.abs(hd) ** 2, noise * _DATA_GAIN ** 2, alloc['qm']))
+    llr = np.concatenate(soft)
+    return llr * (1.0 - 2.0 * _gold((int(rnti) << 15) + int(pci), len(llr)))
+
+
+#: Scrambling identities no cell's SI uses (an SI-RNTI PDSCH is scrambled with its PCI, 0-1007;
+#: 38.211 7.3.1.1): ``shared_score``'s null.
+_NULL_IDS = tuple(range(1008, 1024))
+
+
+def shared_score(llr, signs, pci, rnti=SI_RNTI):
+    """``(score, nulls)``: ``codeword_score`` of descrambled soft bits ``llr`` against ``signs``
+    (a codeword another cell sent: ``1 - 2 encode_dlsch``), and the same bits descrambled as if
+    with each of ``_NULL_IDS`` instead of ``pci``: what the score is where the codeword is not."""
+    raw = np.asarray(llr, dtype=np.float64) * (1.0 - 2.0 * _gold((int(rnti) << 15) + int(pci), len(llr)))
+    nulls = [codeword_score(raw * (1.0 - 2.0 * _gold((int(rnti) << 15) + n, len(llr))), signs) for n in _NULL_IDS]
+    return codeword_score(llr, signs), nulls
 
 
 def cancel(grid, knowns):

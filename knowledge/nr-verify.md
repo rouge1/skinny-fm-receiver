@@ -573,8 +573,8 @@ On real air (2026-10-25, the 850 MHz site, 6 s), the three sectors:
 | | SIB1 | Other SI |
 |---|---|---|
 | First | 143 of 143 | 80 of 80 |
-| Second | 143 of its 143 SIB1 DCIs, each alone | 2 of 80 |
-| Third | one block | none found |
+| Second | 143 of its 143 SIB1 DCIs, each alone | 2 of 80 (8 of 80 and the fifth message matched with 28.7) |
+| Third | one block | none found (three of five messages matched with 28.7) |
 
 - The second sector's PDCCH carries the first's DCI. Its SIB1 is its own,
   and parses: it differs only in the cell identity, `ssb-PositionsInBurst`,
@@ -584,9 +584,9 @@ On real air (2026-10-25, the 850 MHz site, 6 s), the three sectors:
   (every 40 ms), and gave one SIB1 from 131 copies summed.
 - The three cell identities are a fixed step apart, with one tracking area:
   one site.
-- The weaker sectors' other SI is not read: their `si.missing` comes with
-  `missing_unsure` and a reason, so it is not proof that a SIB is absent.
-  Round 28.6 measured why. On those RBs, with the first sector cancelled,
+- The weaker sectors' other SI was not read: their `si.missing` came with
+  `missing_unsure` and a reason, so it was not proof that a SIB is absent.
+  Round 28.7 (below) reads most of it. Round 28.6 measured why it was not read. On those RBs, with the first sector cancelled,
   the second sector is 5 to 7 dB under what is left and the third 7.5 to 10.
   About a third of the leftover repeats copy to copy. It is not the first
   sector's channel mismatch (richer fits changed nothing) and not another
@@ -599,6 +599,59 @@ On real air (2026-10-25, the 850 MHz site, 6 s), the three sectors:
 
 Tests: `tools/tests/test_iqnr_cancel.py`. The idea, where else it applies and
 its limits: [cancellation.md](cancellation.md).
+
+### Sectors sending the same SI (roadmap Round 28.7)
+
+Sectors of one site send their other SI in the same slots on the same RBs, and
+very often the same bytes. Once the strongest cell's SI is decoded, its bytes
+are a hypothesis for what each weaker cell sent in the same slot.
+`iqnr.other_si` uses it in two ways, for a cell read with `known`:
+
+- **A channel fitted to the hypothesis.** The DM-RS give 6 REs a PRB a symbol,
+  and the hypothesis gives every RE of the PDSCH. `iqnr_phy.known_channel` fits
+  `fit_known`'s model (delay slope, frequency, per-PRB gain moving over the
+  slot) to the whole PDSCH the hypothesis rebuilds. `pdsch_llrs_known` then
+  gives the soft bits with that channel. The bits are still the samples' own,
+  so a CRC that passes says the block is this cell's, whatever the hypothesis
+  held.
+- **A test of the hypothesis.** `shared_score` is `codeword_score` of the
+  DM-RS soft bits against the codeword of the stronger cell's bytes, at this
+  cell's scrambling (about 0 ± 1 where it is not sent). Its null is the same
+  bits descrambled with the 16 identities no cell's SI uses (1008-1023).
+
+Where the weaker cell's own DCI is not found, its PDSCH is read on the
+stronger cell's DCI: an entry with `dci_from`, kept out of `blocks.other` and
+never made `known` (its PDCCH is not this cell's). `iqnr_decode` then takes
+each message none of whose blocks decoded and sums its copies' scores
+(z = sum / sqrt n) against the same sums at each null. The message is
+**matched** when z is at least 8 and at least twice the largest null. Its SIBs
+go to `si.sibs_matched` and out of `si.missing`. One changed bit changes a
+tenth to a third of the codeword, so a block a few bits off would still score.
+A match says the cell sends the message as the stronger one does, near
+enough, not every bit.
+
+On real air (2026-10-27, the same 6 s recording):
+
+| | Other SI decoded | Messages matched (z; largest null) | Missing |
+|---|---|---|---|
+| Second sector | 8 of 80 (2 before): SIB2, 3, 4, 5 | the fifth, SIB9's (33.5; 3.3) | none |
+| Third sector | none, 80 read on the first's DCIs | SIB4's, SIB5's, SIB9's (28.5, 20.1, 15.1; 4.2 at most) | SIB2, SIB3 (z 4 and 6), unsure |
+
+- Per copy the second sector scored 5 to 19 against the first's bytes, every
+  copy of every message. The nulls (other scramblings, other bytes) stayed
+  under 4.4 in about 2000 tries. The same bits descrambled at the first
+  sector's own PCI scored 0.0 on average, so nothing of the cancelled cell
+  leaks into the test.
+- The decodes always gave the first sector's bytes. With one byte of the
+  hypothesis changed, they still did, so the hypothesis is not echoed back.
+- The third sector's SIB2 and SIB3 messages do not match. It may send other
+  bytes there (neighbour lists differ between cells), or be too weak there.
+- Not adopted: the channel from the decoder's own soft output (decision
+  directed, iterated). A message decoded from one 8-copy run in three, not
+  reliably from 8.
+- Time: about 4 minutes for the three cells (195 s before).
+
+Tests: `tools/tests/test_iqnr_shared.py`.
 
 ## Decoding a listed SSB (`--decode`)
 

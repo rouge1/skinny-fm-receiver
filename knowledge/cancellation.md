@@ -47,7 +47,10 @@ slots, on the same resource blocks.
   shared system information, about a third of what is left repeats from copy
   to copy and is not the first sector's channel mismatch or another cell
   sending the same bytes (Round 28.6). It sets a floor roughly 1.5 dB above
-  the second sector, so its other SI decodes only rarely.
+  the second sector, so its other SI decoded only rarely. Round 28.7 got past
+  it by using what the sectors share. They send the same SI bytes, so the
+  stronger one's decoded bytes give the weaker cell's channel on every RE of
+  the PDSCH, not only its DM-RS, and test whether it sends them at all.
 
 ## On the 700 MHz LTE carriers (2026-10-26)
 

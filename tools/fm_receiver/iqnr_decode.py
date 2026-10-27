@@ -583,6 +583,39 @@ def _heard(si_blocks, tools, notes):
     return heard, sibs
 
 
+#: ``_shared_matches``: a message's summed score against the stronger cell's bytes must reach
+#: this, and this many times its largest null (one copy scores about 0 +/- 1 without them).
+_MATCH_Z = 8.0
+_MATCH_OVER = 2.0
+
+
+def _shared_matches(blocks):
+    """The other SI messages none of whose blocks decoded, but whose copies hold what a stronger
+    cell sent in the same slots (``other_si``'s ``shared``): per message, the scores summed over
+    its copies (z = sum / sqrt n) against the same sums at each null scrambling. Sectors of one
+    site send their SI on the same RBs; a block a few bits off the hypothesis would still score
+    (one changed bit changes a tenth to a third of the codeword), so a match says the cell sends
+    that message as the stronger one does, near enough, not every bit. ``[{si, pci, copies, z,
+    null_z, matched, hex}]`` for every message tested (``hex`` the hypothesis most often tested)."""
+    decoded = {b['si'] for b in blocks if (b.get('pdsch') or {}).get('hex')}
+    by_si = {}
+    for b in blocks:
+        sh = (b.get('pdsch') or {}).get('shared')
+        if sh and b['si'] not in decoded:
+            by_si.setdefault(b['si'], []).append(sh)
+    out = []
+    for si, rows in sorted(by_si.items()):
+        n = len(rows)
+        z = sum(r['score'] for r in rows) / n ** 0.5
+        null_z = max(abs(sum(col)) for col in zip(*[r['nulls'] for r in rows])) / n ** 0.5
+        hexes = [r['hex'] for r in rows]
+        out.append({'si': si, 'pci': max(set(r['pci'] for r in rows), key=[r['pci'] for r in rows].count),
+                    'copies': n, 'z': round(z, 1), 'null_z': round(null_z, 1),
+                    'matched': bool(z >= _MATCH_Z and z >= _MATCH_OVER * null_z),
+                    'hex': max(set(hexes), key=hexes.count)})
+    return out
+
+
 def own_decode(iq, fs, centre_hz, cell, tools=None, known=None):
     """SIB1 and the other SI of one ``iqnr.ssb_search(..., mib=True)`` entry by our own decoder
     (``iqnr.type0_pdcch`` with ``pdsch``, then ``iqnr.other_si`` configured from that SIB1),
@@ -598,7 +631,11 @@ def own_decode(iq, fs, centre_hz, cell, tools=None, known=None):
     ``known`` (``iqnr.known_transmissions``' dict): what stronger cells on the same carrier were
     decoded sending, cancelled first; this cell's blocks are added to it. ``cancelled`` gives
     the slots something was taken out of ([SIB1's, other SI's]) and ``summed`` SIB1's DCI found
-    from summed occasions (``iqnr.type0_pdcch``), or None."""
+    from summed occasions (``iqnr.type0_pdcch``), or None. Where stronger cells' other SI was
+    tried as a hypothesis (``iqnr.other_si``'s ``shared``), ``shared`` gives the copies
+    ``tested``, those read ``on_their_dci`` ([decoded, read]; not counted in ``blocks.other``)
+    and the ``messages`` none of whose blocks decoded (``_shared_matches``); the SIBs of those
+    matched go to ``si.sibs_matched`` (by copies) and out of ``si.missing``."""
     from fm_receiver import iqnr
     tools = tools if tools is not None else tools_dir()
     seconds = len(iq) / float(fs) if fs else 0.0
@@ -652,12 +689,24 @@ def own_decode(iq, fs, centre_hz, cell, tools=None, known=None):
     if known is not None and other:
         iqnr.known_transmissions(other, cell, known)
     ok = [b['pdsch']['hex'] for b in blocks if b.get('pdsch') and b['pdsch']['hex']]
-    out['blocks']['other'] = [len(ok), len(blocks)]
+    own_dcis = [b for b in blocks if 'dci_from' not in b]
+    out['blocks']['other'] = [sum(1 for b in own_dcis if (b.get('pdsch') or {}).get('hex')), len(own_dcis)]
     out['blocks']['combined'][1] = sum(1 for b in blocks if (b.get('pdsch') or {}).get('copies', 0) > 1)
     counted = {}
     for h in ok:
         counted[h] = counted.get(h, 0) + 1
     heard, sibs = _heard([(n, h) for h, n in counted.items()], tools, notes)
+    tested = _shared_matches(blocks)
+    matched = [m for m in tested if m['matched']]
+    if any('shared' in (b.get('pdsch') or {}) for b in blocks):
+        out['shared'] = {'tested': sum(1 for b in blocks if 'shared' in (b.get('pdsch') or {})),
+                         'on_their_dci': [sum(1 for b in blocks if 'dci_from' in b and (b['pdsch'] or {}).get('hex')),
+                                          sum(1 for b in blocks if 'dci_from' in b)],
+                         'messages': [{k: v for k, v in m.items() if k != 'hex'} for m in tested]}
+    sibs_matched = {}
+    if matched:
+        sibs_matched, _values = _heard([(m['copies'], m['hex']) for m in matched], tools, notes)
+        sibs_matched = {n: c for n, c in sibs_matched.items() if n not in heard}
     entries = out['sib1']['si_schedule']
     if entries or heard:
         scheduled = []
@@ -666,8 +715,12 @@ def own_decode(iq, fs, centre_hz, cell, tools=None, known=None):
         on_air = [n for e in entries if str(e.get('broadcast_status')).lower() != 'notbroadcasting'
                   for n in e['sibs']]
         out['si'] = {'sibs_heard': heard, 'sibs': sibs, 'scheduled': scheduled,
-                     'missing': [n for n in dict.fromkeys(on_air) if n not in heard],
+                     'missing': [n for n in dict.fromkeys(on_air) if n not in heard and n not in sibs_matched],
                      'unscheduled': [n for n in heard if n not in scheduled]}
+        if sibs_matched:
+            out['si']['sibs_matched'] = sibs_matched
+            notes.append('sent as the stronger cell sends them (its bytes found in this cell\'s soft bits, '
+                         'not decoded): %s' % ', '.join(sibs_matched))
         if out['si']['missing']:
             notes.append('not heard in %g s: %s' % (round(seconds, 3), ', '.join(out['si']['missing'])))
             if out['cancelled'][1] or out['cancelled'][0]:

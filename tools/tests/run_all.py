@@ -22,7 +22,7 @@ TESTS = ['test_sweep.py', 'test_tuning.py', 'test_receive_chain.py', 'test_gui.p
          'test_iq_catalog.py', 'test_iq_frames.py', 'test_iq_decode_bursts.py',
          'test_iqlte.py', 'test_iqlte_crs.py', 'test_iqlte_tdd.py', 'test_iqlte_idle.py', 'test_iqlte_si.py', 'test_iqlte_phy.py', 'test_iqlte_pdcch.py', 'test_iqlte_pdsch.py', 'test_iqlte_cancel.py', 'test_iqlte_timing.py', 'test_iqlte_memory.py', 'test_iqlte_own_si.py', 'test_iqlte_si_cancel.py',
          'test_iq_lte.py', 'test_iqnr.py', 'test_iq_nr.py', 'test_iq_nr_decode.py', 'test_iqnr_phy.py',
-         'test_iqnr_pdsch.py', 'test_iqnr_combine.py', 'test_iqnr_cancel.py',
+         'test_iqnr_pdsch.py', 'test_iqnr_combine.py', 'test_iqnr_cancel.py', 'test_iqnr_shared.py',
          'test_hdradio.py', 'test_sceptre_dvr.py',
          'test_dvr_hd.py', 'test_dvr_iq.py', 'test_sceptre_library.py',
          'test_spectra.py', 'test_sceptre_spectra.py',

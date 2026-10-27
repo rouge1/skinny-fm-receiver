@@ -41,7 +41,8 @@ with no launcher.
     `iqnr_ldpc`: MIB, SIB1, other SI; `iq-nr --mib`, `--pdcch`, `--pdsch`)
     runs beside it, with `nr_si` kept as the referee; only the RRC parse is
     outside (pycrate). It reads weaker sectors under a stronger one by
-    cancelling what the stronger was decoded sending (`iqnr.type0_pdcch(known=)`).
+    cancelling what the stronger was decoded sending (`iqnr.type0_pdcch(known=)`),
+    and tries the stronger's SI bytes on theirs (`own.shared`, Round 28.7).
     Our own LTE decoder (`iqlte_phy`, Round 29) has the MIB, SIB1's
     DCI, SIB1 and the other SI (`iq-lte --mib`, `--pdcch`, `--pdsch`, `--own`), copies
     combined and weaker sectors read by cancelling (`known=`; another site's cells out of the samples); `iqlte.py` itself stays standalone (numpy and the

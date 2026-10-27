@@ -1449,9 +1449,22 @@ tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead o
   blocks and gave one in every period. A sector under a stronger one that
   sends the same thing on the same RBs is read with the stronger one's
   decoded transmissions subtracted: on real air a sector 13 dB under another
-  gave its own SIB1 every time, and a third once. Their other SI was not
-  read, so `si.missing_unsure` is set and the reason says so. Three cells
-  take about 3 minutes.
+  gave its own SIB1 every time, and a third once. Sectors also send their
+  other SI in the same slots, very often the same bytes, so a weaker cell's
+  copies are tried against what the stronger one was decoded sending there
+  (Round 28.7). Its channel is fitted to those bytes before it decodes, and
+  the CRC still says whether a block is its own. A message none of whose
+  copies decodes but whose soft bits hold the stronger cell's codeword (`z`,
+  well clear of the same test at scramblings no cell uses) counts as sent:
+  its SIBs go to `si.sibs_matched`, not `si.missing`. `own.shared` gives the
+  copies tested, those read on the stronger cell's DCI (`on_their_dci`, where
+  the weaker cell's own was not found) and each such message's `z`,
+  `null_z` and `matched`. A match means "sent as the stronger cell sends it,
+  near enough", not every bit. On real air the second sector had nothing
+  left missing, and the third, whose other SI was never read before, had
+  three of its five messages matched. A SIB still missing under a stronger
+  cell sets `si.missing_unsure`, and the reason says so. Three cells take
+  about 4 minutes.
 - `--decode` needs srsRAN 4G's NR library behind `run_nr.sh`, built by you
   (AGPL, not part of this repo), and pycrate under `$FMRX_LTE_TOOLS/pyc`. Only
   the broadcast (SI-RNTI) is read. Each entry gets a `decode`: the MIB, SIB1

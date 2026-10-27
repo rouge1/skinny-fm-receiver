@@ -942,8 +942,8 @@ def known_transmissions(result, cell, known=None):
     rows = result.get('dcis') if 'dcis' in result else result.get('blocks')
     for d in rows or ():
         block = d.get('pdsch') or {}
-        if not block.get('hex'):
-            continue
+        if not block.get('hex') or 'dci_from' in d:
+            continue                       # (a block read on a stronger cell's DCI: its PDCCH not this cell's)
         l0 = d.get('first_symbol', (result.get('occasion') or {}).get('first_symbol', 0))
         dci = {k: d[k] for k in ('bits', 'level', 'cce', 'fda', 'tdra', 'vrb_to_prb', 'mcs', 'rv', 'sii',
                                  'rb_start', 'n_rbs') if k in d}
@@ -1055,6 +1055,45 @@ def _block(P, llr, snr, alloc, rv, comb, key, group):
             'copies': copies}
 
 
+_ALLOC_FIELDS = ('fda', 'tdra', 'vrb_to_prb', 'mcs', 'rv')
+
+
+def _same_alloc(a, b):
+    """Whether two DCIs 1_0 schedule the same PDSCH (RBs, symbols, size and version)."""
+    return all(a.get(k) == b.get(k) for k in _ALLOC_FIELDS)
+
+
+def _shared_si(known, key, tm, cs, pci, t_slot, rnti):
+    """The other SI blocks stronger cells were decoded sending in this slot (``known``), at this
+    cell's timing and on its CORESET 0: sectors of one site send their SI in the same slots on
+    the same RBs, very often the same bytes, so each is a hypothesis of what this cell sent."""
+    out = []
+    for e in (known or {}).get(key, ()):
+        if int(e['pci']) == pci or abs(float(e['t_s']) - float(t_slot)) > _SAME_SLOT_S:
+            continue
+        if abs(float(e['f0_hz']) - tm.f0) > 1.0 or int(e['n_rb']) != cs['n_rb'] or int(e['n_symb']) != cs['n_symb']:
+            continue
+        if e['dci'].get('sii') == 1 and e.get('rnti', rnti) == rnti:
+            out.append(e)
+    return out
+
+
+def _shared_llrs(P, g, llr, hyp, alloc, dci, pci, slot, n_rb, rnti, k_ref):
+    """This cell's soft bits with the channel fitted to the hypothesis ``hyp`` (``_shared_si``),
+    and ``shared``: the hypothesis' cell and bytes, and ``shared_score`` of the DM-RS soft bits
+    ``llr`` against its codeword (``score``, ``nulls``)."""
+    data = bytes.fromhex(hyp['hex'])
+    setup = P.dlsch_setup(alloc['tbs'], alloc['rate'])
+    if len(data) * 8 != alloc['tbs']:
+        return llr, None
+    signs = 1.0 - 2.0 * P.encode_dlsch(data, setup, int(dci['rv']), alloc['qm'], len(llr))
+    score, nulls = P.shared_score(llr, signs, pci, rnti)
+    q = P.pdsch_grid(data, setup, alloc, pci, slot, int(dci['rv']), n_rb, rnti, k_ref)
+    known_llr = P.pdsch_llrs_known(g, q, alloc, pci, rnti)
+    return known_llr, {'pci': int(hyp['pci']), 'hex': hyp['hex'], 'score': round(float(score), 3),
+                       'nulls': [round(float(v), 3) for v in nulls]}
+
+
 def _ss_slots(search, frame, slot):
     """Whether a search space ``search`` monitors slot ``slot`` of frame ``frame`` (15 kHz)."""
     period, offset = search.get('period_slots', 1), search.get('offset_slots', 0)
@@ -1076,7 +1115,12 @@ def other_si(iq, fs, center_hz, cell, config, rnti=None, combine=True, known=Non
     window, then across windows until one passes), and ``first_symbol`` (its PDCCH's).
     ``known`` as ``type0_pdcch``'s: stronger cells' transmissions cancelled from each slot first;
     ``cancelled`` in the result counts the slots; ``k_ref`` and ``tdra`` are the DM-RS reference
-    and time list used."""
+    and time list used. Where a stronger cell's other SI was decoded in the slot (Round 28.7:
+    sectors share the schedule and often the bytes), each of this cell's DCIs scheduling the same
+    PDSCH is read with the channel fitted to those bytes, and its ``pdsch`` gains ``shared``
+    (that cell's ``pci`` and ``hex``, and ``shared_score``'s ``score`` and ``nulls``); a
+    stronger cell's DCI with none of this cell's alike is read the same way, as an entry with
+    ``dci_from`` (that cell's PCI: this cell's PDCCH there not found)."""
     from . import iqnr_phy as P
     mib = (cell or {}).get('mib')
     if not mib or int(cell.get('scs_khz') or 0) != 15 or not config:
@@ -1114,9 +1158,17 @@ def other_si(iq, fs, center_hz, cell, config, rnti=None, combine=True, known=Non
                     continue
                 slots += 1
                 cancelled += cut
-                for dci in P.decode_pdcch(grid[l0:l0 + n_symb], pci, slot, l0, n_rb, n_symb, rnti=rnti,
-                                          counts=search['counts']):
+                hyps = _shared_si(known, (sfn, slot), tm, cs, pci, t_slot, rnti) if cut else []
+                own = P.decode_pdcch(grid[l0:l0 + n_symb], pci, slot, l0, n_rb, n_symb, rnti=rnti,
+                                     counts=search['counts'])
+                for dci in own:
                     dci.pop('metric', None)
+                hyp_only = []
+                for e in hyps:                     # strongest first: one entry per PDSCH
+                    if e['first_symbol'] == l0 and not any(d.get('sii') == 1 and _same_alloc(d, e['dci'])
+                                                           for d in own + hyp_only):
+                        hyp_only.append(dict(e['dci'], dci_from=e['pci']))
+                for dci in own + hyp_only:
                     if dci.get('sii') != 1:
                         continue
                     entry = dict(sfn=int(sfn), slot=int(slot), si=which, t_s=float(t_slot), first_symbol=int(l0), **dci)
@@ -1127,6 +1179,12 @@ def other_si(iq, fs, center_hz, cell, config, rnti=None, combine=True, known=Non
                         if g is not None:
                             llr, snr, _slope = P.pdsch_llrs(g, pci, slot, alloc, rnti, k_ref=k_ref,
                                                             slope=dci.get('slope'))
+                            hyp = next((e for e in hyps if _same_alloc(dci, e['dci'])), None)
+                            shared = None
+                            if hyp is not None:
+                                llr, shared = _shared_llrs(P, g, llr, hyp, alloc, dci, pci, slot, n_rb, rnti, k_ref)
                             entry['pdsch'] = _block(P, llr, snr, alloc, dci['rv'], comb, ('si', which), window)
+                            if shared is not None:
+                                entry['pdsch']['shared'] = shared
                     blocks.append(entry)
     return {'slots': slots, 'cancelled': cancelled, 'k_ref': k_ref, 'tdra': config['tdra'] or None, 'blocks': blocks}

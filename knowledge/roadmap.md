@@ -1491,9 +1491,11 @@ Phases, each one checked before the next:
   38.211 5.4's per-symbol phase, which had been taken at the received carrier.
   On real air the second sector's SIB1 decoded 143 of 143 and the third's
   once ([nr-verify.md](nr-verify.md#cancelling-a-stronger-sector-roadmap-round-285)).
-  - [ ] The weaker sectors' other SI: 2 of 80 and none. Their missing SIBs
+  - [x] The weaker sectors' other SI: 2 of 80 and none. Their missing SIBs
     are marked unsure. The third sector, also sending the same SI on the same
     RBs, is not cancelled from the second, since its DCI there is not found.
+    (2026-10-27: read with the stronger sector's bytes as a hypothesis, 28.7
+    below.)
 - [x] 28.6 The weaker sectors' other SI (2026-10-25: stopped at its exit, not reached). The first idea
   was iterative cancellation: once the third sector is decoded, cancel it
   from the second sector's slots too and re-read. The budget (2026-10-25,
@@ -1517,6 +1519,21 @@ Phases, each one checked before the next:
     took 2 to 7 (0.641), partly because it fits the REs it decodes. Not
     adopted; the floor and the gap are in
     [nr-verify.md](nr-verify.md#cancelling-a-stronger-sector-roadmap-round-285).
+- [x] 28.7 The weaker sectors' other SI, with the stronger sector's bytes as a
+  hypothesis (2026-10-27). Sectors send the same SI in the same slots and RBs,
+  often the same bytes. Two levers were measured first (ops notes): the channel
+  from the decoder's own soft output, iterated, gave one message from 8 copies
+  in three tries, not adopted. The stronger cell's bytes scored 5 to 19 in every
+  copy of the second sector, nulls under 4.4. Shipped: `iqnr_phy.known_channel`,
+  `pdsch_llrs_known` and `shared_score`; `iqnr.other_si` reads each copy with
+  the channel fitted to the stronger cell's bytes and scores them, and reads
+  the stronger cell's DCI where the weaker one's is not found (`dci_from`);
+  `iqnr_decode` matches a message none of whose copies decodes when its summed
+  score clears 8 and twice its nulls (`si.sibs_matched`; `test_iqnr_shared.py`).
+  On real air the second sector decoded 8 of 80 copies (2 before) and matched
+  the fifth message: nothing missing. The third sector, whose other SI was
+  never read, matched three of its five messages; SIB2 and SIB3 stay unsure
+  ([nr-verify.md](nr-verify.md#sectors-sending-the-same-si-roadmap-round-287)).
 - [ ] LTE: Round 29 below.
 
 ## Round 29: our own LTE broadcast decoder (planned 2026-10-25)
