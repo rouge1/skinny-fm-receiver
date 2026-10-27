@@ -12,7 +12,8 @@ every 16 frames in format 1A, copies at 2 and 9. What the checks pin:
 - at 12 dB every copy of both messages decoded alone, each its own bytes and in its own window
   and place; SIB1 still decodes in every copy;
 - copies too weak alone: summed within a window (one transport block a window), each sum its
-  message's bytes; noise summed gives nothing;
+  message's bytes, a stray DCI of another size first in message 2's windows (a CRC passing by
+  chance, as on air) summed apart; noise summed gives nothing;
 - ``tools/iq-lte FILE --own`` on a cell sending a SIB1 and an SI message pycrate encoded
   (``test_iqlte_si``'s, made-up values: SIB5 and SIB16 in message 2): ``own`` has the MIB, SIB1's
   fields, its schedule, SIB5 and SIB16 heard and the network time; without pycrate, the MIB
@@ -79,22 +80,30 @@ def blocks(seed=3):
     return out, {si: np.packbits(tb).tobytes().hex() for si, tb in out.items()}
 
 
-def cell_res(sib1_tb, si_tbs):
-    """``test_iqlte_cancel``'s cell (MIB, SIB1) and the SI messages' copies in their windows."""
+STRAY = 1                                              # message 2's window place of the stray DCI
+
+
+def cell_res(sib1_tb, si_tbs, stray=False):
+    """``test_iqlte_cancel``'s cell (MIB, SIB1) and the SI messages' copies in their windows; with
+    ``stray``, at place ``STRAY`` of message 2's windows a 1C DCI of another size and no PDSCH (what a
+    16-bit CRC passing by chance looks like)."""
     base = C.cell_res(PCI, sib1_tb)
+    other = L.dci_1c_si(N_RB, RIV_1C, 3)
 
     def res(f):
         out = base(f)
         sfn = (C.SFN0 + f) % 1024
         for sf in range(10):
             hit = L.si_window(MESSAGES, WINDOW, sfn, sf)
-            if hit is None or hit[1] not in COPIES[hit[0]]:
+            if hit is None or not (hit[1] in COPIES[hit[0]] or (stray and hit[:2] == (2, STRAY))):
                 continue
             si, i, _start = hit
-            a, fields, rv = dci(si, i)
+            a, fields, rv = dci(si, i) if i in COPIES[si] else (other, L.parse_dci_1c(other, N_RB), L.si_rv(i))
             cfi = 2
             for p, l, ks, vals in L.control_res(PCI, N_RB, 2, cfi, '1', 'normal', sf, [(a, 4, 0)]):
                 out.append((p, 14 * sf + l, ks, vals))
+            if i not in COPIES[si]:
+                continue
             for p, ls, ks, vals in L.pdsch_res_values(si_tbs[si], PCI, N_RB, 2, cfi, sf,
                                                       L.si_allocation(fields, N_RB), rv):
                 for l in np.unique(ls):
@@ -103,12 +112,12 @@ def cell_res(sib1_tb, si_tbs):
     return res
 
 
-def capture(snr_db, n_frames=36, seed=4):
+def capture(snr_db, n_frames=36, seed=4, stray=False):
     rng = np.random.default_rng(11)
     sib1_tb = rng.integers(0, 2, 256).astype(np.uint8)
     si_tbs, hexes = blocks()
     cell = dict(pci=PCI, power_db=0.0, delay_samples=0, ports=2,
-                port_gains=[1.0, 0.7 * np.exp(1.1j)], res=cell_res(sib1_tb, si_tbs))
+                port_gains=[1.0, 0.7 * np.exp(1.1j)], res=cell_res(sib1_tb, si_tbs, stray))
     iq, fs = lte_synth.synth_lte_multi([cell], bw_mhz=10, n_frames=n_frames, snr_db=snr_db, seed=seed,
                                        cfo_hz=250.0, idle=True)
     return iq, fs, np.packbits(sib1_tb).tobytes().hex(), hexes
@@ -157,16 +166,20 @@ def check_alone():
 
 
 def check_summed():
-    iq, fs, _sib1_hex, hexes = capture(-9.0, n_frames=36)
+    iq, fs, _sib1_hex, hexes = capture(-9.0, n_frames=36, stray=True)
 
     def summed():
         _pb, _s, si = read(iq, fs)
         alone = [b for b in si['blocks'] if b['crc']]
         sums = si['combined']
+        strays = [b for b in si['blocks'] if b['si'] == 2 and b['i'] == STRAY]
+        two = {c['subframes'][0] for c in sums if c['si'] == 2}
         ok = (bool(sums) and all(c['hex'] == hexes[c['si']] for c in sums)
-              and len(alone) < si['tried'] and {c['si'] for c in sums} == {1, 2})
-        return ok, (si['decoded'], si['tried'], [(c['si'], c['subframes']) for c in sums])
-    expect("-9 dB: copies that fail alone summed in their window, each sum its message's bytes", summed)
+              and len(alone) < si['tried'] and {c['si'] for c in sums} == {1, 2}
+              and strays and not any(b['crc'] for b in strays) and len(two) == 2)
+        return ok, (si['decoded'], si['tried'], len(strays), [(c['si'], c['subframes']) for c in sums])
+    expect("-9 dB: copies that fail alone summed in their window, each sum its message's bytes, "
+           "a stray DCI of another size first in the window summed apart", summed)
 
     def noise():
         rng = np.random.default_rng(5)

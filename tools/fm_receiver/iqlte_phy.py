@@ -1692,9 +1692,9 @@ def si_messages(iq, fs, cell, pbch_result, messages, window_ms, center_offset_hz
     Each subframe of a window: its control region (PCFICH, then the common search space for
     the SI-RNTI's formats 1A and 1C), then the PDSCH each DCI gives (1A's redundancy version from
     the DCI, 1C's from the subframe's place in the window, ``si_rv``). With ``combine``, the
-    copies of a window none of which passed are summed (one transport block a window), then
-    the windows of a message that still fail, in turn, up to the last ``_COMBINE_PERIODS``,
-    while the TBS holds (``sib1``'s rule). ``known`` cells are taken out as for ``sib1``: their
+    copies of a window none of which passed are summed (one transport block a window, so
+    copies of one size), then the windows of a message that still fail, in turn, up to the
+    last ``_COMBINE_PERIODS``, of one size (``sib1``'s rule). ``known`` cells are taken out as for ``sib1``: their
     reference and synchronisation signals and PBCH; their SI DCIs and PDSCH are not rebuilt.
 
     Returns a dict: ``subframes`` (read), ``blocks``, one per DCI (``sfn``, ``subframe``, ``si``,
@@ -1709,7 +1709,8 @@ def si_messages(iq, fs, cell, pbch_result, messages, window_ms, center_offset_hz
     sizes = (('1A', dci_1a_bits(n_rb)), ('1C', dci_1c_bits(n_rb)))
     quads = {}
     out = {'subframes': 0, 'blocks': [], 'decoded': 0, 'tried': 0, 'combined': []}
-    windows = {}                                         # (si, start) -> the copies that failed
+    windows = {}                     # (si, start, tbs) -> the copies that failed: one block a window, so
+    #                                  a DCI of another size (a 16-bit CRC passing by chance) sums apart
     for f in range(frames.count(len(iq))):
         sfn = (int(mib['sfn']) + f) % 1024
         for sf in range(10):
@@ -1740,24 +1741,23 @@ def si_messages(iq, fs, cell, pbch_result, messages, window_ms, center_offset_hz
                     block['hex'] = np.packbits(bits).tobytes().hex()
                     out['decoded'] += 1
                 else:
-                    windows.setdefault((si, start), []).append((10 * sfn + sf, tbs, rv, llr))
+                    windows.setdefault((si, start, tbs), []).append((10 * sfn + sf, tbs, rv, llr))
                 out['blocks'].append(block)
     if combine:
-        passed = {(b['si'], (10 * b['sfn'] + b['subframe'] - b['i']) % 10240) for b in out['blocks'] if b['crc']}
+        passed = {(b['si'], (10 * b['sfn'] + b['subframe'] - b['i']) % 10240, b['tbs']) for b in out['blocks']
+                  if b['crc']}
         left = {}
-        for (si, start), items in windows.items():       # in time order, across the SFN wrap too
-            if (si, start) in passed:
+        for (si, start, tbs), items in windows.items():  # in time order, across the SFN wrap too
+            if (si, start, tbs) in passed:
                 continue
             got = _sum_copies(items, ports) if len(items) > 1 else None
             if got:
                 out['combined'].append({'si': si, 'subframes': got['sfns'], 'tbs': got['tbs'], 'hex': got['hex']})
             else:
-                left.setdefault(si, []).append(items)
-        for si, periods in left.items():                 # windows that failed even summed, in turn
+                left.setdefault((si, tbs), []).append(items)
+        for (si, _tbs), periods in left.items():         # windows that failed even summed, in turn
             run = []
             for items in periods:
-                if run and run[0][0][1] != items[0][1]:
-                    run = []
                 run = run[-(_COMBINE_PERIODS - 1):] + [items]
                 if len(run) > 1:
                     got = _sum_copies([it for period in run for it in period], ports, every=False)

@@ -91,8 +91,8 @@ schedules SIB16; ATSC's system time table.
 ## Reading them from a recording
 
 `tools/iq-lte FILE --own` does it with our own decoders (2026-10-26, roadmap
-29.6; the same `si`, and on the Band 13 cell the same SIBs, block for
-block); `tools/iq-lte FILE --decode` with the outside one (2026-10-22): it reads
+29.6; the same `si`, and on the Band 13 cell the same distinct
+blocks, SIB counts and values); `tools/iq-lte FILE --decode` with the outside one (2026-10-22): it reads
 `--si-seconds` (default 6) and reports SIB1's schedule, every SIB heard, and
 the summaries and time described in [lte-verify.md](lte-verify.md#decoding-the-broadcast---decode).
 On the real cell checked, a 6 s capture heard every scheduled message,

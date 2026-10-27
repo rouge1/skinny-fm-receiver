@@ -1348,10 +1348,10 @@ tools/iq-lte CAPTURE.cfile --own                          # every SIB by our own
   `combined` the sums). The card's `own` is the strongest cell's. The span
   defaults to 6 s, for the slow messages. Without pycrate there is no
   schedule: `si` is null with a reason. On the Band 13 cell it equals the
-  outside decoder's SI, SIB for SIB; on the 700 MHz carriers it reads what
+  outside decoder's SI (the same distinct blocks, SIB counts and values); on the 700 MHz carriers it reads what
   the outside decoder cannot. Every subframe of every window is read for
-  each cell: 52 s for the one-cell Band 13 carrier's 6 s (1.9 GB), minutes
-  for a carrier of two or three cells.
+  each cell: 52 s for the one-cell Band 13 carrier's 6 s, 127 s for the
+  two-cell 700 MHz pair (1.9 GB).
 - `--decode` runs when the fingerprint's verdict is `lte` or `possible` (a
   possible carrier may well be one: a 700 MHz carrier read `possible` while
   both decoders read its MIB), not when it is `not-lte` or `unknown`.
