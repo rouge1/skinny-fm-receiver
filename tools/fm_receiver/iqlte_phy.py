@@ -1684,6 +1684,26 @@ def sib1(iq, fs, cell, pbch_result, dci_result=None, center_offset_hz=0.0, carri
     return out
 
 
+def _si_block(g, pci, n_rb, ports, cfi, sf, d, i, rnti):
+    """One SI DCI's PDSCH in subframe grid ``g``: ``(block, llr)``, the block's ``hex`` when it
+    passed, or None when the DCI gives no TBS."""
+    tbs = si_tbs(d)
+    if tbs is None:
+        return None
+    rv = int(d['rv']) if d['format'] == '1A' else si_rv(i)
+    prbs = si_allocation(d, n_rb)
+    h, noise = subframe_channel(g, pci, sf, ports, list(range(14)))
+    ls, ks = pdsch_res(pci, n_rb, ports, cfi, sf, prbs)
+    llr = soft_bits(g[ls, ks], h[:ports, ls, ks], noise, ports)
+    llr *= 1.0 - 2.0 * pdsch_scrambling(pci, sf, rnti, len(llr))
+    bits, _buf = dlsch_decode(llr, tbs, rv, ports=ports)
+    block = {'format': d['format'], 'rv': rv, 'tbs': tbs, 'n_prb': len(prbs[0]), 'crc': bits is not None,
+             'cfi': int(cfi), 'level': int(d['level']), 'cce': int(d['cce']), 'bits': d['bits']}
+    if bits is not None:
+        block['hex'] = np.packbits(bits).tobytes().hex()
+    return block, llr
+
+
 def si_messages(iq, fs, cell, pbch_result, messages, window_ms, center_offset_hz=0.0, carrier_hz=None,
                 rnti=SI_RNTI, combine=True, known=None):
     """The SI messages after SIB1 (SIB2 onwards) of one cell, by our own decode (roadmap Round
@@ -1691,16 +1711,21 @@ def si_messages(iq, fs, cell, pbch_result, messages, window_ms, center_offset_hz
 
     Each subframe of a window: its control region (PCFICH, then the common search space for
     the SI-RNTI's formats 1A and 1C), then the PDSCH each DCI gives (1A's redundancy version from
-    the DCI, 1C's from the subframe's place in the window, ``si_rv``). With ``combine``, the
+    the DCI, 1C's from the subframe's place in the window, ``si_rv``). With ``combine`` (29.7),
+    first the DCIs: in the windows where no block of the message passed, the subframes no DCI
+    was found in are summed with those at the same place in the windows before (a cell sends a
+    message in the same subframes of each window; not a message with no SIB mapped), up to ``_COMBINE_PERIODS``, kept as SIB1's
+    are (``_dci_sum``: the CRC and the re-encoded DCI's score), and their PDSCH read. Then the
     copies of a window none of which passed are summed (one transport block a window, so
     copies of one size), then the windows of a message that still fail, in turn, up to the
-    last ``_COMBINE_PERIODS``, of one size (``sib1``'s rule). ``known`` cells are taken out as for ``sib1``: their
-    reference and synchronisation signals and PBCH; their SI DCIs and PDSCH are not rebuilt.
+    last ``_COMBINE_PERIODS``, of one size (``sib1``'s rule). ``known`` cells are taken out as
+    for ``sib1``, their SI too where ``known_si`` added it.
 
     Returns a dict: ``subframes`` (read), ``blocks``, one per DCI (``sfn``, ``subframe``, ``si``,
-    ``i``, ``format``, ``rv``, ``tbs``, ``n_prb``, ``crc``, ``hex`` when it passed), ``decoded``,
-    ``tried``, ``combined`` (one per summed decode: ``si``, ``subframes`` as SFN 10 + subframe,
-    ``tbs``, ``hex``); None without a MIB or a window."""
+    ``i``, ``format``, ``rv``, ``tbs``, ``n_prb``, ``crc``, ``hex`` when it passed; the DCI's
+    ``cfi``, ``level``, ``cce`` and ``bits``; ``combined``, the subframes as SFN 10 + subframe,
+    on a DCI found by summing), ``decoded``, ``tried``, ``combined`` (one per summed decode:
+    ``si``, ``subframes`` as SFN 10 + subframe, ``tbs``, ``hex``); None without a MIB or a window."""
     mib = (pbch_result or {}).get('mib')
     if not mib or mib.get('n_rb') not in _NFFT_FOR_RB or not window_ms or not messages:
         return None
@@ -1709,8 +1734,21 @@ def si_messages(iq, fs, cell, pbch_result, messages, window_ms, center_offset_hz
     sizes = (('1A', dci_1a_bits(n_rb)), ('1C', dci_1c_bits(n_rb)))
     quads = {}
     out = {'subframes': 0, 'blocks': [], 'decoded': 0, 'tried': 0, 'combined': []}
-    windows = {}                     # (si, start, tbs) -> the copies that failed: one block a window, so
-    #                                  a DCI of another size (a 16-bit CRC passing by chance) sums apart
+    soft = []                                            # (si, start, tbs, (s, tbs, rv, llr)) that failed
+    missed = []                                          # (si, i, start, f, sf, s, llr, power, cfi)
+
+    def add(sfn, sf, si, i, start, got, combined=None):
+        block, llr = got
+        block = dict({'sfn': sfn, 'subframe': sf, 'si': si, 'i': i}, **block)
+        if combined:
+            block['combined'] = combined
+        out['tried'] += 1
+        if block['crc']:
+            out['decoded'] += 1
+        else:
+            soft.append((si, start, block['tbs'], (10 * sfn + sf, block['tbs'], block['rv'], llr)))
+        out['blocks'].append(block)
+
     for f in range(frames.count(len(iq))):
         sfn = (int(mib['sfn']) + f) % 1024
         for sf in range(10):
@@ -1722,49 +1760,65 @@ def si_messages(iq, fs, cell, pbch_result, messages, window_ms, center_offset_hz
             if g is None:
                 continue
             out['subframes'] += 1
-            cfi, found, _miss = _read_control(g, pci, n_rb, ports, mib, quads, sizes, rnti, sf)
+            cfi, found, miss = _read_control(g, pci, n_rb, ports, mib, quads, sizes, rnti, sf)
             for d in found:
-                tbs = si_tbs(d)
-                if tbs is None:
-                    continue
-                rv = int(d['rv']) if d['format'] == '1A' else si_rv(i)
-                prbs = si_allocation(d, n_rb)
-                out['tried'] += 1
-                h, noise = subframe_channel(g, pci, sf, ports, list(range(14)))
-                ls, ks = pdsch_res(pci, n_rb, ports, cfi, sf, prbs)
-                llr = soft_bits(g[ls, ks], h[:ports, ls, ks], noise, ports)
-                llr *= 1.0 - 2.0 * pdsch_scrambling(pci, sf, rnti, len(llr))
-                bits, _buf = dlsch_decode(llr, tbs, rv, ports=ports)
-                block = {'sfn': sfn, 'subframe': sf, 'si': si, 'i': i, 'format': d['format'], 'rv': rv,
-                         'tbs': tbs, 'n_prb': len(prbs[0]), 'crc': bits is not None}
-                if bits is not None:
-                    block['hex'] = np.packbits(bits).tobytes().hex()
-                    out['decoded'] += 1
-                else:
-                    windows.setdefault((si, start, tbs), []).append((10 * sfn + sf, tbs, rv, llr))
-                out['blocks'].append(block)
-    if combine:
-        passed = {(b['si'], (10 * b['sfn'] + b['subframe'] - b['i']) % 10240, b['tbs']) for b in out['blocks']
-                  if b['crc']}
-        left = {}
-        for (si, start, tbs), items in windows.items():  # in time order, across the SFN wrap too
-            if (si, start, tbs) in passed:
-                continue
-            got = _sum_copies(items, ports) if len(items) > 1 else None
-            if got:
-                out['combined'].append({'si': si, 'subframes': got['sfns'], 'tbs': got['tbs'], 'hex': got['hex']})
-            else:
-                left.setdefault((si, tbs), []).append(items)
-        for (si, _tbs), periods in left.items():         # windows that failed even summed, in turn
-            run = []
-            for items in periods:
-                run = run[-(_COMBINE_PERIODS - 1):] + [items]
-                if len(run) > 1:
-                    got = _sum_copies([it for period in run for it in period], ports, every=False)
-                    if got:
-                        out['combined'].append({'si': si, 'subframes': got['sfns'], 'tbs': got['tbs'],
-                                                'hex': got['hex']})
-                        run = []
+                got = _si_block(g, pci, n_rb, ports, cfi, sf, d, i, rnti)
+                if got is not None:
+                    add(sfn, sf, si, i, start, got)
+            if not found:
+                missed.append((si, i, start, f, sf, 10 * sfn + sf) + miss + (cfi,))
+    if not combine:
+        return out
+    read = {(b['si'], (10 * b['sfn'] + b['subframe'] - b['i']) % 10240) for b in out['blocks'] if b['crc']}
+    # A message with no SIB mapped (but SIB2's first) carries nothing to find: one on real air
+    # never sent in 6 s. Its windows are read for DCIs alone, not summed.
+    empty = {int(m['si']) for m in messages if int(m['si']) > 1 and not m.get('sibs')}
+    runs = {}
+    for m in missed:                                     # in time order; a run per (message, place)
+        if (m[0], m[2]) in read or m[0] in empty:
+            continue
+        run = runs.setdefault((m[0], m[1]), [])
+        run[:] = run[-(_COMBINE_PERIODS - 1):] + [m]
+        if len(run) < 2:
+            continue
+        got = _dci_sum([(r[5], r[6], r[7], r[8]) for r in run], sizes, n_rb, rnti)
+        if got is None:
+            continue
+        fmt, a, fields, level, cce0 = got
+        d = dict(fields, level=level, cce=cce0, bits=''.join(str(int(b)) for b in a))
+        subframes = [r[5] for r in run]
+        for si, i, start, f, sf, s, _llr, _power, cfi in run:
+            g = frames.subframe(iq, f, sf, n_rb, 14)
+            got = _si_block(g, pci, n_rb, ports, cfi, sf, d, i, rnti) if g is not None else None
+            if got is not None:
+                add(s // 10, sf, si, i, start, got, subframes)
+        run.clear()
+    out['blocks'].sort(key=lambda b: (10 * b['sfn'] + b['subframe'] - 10 * int(mib['sfn'])) % 10240)
+    passed = {(b['si'], (10 * b['sfn'] + b['subframe'] - b['i']) % 10240, b['tbs']) for b in out['blocks']
+              if b['crc']}
+    windows = {}                     # (si, start, tbs) -> the copies that failed: one block a window, so
+    #                                  a DCI of another size (a 16-bit CRC passing by chance) sums apart
+    for si, start, tbs, item in sorted(soft, key=lambda x: (x[3][0] - 10 * int(mib['sfn'])) % 10240):
+        windows.setdefault((si, start, tbs), []).append(item)
+    left = {}
+    for (si, start, tbs), items in windows.items():      # in time order, across the SFN wrap too
+        if (si, start, tbs) in passed:
+            continue
+        got = _sum_copies(items, ports) if len(items) > 1 else None
+        if got:
+            out['combined'].append({'si': si, 'subframes': got['sfns'], 'tbs': got['tbs'], 'hex': got['hex']})
+        else:
+            left.setdefault((si, tbs), []).append(items)
+    for (si, _tbs), periods in left.items():             # windows that failed even summed, in turn
+        run = []
+        for items in periods:
+            run = run[-(_COMBINE_PERIODS - 1):] + [items]
+            if len(run) > 1:
+                got = _sum_copies([it for period in run for it in period], ports, every=False)
+                if got:
+                    out['combined'].append({'si': si, 'subframes': got['sfns'], 'tbs': got['tbs'],
+                                            'hex': got['hex']})
+                    run = []
     return out
 
 
@@ -1812,7 +1866,34 @@ def known_cell(fs, cell, pbch_result, dci_result=None, sib1_result=None, center_
             tbs[sfn] = hx
     return {'pci': int(cell['pci']), 'mib': mib, 'ports': int(pbch_result['ports']),
             'frames': _cell_frames(fs, cell, pbch_result, center_offset_hz, carrier_hz),
-            'dcis': dcis, 'tbs': tbs, 'cache': {}}
+            'dcis': dcis, 'tbs': tbs, 'si': {}, 'cache': {}}
+
+
+def known_si(kc, si_result):
+    """A known cell's SI messages (``si_messages``) added to what it is known to send (roadmap
+    Round 29.7), so a weaker cell's SI is read with them taken out: in each subframe whose SI
+    DCI passed alone, or whose PDSCH passed, the PCFICH and that DCI, and the PDSCH where its
+    block is known, alone or summed. One block a window (36.331 5.2.3: an SI message's copies in
+    its window are one transport block), so a block known in a window rebuilds the window's
+    other copies of its size. Returns ``kc``, its rebuilt subframes dropped."""
+    if kc is None or not si_result:
+        return kc
+    blocks = si_result.get('blocks', [])
+    known = {}                                           # (si, window start, tbs) -> hex
+    for b in blocks:
+        if b.get('hex'):
+            known.setdefault((b['si'], (10 * b['sfn'] + b['subframe'] - b['i']) % 10240, b['tbs']), b['hex'])
+    for c in si_result.get('combined', []):
+        b = next((b for b in blocks if 10 * b['sfn'] + b['subframe'] == c['subframes'][0]), None)
+        if b is not None:
+            known.setdefault((c['si'], (c['subframes'][0] - b['i']) % 10240, c['tbs']), c['hex'])
+    for b in blocks:
+        if 'combined' in b and not b.get('hex'):
+            continue                                     # a summed DCI whose PDSCH failed: CFI unchecked
+        key = (b['si'], (10 * b['sfn'] + b['subframe'] - b['i']) % 10240, b['tbs'])
+        kc['si'][(int(b['sfn']), int(b['subframe']))] = dict(b, hex=known.get(key))
+    kc['cache'].clear()
+    return kc
 
 
 def _known_subframe(kc, sfn, sf):
@@ -1846,6 +1927,18 @@ def _known_subframe(kc, sfn, sf):
         for p in range(ports):
             rest[p][7 + res[:, 0], mid + res[:, 1]] = y[p]
     d = kc['dcis'].get(sfn) if sf == 5 else None
+    si = kc.get('si', {}).get((sfn, sf))
+    if si is not None:
+        a = np.array([int(b) for b in si['bits']], dtype=np.uint8)
+        for p, l, ks, vals in control_res(pci, n_rb, ports, si['cfi'], mib['phich_resource'],
+                                          mib['phich_duration'], sf, [(a, si['level'], si['cce'])]):
+            rest[p][l, ks] = vals
+        if si.get('hex'):
+            fields = parse_dci_1a(a, n_rb) if si['format'] == '1A' else parse_dci_1c(a, n_rb)
+            tb = np.unpackbits(np.frombuffer(bytes.fromhex(si['hex']), dtype=np.uint8))[:si['tbs']]
+            for p, ls, ks, vals in pdsch_res_values(tb, pci, n_rb, ports, si['cfi'], sf,
+                                                    si_allocation(fields, n_rb), si['rv']):
+                rest[p][ls, ks] = vals
     if d is not None:
         a = np.array([int(b) for b in d['bits']], dtype=np.uint8)
         for p, l, ks, vals in control_res(pci, n_rb, ports, d['cfi'], mib['phich_resource'],

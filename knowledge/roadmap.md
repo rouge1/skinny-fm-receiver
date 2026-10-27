@@ -1628,11 +1628,14 @@ sequences and the CRS check) is the start.
   (SIB2 to SIB5 on the pair's), where `pdsch_ue` reads none; the pair's
   weaker cell SIB2 and SIB3 by summing. None schedules SIB16.
   ([lte-verify.md](lte-verify.md#our-own-si-decoder---own-roadmap-round-296))
-  - [ ] A known cell's SI DCIs and PDSCH rebuilt in their subframes (today
+  - [x] A known cell's SI DCIs and PDSCH rebuilt in their subframes (today
     only subframe 5's), so a weaker sector's SI is read with the stronger
     one's taken out; one copy of a window rebuilds the others, as SIB1's
-    TTI does.
-  - [ ] The SI DCIs summed when none is found alone, as SIB1's.
+    TTI does (29.7, 2026-10-26: `iqlte_phy.known_si`; the pair's weaker cell
+    every SIB, 125 of 125 alone, was SIB2 and SIB3 by summing).
+  - [x] The SI DCIs summed when none is found alone, as SIB1's (29.7: by
+    the place in the window, across windows; the other carrier's second
+    cell, 9 dB down, every scheduled SIB, was none).
 - [ ] Memory for long LTE spans (`iq-lte` was 4.5 GB a second of span at 20 MS/s;
   `lte-verify.md`'s Memory section).
   - [x] `iqlte._resample` lean, the same to the bit; `fingerprint` resampling

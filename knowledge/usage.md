@@ -1344,8 +1344,10 @@ tools/iq-lte CAPTURE.cfile --own                          # every SIB by our own
   all the blocks. Each cell gains `own`, shaped as `--decode`'s `decode`
   (`mib`, `sib1`, `si`: the schedule, each SIB heard and how often, the
   summaries and `time`), and `own_si` (each block's `sfn`, `subframe`,
-  message `si`, place `i` in its window, `format`, `rv`, `tbs`, `crc`, `hex`;
-  `combined` the sums). The card's `own` is the strongest cell's. The span
+  message `si`, place `i` in its window, `format`, `rv`, `tbs`, `crc`, `hex`,
+  the DCI's `cfi`, `level`, `cce` and `bits`, and `combined` on a DCI found
+  by summing; `combined` the block sums). A weaker cell's SI is read with the
+  stronger cells' SI taken out too. The card's `own` is the strongest cell's. The span
   defaults to 6 s, for the slow messages. Without pycrate there is no
   schedule: `si` is null with a reason. On the Band 13 cell it equals the
   outside decoder's SI (the same distinct blocks, SIB counts and values); on the 700 MHz carriers it reads what

@@ -579,9 +579,9 @@ On real air (2026-10-26, 6 s):
 |---|---|---|
 | Band 13 | 7 messages scheduled, all covered; SIB2 36, SIB3 18, SIB4 9, SIB5 9, SIB15 4, SIB24 1; 77 of 78 blocks alone | the same 7 distinct blocks, the same counts, every SIB's value equal |
 | 700 MHz pair, stronger cell | SIB2 76, SIB3 38, SIB4 1, SIB5 10 (every scheduled SIB); 125 of 126 alone | none (no SIB1) |
-| 700 MHz pair, weaker cell (stronger cancelled) | SIB2 37 (33 by summing), SIB3 4; SIB4 and SIB5 not | none |
+| 700 MHz pair, weaker cell (stronger cancelled) | SIB2 37 (33 by summing), SIB3 4, SIB4 and SIB5 not; with the stronger's SI cancelled too (29.7) every SIB, 125 of 125 alone | none |
 | The other 700 MHz carrier, stronger cell | SIB2 74, SIB3 37, SIB5 9 (every scheduled SIB); 120 of 120 | none |
-| The other 700 MHz carrier, second cell (9 dB down) | one SI DCI found, not decoded | none |
+| The other 700 MHz carrier, second cell (9 dB down) | one SI DCI found, not decoded; with the stronger's SI cancelled and the DCIs summed (29.7) every scheduled SIB: SIB2 25, SIB3 12, SIB5 2 (28 DCIs found by summing, 36 window sums) | none |
 
 None of them schedules SIB16, so no network time. The one block that fails on
 Band 13 and on the pair's stronger cell is, both times, a format 1C DCI on a
@@ -589,14 +589,26 @@ cell that sends its SI in 1A, of another size: a 16-bit CRC passing by
 chance (about 0.2 expected over a thousand subframes of candidates), which
 the PDSCH's CRC rejects.
 
-Not yet: a known cell's SI DCIs and PDSCH are not rebuilt outside subframe
-5, so a weaker sector reads its SI under the stronger one's (the second cell
-on the other carrier finds one DCI; the pair's weaker cell reads SIB2 and
-SIB3 by summing, not SIB4 or SIB5); and the SI DCIs are not summed as
-SIB1's are.
+**A weaker sector's SI (roadmap Round 29.7).** Sectors of one site send
+their SI in the same subframes on the same RBs, so a known cell's SI is
+cancelled too (`iqlte_phy.known_si`, the cells read strongest first): in each
+subframe whose SI DCI passed alone or whose PDSCH passed, its PCFICH and DCI,
+and its PDSCH where the window's block is known (one block a window: a copy
+known rebuilds the window's other copies of its size). The SI DCIs are summed
+as SIB1's: in a window where no block of the message passed, the subframes
+with no DCI found are summed with those at the same place in the windows
+before (a cell sends a message in the same subframes of each window), the CRC
+and the re-encoded DCI's score the guard, then their PDSCH read; a message
+SIB1 maps no SIB to is not summed (on Band 13 one is scheduled and never
+sent). On real air it read every scheduled SIB of both weaker cells (the
+table). It costs nothing on a cell whose SI decodes alone: on Band 13, the
+same CPU time as before and the same `si`.
 
 Tests: `tools/tests/test_iqlte_own_si.py` (synthetic: windows and RVs, 1A and
-1C, a copy in subframe 0, sums; `iq-lte --own` end to end through pycrate).
+1C, a copy in subframe 0, sums; `iq-lte --own` end to end through pycrate);
+`test_iqlte_si_cancel.py` (two sectors, the second 6 dB down: its SI 0 of 16
+with only the first's signals and SIB1 known, 16 of 16 with its SI; DCIs
+found by summing at -13 dB).
 
 ## Several cells on one carrier: `cells`
 

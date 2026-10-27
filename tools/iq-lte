@@ -143,7 +143,8 @@ def _own_cells(iq, rate, cells, block_hz, pdcch, pdsch, si=False):
     each with the cells decoded before it taken out (roadmap Round 29.5: sectors of one site send
     their broadcast on the same REs; a cell of another site is taken out of the samples), a cell
     left short (no MIB, a DCI or SIB1 copy missed alone) read once more with the others known; ``own_known`` lists the PCIs taken
-    out. With ``si``, each cell's SI messages too, the same cells taken out (``_own_si``)."""
+    out. With ``si``, each cell's SI messages too, the same cells taken out, their SI included
+    (``_own_si``, ``iqlte_phy.known_si``)."""
     def read(cell, use):
         cell['own_known'] = [k['pci'] for k in use]
         cell['own_mib'] = iqlte_phy.pbch(iq, rate, cell, carrier_hz=block_hz, known=use or None)
@@ -199,6 +200,8 @@ def _own_cells(iq, rate, cells, block_hz, pdcch, pdsch, si=False):
         for cell, _kc in order:
             use = [by_pci[p] for p in cell['own_known'] if p in by_pci]
             cell['own'], cell['own_si'] = _own_si(iq, rate, cell, block_hz, use or None)
+            # Strongest first: a weaker cell's SI is read with this one's taken out (roadmap 29.7).
+            iqlte_phy.known_si(by_pci.get(cell['pci']), cell['own_si'])
 
 
 def _check_options(args):

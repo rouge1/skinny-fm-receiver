@@ -83,11 +83,11 @@ def blocks(seed=3):
 STRAY = 1                                              # message 2's window place of the stray DCI
 
 
-def cell_res(sib1_tb, si_tbs, stray=False):
+def cell_res(sib1_tb, si_tbs, stray=False, pci=PCI):
     """``test_iqlte_cancel``'s cell (MIB, SIB1) and the SI messages' copies in their windows; with
     ``stray``, at place ``STRAY`` of message 2's windows a 1C DCI of another size and no PDSCH (what a
     16-bit CRC passing by chance looks like)."""
-    base = C.cell_res(PCI, sib1_tb)
+    base = C.cell_res(pci, sib1_tb)
     other = L.dci_1c_si(N_RB, RIV_1C, 3)
 
     def res(f):
@@ -100,11 +100,11 @@ def cell_res(sib1_tb, si_tbs, stray=False):
             si, i, _start = hit
             a, fields, rv = dci(si, i) if i in COPIES[si] else (other, L.parse_dci_1c(other, N_RB), L.si_rv(i))
             cfi = 2
-            for p, l, ks, vals in L.control_res(PCI, N_RB, 2, cfi, '1', 'normal', sf, [(a, 4, 0)]):
+            for p, l, ks, vals in L.control_res(pci, N_RB, 2, cfi, '1', 'normal', sf, [(a, 4, 0)]):
                 out.append((p, 14 * sf + l, ks, vals))
             if i not in COPIES[si]:
                 continue
-            for p, ls, ks, vals in L.pdsch_res_values(si_tbs[si], PCI, N_RB, 2, cfi, sf,
+            for p, ls, ks, vals in L.pdsch_res_values(si_tbs[si], pci, N_RB, 2, cfi, sf,
                                                       L.si_allocation(fields, N_RB), rv):
                 for l in np.unique(ls):
                     out.append((p, 14 * sf + int(l), ks[ls == l], vals[ls == l]))
