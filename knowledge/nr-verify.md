@@ -672,9 +672,17 @@ thread gave 199 s). Half of it was the polar decoder of the DCI candidates,
 
 The same bits and metrics as before (`test_iqnr_phy.py`: a batch against
 each alone, the subtree pass against leaf by leaf), and the JSON byte for
-byte the same: 126 s wall, 129 s of CPU. What is left is spread: LDPC 32 s
-(layered, so sequential), the channel fits 20 s (mostly `exp`), the PDCCH
-soft bits 17 s (measured before the polar batching).
+byte the same: 126 s wall, 129 s of CPU.
+
+Then (2026-10-28) 86 s wall, the JSON again byte for byte the same:
+`_SCL` gathers each codeword's paths by indexing (`x[rows, paths]`) rather
+than `take_along_axis`, whose wrapper cost more than the gather in 4 million
+calls; `pdcch_llrs` takes its slopes' phase turns from a table over every
+subcarrier (`_pd_turns`) and `_fit_turn` its slopes' and frequencies' from
+tables over every subcarrier and symbol (`_Turns`), each value the one the
+expression over the RE's own index gives. LDPC (about 30 s, layered and so
+sequential) is now the largest part; one `reduceat` for its parity check
+saved nothing.
 
 ## Decoding a listed SSB (`--decode`)
 

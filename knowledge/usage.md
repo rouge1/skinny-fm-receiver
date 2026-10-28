@@ -1513,7 +1513,7 @@ tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead o
   left missing, and the third, whose other SI was never read before, had
   three of its five messages matched. A SIB still missing under a stronger
   cell sets `si.missing_unsure`, and the reason says so. Three cells take
-  about 2 minutes.
+  about a minute and a half.
 - `--progress` (with `--pdsch`) reports the read on stderr as `iq-lte`'s
   does: a JSON line per cell's stage (`SIB1`, `other SI`) and whole per cent,
   and each finished cell's entry. Stdout is unchanged.

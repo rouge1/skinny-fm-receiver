@@ -343,6 +343,7 @@ class _SCL:
         self.u = np.zeros((batch, size, len(frozen)), dtype=np.uint8)
         self.i = 0
         self.keep = np.broadcast_to(np.arange(size), (batch, size))
+        self.rows = np.arange(batch)[:, None]           # x[rows, paths]: each codeword's paths
         # info[j]: how many information bits come before bit j, to spot all-frozen subtrees
         self.info = np.concatenate(([0], np.cumsum(~np.asarray(frozen, dtype=bool))))
 
@@ -371,8 +372,8 @@ class _SCL:
                                self.pm + np.where(lam > 0, np.abs(lam), 0.0)), axis=1)
         pick = np.argsort(both, axis=1, kind='stable')[:, :self.size]
         parent, bit = pick % self.size, (pick // self.size).astype(np.uint8)
-        self.pm = np.take_along_axis(both, pick, axis=1)
-        self.u = np.take_along_axis(self.u, parent[..., None], axis=1)
+        self.pm = both[self.rows, pick]
+        self.u = self.u[self.rows, parent]
         self.u[:, :, i] = bit
         return bit[..., None], parent
 
@@ -386,11 +387,10 @@ class _SCL:
         a, b = llr[..., :h], llr[..., h:]
         left = np.sign(a) * np.sign(b) * np.minimum(np.abs(a), np.abs(b))
         xl, p1 = self.node(left)
-        a = np.take_along_axis(a, p1[..., None], axis=1)
-        b = np.take_along_axis(b, p1[..., None], axis=1)
+        a = a[self.rows, p1]
+        b = b[self.rows, p1]
         xr, p2 = self.node(b + (1.0 - 2.0 * xl) * a)
-        return (np.concatenate((np.take_along_axis(xl, p2[..., None], axis=1) ^ xr, xr), axis=2),
-                np.take_along_axis(p1, p2, axis=1))
+        return (np.concatenate((xl[self.rows, p2] ^ xr, xr), axis=2), p1[self.rows, p2])
 
 
 #: The LLR given a shortened bit, known to be 0.
@@ -776,6 +776,16 @@ def coreset_grid(n_rb, n_symb, pci, slot, first_symbol, pdcchs):
 
 #: Timing slopes searched in a candidate's DM-RS, rad per subcarrier (+/- 0.3 is +/- 3 us at 15 kHz).
 _PD_SLOPES = np.linspace(-0.3, 0.3, 241)
+_PD_TURNS = {}
+
+
+def _pd_turns(n_k):
+    """exp(-1j outer(_PD_SLOPES, k)) for k = 0..n_k-1, cached: a candidate's columns of it are
+    the values the outer product over its own k would give."""
+    have = _PD_TURNS.get(n_k)
+    if have is None:
+        have = _PD_TURNS[n_k] = np.exp(-1j * np.outer(_PD_SLOPES, np.arange(n_k, dtype=np.float64)))
+    return have
 
 
 def pdcch_llrs(grid, pci, slot, first_symbol, n_rb, n_symb, level, cce0):
@@ -797,7 +807,7 @@ def pdcch_llrs(grid, pci, slot, first_symbol, n_rb, n_symb, level, cce0):
         bundle_of[b] = i
     gid = dmrs[:, 0] * len(bundles) + bundle_of[dmrs[:, 1] // 12]
     n_g = n_symb * len(bundles)
-    turn = np.exp(-1j * np.outer(_PD_SLOPES, k_dm))
+    turn = _pd_turns(grid.shape[1])[:, dmrs[:, 1]]
     sums = np.zeros((len(_PD_SLOPES), n_g), dtype=np.complex128)
     for g in range(n_g):
         sums[:, g] = turn[:, gid == g] @ z[gid == g]
@@ -1295,13 +1305,19 @@ def _best(z, turns, ids):
 
 
 class _Turns:
-    """Row r: exp(f(grid[r])) over the REs, as the one-row expression would compute it."""
+    """Row r: exp(f(grid[r], x)) at each RE's x (its subcarrier or symbol), from a table over
+    every x cached per (name, n_x): each value the one-row expression would compute."""
 
-    def __init__(self, grid, f):
-        self.grid, self.f = grid, f
+    _tables = {}
+
+    def __init__(self, name, grid, f, x, n_x):
+        key = (name, n_x)
+        if key not in self._tables:
+            self._tables[key] = np.exp(f(grid[:, None], np.arange(n_x)))
+        self.grid, self.table, self.x = grid, self._tables[key], x
 
     def __call__(self, rows):
-        return np.exp(self.f(self.grid[rows][:, None]))
+        return self.table[rows][:, self.x]
 
 
 def _fit_turn(grid, q, m):
@@ -1310,10 +1326,11 @@ def _fit_turn(grid, q, m):
     z = grid[m] * np.conj(q[m])
     pi = ki // 12
     _u, per_symbol = np.unique(li * 4096 + pi, return_inverse=True)
-    slope = _best(z, _Turns(_FIT_SLOPES, lambda s: -1j * s * ki), per_symbol)
+    slope = _best(z, _Turns('slope', _FIT_SLOPES, lambda s, k: -1j * s * k, ki, q.shape[1]), per_symbol)
     t = z * np.exp(-1j * slope * ki)
     _u, per_prb = np.unique(pi, return_inverse=True)
-    freq = _best(t, _Turns(_FIT_FREQS, lambda f: -2j * np.pi * f * li * _T_SYMBOL), per_prb)
+    freq = _best(t, _Turns('freq', _FIT_FREQS, lambda f, l: -2j * np.pi * f * l * _T_SYMBOL, li, q.shape[0]),
+                 per_prb)
     return slope, freq
 
 
@@ -1361,12 +1378,13 @@ def known_channel(grid, q, symbols, prbs):
     rows = np.zeros(q.shape[0], dtype=bool)
     rows[list(symbols)] = True
     tl_all = np.arange(q.shape[0])[:, None] - mid
+    turned = q * turn
     for p in prbs:
         c = slice(12 * p, 12 * p + 12)
         mm = m[:, c]
         if not mm.any():
             continue
-        qq = (q * turn)[:, c][mm]
+        qq = turned[:, c][mm]
         tl = np.nonzero(mm)[0] - mid
         a = np.stack([qq, qq * tl], axis=1) if np.ptp(tl) > 0 else qq[:, None]
         coef, *_ = np.linalg.lstsq(a, grid[:, c][mm], rcond=None)

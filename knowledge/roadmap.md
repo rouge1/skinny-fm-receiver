@@ -1540,6 +1540,10 @@ Phases, each one checked before the next:
   check update, the channel fit's search and the PDCCH indexing vectorised.
   numpy's threads were not the cost here, unlike `iq-lte`
   ([nr-verify.md](nr-verify.md#sectors-sending-the-same-si-roadmap-round-287)).
+- [x] `iq-nr --pdsch` faster again (2026-10-28): 126 s to 86 s, byte for byte
+  the same. The polar decoder gathers its paths by indexing instead of
+  `take_along_axis`; the PDCCH slope search and the channel fit's slope and
+  frequency search take their phase turns from tables cached per grid size.
 - [ ] LTE: Round 29 below.
 
 ## Round 29: our own LTE broadcast decoder (planned 2026-10-25)
