@@ -244,7 +244,7 @@ Details in rtl-software.md, "What this machine already has".
 
 - URH (pipx): `urh` opens `.cfile` recordings as cf32 (set the rate from
   the `.sigmf-meta`). `urh_cli` receives from a radio only, and can
-  transmit (`-tx`): never without being asked.
+  transmit (`-tx`).
 - apt: rtl_433, inspectrum, gqrx, multimon-ng, direwolf, minimodem, fldigi,
   qsstv, welle.io, dump1090-mutability, gr-satellites, wsjtx, sox, audacity,
   sonic-visualiser.

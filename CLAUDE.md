@@ -53,8 +53,6 @@ with no launcher.
     combined and weaker sectors read by cancelling (`known=`; another site's cells out of the samples); `iqlte.py` itself stays standalone (numpy and the
     standard library only: a test checks). Our own decoders are written from the 3GPP specs:
     srsRAN is AGPL and none of its code comes into this repo.
-    Cellular decoding stays broadcast only (MIB, SIB1, other SI on the
-    SI-RNTI): no paging, random access or user traffic, and nothing sent.
   - `sceptre_dvr`, `iqmeasure`, `iqburst`, `iqframes`, `iqcatalog`,
     `iqlte`, `iqlte_phy`, `iqnr`, `iqnr_phy` and `iqnr_ldpc` stay numpy only, so their tools run anywhere
     (`iq-picture` needs matplotlib; the LTE test helpers use scipy).
