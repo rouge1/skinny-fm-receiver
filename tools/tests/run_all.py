@@ -26,7 +26,7 @@ TESTS = ['test_sweep.py', 'test_tuning.py', 'test_receive_chain.py', 'test_gui.p
          'test_hdradio.py', 'test_sceptre_dvr.py',
          'test_dvr_hd.py', 'test_dvr_iq.py', 'test_sceptre_library.py',
          'test_spectra.py', 'test_sceptre_spectra.py',
-         'test_narrow_files.py', 'test_atsc.py']
+         'test_narrow_files.py', 'test_atsc.py', 'test_cells.py']
 TIMEOUT = 600   # seconds per file
 
 

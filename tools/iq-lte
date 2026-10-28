@@ -3,8 +3,8 @@
 
     tools/iq-lte FILE [--block-center HZ] [--t0 S --t1 S] [--rate R --center HZ]
     tools/iq-lte FILE --decode [--ports N ...]
-    tools/iq-lte FILE --mib [--pdcch | --pdsch]
-    tools/iq-lte FILE --own
+    tools/iq-lte FILE --mib [--pdcch | --pdsch] [--progress]
+    tools/iq-lte FILE --own [--progress]
 
 The block is mixed to 0 Hz and read with ``iqmeasure.extract`` (band-limited,
 in chunks). Stdout is one JSON document: the fingerprint (verdict, PSS root,
@@ -18,8 +18,9 @@ its bytes, and its fields when pycrate is under ``$FMRX_LTE_TOOLS``). ``--own``
 reads all of it and the SI messages SIB1 schedules (``iqlte_phy.si_messages``,
 Round 29.6; pycrate reads the schedule and the SIBs), each cell gaining ``own``,
 shaped as ``--decode``'s ``decode`` (the card's ``own`` the strongest cell's), and
-``own_si``, the blocks; its span defaults to ``DEFAULT_SI_S``. Only the
-broadcast channel is decoded. Numpy only; the outside tools are subprocesses.
+``own_si``, the blocks; its span defaults to ``DEFAULT_SI_S``. ``--progress`` reports
+that read on stderr, a JSON line at a time (``Progress``), for the window's cells
+pane. Only the broadcast channel is decoded. Numpy only; the outside tools are subprocesses.
 
 Exit 0 when the run completed, whatever the verdict. Exit 1 for a bad option,
 a file that cannot be read, or a sweep file. Exit 2 when ``--decode`` needs a
@@ -102,14 +103,15 @@ def _dump(records):
     return bytes(out)
 
 
-def _own_si(iq, rate, cell, block_hz, known=None):
+def _own_si(iq, rate, cell, block_hz, known=None, progress=None):
     """``(own, own_si)`` of a cell (``--own``, roadmap Round 29.6): ``own`` shaped as ``--decode``'s
     ``decode`` (``ran``, ``mib``, ``sib1``, ``si``, a ``*_reason`` beside each that is None) from our
     own decoders, ``own_si`` the SI blocks (``iqlte_phy.si_messages``) or None.
 
     pycrate reads SIB1's schedule from our SIB1 (``iqlte_decode.read_si``), the SI messages are
     read in their windows with ``known`` taken out, and every block that passed (SIB1's copies
-    and sums, then the SI's) goes to ``read_si`` as the outside decoder's dump would."""
+    and sums, then the SI's) goes to ``read_si`` as the outside decoder's dump would.
+    ``progress(done, total)`` follows the SI windows' read, a call at each frame."""
     mib, s1 = cell.get('own_mib') or {}, cell.get('own_sib1') or {}
     out = {'ran': True, 'mib': None, 'sib1': None, 'si': None}
     if not mib.get('mib'):
@@ -132,7 +134,7 @@ def _own_si(iq, rate, cell, block_hz, known=None):
         out['si'], out['si_reason'] = first, why or 'SIB1 schedules no SI message'
         return out, None
     got = iqlte_phy.si_messages(iq, rate, cell, mib, first['schedule'], first.get('window_ms'),
-                                carrier_hz=block_hz, known=known)
+                                carrier_hz=block_hz, known=known, progress=progress)
     records += [(b['subframe'], b['hex']) for b in (got or {}).get('blocks', []) if b.get('hex')]
     records += [(c['subframes'][0] % 10, c['hex']) for c in (got or {}).get('combined', [])]
     si, why = iqlte_decode.read_si(_dump(records), tools, frames)
@@ -144,14 +146,22 @@ def _own_si(iq, rate, cell, block_hz, known=None):
     return out, got
 
 
-def _own_cells(iq, rate, cells, block_hz, pdcch, pdsch, si=False):
+def _own_cells(iq, rate, cells, block_hz, pdcch, pdsch, si=False, progress=None):
     """Our own decode of each FDD cell (``own_mib``, ``own_pdcch``, ``own_sib1``) over ``iq`` (the
     whole span, an ``iqmeasure.IQView``), strongest first,
     each with the cells decoded before it taken out (roadmap Round 29.5: sectors of one site send
     their broadcast on the same REs; a cell of another site is taken out of the samples), a cell
     left short (no MIB, a DCI or SIB1 copy missed alone) read once more with the others known; ``own_known`` lists the PCIs taken
     out. With ``si``, each cell's SI messages too, the same cells taken out, their SI included
-    (``_own_si``, ``iqlte_phy.known_si``)."""
+    (``_own_si``, ``iqlte_phy.known_si``).
+
+    ``progress(i, stage, done, total, entry=None)``, when given, follows cell ``i`` (its place in
+    ``cells``): 'MIB and SIB1', 'MIB and SIB1, the others known' on a second read, 'other SI'
+    (a call at each frame), then 'done' with the cell as it will be listed."""
+    def tell(cell, stage, done=0, total=1, entry=None):
+        if progress is not None:
+            progress(cells.index(cell), stage, done, total, entry)
+
     def read(cell, use):
         cell['own_known'] = [k['pci'] for k in use]
         cell['own_mib'] = iqlte_phy.pbch(iq, rate, cell, carrier_hz=block_hz, known=use or None)
@@ -180,6 +190,7 @@ def _own_cells(iq, rate, cells, block_hz, pdcch, pdsch, si=False):
     for cell in cells:
         if not isinstance(cell, dict) or cell.get('duplex', 'FDD') != 'FDD':
             continue
+        tell(cell, 'MIB and SIB1')
         kc = read(cell, list(known))
         order.append((cell, kc))
         if kc is not None:
@@ -192,6 +203,7 @@ def _own_cells(iq, rate, cells, block_hz, pdcch, pdsch, si=False):
         if not short(cell) or len(others) <= len(cell['own_known']):
             continue
         before = {k: cell[k] for k in keys if k in cell}
+        tell(cell, 'MIB and SIB1, the others known')
         new = read(cell, others)
         if score(cell) < score(before):
             for k in keys:
@@ -206,9 +218,40 @@ def _own_cells(iq, rate, cells, block_hz, pdcch, pdsch, si=False):
         by_pci = {k['pci']: k for k in known}
         for cell, _kc in order:
             use = [by_pci[p] for p in cell['own_known'] if p in by_pci]
-            cell['own'], cell['own_si'] = _own_si(iq, rate, cell, block_hz, use or None)
+            tell(cell, 'other SI')
+            cell['own'], cell['own_si'] = _own_si(
+                iq, rate, cell, block_hz, use or None,
+                progress=None if progress is None else (lambda done, total, c=cell: tell(c, 'other SI', done, total)))
             # Strongest first: a weaker cell's SI is read with this one's taken out (roadmap 29.7).
             iqlte_phy.known_si(by_pci.get(cell['pci']), cell['own_si'])
+            tell(cell, 'done', 1, 1, cell)
+    else:
+        for cell, _kc in order:
+            tell(cell, 'done', 1, 1, cell)
+
+
+class Progress:
+    """``--progress``: one JSON line on stderr, ``{"progress": {...}}``, when a cell's stage
+    starts, at each whole per cent of it, and when the cell is done (with ``entry``, the cell
+    as stdout will list it). The window's cells pane reads these."""
+
+    def __init__(self, cells, out=None):
+        self.cells = cells                          # the cells being read, in their listed order
+        self.out = out or sys.stderr
+        self.last = None
+
+    def __call__(self, i, stage, done, total, entry=None):
+        pct = int(100 * done / total) if total else 0
+        key = (i, stage, pct)
+        if key == self.last and entry is None:
+            return
+        self.last = key
+        line = {'cell': i, 'cells': len(self.cells), 'pci': self.cells[i].get('pci'),
+                'stage': stage, 'done': done, 'total': total}
+        if entry is not None:
+            line['entry'] = entry
+        self.out.write(json.dumps({'progress': line}, allow_nan=False, default=_json_num) + '\n')
+        self.out.flush()
 
 
 def _check_options(args):
@@ -491,6 +534,9 @@ def main(argv=None):
                          "messages SIB1 schedules (roadmap 29.6); each cell gains own, shaped as "
                          "--decode's decode, and own_si; pycrate under $FMRX_LTE_TOOLS reads the "
                          "schedule and the SIBs. The span defaults to %g s" % DEFAULT_SI_S)
+    ap.add_argument('--progress', action='store_true',
+                    help='with --mib, --pdcch, --pdsch or --own, report each cell\'s read on stderr '
+                         'as JSON lines ({"progress": {...}}), each finished cell with its entry')
     ap.add_argument('--ports', type=int, nargs='+', metavar='N',
                     help='antenna port counts to try, in order (default: 4 2 1)')
     ap.add_argument('--si-seconds', type=float, metavar='S',
@@ -532,7 +578,8 @@ def main(argv=None):
     fp, sss = _fingerprint(sl.iq, sl.rate)
     cells = _cells_of(fp)
     if args.mib or args.pdcch or args.pdsch or args.own:
-        _own_cells(span, sl.rate, cells, block_hz, args.pdcch or args.own, args.pdsch or args.own, args.own)
+        _own_cells(span, sl.rate, cells, block_hz, args.pdcch or args.own, args.pdsch or args.own, args.own,
+                   progress=Progress(cells) if args.progress else None)
     decode = None
     if args.decode:
         try:

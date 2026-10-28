@@ -1707,3 +1707,27 @@ sequences and the CRS check) is the start.
 
 Never on air yet, so tests only: 4 antenna ports, extended CP, TDD.
 
+## Round 30: the cells in the Recordings tab (requested 2026-10-27)
+
+Why: the cell decoders' results only came out as JSON from `iq-lte`,
+`iq-nr` and `fmctl cells`. The user asked how the app should show them and
+approved a mock-up: the pane takes the multiplex's place under the
+waterfall (as the ATSC picture does), identity rows first, then a grid of
+messages by cells, Read cells on a button, the detail of a mark in the
+first build, 15 px text with a scroll.
+
+- [x] The quick check when an IQ recording is chosen (`cells.quick`, in a
+  thread), the pane in the multiplex's place when it finds cells.
+- [x] The grid: cells strongest first with their level, operator, tracking
+  area, cell identity; MIB, SIB1 and the SIBs scheduled; marks for decoded,
+  matched, not found or unsure, not in the span; how each cell was read.
+- [x] Read cells: `iq-nr --pdsch` and `iq-lte --own` as processes, followed
+  by their new `--progress` lines (each cell fills in as it is done), Stop,
+  the read kept beside the recording and on its list line.
+- [x] A mark's detail, gliding open under the grid.
+- [x] `fmctl cells-pane`, and `test_cells.py`.
+- [ ] Progress within a stage by copies rather than by frames, if the
+  per cent reads too coarse.
+- [ ] Reading a Sceptre recording's cells keeps nothing (only a `.cfile`
+  gets a file beside it): keep those in the settings folder if wanted.
+

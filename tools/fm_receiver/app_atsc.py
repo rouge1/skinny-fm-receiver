@@ -27,6 +27,8 @@ ATSC_TAB = 2
 SWAP_MS = 320
 #: The picture's share of the right-hand column's height.
 VIDEO_SHARE = 0.56
+#: The cells pane's (``app_cells``), when it takes the multiplex's place in Recordings.
+CELLS_SHARE = 0.5
 DEFAULT_CHANNEL = 14
 
 
@@ -261,10 +263,12 @@ class AtscWindow:
 
     # ------------------------------------------------------------ swap
     def _show_bottom(self, television, animate):
-        """The multiplex (or, in Receive for television, the picture) under
-        the RF spectrum. Changing over, one fades into the other and the
-        splitter glides, rather than jumping."""
-        target = self.video_view if television else self.rx_page
+        """The multiplex (or, in Receive for television, the picture; in
+        Recordings, a recording's cells) under the RF spectrum. Changing
+        over, one fades into the other and the splitter glides, rather than
+        jumping."""
+        target = self.video_view if television else \
+            self.cells_pane if self._cells_wanted() else self.rx_page
         if self.bottom.currentWidget() is target:
             return
         ms = SWAP_MS if (animate and self.bottom.isVisible()) else 0
@@ -280,20 +284,23 @@ class AtscWindow:
         self.bottom.setVisible(True)
         if overlay is not None:
             fade(overlay, False, ms, done=overlay.deleteLater)
-        self._glide_split(television, ms)
+        self._glide_split(VIDEO_SHARE if television else
+                          CELLS_SHARE if target is self.cells_pane else None, ms)
         if television:
             self.video_timer.start(33)
         else:
             self.video_timer.stop()
             self.video_view.clear_frame()
 
-    def _glide_split(self, television, ms):
+    def _glide_split(self, share, ms):
+        """The bottom pane to ``share`` of the column's height, the sizes
+        before kept; ``share`` None puts them back."""
         split = self.right_split
         total = sum(split.sizes()) or split.height()
-        if television:
+        if share is not None:
             if self._split_before is None:
                 self._split_before = split.sizes()
-            bottom = int(total * VIDEO_SHARE)
+            bottom = int(total * share)
             end = [total - bottom, bottom]
         else:
             end = self._split_before or split.sizes()

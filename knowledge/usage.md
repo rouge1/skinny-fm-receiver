@@ -811,6 +811,40 @@ and leaves the marker where it is.
 `fmctl marker FREQ` places the marker the same way and replies with the level;
 `fmctl status` has `marker_mhz`.
 
+**The cells in a recording.** When you choose an IQ recording (2 MS/s or
+wider), its first 50 ms are checked for LTE and 5G NR cells, in the
+background (a few seconds). If any are found, the **cells pane** fades in
+under the waterfall, where the multiplex was, and the split glides to give it
+half the height; the recording's line in the list gains what was found
+("5G NR, 3 cells"). Choose a recording without cells and the multiplex comes
+back.
+
+- **The grid.** One column per cell, strongest first, each with its level
+  against the strongest (a bar and dB). Then who it is: operator (MCC-MNC),
+  tracking area and cell identity. Under the rule, a row per message: MIB,
+  SIB1, then the SIBs the cells schedule (the one with the network time is
+  named so). The last row says how each cell was read: alone, or with the
+  stronger cells removed first.
+- **Read cells** (top right) reads every message of every cell with our own
+  decoders (`iq-nr --pdsch`, `iq-lte --own`): about 40 s a cell, while you
+  keep using the app. The button becomes **Stop**, a line says where it is
+  ("PCI 124: other SI, 40%") and each cell's column fills in as it is read.
+  Before SIB1 is read only MIB and SIB1 are listed; the SIBs it schedules come
+  after. The read is kept beside the recording (`<base>.cells.json`, for a
+  `.cfile`) and shown at once the next time you choose it; **Read again**
+  reads it afresh. Delete takes it with the recording. Stopping keeps nothing.
+- **The marks.** A filled dot: decoded, with how many copies. A ring: not
+  decoded, but its signal fits the bytes a stronger cell was decoded sending
+  ("same as 123"): it sends the same, near enough. A dashed ring: not found
+  ("unsure" when a stronger cell was on top of it). "Not in this recording":
+  its window did not come in the seconds recorded.
+- **Click a mark** (or Tab to it and press Space) to open what is behind it
+  under the grid: the copies, the fields read, the bytes, or a match's score
+  against chance. Click it again to close it.
+
+`fmctl cells-pane` gives all of it as JSON, `read` and `stop` press the
+button, and `open PCI ROW` a mark.
+
 ## Playing other IQ files
 
 The Recordings tab plays this app's recordings, and Sceptre's `.sdvr` and
@@ -972,6 +1006,7 @@ tools/fmctl help                          # every command
 | `marker FREQ` | On a spectrum recording (Recordings tab), places the spectrum marker there, as a click does, and replies. Elsewhere read-only: the level at FREQ (MHz) on the RF trace, in the view's unit: the held trace while Peak hold is on, otherwise the live one. Refused for a frequency off the shown band. Replies `freq_mhz`, `level_db`, `unit` and `trace` |
 | `measure [SECONDS] [card]` | Measures the last capture (the file the last `capture` replied with) with `tools/iq-measure`, and replies the card (see [Measuring a recording](#measuring-a-recording-iq-measure-and-iq-picture)). `SECONDS` measures only the first that long. `card` also writes `<base>.card.json` beside a `.cfile`. Runs for at most 60 s, and the window keeps running meanwhile. Refused when there is no capture yet
 | `cells lte` / `nr [decode] [PATH]` | Runs `tools/iq-lte` or `tools/iq-nr` on PATH (default: the file the last `capture` replied with) and replies with what it prints, unchanged. For `lte` the carrier is taken at the station the recording was tuned to (a Receive-tab capture is centred 300 kHz below it) (see [Verifying an LTE carrier](#verifying-an-lte-carrier-iq-lte) and [Finding and decoding 5G NR cells](#finding-and-decoding-5g-nr-cells-iq-nr)). `decode` adds `--decode`: each cell's MIB, SIB1, other SI and network time, through the outside tools under `$FMRX_LTE_TOOLS`. Read-only: the window is not changed. Runs for at most 60 s, or 300 s with `decode`, and the window keeps running meanwhile. Refused with no PATH and no capture yet, for a missing file, and with the tool's own message when it fails (for example, no outside tools) |
+| `cells-pane [read` / `stop` / `open PCI ROW [SECTION]]` | The Recordings tab's cells pane (see [Recordings](#recordings-listening-back), "The cells in a recording"): its state (`found`, `reading`, `read`, `failed`), heading, status line, button, progress, the open detail, whether it is on show, and per section (NR, LTE) the cells, rows and marks with their details. `read` presses Read cells, `stop` Stop; `open PCI ROW` opens or closes a mark's detail as a click does (ROW as the rows name it: `sib2`; SECTION 0 unless the recording has both LTE and NR). Needs `mode recordings` and a recording chosen |
 | `record audio` / `iq-channel` / `iq-band` `on` / `off`, `record start` / `stop` | The Record box. `stop` replies with the files saved, the `.sigmf-meta` beside each IQ file included |
 | `capture SECONDS [iq-band` / `iq-channel` / `audio]` | Records only that (IQ of the whole band by default) for SECONDS and replies with the files; the Record box's ticks are put back after. Refused over 4 GB: at 40 MS/s the whole band is 320 MB/s, so 12 s at most |
 | `scan START STOP [step KHZ] [quick S] [listen S] [snr DB]` | Tunes each channel from START to STOP MHz and replies with one row for each: level, SNR, stereo pilot, and `rds` (the same block as `status`) and `hd` (station, programs, now playing, BER) where something was decoded. The step is the Tuner's Step unless given. Each channel is heard for `quick` seconds (2); one with a pilot or an SNR of `snr` dB (6) or more is heard `listen` seconds more (12; 0 for none), long enough for RDS and for HD Radio's name. A channel outside an IQ file's band is a row with the reason. Receive's, refused while recording (retuning would spoil it). The Tuner goes back where it was afterwards, and also if the client leaves, which ends the scan. Up to 30 minutes, worst case |
@@ -1358,6 +1393,12 @@ tools/iq-lte CAPTURE.cfile --own                          # every SIB by our own
   on one BLAS thread unless `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS` or
   `MKL_NUM_THREADS` says otherwise. Its products are small, and a thread pool
   fighting over them cost 20 to 40 times the CPU and more time.
+- `--progress` (with `--mib`, `--pdcch`, `--pdsch` or `--own`) reports the
+  read on stderr, a JSON line at a time: `{"progress": {"cell", "cells",
+  "pci", "stage", "done", "total"}}` as each cell's stage starts and at each
+  whole per cent of it, and with stage `done` the cell as stdout will list it
+  (`entry`). Stdout is unchanged. The cells pane in the Recordings tab reads
+  these.
 - `--decode` runs when the fingerprint's verdict is `lte` or `possible` (a
   possible carrier may well be one: a 700 MHz carrier read `possible` while
   both decoders read its MIB), not when it is `not-lte` or `unknown`.
@@ -1469,6 +1510,9 @@ tools/iq-nr CAPTURE.cfile --decode --decode-seconds 10     # read 10 s instead o
   three of its five messages matched. A SIB still missing under a stronger
   cell sets `si.missing_unsure`, and the reason says so. Three cells take
   about 2 minutes.
+- `--progress` (with `--pdsch`) reports the read on stderr as `iq-lte`'s
+  does: a JSON line per cell's stage (`SIB1`, `other SI`) and whole per cent,
+  and each finished cell's entry. Stdout is unchanged.
 - `--decode` needs srsRAN 4G's NR library behind `run_nr.sh`, built by you
   (AGPL, not part of this repo), and pycrate under `$FMRX_LTE_TOOLS/pyc`. Only
   the broadcast (SI-RNTI) is read. Each entry gets a `decode`: the MIB, SIB1

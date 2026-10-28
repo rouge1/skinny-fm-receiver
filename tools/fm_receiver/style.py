@@ -92,6 +92,17 @@ QListWidget { background: %(well)s; color: %(ink)s;
 QListWidget::item { padding: 3px 6px; }
 QListWidget::item:selected { background: %(rule)s; color: %(ink)s; }
 QSplitter::handle { background: %(ground)s; }
+QScrollArea#cellsScroll, QWidget#cellsBody { background: transparent; border: none; }
+QLabel#cellsTitle, QLabel#cellsValue { color: %(ink)s; }
+QLabel#cellsName { color: %(ink_2)s; }
+QLabel#cellsQuiet { color: %(ink_3)s; }
+QLabel#cellsWarn { color: %(warn)s; }
+QFrame#cellsRule { background: %(rule)s; border: none; }
+QFrame#cellsRuleSoft { background: %(rule_soft)s; border: none; }
+QFrame#cellsDetail { background: %(well)s; border: 1px solid %(rule_soft)s;
+    border-radius: 2px; }
+QProgressBar#cellsBar { background: %(rule_soft)s; border: none; border-radius: 2px; }
+QProgressBar#cellsBar::chunk { background: %(trace)s; border-radius: 2px; }
 """
 
 

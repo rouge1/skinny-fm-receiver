@@ -1765,7 +1765,7 @@ def _si_block(g, pci, n_rb, ports, cfi, sf, d, i, rnti, chan=None):
 
 
 def si_messages(iq, fs, cell, pbch_result, messages, window_ms, center_offset_hz=0.0, carrier_hz=None,
-                rnti=SI_RNTI, combine=True, known=None):
+                rnti=SI_RNTI, combine=True, known=None, progress=None):
     """The SI messages after SIB1 (SIB2 onwards) of one cell, by our own decode (roadmap Round
     29.6), in the windows SIB1's schedule gives (``messages``, ``window_ms``: ``si_window``).
 
@@ -1785,7 +1785,8 @@ def si_messages(iq, fs, cell, pbch_result, messages, window_ms, center_offset_hz
     ``i``, ``format``, ``rv``, ``tbs``, ``n_prb``, ``crc``, ``hex`` when it passed; the DCI's
     ``cfi``, ``level``, ``cce`` and ``bits``; ``combined``, the subframes as SFN 10 + subframe,
     on a DCI found by summing), ``decoded``, ``tried``, ``combined`` (one per summed decode:
-    ``si``, ``subframes`` as SFN 10 + subframe, ``tbs``, ``hex``); None without a MIB or a window."""
+    ``si``, ``subframes`` as SFN 10 + subframe, ``tbs``, ``hex``); None without a MIB or a window.
+    ``progress(done, total)``, when given, is called at each frame of the span."""
     mib = (pbch_result or {}).get('mib')
     if not mib or mib.get('n_rb') not in _NFFT_FOR_RB or not window_ms or not messages:
         return None
@@ -1809,7 +1810,10 @@ def si_messages(iq, fs, cell, pbch_result, messages, window_ms, center_offset_hz
             soft.append((si, start, block['tbs'], (10 * sfn + sf, block['tbs'], block['rv'], llr)))
         out['blocks'].append(block)
 
-    for f in range(frames.count(len(iq))):
+    n_frames = frames.count(len(iq))
+    for f in range(n_frames):
+        if progress is not None:
+            progress(f, n_frames)
         sfn = (int(mib['sfn']) + f) % 1024
         for sf in range(10):
             hit = si_window(messages, window_ms, sfn, sf)

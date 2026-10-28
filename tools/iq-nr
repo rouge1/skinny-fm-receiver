@@ -3,7 +3,7 @@
 
     tools/iq-nr FILE [--rate HZ --center HZ] [--t0 S] [--seconds S]
                      [--ssb-hz HZ] [--scs 15|30] [--max-cells N]
-                     [--mib] [--pdcch] [--pdsch] [--decode] [--decode-seconds S]
+                     [--mib] [--pdcch] [--pdsch] [--progress] [--decode] [--decode-seconds S]
 
 Rate and centre come from the ``.sigmf-meta`` beside the file; the options
 override them. Only the span ``[t0, t0 + seconds]`` is read (default 0.1 s,
@@ -18,8 +18,9 @@ occasion of the span and adds ``pdcch`` (``iqnr.type0_pdcch``; times from the sp
 null without a MIB or for a 30 kHz cell). ``--pdsch`` (which implies ``--mib``) decodes
 SIB1 and the other SI ourselves (``iqnr_decode.own_decode``) over the ``--decode-seconds``
 span and adds ``own``: SIB1's summary as ``--decode`` gives it, the SI heard and SIB9's time;
-only the RRC parse uses pycrate, and without it ``own`` still has SIB1's bytes. ``--decode`` adds a ``decode``
-object to each entry (MIB, SIB1, other SI, SIB9 time) via ``iqnr_decode``;
+only the RRC parse uses pycrate, and without it ``own`` still has SIB1's bytes. ``--progress``
+reports that read on stderr, a JSON line at a time (``Progress``), for the window's cells pane.
+``--decode`` adds a ``decode`` object to each entry (MIB, SIB1, other SI, SIB9 time) via ``iqnr_decode``;
 the search span stays the short one. ``--decode-seconds`` is how long that
 read is (default 6 s, at most 10 s).
 
@@ -202,6 +203,28 @@ class _Span:
         return np.asarray(self.src.read(self.i_start + a, max(0, b - a)), dtype=np.complex64)
 
 
+class Progress:
+    """``--progress``: one JSON line on stderr, ``{"progress": {...}}``, when a cell's stage
+    starts, at each whole per cent of it, and when the cell is done (with ``entry``, the cell
+    as stdout will list it). The window's cells pane reads these."""
+
+    def __init__(self, out=None):
+        self.out = out or sys.stderr
+        self.last = None
+
+    def __call__(self, i, cells, pci, stage, done, total, entry=None):
+        pct = int(100 * done / total) if total else 0
+        key = (i, stage, pct)
+        if key == self.last and entry is None:
+            return
+        self.last = key
+        line = {'cell': i, 'cells': cells, 'pci': pci, 'stage': stage, 'done': done, 'total': total}
+        if entry is not None:
+            line['entry'] = _json_safe(entry)
+        self.out.write(json.dumps({'progress': line}, allow_nan=False) + '\n')
+        self.out.flush()
+
+
 def _attach_own(args, src, t0, ssbs):
     """Add ``own`` (our own SIB1 and other SI) to each SSB with a MIB."""
     from fm_receiver import iqnr_decode  # noqa: E402
@@ -211,15 +234,26 @@ def _attach_own(args, src, t0, ssbs):
     n = max(0, min(int(round(float(seconds) * float(src.rate))), int(src.samples) - i_start))
     span = _Span(src, i_start, n)
     entries = [e for e in ssbs if isinstance(e, dict)]
-    owns = iqnr_decode.own_decode_cells(span, src.rate, src.center_hz, entries, tools=_tools_dir())
-    for e, own in zip(entries, owns):
-        if own is None:
-            e['own'] = None
-            continue
+
+    def finished(own):
+        own = dict(own)
         if cut_reason:
             own['reason'] = '; '.join(r for r in (cut_reason, own.get('reason')) if r)
         own['seconds'] = round(n / float(src.rate), 6)
-        e['own'] = own
+        return own
+
+    report = None
+    if args.progress:
+        tell = Progress()
+
+        def report(i, stage, done, total, own=None):
+            e = entries[i]
+            tell(i, len(entries), e.get('pci'), stage, done, total,
+                 entry=None if own is None else dict(e, own=finished(own)))
+    owns = iqnr_decode.own_decode_cells(span, src.rate, src.center_hz, entries, tools=_tools_dir(),
+                                        progress=report)
+    for e, own in zip(entries, owns):
+        e['own'] = None if own is None else finished(own)
 
 
 def _attach_decode(args, src, t0, ssbs):
@@ -312,6 +346,9 @@ def main(argv=None):
     ap.add_argument('--pdsch', action='store_true',
                     help="decode each cell's SIB1 and other SI with our own decoder over the "
                          "--decode-seconds span (pycrate, if present, parses them)")
+    ap.add_argument('--progress', action='store_true',
+                    help='with --pdsch, report each cell\'s read on stderr as JSON lines '
+                         '({"progress": {...}}), each finished cell with its entry')
     ap.add_argument('--decode', action='store_true',
                     help='decode the MIB, SIB1, other SI and SIB9 time of each '
                          'listed SSB with $FMRX_LTE_TOOLS/run_nr.sh')

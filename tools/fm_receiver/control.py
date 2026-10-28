@@ -1348,6 +1348,42 @@ def cmd_cells(w, args):
     return _run_tool('cells', argv, limit, 'cell list', lambda result: result)
 
 
+CELLS_PANE_USAGE = 'cells-pane [read|stop|open PCI ROW [SECTION]]'
+
+
+@command('cells-pane', CELLS_PANE_USAGE, "The Recordings tab's cells pane, under the waterfall "
+         "for an IQ recording with cells: what it shows (its state, heading, status, the open "
+         "detail, and per section the cells, rows and marks). read presses Read cells, stop "
+         "presses Stop; open PCI ROW opens (or closes) a mark's detail, as a click does (ROW "
+         "as the rows name them, e.g. sib2; SECTION 0 unless the recording holds both LTE "
+         "and NR). Needs 'mode recordings' and a recording chosen.")
+def cmd_cells_pane(w, args):
+    words = _args(args, 0, 4, CELLS_PANE_USAGE)
+    _recordings_tab(w)
+    pane = w.cells_pane
+    if words:
+        what = words[0].lower()
+        if what == 'read':
+            if w._cells_path is None:
+                raise CommandError("cells-pane read: the recording chosen holds no cells to read")
+            if not w.cells_read():
+                raise CommandError("cells-pane read: already reading it, or no cells found yet")
+        elif what == 'stop':
+            if not w.cells_stop():
+                raise CommandError("cells-pane stop: nothing is being read")
+        elif what == 'open' and len(words) in (3, 4):
+            pci = _number(words[1], 'cells-pane open PCI')
+            section = int(_number(words[3], 'cells-pane open SECTION')) if len(words) == 4 else 0
+            if not pane.open_detail(section, int(pci), words[2].lower()):
+                raise CommandError(f"cells-pane open: no mark with a detail at PCI {int(pci)}, "
+                                   f"{words[2]}")
+        else:
+            raise CommandError(f"usage: {CELLS_PANE_USAGE}")
+    out = pane.state()
+    out['shown'] = w.bottom.isVisible() and w.bottom.currentWidget() is pane
+    return out
+
+
 def parse(line):
     """(name, args) from a line: JSON ``{"cmd", "args"}`` or plain words."""
     line = line.strip()

@@ -43,6 +43,10 @@ with no launcher.
     outside (pycrate). It reads weaker sectors under a stronger one by
     cancelling what the stronger was decoded sending (`iqnr.type0_pdcch(known=)`),
     and tries the stronger's SI bytes on theirs (`own.shared`, Round 28.7).
+    The Recordings tab shows a recording's cells under the waterfall
+    (`app_cells`, `cells_view`; the model in `cells`, no Qt), running
+    `iq-nr --pdsch` and `iq-lte --own` with `--progress` as processes of
+    their own.
     Our own LTE decoder (`iqlte_phy`, Round 29) has the MIB, SIB1's
     DCI, SIB1 and the other SI (`iq-lte --mib`, `--pdcch`, `--pdsch`, `--own`), copies
     combined and weaker sectors read by cancelling (`known=`; another site's cells out of the samples); `iqlte.py` itself stays standalone (numpy and the

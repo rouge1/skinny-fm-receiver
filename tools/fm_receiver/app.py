@@ -39,6 +39,7 @@ from . import bb60_source, bb60_sweep
 from .bb60_sweep import RBW_LADDER, RT_MAX_SPAN_HZ
 from .dsp import AUDIO_RATE, CHANNEL_MAX_BW, MPX_RATE, wav_source
 from .app_atsc import ATSC_TAB, AtscWindow
+from .app_cells import CellsWindow
 from .atsc import MIN_RATE as ATSC_MIN_RATE
 from .engine import Engine
 from .hdradio import (LOST_SHARE as HD_LOST_SHARE, PROGRAMS as HD_PROGRAMS,
@@ -421,7 +422,7 @@ def _report_shown_filter():
     control.COMMANDS['view'] = view
 
 
-class MainWindow(AtscWindow, Qt.QWidget):
+class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
 
     #: The Recordings tab's mini map is drawn from the whole track at this
     #: many rows (time) by columns (frequency); and the waterfall's stretch
@@ -1761,6 +1762,8 @@ class MainWindow(AtscWindow, Qt.QWidget):
         # FM receiver: the television picture, in the multiplex's place while
         # the ATSC tab is on show (app_atsc.py).
         self.bottom.addTab(self._build_video_view(), "Television")
+        # FM receiver: in Recordings, a recording's cells there instead (app_cells.py).
+        self._build_cells_pane()
         self.bottom.setTabBarAutoHide(False)
         self.bottom.tabBar().hide()
         self.right_split.addWidget(self.bottom)
@@ -2861,6 +2864,7 @@ class MainWindow(AtscWindow, Qt.QWidget):
             entry.restyle()
         for view in (self.rf_view, self.audio_view):
             view.minimap.update()
+        self.cells_pane.restyle()
         self.theme_disc.describe()
         self.theme_word.setToolTip(self.theme_disc.toolTip())
         self._refit_left()
@@ -3024,6 +3028,7 @@ class MainWindow(AtscWindow, Qt.QWidget):
 
     def _leave_recordings(self):
         """Back to Sweep or Receive: the radio opens again, tuned where it was."""
+        self._cells_leave()
         self._stop_playback(show=False)
         self._keep_track_view()
         live, self._live = self._live, None
@@ -3114,7 +3119,7 @@ class MainWindow(AtscWindow, Qt.QWidget):
                 head.setData(GROUP_ROLE, library.GROUPS.index(title))
                 head.setFlags(QtCore.Qt.NoItemFlags)
                 self.rec_list.addItem(head)
-            item = Qt.QListWidgetItem(self._recording_text(rec))
+            item = Qt.QListWidgetItem(self._recording_line(rec))
             item.setData(QtCore.Qt.UserRole, rec.key)
             item.setData(GROUP_ROLE, library.GROUPS.index(rec.group))
             item.setToolTip("\n".join(os.path.basename(p) for p in rec.files()))
@@ -3210,6 +3215,7 @@ class MainWindow(AtscWindow, Qt.QWidget):
         mini map beside the waterfall, the map and the waterfall's first
         stretch being drawn from the file."""
         self._track = track
+        self._cells_track(track)
         self._start_at = 0.0
         self._shown_at = 0.0
         self._heard = ('', 0.0)
@@ -3267,7 +3273,8 @@ class MainWindow(AtscWindow, Qt.QWidget):
         view.clear()
         view.wf_clock = None
         if not audio:
-            self.bottom.setCurrentWidget(self.rx_page)
+            if self.bottom.currentWidget() is not self.cells_pane:     # put there just before
+                self.bottom.setCurrentWidget(self.rx_page)
             self.mpx_view.clear()
             view.set_band(None, None)
             view.set_center_line(None)
@@ -4501,6 +4508,7 @@ class MainWindow(AtscWindow, Qt.QWidget):
         self.fast_timer.stop()
         self.slow_timer.stop()
         self._spec_timer.stop()
+        self._window_timer.stop()            # its job goes to the pool, shut below
         self._stop_recording("closing")
         if not self.args.no_save:
             self.save_settings()
@@ -4509,6 +4517,7 @@ class MainWindow(AtscWindow, Qt.QWidget):
         except Exception as exc:
             print(f"FM receiver: closing the radio: {exc}", file=sys.stderr)
         self._pool.shutdown(wait=False)
+        self._cells_close()
         event.accept()
 
 

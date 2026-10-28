@@ -116,7 +116,12 @@ user sees it, and is refused where the window would refuse it.
   (or PATH) and replies with its JSON, read-only (60 s, 300 s with `decode`);
   for `lte` the carrier is taken at the station the recording was tuned to.
   A cell survey: `rate 20; center MHZ; capture 6 iq-band; cells nr decode`
-  (6 s is what `decode` reads).
+  (6 s is what `decode` reads). In Recordings, an IQ recording with cells
+  shows the cells pane under the waterfall (Round 30): `cells-pane` replies
+  what it shows as JSON, `cells-pane read` reads every cell's broadcast with
+  our own decoders (1 to 2 minutes; poll `cells-pane` until `state` is
+  `read`), `cells-pane open PCI ROW` opens a mark's detail on the user's
+  screen.
 - `wait SECONDS` lets the window run between commands: your shell can't
   sleep in the foreground, and RDS or peak hold need seconds.
 

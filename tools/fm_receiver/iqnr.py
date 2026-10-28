@@ -810,7 +810,8 @@ class _Timing:
         return out
 
 
-def type0_pdcch(iq, fs, center_hz, cell, rnti=None, pdsch=False, combine=True, known=None):
+def type0_pdcch(iq, fs, center_hz, cell, rnti=None, pdsch=False, combine=True, known=None,
+                progress=None):
     """SIB1's DCIs (DCI format 1_0, CRC scrambled by SI-RNTI) of one cell, decoded with
     ``iqnr_phy`` in every Type0-PDCCH occasion of the capture, and with ``pdsch`` the SIB1
     each one schedules.
@@ -836,7 +837,8 @@ def type0_pdcch(iq, fs, center_hz, cell, rnti=None, pdsch=False, combine=True, k
     160 ms period whose occasions score over ``_PLACE`` together) and given to those, each
     marked ``summed`` (how many occasions held it) and ``score``; ``summed`` in the result says
     how the last was found. That finds only copies of the same DCI: a cell cycling redundancy
-    versions sends another in each occasion."""
+    versions sends another in each occasion.
+    ``progress(done, total)``, when given, is called at each frame of the capture."""
     from . import iqnr_phy as P
     mib = (cell or {}).get('mib')
     if not mib or int(cell.get('scs_khz') or 0) != 15:
@@ -855,7 +857,10 @@ def type0_pdcch(iq, fs, center_hz, cell, rnti=None, pdsch=False, combine=True, k
     l0 = occ['first_symbol']
     comb = P.SoftCombiner() if combine else None
     dcis, slots, cancelled, empty = [], 0, 0, []
-    for fr in tm.frames(len(x)):
+    frames = tm.frames(len(x))
+    for fr in frames:
+        if progress is not None:
+            progress(fr - frames[0], len(frames))
         sfn = (tm.sfn0 + fr) % 1024
         if sfn % 2 != occ['parity']:
             continue
@@ -1100,7 +1105,7 @@ def _ss_slots(search, frame, slot):
     return (frame * 10 + slot - offset) % period == 0
 
 
-def other_si(iq, fs, center_hz, cell, config, rnti=None, combine=True, known=None):
+def other_si(iq, fs, center_hz, cell, config, rnti=None, combine=True, known=None, progress=None):
     """The other SI messages of one cell (DCI format 1_0 with the SI indicator 1, and the PDSCH
     each schedules), decoded with ``iqnr_phy`` in the SI windows SIB1 names.
 
@@ -1120,7 +1125,8 @@ def other_si(iq, fs, center_hz, cell, config, rnti=None, combine=True, known=Non
     PDSCH is read with the channel fitted to those bytes, and its ``pdsch`` gains ``shared``
     (that cell's ``pci`` and ``hex``, and ``shared_score``'s ``score`` and ``nulls``); a
     stronger cell's DCI with none of this cell's alike is read the same way, as an entry with
-    ``dci_from`` (that cell's PCI: this cell's PDCCH there not found)."""
+    ``dci_from`` (that cell's PCI: this cell's PDCCH there not found).
+    ``progress(done, total)``, when given, is called at each frame of the capture."""
     from . import iqnr_phy as P
     mib = (cell or {}).get('mib')
     if not mib or int(cell.get('scs_khz') or 0) != 15 or not config:
@@ -1139,7 +1145,10 @@ def other_si(iq, fs, center_hz, cell, config, rnti=None, combine=True, known=Non
     w = int(config['window_slots'])
     comb = P.SoftCombiner() if combine else None
     blocks, slots, cancelled = [], 0, 0
-    for fr in tm.frames(len(x)):
+    frames = tm.frames(len(x))
+    for fr in frames:
+        if progress is not None:
+            progress(fr - frames[0], len(frames))
         sfn = (tm.sfn0 + fr) % 1024
         for slot in range(10):
             here = sfn * 10 + slot

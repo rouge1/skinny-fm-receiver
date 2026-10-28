@@ -616,7 +616,7 @@ def _shared_matches(blocks):
     return out
 
 
-def own_decode(iq, fs, centre_hz, cell, tools=None, known=None):
+def own_decode(iq, fs, centre_hz, cell, tools=None, known=None, progress=None):
     """SIB1 and the other SI of one ``iqnr.ssb_search(..., mib=True)`` entry by our own decoder
     (``iqnr.type0_pdcch`` with ``pdsch``, then ``iqnr.other_si`` configured from that SIB1),
     over the whole of ``iq``. Only the RRC parse is outside: pycrate, as for ``decode_ssb``.
@@ -635,16 +635,22 @@ def own_decode(iq, fs, centre_hz, cell, tools=None, known=None):
     tried as a hypothesis (``iqnr.other_si``'s ``shared``), ``shared`` gives the copies
     ``tested``, those read ``on_their_dci`` ([decoded, read]; not counted in ``blocks.other``)
     and the ``messages`` none of whose blocks decoded (``_shared_matches``); the SIBs of those
-    matched go to ``si.sibs_matched`` (by copies) and out of ``si.missing``."""
+    matched go to ``si.sibs_matched`` (by copies) and out of ``si.missing``.
+
+    ``progress(stage, done, total)``, when given, follows the read: stage 'SIB1', then
+    'other SI', a call at each frame."""
     from fm_receiver import iqnr
     tools = tools if tools is not None else tools_dir()
     seconds = len(iq) / float(fs) if fs else 0.0
+
+    def follow(stage):
+        return None if progress is None else (lambda done, total: progress(stage, done, total))
     out = {'ran': True, 'decoder': 'ours', 'sib1': None, 'sib1_hex': None, 'si': None, 'time': None,
            'time_reason': None, 'reason': None,
            'blocks': {'sib1': [0, 0], 'other': [0, 0], 'combined': [0, 0]}, 'cancelled': [0, 0],
            'summed': None}
     notes = []
-    got = iqnr.type0_pdcch(iq, fs, centre_hz, cell, pdsch=True, known=known)
+    got = iqnr.type0_pdcch(iq, fs, centre_hz, cell, pdsch=True, known=known, progress=follow('SIB1'))
     if got is None:
         out['time_reason'] = 'no SIB1'
         out['reason'] = 'no MIB, or a cell this decoder does not read (15 kHz only)'
@@ -683,7 +689,8 @@ def own_decode(iq, fs, centre_hz, cell, tools=None, known=None):
         point_a = _point_a_hz(float(cell['ssb_hz']), 15e3, mib['ssb_subcarrier_offset'], offset)
     out['sib1'] = _summarise_sib1(sib1, mib, point_a)
     config = si_config(sib1)
-    other = iqnr.other_si(iq, fs, centre_hz, cell, config, known=known) if config else None
+    other = (iqnr.other_si(iq, fs, centre_hz, cell, config, known=known, progress=follow('other SI'))
+             if config else None)
     blocks = (other or {}).get('blocks') or []
     out['cancelled'][1] = (other or {}).get('cancelled', 0)
     if known is not None and other:
@@ -737,7 +744,7 @@ def own_decode(iq, fs, centre_hz, cell, tools=None, known=None):
     return out
 
 
-def own_decode_cells(iq, fs, centre_hz, cells, tools=None):
+def own_decode_cells(iq, fs, centre_hz, cells, tools=None, progress=None):
     """``own_decode`` for each of ``cells`` (``iqnr.ssb_search`` entries, strongest first; one
     without a MIB gets None), weaker cells after stronger ones on the same SSB frequency.
 
@@ -746,7 +753,10 @@ def own_decode_cells(iq, fs, centre_hz, cells, tools=None):
     frequency (``known``). Such a cell is read at the strongest one's frequency offset: the
     offset is mostly the recorder's, and the strongest cell's SSB measures it best. Each result
     gains ``cfo_hz`` (the offset used) and ``cfo_from`` ('own SSB', or 'strongest on this SSB
-    frequency: PCI n')."""
+    frequency: PCI n').
+
+    ``progress(i, stage, done, total, own=None)``, when given, follows cell ``i`` (its place in
+    ``cells``) through ``own_decode``'s stages, then once with stage 'done' and its result."""
     groups = []                                    # [ssb_hz, strongest cell, known]
     out = []
     for cell in cells:
@@ -761,10 +771,14 @@ def own_decode_cells(iq, fs, centre_hz, cells, tools=None):
         else:
             used = dict(cell, cfo_hz=group[1].get('cfo_hz'))
             source = 'strongest on this SSB frequency: PCI %s' % group[1]['pci']
-        own = own_decode(iq, fs, centre_hz, used, tools=tools, known=group[2])
+        i = len(out)
+        step = None if progress is None else (lambda stage, done, total: progress(i, stage, done, total))
+        own = own_decode(iq, fs, centre_hz, used, tools=tools, known=group[2], progress=step)
         own['cfo_hz'] = used.get('cfo_hz')
         own['cfo_from'] = source
         out.append(own)
+        if progress is not None:
+            progress(i, 'done', 1, 1, own=own)
     return out
 
 

@@ -201,11 +201,11 @@ class Track:
         return self.kind != 'audio' and not self.is_spectrum
 
     def sidecars(self):
-        """The files that describe this one."""
+        """The files that describe this one (FM receiver: and the cells read in it)."""
         if self.external:
             return []
         base = os.path.splitext(self.path)[0]
-        return [base + ext for ext in ('.json', '.sigmf-meta')
+        return [base + ext for ext in ('.json', '.sigmf-meta', '.cells.json')
                 if self.is_iq and os.path.exists(base + ext)]
 
     def label(self):
