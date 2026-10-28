@@ -99,7 +99,7 @@ class MarkCell(Qt.QAbstractButton):
         self.mark = mark or {}
         self.setCheckable(True)
         self.setCursor(QtCore.Qt.PointingHandCursor if self.mark.get('detail') else QtCore.Qt.ArrowCursor)
-        self.setEnabled(bool(self.mark))
+        self.setEnabled(bool(self.mark.get('detail')))         # nothing to open: not a button
         self.setFocusPolicy(QtCore.Qt.StrongFocus if self.mark.get('detail') else QtCore.Qt.NoFocus)
         self.setAccessibleName(self.mark.get('text') or '')
         _font(self, 'f_num' if self.mark.get('mark') == 'ok' else 'f_ui')
@@ -234,9 +234,6 @@ class CellsPane(Qt.QWidget):
         self._build()
 
     # ------------------------------------------------------------- states
-    def show_checking(self):
-        self._set('checking', [], 'Looking for cells…', None)
-
     def show_found(self, models, seconds=None):
         how_long = (f"Takes about {max(1, round(seconds / 60))} minute{'s' if round(seconds / 60) > 1 else ''}"
                     if seconds else 'Takes a minute or two')
@@ -296,7 +293,7 @@ class CellsPane(Qt.QWidget):
             self.title.setText(titles[0] if len(titles) == 1 else ' and '.join(
                 m['title'].split(':')[0] for m in models))
         else:
-            self.title.setText('Cells' if state != 'checking' else '')
+            self.title.setText('Cells')
         if changed:
             self._models = [dict(m) for m in models]
             self._rebuild()

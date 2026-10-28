@@ -1728,6 +1728,7 @@ first build, 15 px text with a scroll.
 - [x] `fmctl cells-pane`, and `test_cells.py`.
 - [ ] Progress within a stage by copies rather than by frames, if the
   per cent reads too coarse.
-- [ ] Reading a Sceptre recording's cells keeps nothing (only a `.cfile`
-  gets a file beside it): keep those in the settings folder if wanted.
+- [ ] A Sceptre recording's read is kept only until the app closes (only a
+  `.cfile` gets a file beside it): keep those in the settings folder if
+  wanted.
 

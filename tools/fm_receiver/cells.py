@@ -13,7 +13,8 @@ any cell schedules), ``sectors`` (strongest first: ``pci``, ``rel_db``, ``state`
 {mark, text, detail}}) and ``note``. A mark is 'ok' (decoded; the text says how many copies),
 'match' (not decoded, but its signal fits a stronger cell's bytes: ``iqnr_decode``'s
 ``sibs_matched``), 'missing' (looked for, not found), 'unsure' (not found where a stronger cell
-was on top of it) or 'span' (its window is not in the recording). ``detail`` is [(label, value)]
+was on top of it) or 'span' (not to be heard in the recording: its window did not come, or the
+cell sends it only when asked). ``detail`` is [(label, value)]
 for the pane to open under the grid.
 
 A read is kept beside a ``.cfile`` as ``<base>.cells.json`` (``save``, ``load``), the tools' JSON
@@ -217,6 +218,9 @@ def _nr_sector(e, stronger):
             for sib in schedule[m['si'] - 1].get('sibs') or ():
                 match_of[str(sib).lower()] = m
     unsure = bool(si.get('missing_unsure'))
+    on_request = {str(sib).lower() for entry in schedule
+                  if str(entry.get('broadcast_status')).lower() == 'notbroadcasting'
+                  for sib in entry.get('sibs') or ()}
     for sib, count in heard.items():
         detail = [('copies decoded', str(count))] + _summary_detail(summaries.get(sib))
         if sib == TIME_SIB['nr'] and own.get('time'):
@@ -246,6 +250,9 @@ def _nr_sector(e, stronger):
             s['marks'][sib] = _mark('missing', 'not found')
     keys = list(heard) + list(matched) + list(si.get('missing') or ()) + list(si.get('scheduled') or ())
     for sib in si.get('scheduled') or ():
+        if sib in on_request:
+            s['marks'].setdefault(sib, _mark('span', 'sent only on request',
+                                             [('why', "SIB1 lists it as not broadcast: a phone asks for it")]))
         s['marks'].setdefault(sib, _mark('missing', 'not found'))
     return s, keys
 
@@ -361,16 +368,25 @@ def model(kind, result, waiting=()):
     return (nr_model if kind == 'nr' else lte_model)(result, waiting)
 
 
-def reading(quick_model, entries):
+def reading(quick_model, entries, pci=None):
     """The model while a read runs: the cells done so far (``entries``, as ``--progress`` gives
-    them), then the quick check's others, waiting. The title stays the quick check's."""
+    them), then the quick check's others, waiting, the one with ``pci`` (being read) 'reading'.
+    The title stays the quick check's."""
     kind = quick_model['kind']
-    waiting = [dict(s) for s in quick_model['sectors']]
+    waiting = [dict(s, state='reading' if s.get('pci') == pci else 'waiting')
+               for s in quick_model['sectors']]
     out = model(kind, list(entries), waiting)
     out['title'] = quick_model['title']
     if not entries:
         out['rows'] = quick_model['rows']
     return out
+
+
+def waiting(read_model):
+    """A model as the quick check would give it, from a read's: the same cells, nothing read."""
+    sectors = [_sector(s.get('pci'), s.get('rel_db')) for s in read_model.get('sectors') or ()]
+    return {'kind': read_model['kind'], 'title': read_model['title'], 'rows': _rows(read_model['kind'], ()),
+            'sectors': sectors, 'note': None}
 
 
 # ----------------------------------------------------------------- reading
@@ -385,7 +401,7 @@ def read_argv(kind, path, python=None):
         argv += ['--pdsch', '--progress']
     else:
         argv += ['--own', '--progress']
-        station = _station_hz(path)
+        station = _station_hz(path) if str(path).lower().endswith('.cfile') else None
         if station is not None:
             argv += ['--block-center', repr(station)]
     return argv
@@ -423,13 +439,22 @@ def progress_text(p):
     return head + (f", {pct}%" if pct is not None and p.get('total', 1) > 1 else '')
 
 
-def progress_fraction(p):
-    """The whole read's share done, from one progress dict."""
+def progress_fraction(p, kind='nr'):
+    """The whole read's share done, from one progress dict. ``iq-nr`` reads each cell through
+    SIB1 then other SI; ``iq-lte --own`` reads every cell's MIB and SIB1 first (about 40% of
+    the time), then every cell's other SI."""
     cells = max(1, int(p.get('cells') or 1))
+    cell = int(p.get('cell') or 0)
+    stage = str(p.get('stage') or '')
     within = (p['done'] / p['total']) if p.get('total') else 0.0
-    if p.get('stage') == 'done':
-        within = 1.0
-    return min(1.0, (int(p.get('cell') or 0) + within) / cells)
+    if kind == 'nr':
+        step = {'SIB1': 0, 'other SI': 1, 'done': 2}.get(stage, 0)
+        share = (cell + (min(step, 2) + (within if step < 2 else 0.0)) / 2.0) / cells
+    elif stage.startswith('MIB'):
+        share = 0.4 * (cell + within) / cells
+    else:
+        share = 0.4 + 0.6 * (cell + (1.0 if stage == 'done' else within)) / cells
+    return max(0.0, min(1.0, share))
 
 
 # ----------------------------------------------------------------- kept beside the recording
@@ -459,7 +484,7 @@ def save(recording, replies, seconds):
     """Keep ``replies`` ({'lte': ..., 'nr': ...}) beside ``recording``. A file there is replaced
     only when it is one of these. Returns the path, or None when nothing is written."""
     target = path_for(recording)
-    if target is None:
+    if target is None or not os.path.exists(recording):
         return None
     if os.path.exists(target) and load(recording) is None:
         return None
@@ -471,6 +496,27 @@ def save(recording, replies, seconds):
         json.dump(doc, fh, indent=1)
     os.replace(tmp, target)
     return target
+
+
+_SUMMARIES = {}
+
+
+def kept_summary(recording):
+    """The list line's words of the read kept beside ``recording``, or ''. Read once per change
+    of the file, not on every list refresh."""
+    target = path_for(recording)
+    if target is None:
+        return ''
+    try:
+        stamp = os.stat(target).st_mtime_ns
+    except OSError:
+        return ''
+    have = _SUMMARIES.get(target)
+    if have is None or have[0] != stamp:
+        doc = load(recording) or {}
+        have = (stamp, (doc.get('summary') or summary(models_of(doc))) if doc else '')
+        _SUMMARIES[target] = have
+    return have[1]
 
 
 def models_of(doc):

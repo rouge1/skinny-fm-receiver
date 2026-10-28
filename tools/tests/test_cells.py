@@ -10,9 +10,11 @@ the air. What the checks pin:
   score), not found but unsure under a stronger cell; an LTE reply of two sites gives a SIB whose
   window was not in the span ('span'), one unsure under a removed cell, a TDD cell not read, and
   missing fields do not break it; the model while reading (cells done, the others waiting);
-  progress lines, their words and their share; the file kept beside a ``.cfile`` (only there,
-  never over another file), and the list line's words;
-- part 2, the tools: ``iq-lte FILE --mib --progress`` gives the same stdout as without, and on
+  progress lines, their words and their share, which only grows (NR cell by cell, LTE's two
+  passes); an SI message not broadcast is 'sent only on request'; the file kept beside a
+  ``.cfile`` (only there, never over another file), and the list line's words;
+- part 2, the tools: a read's stderr read while the tool writes it (20000 lines, none lost or
+  torn: the file is shared, so it is read at an offset); ``iq-lte FILE --mib --progress`` gives the same stdout as without, and on
   stderr a JSON line per stage and a 'done' line carrying the cell; ``iqnr_decode.own_decode_cells``
   calls ``progress`` for each cell's stages and once done with its result, and ``iq-nr``'s
   ``Progress`` writes one line per whole per cent;
@@ -21,8 +23,10 @@ the air. What the checks pin:
   tool (a stub here), its progress shows and each cell fills in, the read is kept beside the
   recording and the list line says what it found; a mark's detail opens and closes; the theme
   recolours the pane; a recording sampled too slowly has the multiplex back; the kept read shows
-  again with no tool run; Stop ends a read and its process; deleting the recording takes the
-  kept read with it.
+  again with no tool run; another recording chosen during a read gets its own pane, and the read
+  goes on; Read again on a kept read keeps the grid (the cell being read marked) and after Stop;
+  Stop ends a read and its process; deleting the recording mid-read stops the read and takes the
+  kept read with it; leaving Recordings puts the multiplex back at once, the split as it was.
 
 Run:  PYTHONPATH=tools python tools/tests/test_cells.py   (under a minute)
 """
@@ -194,8 +198,38 @@ def part1():
                                 '"done": 40, "total": 80}}')
         other = cells.progress_line('iq-nr: something else')
         return (p is not None and other is None and cells.progress_text(p) == 'PCI 124: other SI, 50%'
-                and abs(cells.progress_fraction(p) - 0.5) < 1e-9), (p, cells.progress_text(p) if p else None)
+                and abs(cells.progress_fraction(p, 'nr') - 1.75 / 3) < 1e-9), (p, cells.progress_text(p) if p else None)
     expect("a progress line: read, worded ('PCI 124: other SI, 50%') and its share of the read", progress)
+
+    def forwards():
+        def run(kind, stages):
+            out = []
+            for stage, cells_order in stages:
+                for cell in cells_order:
+                    for d in range(0, 11):
+                        out.append(cells.progress_fraction({'cell': cell, 'cells': 3, 'stage': stage,
+                                                            'done': d, 'total': 10}, kind))
+                    if stage in ('other SI',):
+                        out.append(cells.progress_fraction({'cell': cell, 'cells': 3, 'stage': 'done',
+                                                            'done': 1, 'total': 1}, kind))
+            return out
+        nr = []
+        for cell in range(3):
+            nr += run('nr', [('SIB1', [cell]), ('other SI', [cell])])
+        lte = run('lte', [('MIB and SIB1', [0, 1, 2]), ('other SI', [0, 1, 2])])
+        ok = all(b >= a - 1e-12 for a, b in zip(nr, nr[1:])) and all(b >= a - 1e-12 for a, b in zip(lte, lte[1:]))
+        return ok and abs(nr[-1] - 1) < 1e-9 and abs(lte[-1] - 1) < 1e-9, (nr[-3:], lte[-3:])
+    expect("the read's share only grows: NR cell by cell, LTE's MIB and SIB1 pass then its SI pass", forwards)
+
+    def on_request():
+        r = nr_reply()
+        e = r['ssbs'][0]
+        e['own']['sib1']['si_schedule'] = [dict(x) for x in SCHEDULE]
+        e['own']['sib1']['si_schedule'][4]['broadcast_status'] = 'notBroadcasting'
+        e['own']['si']['sibs_heard'].pop('sib9')
+        mark = cells.model('nr', r)['sectors'][0]['marks']['sib9']
+        return mark['mark'] == 'span' and mark['text'] == 'sent only on request', mark
+    expect("an SI message SIB1 lists as not broadcast: 'sent only on request', not 'not found'", on_request)
 
     def kept():
         folder = tempfile.mkdtemp(prefix='cells-kept-')
@@ -232,6 +266,23 @@ def _tool(name):
 
 def part2():
     print('part 2: the tools report as they go')
+
+    def shared_file():
+        from fm_receiver.app_cells import _Read
+        script = os.path.join(FOLDER, 'writer.py')
+        with open(script, 'w') as fh:
+            fh.write("import json, sys\n"
+                     "for i in range(20000):\n"
+                     "    sys.stderr.write(json.dumps({'progress': {'cell': i, 'x': 'y' * (i % 300)}}) + '\\n')\n")
+        r = _Read('x', 'nr', [sys.executable, script], False)
+        got = []
+        while r.proc.poll() is None:
+            got += r.lines()
+        got += r.lines()
+        r.close()
+        parsed = [cells.progress_line(x) for x in got]
+        return (len(got) == 20000 and all(parsed) and [p['cell'] for p in parsed] == list(range(20000))), len(got)
+    expect("a read's stderr, read as the tool writes it: every line whole, none lost", shared_file)
 
     def lte_cli():
         from tests.test_iqlte_phy import PCI, cell_iq
@@ -356,7 +407,7 @@ def part3():
 
     def fake_quick(path):
         asked.append(path)
-        return {'nr': quick if path == cell_rec else None, 'lte': None}
+        return {'nr': quick if path != slow_rec else None, 'lte': None}
     cells.quick = fake_quick
 
     args = fmapp.parse_args(['--no-sound-card', '--no-control', '--mode', 'recordings'])
@@ -402,7 +453,7 @@ def part3():
                 if st['state'] == 'reading':
                     seen['reading'] = True
                     states = [s['state'] for s in st['models'][0]['sectors']]
-                    if states[:2] == ['read', 'waiting']:
+                    if states[0] == 'read' and states[1] in ('waiting', 'reading'):
                         seen['partial'] = True
                 return st['state'] == 'read'
             done = pump(qapp, 20, watch)
@@ -446,6 +497,43 @@ def part3():
             return shown and not os.path.exists(ran), (state()['state'], state()['shown'], os.path.exists(ran))
         expect("the kept read shows again at once, with no tool run", kept_again)
 
+        def other_while_reading():
+            other = recording(601.0, '20260101-130000', 2e6)
+            w._refresh_library()
+            pump(qapp, 0.5)
+            open(slow, 'w').close()
+            pick(cell_rec)
+            pump(qapp, 1, lambda: state()['shown'])
+            cmd['cells-pane'](w, ['read'])
+            started = pump(qapp, 3, lambda: state()['state'] == 'reading')
+            pick(other)
+            shown = pump(qapp, 10, lambda: state()['shown'] and state()['state'] == 'found')
+            back = pick(cell_rec) and pump(qapp, 3, lambda: state()['state'] == 'reading')
+            st = state()
+            sectors = st['models'][0]['sectors'] if st['models'] else []
+            cmd['cells-pane'](w, ['stop'])
+            os.remove(slow)
+            return started and shown and back and len(sectors) == 3, (started, shown, back, st['state'])
+        expect("another recording chosen during a read gets its pane; back on the first, the read goes on", other_while_reading)
+
+        def again_keeps_grid():
+            pick(cell_rec)
+            pump(qapp, 2, lambda: state()['state'] in ('read', 'found', 'failed'))
+            w._cells_quick.pop(cell_rec, None)          # as after a restart: only the kept read
+            w._cells_done.clear()
+            open(slow, 'w').close()
+            cmd['cells-pane'](w, ['read'])
+            pump(qapp, 1.0)
+            st = state()
+            grid = bool(st['models']) and len(st['models'][0]['sectors']) == 3
+            reading = [s['state'] for s in st['models'][0]['sectors']] if grid else []
+            cmd['cells-pane'](w, ['stop'])
+            after = state()
+            os.remove(slow)
+            return (grid and 'reading' in reading and after['state'] == 'failed'
+                    and len(after['models'][0]['sectors']) == 3), (reading, after['state'])
+        expect("Read again on a kept read: the grid stays while reading, the cell read marked, and after Stop", again_keeps_grid)
+
         def stop():
             open(slow, 'w').close()
             cmd['cells-pane'](w, ['read'])
@@ -460,9 +548,26 @@ def part3():
         def delete():
             rec = next(r for r in w._recordings if any(t.path == cell_rec for t in r.tracks))
             target = cells.path_for(cell_rec)
+            pick(cell_rec)
+            pump(qapp, 1, lambda: state()['shown'])
+            cmd['cells-pane'](w, ['read'])                  # still slow: deleted mid-read
+            pump(qapp, 1, lambda: w._cells_job is not None and w._cells_job['read'] is not None)
+            proc = w._cells_job['read'].proc
             w._delete_recording(rec)
-            return not os.path.exists(target) and not os.path.exists(cell_rec), os.listdir(rec_dir)
-        expect("deleting the recording takes its kept read", delete)
+            pump(qapp, 0.5)
+            return (not os.path.exists(target) and not os.path.exists(cell_rec) and w._cells_job is None
+                    and proc.poll() is not None), os.listdir(rec_dir)
+        expect("deleting the recording mid-read stops the read and takes its kept read", delete)
+
+        def leave():
+            other = next(p for r in w._recordings for p in [t.path for t in r.tracks] if '601.00MHz' in p)
+            pick(other)
+            pump(qapp, 3, lambda: state()['shown'])
+            was = w.bottom.currentWidget() is pane
+            w._cells_leave()
+            return was and w.bottom.currentWidget() is w.rx_page and w._split_before is None, \
+                (was, type(w.bottom.currentWidget()).__name__)
+        expect("leaving Recordings: the multiplex back at once, the split as it was", leave)
     finally:
         w.close()
         pump(qapp, 0.2)

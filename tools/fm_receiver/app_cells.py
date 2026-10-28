@@ -5,12 +5,18 @@ A mixin of ``app.MainWindow``. When an IQ recording is chosen, the quick check (
 (``cells_view.CellsPane``) takes the multiplex's place under the waterfall, fading in. Read cells
 runs ``tools/iq-nr --pdsch`` and ``tools/iq-lte --own`` in turn (``cells.read_argv``), as their own
 process group, the memory capped where systemd can, and follows their ``--progress`` lines:
-each cell's column fills in as it is read. Stop, another Read, or closing the window ends it.
-A read is kept beside its recording (``cells.save``) and shown again when chosen; the list line
-gains its words ("5G NR, 3 cells").
+each cell's column fills in as it is read. Stop, another Read, deleting the recording or closing
+the window ends it. A read is kept beside its recording (``cells.save``, a ``.cfile``; in memory
+for the session otherwise) and shown again when chosen; the list line gains its words
+("5G NR, 3 cells").
+
+Every slot here is guarded as the window's timers are (``_report``): an exception escaping a Qt
+slot would end the app.
 """
 
 import concurrent.futures
+import datetime
+import functools
 import json
 import os
 import shutil
@@ -20,7 +26,7 @@ import sys
 import tempfile
 import time
 
-from PyQt5 import Qt, QtCore  # type: ignore
+from PyQt5 import Qt  # type: ignore
 
 from . import cells
 from .cells_view import CellsPane
@@ -32,15 +38,31 @@ POLL_MS = 250
 #: The memory a read may take (``iq-lte --own`` peaks near 2 GB): beyond it the read, not the
 #: session, is stopped. Linux with a user systemd only.
 READ_MEMORY = '6G'
+#: A capped read that fails this soon, saying so, is run again without the cap.
+CAP_FAIL_S = 5.0
 #: Read time, seconds a cell: the measured runs took 24 to 42.
 SECONDS_A_CELL = 40
+
+
+def _guarded(where):
+    """A slot that reports an exception (``_report``) rather than letting it end the app."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        def slot(self, *args):
+            try:
+                return fn(self, *args)
+            except Exception:
+                self._report(where)
+                return False
+        return slot
+    return wrap
 
 
 class _Read:
     """One running tool: its process (a group of its own), its output files and where it is."""
 
-    def __init__(self, path, kind, argv):
-        self.path, self.kind = path, kind
+    def __init__(self, path, kind, argv, capped):
+        self.path, self.kind, self.argv, self.capped = path, kind, argv, capped
         self.out = tempfile.TemporaryFile()
         self.err = tempfile.TemporaryFile()
         self.proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=self.out, stderr=self.err,
@@ -53,12 +75,17 @@ class _Read:
         self.notes = []                   # stderr lines that are not progress
 
     def lines(self):
-        """The stderr lines written since last asked."""
-        self.err.seek(self.at)
-        got = self.err.read()
-        self.at += len(got)
-        data = self.rest + got
-        *whole, self.rest = data.split(b'\n')
+        """The whole stderr lines written since last asked. Read at an offset (``pread``), so the
+        tool's own place in the file it shares is never moved."""
+        fd = self.err.fileno()
+        got = []
+        while True:
+            chunk = os.pread(fd, 1 << 16, self.at)
+            if not chunk:
+                break
+            self.at += len(chunk)
+            got.append(chunk)
+        *whole, self.rest = (self.rest + b''.join(got)).split(b'\n')
         return [w.decode('utf-8', 'replace') for w in whole]
 
     def stop(self):
@@ -88,14 +115,14 @@ class _Read:
 
 
 def _capped(argv):
-    """``argv`` under a memory cap where a user systemd runs (Linux); as it is elsewhere."""
+    """``argv`` under a memory cap where a user systemd runs (Linux), and whether it is."""
     if not sys.platform.startswith('linux') or os.environ.get('FMRX_CELLS_NO_CAP'):
-        return argv
+        return argv, False
     runner = shutil.which('systemd-run')
     if runner is None or not os.environ.get('XDG_RUNTIME_DIR'):
-        return argv
+        return argv, False
     return [runner, '--user', '--scope', '-q', '-p', f'MemoryMax={READ_MEMORY}',
-            '-p', 'MemorySwapMax=0', '--'] + argv
+            '-p', 'MemorySwapMax=0', '--'] + argv, True
 
 
 class CellsWindow:
@@ -111,6 +138,7 @@ class CellsWindow:
         self._cells_check = None                # (path, future) of the quick check running
         self._cells_path = None                 # the IQ file of the recording on show, if any
         self._cells_job = None                  # {'path', 'kinds', 'replies', 'read', 'began'}
+        self._cells_done = {}                   # path -> a read finished this session (as kept)
         self._cells_shown = False
         self._cells_words = {}                  # path -> the list line's words, once found
         self._cells_timer = Qt.QTimer(self)
@@ -133,7 +161,7 @@ class CellsWindow:
             self._cells_progress_shown()
             self._cells_show(True)
             return
-        kept = cells.load(path)
+        kept = self._cells_kept(path)
         if kept is not None:
             self._cells_show_kept(kept)
             return
@@ -142,12 +170,22 @@ class CellsWindow:
             return
         self._cells_show(False)
         if self._cells_check is None or self._cells_check[0] != path:
+            if self._cells_check is not None:
+                self._cells_check[1].cancel()       # not started yet: it never runs
             self._cells_check = (path, self._cells_exec.submit(cells.quick, path))
         self._cells_timer.start()
 
+    def _cells_kept(self, path):
+        return self._cells_done.get(path) or cells.load(path)
+
     def _cells_models(self, path):
+        """The cells known of ``path`` before a read: the quick check's, else the last read's."""
         quick = self._cells_quick.get(path) or {}
-        return [quick[k] for k in ('nr', 'lte') if quick.get(k)]
+        models = [quick[k] for k in ('nr', 'lte') if quick.get(k)]
+        if not models:
+            kept = self._cells_kept(path)
+            models = [cells.waiting(m) for m in cells.models_of(kept)] if kept else []
+        return models
 
     def _cells_found(self, path):
         models = self._cells_models(path)
@@ -180,11 +218,15 @@ class CellsWindow:
         return bool(self._cells_shown and self._tab_mode() == 'recordings')
 
     def _cells_leave(self):
-        """Out of Recordings: the multiplex is the receiver's again (a read goes on)."""
+        """Out of Recordings: the multiplex is the receiver's again, at once and at its own
+        height (a read goes on)."""
         self._cells_path = None
         self._cells_shown = False
+        if self.bottom.currentWidget() is self.cells_pane:
+            self._show_bottom(False, False)
 
     # ------------------------------------------------------------ reading
+    @_guarded('cells read')
     def cells_read(self):
         """Read the cells of the recording on show (Read cells). False when there is nothing to
         read or it is being read."""
@@ -195,39 +237,50 @@ class CellsWindow:
             if self._cells_job['path'] == path:
                 return False
             self.cells_stop()
-        kinds = [k for k in ('nr', 'lte') if (self._cells_quick.get(path) or {}).get(k)]
-        if not kinds:
-            kept = cells.load(path) or {}
-            kinds = [k for k in ('nr', 'lte') if kept.get(k)]
+        kinds = [m['kind'] for m in self._cells_models(path)]
         if not kinds:
             return False
         self._cells_job = {'path': path, 'kinds': kinds, 'replies': {}, 'read': None,
-                           'began': time.monotonic(), 'error': None}
+                           'began': time.monotonic()}
         self._cells_next()
         self._cells_timer.start()
         return True
 
-    def cells_stop(self):
+    @_guarded('cells stop')
+    def cells_stop(self, why='Stopped; nothing kept'):
         job, self._cells_job = self._cells_job, None
         if job is None:
             return False
         if job['read'] is not None:
             job['read'].stop()
         if job['path'] == self._cells_path:
-            self.cells_pane.show_failed(self._cells_models(job['path']), 'Stopped; nothing kept')
+            self.cells_pane.show_failed(self._cells_models(job['path']), why)
         return True
 
-    def _cells_next(self):
+    def _cells_deleted(self, paths):
+        """Recordings were deleted: a read of one of them stops, and is forgotten."""
+        paths = set(paths)
+        if self._cells_job is not None and self._cells_job['path'] in paths:
+            self.cells_stop()
+        for path in paths:
+            self._cells_done.pop(path, None)
+            self._cells_quick.pop(path, None)
+            self._cells_words.pop(path, None)
+
+    def _cells_next(self, uncapped=False):
         job = self._cells_job
         kind = next(k for k in job['kinds'] if k not in job['replies'])
+        argv = cells.read_argv(kind, job['path'])
+        argv, capped = (argv, False) if uncapped else _capped(argv)
         try:
-            job['read'] = _Read(job['path'], kind, _capped(cells.read_argv(kind, job['path'])))
+            job['read'] = _Read(job['path'], kind, argv, capped)
         except OSError as exc:
             job['read'] = None
             self._cells_failed(f"Could not start the read: {exc.strerror or exc}")
             return
         self._cells_progress_shown()
 
+    @_guarded('cells')
     def _cells_poll(self):
         check = self._cells_check
         if check is not None and check[1].done():
@@ -237,9 +290,11 @@ class CellsWindow:
                 self._cells_quick[path] = future.result()
             except Exception:
                 self._cells_quick[path] = {}
-            if path == self._cells_path and self._cells_job is None and cells.load(path) is None:
+            job = self._cells_job
+            if path == self._cells_path and (job is None or job['path'] != path) \
+                    and self._cells_kept(path) is None:
                 self._cells_found(path)
-                self._cells_list_words(path)
+            self._cells_list_words(path)
         job = self._cells_job
         if job is not None and job['read'] is not None:
             self._cells_follow(job)
@@ -248,6 +303,7 @@ class CellsWindow:
 
     def _cells_follow(self, job):
         read = job['read']
+        code = read.proc.poll()                     # before reading: what it wrote is all there
         moved = False
         for line in read.lines():
             p = cells.progress_line(line)
@@ -259,7 +315,6 @@ class CellsWindow:
             moved = True
             if p.get('entry') is not None:
                 read.entries.append(p['entry'])
-        code = read.proc.poll()
         if code is None:
             if moved:
                 self._cells_progress_shown()
@@ -267,6 +322,10 @@ class CellsWindow:
         job['read'] = None
         if code != 0:
             read.close()
+            if read.capped and time.monotonic() - read.began < CAP_FAIL_S \
+                    and not read.entries and read.last is None:
+                self._cells_next(uncapped=True)     # no user systemd after all: without the cap
+                return
             why = read.notes[-1] if read.notes else f"exit {code}"
             self._cells_failed(f"The {cells.TECH[read.kind]} read failed: {why}")
             return
@@ -280,11 +339,16 @@ class CellsWindow:
             return
         self._cells_job = None
         seconds = time.monotonic() - job['began']
+        doc = {'schema': cells.SCHEMA, 'seconds': round(seconds, 1),
+               'read': datetime.datetime.now().astimezone().isoformat(timespec='seconds'),
+               'lte': job['replies'].get('lte'), 'nr': job['replies'].get('nr')}
+        models = cells.models_of(doc)
+        doc['summary'] = cells.summary(models)
+        self._cells_done[job['path']] = doc
         try:
             cells.save(job['path'], job['replies'], seconds)
         except OSError:
             pass
-        models = [cells.model(k, job['replies'][k]) for k in ('nr', 'lte') if k in job['replies']]
         if job['path'] == self._cells_path:
             self.cells_pane.show_read(models, f"Read in {_took(seconds)}")
         self._cells_list_words(job['path'], models)
@@ -294,7 +358,7 @@ class CellsWindow:
         job = self._cells_job
         if job is None or job['path'] != self._cells_path:
             return
-        quick = self._cells_quick.get(job['path']) or {}
+        before = {m['kind']: m for m in self._cells_models(job['path'])}
         read = job['read']
         models = []
         for kind in ('nr', 'lte'):
@@ -302,20 +366,31 @@ class CellsWindow:
                 continue
             if kind in job['replies']:
                 models.append(cells.model(kind, job['replies'][kind]))
-            elif read is not None and read.kind == kind and quick.get(kind):
-                models.append(cells.reading(quick[kind], read.entries))
-            elif quick.get(kind):
-                models.append(quick[kind])
+            elif read is not None and read.kind == kind and before.get(kind):
+                models.append(cells.reading(before[kind], read.entries,
+                                            (read.last or {}).get('pci')))
+            elif before.get(kind):
+                models.append(before[kind])
         last = read.last if read is not None else None
-        text = cells.progress_text(last) if last else f"Starting the {cells.TECH[read.kind]} read" \
-            if read is not None else ''
-        done = len(job['replies']) + (cells.progress_fraction(last) if last else 0.0)
-        self.cells_pane.show_reading(models, text, done / max(1, len(job['kinds'])))
+        if last:
+            text = cells.progress_text(last)
+        else:
+            text = f"Starting the {cells.TECH[read.kind]} read" if read is not None else ''
+        share = cells.progress_fraction(last, read.kind) if last else 0.0
+        done = (len(job['replies']) + share) / max(1, len(job['kinds']))
+        job['shown'] = max(job.get('shown', 0.0), done)        # never backwards
+        self.cells_pane.show_reading(models, text, job['shown'])
 
     def _cells_failed(self, why):
+        """The read ended without a result: what it finished (another technology) is still
+        shown, with why."""
         job, self._cells_job = self._cells_job, None
-        if job is not None and job['path'] == self._cells_path:
-            self.cells_pane.show_failed(self._cells_models(job['path']), why)
+        if job is None or job['path'] != self._cells_path:
+            return
+        models = [cells.model(k, r) for k, r in job['replies'].items()]
+        done = {m['kind'] for m in models}
+        models += [m for m in self._cells_models(job['path']) if m['kind'] not in done]
+        self.cells_pane.show_failed(models, why)
 
     def _cells_list_words(self, path, models=None):
         """The recording's list line gains what was found."""
@@ -337,23 +412,23 @@ class CellsWindow:
         text = self._recording_text(rec)
         words = next((self._cells_words[t.path] for t in rec.tracks if t.path in self._cells_words), None)
         words = words or cells_words(rec)
-        return text + (' \u00b7 ' + words if words else '')
+        return text + (' · ' + words if words else '')
 
     def _cells_close(self):
         self._cells_timer.stop()
         if self._cells_job is not None and self._cells_job['read'] is not None:
             self._cells_job['read'].stop()
         self._cells_job = None
-        self._cells_exec.shutdown(wait=False)
+        self._cells_exec.shutdown(wait=False, cancel_futures=True)
 
 
 def cells_words(rec):
     """What a recording's kept read found, for its list line, or ''."""
     for track in rec.tracks:
         if track.kind in CELL_KINDS:
-            kept = cells.load(track.path)
-            if kept is not None:
-                return kept.get('summary') or cells.summary(cells.models_of(kept))
+            words = cells.kept_summary(track.path)
+            if words:
+                return words
     return ''
 
 

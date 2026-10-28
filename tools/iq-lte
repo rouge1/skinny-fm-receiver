@@ -160,7 +160,7 @@ def _own_cells(iq, rate, cells, block_hz, pdcch, pdsch, si=False, progress=None)
     (a call at each frame), then 'done' with the cell as it will be listed."""
     def tell(cell, stage, done=0, total=1, entry=None):
         if progress is not None:
-            progress(cells.index(cell), stage, done, total, entry)
+            progress(next(i for i, c in enumerate(cells) if c is cell), stage, done, total, entry)
 
     def read(cell, use):
         cell['own_known'] = [k['pci'] for k in use]

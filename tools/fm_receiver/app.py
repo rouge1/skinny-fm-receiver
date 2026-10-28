@@ -4021,6 +4021,7 @@ class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
         """Delete ``recs``. Returns the keys of the ones whose files all went:
         a recording that kept a file, or is a Sceptre file, is not in it."""
         keys = {rec.key for rec in recs}
+        self._cells_deleted([t.path for rec in recs for t in rec.tracks])
         if self._play is not None and self._play.recording.key in keys:
             self._stop_playback(show=False)
         failed, removed = [], []
