@@ -19,12 +19,18 @@ for the pane to open under the grid.
 
 A read is kept beside a ``.cfile`` as ``<base>.cells.json`` (``save``, ``load``), the tools' JSON
 as it came, so the pane shows it again without reading; the list line's words come from it.
+The app writes nothing beside a Sceptre recording (``.sdvr``, ``.cdif``): its read is kept in
+``cells/`` beside the settings (``config.config_path``), named by the recording's path, with
+the recording's size and time, so a recording Sceptre wrote again over the old one is read anew.
 """
 
 import datetime
+import hashlib
 import json
 import os
 import sys
+
+from . import config
 
 #: Beside ``<base>.cfile``.
 SUFFIX = '.cells.json'
@@ -459,19 +465,31 @@ def progress_fraction(p, kind='nr'):
 
 # ----------------------------------------------------------------- kept beside the recording
 
+def _beside(recording):
+    return os.path.splitext(str(recording))[1].lower() == '.cfile'
+
+
+def kept_dir():
+    """Where the reads of recordings the app writes nothing beside are kept."""
+    return os.path.join(os.path.dirname(config.config_path()), 'cells')
+
+
 def path_for(recording):
-    """``<base>.cells.json`` beside a ``.cfile``; None for any other file (the app does not
-    write beside those)."""
-    base, ext = os.path.splitext(str(recording))
-    return base + SUFFIX if ext.lower() == '.cfile' else None
+    """``<base>.cells.json`` beside a ``.cfile``; for any other file (the app does not write
+    beside those) ``kept_dir()/<hash of its full path>.cells.json``."""
+    if _beside(recording):
+        return os.path.splitext(str(recording))[0] + SUFFIX
+    key = hashlib.sha1(os.path.realpath(str(recording)).encode('utf-8', 'surrogateescape')).hexdigest()
+    return os.path.join(kept_dir(), key[:20] + SUFFIX)
 
 
-def load(recording):
-    """``{'lte': reply or None, 'nr': reply or None, 'read': when, 'seconds': how long,
-    'summary': the list line's words}`` kept beside ``recording``, or None."""
-    target = path_for(recording)
-    if target is None or not os.path.isfile(target):
-        return None
+def _source(recording):
+    """The recording as a kept read away from it names it: path, size and time."""
+    st = os.stat(recording)
+    return {'path': os.path.realpath(str(recording)), 'size': st.st_size, 'mtime_ns': st.st_mtime_ns}
+
+
+def _read(target):
     try:
         with open(target) as fh:
             doc = json.load(fh)
@@ -480,22 +498,58 @@ def load(recording):
     return doc if isinstance(doc, dict) and doc.get('schema') == SCHEMA else None
 
 
+def load(recording):
+    """``{'lte': reply or None, 'nr': reply or None, 'read': when, 'seconds': how long,
+    'summary': the list line's words}`` kept for ``recording``, or None. One kept away from it
+    counts only while the recording is the one read (the same path, size and time)."""
+    target = path_for(recording)
+    if not os.path.isfile(target):
+        return None
+    doc = _read(target)
+    if doc is None or _beside(recording):
+        return doc
+    try:
+        return doc if doc.get('source') == _source(recording) else None
+    except OSError:
+        return None
+
+
 def save(recording, replies, seconds):
-    """Keep ``replies`` ({'lte': ..., 'nr': ...}) beside ``recording``. A file there is replaced
+    """Keep ``replies`` ({'lte': ..., 'nr': ...}) for ``recording``. A file there is replaced
     only when it is one of these. Returns the path, or None when nothing is written."""
     target = path_for(recording)
-    if target is None or not os.path.exists(recording):
+    if not os.path.exists(recording):
         return None
-    if os.path.exists(target) and load(recording) is None:
+    if os.path.exists(target) and _read(target) is None:
         return None
     doc = {'schema': SCHEMA, 'read': datetime.datetime.now().astimezone().isoformat(timespec='seconds'),
            'seconds': round(float(seconds), 1), 'lte': replies.get('lte'), 'nr': replies.get('nr')}
     doc['summary'] = summary(models_of(doc))
+    if not _beside(recording):
+        doc['source'] = _source(recording)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        _tidy(os.path.dirname(target))
     tmp = target + '.tmp'
     with open(tmp, 'w') as fh:
         json.dump(doc, fh, indent=1)
     os.replace(tmp, target)
     return target
+
+
+def _tidy(folder):
+    """Drop the reads in ``folder`` whose recording is gone (Sceptre deletes its own files)."""
+    try:
+        names = [n for n in os.listdir(folder) if n.endswith(SUFFIX)]
+    except OSError:
+        return
+    for name in names:
+        doc = _read(os.path.join(folder, name))
+        path = (doc or {}).get('source', {}).get('path')
+        if path and not os.path.exists(path):
+            try:
+                os.remove(os.path.join(folder, name))
+            except OSError:
+                pass
 
 
 _SUMMARIES = {}
@@ -505,10 +559,8 @@ def kept_summary(recording):
     """The list line's words of the read kept beside ``recording``, or ''. Read once per change
     of the file, not on every list refresh."""
     target = path_for(recording)
-    if target is None:
-        return ''
     try:
-        stamp = os.stat(target).st_mtime_ns
+        stamp = (os.stat(target).st_mtime_ns, os.stat(recording).st_mtime_ns)
     except OSError:
         return ''
     have = _SUMMARIES.get(target)

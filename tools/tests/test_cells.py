@@ -252,6 +252,31 @@ def part1():
             shutil.rmtree(folder, ignore_errors=True)
     expect("a read is kept beside a .cfile only, never over another file; its list words", kept)
 
+    def kept_away():
+        folder = tempfile.mkdtemp(prefix='cells-away-')
+        try:
+            rec = os.path.join(folder, 'sceptre.sdvr')
+            open(rec, 'wb').write(b'\0' * 64)
+            target = cells.save(rec, {'nr': nr_reply()}, 30.0)
+            beside = os.listdir(folder) == ['sceptre.sdvr']
+            doc = cells.load(rec)
+            words = cells.kept_summary(rec)
+            gone = os.path.join(folder, 'deleted.cdif')
+            open(gone, 'wb').write(b'\0' * 8)
+            orphan = cells.save(gone, {'nr': nr_reply()}, 1.0)
+            os.remove(gone)
+            cells.save(rec, {'nr': nr_reply()}, 31.0)      # the next save tidies the orphan away
+            tidied = not os.path.exists(orphan) and os.path.exists(target)
+            open(rec, 'wb').write(b'\0' * 128)               # Sceptre writes it again
+            stale = cells.load(rec)
+            return (target.startswith(cells.kept_dir()) and beside and doc is not None
+                    and doc['seconds'] == 30.0 and words == '5G NR, 3 cells' and tidied
+                    and stale is None and cells.kept_summary(rec) == ''), (target, words, tidied, stale)
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+    expect("a Sceptre recording's read is kept in the app's folder, dropped when the file is "
+           "written again or gone", kept_away)
+
 
 # ----------------------------------------------------------------- part 2
 
@@ -496,6 +521,20 @@ def part3():
             shown = pump(qapp, 3, lambda: state()['shown'] and state()['state'] == 'read')
             return shown and not os.path.exists(ran), (state()['state'], state()['shown'], os.path.exists(ran))
         expect("the kept read shows again at once, with no tool run", kept_again)
+
+        def rewritten():
+            kept_file = cells.path_for(cell_rec)
+            saved = open(kept_file).read()
+            pick(slow_rec)
+            pump(qapp, 1, lambda: w.bottom.currentWidget() is w.rx_page)
+            os.remove(kept_file)                             # as a Sceptre file's, kept away from it
+            np.zeros(int(2e6 * 0.06), dtype=np.complex64).tofile(cell_rec)   # written again
+            pick(cell_rec)
+            found = pump(qapp, 3, lambda: state()['shown'] and state()['state'] == 'found')
+            open(kept_file, 'w').write(saved)
+            np.zeros(int(2e6 * 0.05), dtype=np.complex64).tofile(cell_rec)
+            return found, state()['state']
+        expect("a recording written again over the old one: this session's read of it is not shown", rewritten)
 
         def other_while_reading():
             other = recording(601.0, '20260101-130000', 2e6)

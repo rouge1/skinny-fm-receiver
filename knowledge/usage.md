@@ -831,9 +831,12 @@ back.
   ("PCI 124: other SI, 40%") and each cell's column fills in as it is read.
   Before SIB1 is read only MIB and SIB1 are listed; the SIBs it schedules come
   after. The read is kept beside the recording (`<base>.cells.json`, for a
-  `.cfile`; a Sceptre file's only until the app closes) and shown at once the
-  next time you choose it; **Read again** reads it afresh. Delete takes it
-  with the recording, and stops a read of it. Stopping keeps nothing. You
+  `.cfile`) or, for a Sceptre file, which the app writes nothing beside, in
+  `cells/` beside the settings (`~/.config/fm-receiver/`), and shown at once
+  the next time you choose it; **Read again** reads it afresh. A Sceptre file
+  written again over the old one is read anew, and the read of one Sceptre
+  deleted goes at the next save. Delete takes it with the recording, and
+  stops a read of it. Stopping keeps nothing. You
   can choose other recordings while one is read; its pane goes on filling
   in when you come back to it.
 - **The marks.** A filled dot: decoded, with how many copies. A ring: not

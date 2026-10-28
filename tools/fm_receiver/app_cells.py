@@ -6,9 +6,9 @@ A mixin of ``app.MainWindow``. When an IQ recording is chosen, the quick check (
 runs ``tools/iq-nr --pdsch`` and ``tools/iq-lte --own`` in turn (``cells.read_argv``), as their own
 process group, the memory capped where systemd can, and follows their ``--progress`` lines:
 each cell's column fills in as it is read. Stop, another Read, deleting the recording or closing
-the window ends it. A read is kept beside its recording (``cells.save``, a ``.cfile``; in memory
-for the session otherwise) and shown again when chosen; the list line gains its words
-("5G NR, 3 cells").
+the window ends it. A read is kept (``cells.save``: beside a ``.cfile``, in the app's own
+``cells/`` folder for a Sceptre recording) and shown again when chosen; the list line gains its
+words ("5G NR, 3 cells").
 
 Every slot here is guarded as the window's timers are (``_report``): an exception escaping a Qt
 slot would end the app.
@@ -141,6 +141,7 @@ class CellsWindow:
         self._cells_done = {}                   # path -> a read finished this session (as kept)
         self._cells_shown = False
         self._cells_words = {}                  # path -> the list line's words, once found
+        self._cells_stamps = {}                 # path -> (size, time) when the above were made
         self._cells_timer = Qt.QTimer(self)
         self._cells_timer.setInterval(POLL_MS)
         self._cells_timer.timeout.connect(self._cells_poll)
@@ -156,6 +157,7 @@ class CellsWindow:
         if path is None:
             self._cells_show(False)
             return
+        self._cells_fresh(path)
         job = self._cells_job
         if job is not None and job['path'] == path:
             self._cells_progress_shown()
@@ -174,6 +176,19 @@ class CellsWindow:
                 self._cells_check[1].cancel()       # not started yet: it never runs
             self._cells_check = (path, self._cells_exec.submit(cells.quick, path))
         self._cells_timer.start()
+
+    def _cells_fresh(self, path):
+        """Forget what is known of ``path`` if the file changed since (Sceptre writes a
+        recording again over the old one); a read of it running is left to finish."""
+        try:
+            st = os.stat(path)
+            stamp = (st.st_size, st.st_mtime_ns)
+        except OSError:
+            return
+        if self._cells_stamps.get(path, stamp) != stamp:
+            for known in (self._cells_done, self._cells_quick, self._cells_words):
+                known.pop(path, None)
+        self._cells_stamps[path] = stamp
 
     def _cells_kept(self, path):
         return self._cells_done.get(path) or cells.load(path)
@@ -410,6 +425,9 @@ class CellsWindow:
     def _recording_line(self, rec):
         """A recording's line in the list, with the cells found in it."""
         text = self._recording_text(rec)
+        for t in rec.tracks:
+            if t.path in self._cells_words:
+                self._cells_fresh(t.path)
         words = next((self._cells_words[t.path] for t in rec.tracks if t.path in self._cells_words), None)
         words = words or cells_words(rec)
         return text + (' · ' + words if words else '')
