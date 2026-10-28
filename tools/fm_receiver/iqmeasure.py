@@ -624,18 +624,6 @@ def _decimated(read, n, rate, lo, hi, min_rate=0.0):
     return dec, _banded(read, n, rate, lo, hi, dec)
 
 
-def _crs_confirms(cell):
-    """True when an ``iqlte`` cell's reference signals (CRS) confirm its PCI at 1e-3.
-
-    In 50 ms a synthetic 5 MHz cell also gave a second "cell" at the TDD position, 17 dB
-    down, whose SSS cleared 1e-3 (2.5e-4) and whose CRS did not (chance 1, score 0.01);
-    every real cell so far had a CRS chance of 1e-300.
-    """
-    crs = cell.get('crs') if isinstance(cell, dict) else None
-    return (isinstance(crs, dict) and crs.get('pci') == cell.get('pci')
-            and crs.get('chance') is not None and crs['chance'] <= 1e-3)
-
-
 def _cells(read, n, rate, center_hz, centre, bw99, station_hz):
     """The card's ``lte`` and ``nr`` sections: the cells in the span's first 50 ms.
 
@@ -664,7 +652,7 @@ def _cells(read, n, rate, center_hz, centre, bw99, station_hz):
                       'chance': c.get('chance'), 'duplex': c.get('duplex'),
                       'frame_offset_s': None if c.get('frame_offset_samples') is None
                       else c['frame_offset_samples'] / rate}
-                     for c in fp.get('cells') or [] if _crs_confirms(c)]}
+                     for c in fp.get('cells') or [] if iqlte.crs_confirms(c)]}
     ssbs = iqnr.ssb_search(iq, rate, center_hz)
     nr = {'searched': True, 'reason': None, 'span_s': span_s,
           'ssbs': [{k: e.get(k) for k in ('ssb_hz', 'gscn', 'scs_khz', 'pci', 'ssb_index',

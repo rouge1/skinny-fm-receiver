@@ -546,6 +546,20 @@ SSS, or something else on the PSS, not a cell sending CRS there. The other cells
 read as before (the second cell's MIB in 191 of 629 frames, 312 of 314
 DCIs, SIB1 in 73 sums; 1.4 minutes and 2.0 GB for 6.3 s).
 
+Settled (2026-10-28): not a cell. `cells` on six separate seconds of the
+recording finds it in the first only, never again at its timing, while other
+one-off "cells" of the same strength (SSS chance 2e-4 to 7e-4) come and go in
+the others, one of them on the second cell's root just after the site (its
+ghost). Read at the extended-CP SSS position it vanishes, so it is no
+extended-CP (broadcast) carrier. Its PSS, per half-frame, is at the noise
+(found only by folding 200), half again as strong in odd half-frames as in
+even. The SSS chance is per timing, and the search tries up to 8 timings
+and 3 roots without counting them, so its 3.8e-4 is nearer 1e-2. Hence
+`confirmed` (`iqlte.crs_confirms`): a cell's CRS must confirm its PCI, or
+its MIB decode, before the card or the cells pane counts it; the decoders
+still read it. Correcting the chance instead would have dropped the
+second cell as well: it scored 7.4e-5 in that same second.
+
 ## Our own SI decoder: `--own` (roadmap Round 29.6)
 
 `tools/iq-lte FILE --own` reads each cell's whole broadcast with our own

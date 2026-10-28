@@ -1735,4 +1735,9 @@ first build, 15 px text with a scroll.
 - [x] A Sceptre recording's read kept too (2026-10-28): in `cells/` beside
   the settings, named by the recording's path and holding its size and
   time, so a file Sceptre writes again is read anew (`cells.path_for`).
+- [x] A sync signal that is not a cell (2026-10-28): the other 700 MHz
+  carrier's third PCI was a false SSS (one second of six, no CRS, no MIB,
+  not extended CP). `iq-lte` marks each cell `confirmed` (its CRS confirm
+  the PCI); the pane shows an unconfirmed one, still read, as a line under
+  the grid, not a column.
 

@@ -15,7 +15,10 @@ any cell schedules), ``sectors`` (strongest first: ``pci``, ``rel_db``, ``state`
 ``sibs_matched``), 'missing' (looked for, not found), 'unsure' (not found where a stronger cell
 was on top of it) or 'span' (not to be heard in the recording: its window did not come, or the
 cell sends it only when asked). ``detail`` is [(label, value)]
-for the pane to open under the grid.
+for the pane to open under the grid. An LTE model also has ``unconfirmed``: [{pci, rel_db, mark}]
+for the sync signals whose reference signals were not found and whose MIB did not decode
+(``iqlte.crs_confirms``). They are read like the cells, but are not counted as cells: the pane
+shows each as a line under the grid, its mark (quiet, 'span') opening what was found.
 
 A read is kept beside a ``.cfile`` as ``<base>.cells.json`` (``save``, ``load``), the tools' JSON
 as it came, so the pane shows it again without reading; the list line's words come from it.
@@ -164,9 +167,9 @@ def quick(path):
     return out
 
 
-def _model(kind, sectors, rows, sites=None, note=None):
+def _model(kind, sectors, rows, sites=None, note=None, unconfirmed=()):
     return {'kind': kind, 'title': _title(kind, sectors, sites), 'rows': rows, 'sectors': sectors,
-            'note': note}
+            'note': note, 'unconfirmed': list(unconfirmed)}
 
 
 # ----------------------------------------------------------------- NR
@@ -352,22 +355,66 @@ def _lte_sector(c):
     return s, keys
 
 
+def _lte_confirmed(c):
+    """A cell: its reference signals confirm its PCI, or its MIB decoded. A reply kept before
+    ``confirmed`` was written is judged by its ``crs``; one with neither counts as a cell."""
+    if (c.get('own_mib') or {}).get('mib'):
+        return True
+    if 'confirmed' in c:
+        return bool(c['confirmed'])
+    if 'crs' not in c:
+        return True
+    from . import iqlte
+    return iqlte.crs_confirms(c)
+
+
+def _db_text(db):
+    return '0 dB' if db is None or abs(db) < 0.05 else f"−{abs(db):.0f} dB"
+
+
+def _unconfirmed(c, s):
+    """The line (a quiet mark) of a sync signal that is not counted as a cell."""
+    read = 'not read: ' + s['reason'] if s.get('state') == 'not read' else \
+        'read anyway: ' + ('nothing decoded' if not any(m.get('mark') == 'ok' for m in s['marks'].values())
+                           else 'some decoded')
+    crs = c.get('crs') or {}
+    detail = [('sync (SSS)', f"correlation {float(c.get('score') or 0):.3f}, chance {float(c.get('chance') or 1):.1e}")]
+    if crs:
+        detail.append(('reference signals', f"none for PCI {s['pci']} at its timing (score "
+                                             f"{float(crs.get('score') or 0):.3f}; best fit PCI {crs.get('best_pci')})"))
+    else:
+        detail.append(('reference signals', 'not checked'))
+    detail.append(('read', (s.get('how') or '') + ('; ' if s.get('how') else '') + read))
+    if s.get('reason') and s.get('state') != 'not read':
+        detail.append(('MIB', s['reason']))
+    detail.append(('why not a cell', "a cell sends reference signals in every subframe; a sync "
+                                     "signal this weak can be noise, as the search tries several "
+                                     "timings and roots"))
+    text = (f"Also a sync signal at PCI {s['pci']}, {_db_text(s.get('rel_db'))}: no reference signals, "
+            f"so not a cell. {read[0].upper() + read[1:]}.")
+    return {'pci': s['pci'], 'rel_db': s.get('rel_db'), 'mark': _mark('span', text, detail)}
+
+
 def lte_model(result, waiting=()):
     """The model of an ``iq-lte --own`` reply (its ``cells``, or the cells read so far)."""
     cells = [c for c in (result.get('cells') if isinstance(result, dict) else result) or ()
              if isinstance(c, dict)]
     cells = sorted(cells, key=lambda c: -(c.get('relative_power_db') or 0.0))
-    sectors, sibs = [], set()
+    sectors, sibs, unconfirmed, counted = [], set(), [], []
     for c in cells:
         s, keys = _lte_sector(c)
+        if not _lte_confirmed(c):
+            unconfirmed.append(_unconfirmed(c, s))
+            continue
         sectors.append(s)
+        counted.append(c)
         sibs.update(keys)
-    seen = {s['pci'] for s in sectors}
+    seen = {s['pci'] for s in sectors} | {u['pci'] for u in unconfirmed}
     sectors += [dict(w) for w in waiting if w.get('pci') not in seen]
     rate = result.get('rate_sps') if isinstance(result, dict) else None
-    sites = _lte_sites([c['frame_offset_samples'] / rate for c in cells
+    sites = _lte_sites([c['frame_offset_samples'] / rate for c in counted
                         if rate and c.get('frame_offset_samples') is not None])
-    return _model('lte', sectors, _rows('lte', sibs), sites)
+    return _model('lte', sectors, _rows('lte', sibs), sites, unconfirmed=unconfirmed)
 
 
 def model(kind, result, waiting=()):

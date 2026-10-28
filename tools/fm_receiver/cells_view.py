@@ -5,7 +5,9 @@ cells. One layout in every state, so nothing jumps: a heading with the button on
 (Read cells, Stop while reading, Read again), then per technology a grid whose columns are the
 cells, strongest first - their level against the strongest, their identity (operator, tracking
 area, cell), a rule, a row per message (MIB, SIB1, the SIBs scheduled) and how each was read.
-Marks fill in as each cell is read. A mark opens what is behind it under the grid.
+Marks fill in as each cell is read. A mark opens what is behind it under the grid. A sync signal
+that is not counted as a cell (``cells``' ``unconfirmed``) is a quiet line under the grid, not a
+column; it opens the same way (row ``sync``).
 
 The look of it only: the models come from ``cells``. Colours are the stylesheet's (``style``,
 the ``cells*`` object names) or read from ``theme.TOKENS`` when painted; ``restyle`` sets the
@@ -395,6 +397,17 @@ class CellsPane(Qt.QWidget):
             if s.get('state') == 'not read' and s.get('reason'):
                 how = f"not read: {s['reason']}"
             grid.addWidget(_label(how, 'cellsName' if s.get('state') == 'read' else 'cellsQuiet'), r, c)
+        r += 1
+        for i, u in enumerate(m.get('unconfirmed') or ()):
+            if i == 0:                                        # a soft rule above them
+                grid.addWidget(_rule('cellsRuleSoft'), r, 0, 1, len(sectors) + 2)
+                r += 1
+            line = MarkCell(u['mark'])
+            where = (mi, u['pci'], 'sync')
+            line.clicked.connect(lambda _on=False, w=where: self._clicked(w))
+            self._cells[where] = line
+            grid.addWidget(line, r, 0, 1, len(sectors) + 2, QtCore.Qt.AlignLeft)
+            r += 1
         return grid
 
     def _clicked(self, where):
@@ -422,9 +435,11 @@ class CellsPane(Qt.QWidget):
                 _clear(item.layout())
         mi, pci, row = where
         model = self._models[mi]
-        name = dict(model['rows']).get(row, row)
-        self.detail_box.addWidget(_label(f"{name} of PCI {pci}: {mark.get('text', '')}", 'cellsTitle',
-                                         weight=QtGui.QFont.DemiBold))
+        if row == 'sync':
+            heading = f"Sync signal at PCI {pci}: not counted as a cell"
+        else:
+            heading = f"{dict(model['rows']).get(row, row)} of PCI {pci}: {mark.get('text', '')}"
+        self.detail_box.addWidget(_label(heading, 'cellsTitle', weight=QtGui.QFont.DemiBold))
         form = Qt.QGridLayout()
         form.setHorizontalSpacing(18)
         form.setVerticalSpacing(2)

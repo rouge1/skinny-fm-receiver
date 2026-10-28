@@ -2100,20 +2100,37 @@ def _apply_duplex(iq, fs, checks, pci, found, nfft):
 
 
 def _cells_crs(iq, fs, found, nfft):
-    """Each cell gains ``crs``: ``{pci, score, chance, best_pci}`` at its own timing.
+    """Each cell gains ``crs``: ``{pci, score, chance, best_pci}`` at its own timing, and
+    ``confirmed`` (``crs_confirms``).
 
     The other cells' PCIs are left out of the null. Not run without a class.
     """
     for cell in found:
         if nfft is None:
             cell['crs'] = None
+            cell['confirmed'] = False
             continue
         others = [c['pci'] for c in found if c['pci'] != cell['pci']]
         got = crs_search(iq, fs, cell['frame_offset_samples'], nfft,
                                    exclude=others, target=cell['pci'])
         cell['crs'] = {'pci': got.get('pci'), 'score': float(got.get('score') or 0.0),
                        'chance': float(got.get('chance', 1.0)), 'best_pci': got.get('best_pci')}
+        cell['confirmed'] = crs_confirms(cell)
     return found
+
+
+def crs_confirms(cell):
+    """True when a cell's reference signals (its ``crs``) confirm its PCI at 1e-3.
+
+    An SSS that clears 1e-3 is not enough on its own: the search tries several PSS timings and
+    roots, and does not count them. A synthetic 5 MHz cell gave a second "cell" 17 dB down at
+    the TDD position whose SSS cleared it (2.5e-4) and whose CRS did not (chance 1, score
+    0.01); on air a 1 s span gave one 9 dB down at another timing, found in no other second,
+    with no CRS there and no MIB. Every real cell so far had a CRS chance of 1e-300.
+    """
+    crs = cell.get('crs') if isinstance(cell, dict) else None
+    return (isinstance(crs, dict) and crs.get('pci') == cell.get('pci')
+            and crs.get('chance') is not None and crs['chance'] <= 1e-3)
 
 
 #: The carrier's bandwidth in MHz for each FFT size.

@@ -137,6 +137,22 @@ def lte_reply():
     return {'rate_sps': 1.92e6, 'cells': [lte_cell(321, 0.0, 100, schedule=sched), second, tdd]}
 
 
+def unconfirmed_reply():
+    """Two cells of one site, and two sync signals with no reference signals or MIB (the second
+    as a read kept before ``confirmed`` was written: judged by its ``crs``)."""
+    def sync_only(pci, rel, offset, **extra):
+        c = lte_cell(pci, rel, offset, known=[321, 322])
+        c['own_mib'] = {'mib': None, 'reason': 'no MIB in 10 frames', 'frames': 10}
+        c['own_sib1'] = c['own'] = None
+        c['crs'] = {'pci': None, 'score': 0.01, 'chance': 1.0, 'best_pci': 321}
+        c.update(extra)
+        return c
+    return {'rate_sps': 1.92e6, 'cells': [dict(lte_cell(321, 0.0, 100), confirmed=True),
+                                          dict(lte_cell(322, -3.0, 101), confirmed=True),
+                                          sync_only(324, -9.0, 5000, confirmed=False),
+                                          sync_only(325, -12.0, 7000)]}
+
+
 # ----------------------------------------------------------------- part 1
 
 def part1():
@@ -176,6 +192,24 @@ def part1():
         r['cells'] = r['cells'][:2]
         return cells.model('lte', r)['title'] == 'LTE: one site, two sectors', cells.model('lte', r)['title']
     expect("LTE: frames within a few microseconds are one site's sectors", lte_one_site)
+
+    def lte_unconfirmed():
+        m = cells.model('lte', unconfirmed_reply())
+        u = m['unconfirmed']
+        text = u[0]['mark']['text'] if u else ''
+        detail = dict(u[0]['mark']['detail']) if u else {}
+        # a sync signal whose MIB decoded is a cell, whatever its reference signals gave
+        r2 = {'rate_sps': 1.92e6, 'cells': [dict(lte_cell(321, 0.0, 100), confirmed=False)]}
+        m2 = cells.model('lte', r2)
+        return ([s['pci'] for s in m['sectors']] == [321, 322] and m['title'] == 'LTE: one site, two sectors'
+                and [x['pci'] for x in u] == [324, 325] and u[0]['mark']['mark'] == 'span'
+                and text == ("Also a sync signal at PCI 324, −9 dB: no reference signals, so not a cell. "
+                             "Read anyway: nothing decoded.")
+                and 'none for PCI 324' in detail.get('reference signals', '')
+                and detail.get('MIB') == 'no MIB in 10 frames' and cells.summary([m]) == 'LTE, 2 cells'
+                and [s['pci'] for s in m2['sectors']] == [321] and not m2['unconfirmed']), (m['title'], text, detail)
+    expect("LTE: a sync signal without reference signals or MIB is a line, not a cell; one with a MIB is a cell",
+           lte_unconfirmed)
 
     def sparse():
         m1 = cells.model('nr', {'ssbs': [{'pci': 123, 'relative_power_db': 0, 'mib': None, 'own': None}]})
@@ -499,6 +533,28 @@ def part3():
             pump(qapp, 0.6)
             return opened and state()['open'] is None and pane.detail.isHidden(), state()['open']
         expect("a mark's detail glides open under the grid, and shut again", detail)
+
+        def sync_line():
+            before = [dict(m) for m in pane._models], pane.state()['status']
+            pane.show_read([cells.model('lte', unconfirmed_reply())], 'Read in 1 s')
+            pump(qapp, 0.4)
+            lines = [c for (_mi, pci, row), c in pane._cells.items() if row == 'sync']
+            texts = [c.mark['text'] for c in lines]
+            heads = [lb.text() for lb in pane.body.findChildren(Qt.QLabel)]
+            title = pane.title.text()
+            cmd['cells-pane'](w, ['open', '324', 'sync'])
+            pump(qapp, 0.6)
+            opened = (state()['open'] == {'model': 0, 'pci': 324, 'row': 'sync'} and not pane.detail.isHidden()
+                      and any('Sync signal at PCI 324' in lb.text() for lb in pane.detail.findChildren(Qt.QLabel)))
+            cmd['cells-pane'](w, ['open', '324', 'sync'])
+            pump(qapp, 0.6)
+            pane.show_read(*before)
+            pump(qapp, 0.4)
+            return (len(lines) == 2 and texts[0].startswith('Also a sync signal at PCI 324')
+                    and 'PCI 324' not in heads and 'PCI 321' in heads and opened
+                    and title == 'LTE: one site, two sectors'), (texts, opened, title)
+        expect("a sync signal not counted as a cell: a line under the grid, no column; it opens its detail",
+               sync_line)
 
         def recolour():
             name = pane.findChild(Qt.QLabel, 'cellsName')

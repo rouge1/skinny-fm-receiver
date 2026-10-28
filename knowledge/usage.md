@@ -825,6 +825,13 @@ back.
   SIB1, then the SIBs the cells schedule (the one with the network time is
   named so). The last row says how each cell was read: alone, or with the
   stronger cells removed first.
+- **A sync signal that is not a cell** (LTE): one whose reference signals are
+  not found at its timing and whose MIB does not decode gets no column. It
+  is still read, but shows as a quiet line under the grid ("Also a sync
+  signal at PCI 324, −9 dB: no reference signals, so not a cell. Read
+  anyway: nothing decoded."), and it is not counted in the heading or the
+  list line. Click the line for what was found: the SSS's score and chance,
+  the reference-signal check, and what the read tried.
 - **Read cells** (top right) reads every message of every cell with our own
   decoders (`iq-nr --pdsch`, `iq-lte --own`): about 40 s a cell, while you
   keep using the app. The button becomes **Stop**, a line says where it is
@@ -1414,6 +1421,13 @@ tools/iq-lte CAPTURE.cfile --own                          # every SIB by our own
   `unknown`, and each check in `checks` has its score and chance estimate.
   The CP and PSS checks decide the verdict; SSS gives `pci`, which is null
   unless the SSS chance is at most 1e-3.
+- Each cell's `crs` is the reference-signal check at its own timing, and
+  `confirmed` says whether it confirms the cell's PCI at 1e-3
+  (`iqlte.crs_confirms`). An SSS that clears 1e-3 alone is not proof: the
+  search tries several timings and roots without counting them, and on air
+  a second of one carrier gave a "cell" found in no other second, with no
+  reference signals and no MIB. The decoders still read an unconfirmed cell;
+  the measurement card and the cells pane do not count it as one.
 - The carrier is looked for at the file centre. A capture from the Receive tab
   is centred 300 kHz below the tuned station, so give `--block-center` there
   (`fmctl cells lte` does it for you). An off-centre carrier reads as

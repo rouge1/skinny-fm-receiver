@@ -83,7 +83,8 @@ SIB1 in the same subframes.
   neighbour's broadcast), modulated again and subtracted from the samples.
   On synthetic signals that reads a cell 10 dB down. The one candidate here,
   a third PCI on the other carrier, shows no CRS at its timing with the
-  site gone, where a cell as strong as the site's second would.
+  site gone, where a cell as strong as the site's second would: a false SSS,
+  not a cell ([lte-verify.md](lte-verify.md#a-cell-of-another-timing-another-site)).
 
 Unlike the NR site, combining helped on top of cancellation here (no copy
 of the second cell's SIB1 decoded alone; every period did summed). Likely

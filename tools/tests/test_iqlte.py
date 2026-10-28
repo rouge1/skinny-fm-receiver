@@ -1216,7 +1216,7 @@ def check_l4_interface():
             return False, 'fingerprint has no cells key'
         want = multi_cells(L4_SPEC3, 0)['cells']
         # fingerprint adds each cell's CRS result; the rest is cells() as it is.
-        got = [{k: v for k, v in c.items() if k != 'crs'} for c in fp['cells']]
+        got = [{k: v for k, v in c.items() if k not in ('crs', 'confirmed')} for c in fp['cells']]
         same = bool(got == want)
         strongest = want[0]['pci'] if want else None
         ok = same and fp['pci'] == strongest
