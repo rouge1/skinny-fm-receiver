@@ -2658,6 +2658,26 @@ class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
                 "and back up 5% after a minute without, never above the slider.\n"
                 + cost + "\nOnce the gain has settled, turn AGC off to keep it there.")
 
+    def _gain_now(self):
+        """The radio's gain for a recording's metadata: the slider's percentage, what it set
+        each element to in dB, and whether AGC (in Receive) may move it."""
+        radio = self.radio
+        if radio is None:
+            return None
+        try:
+            db = radio.gain_db()
+        except Exception:
+            db = {}
+        return {'percent': float(radio.gain_percent), 'db': db, 'agc': bool(self._iq_agc_on())}
+
+    def _recording_gain_moved(self):
+        """Each IQ file being written notes the gain's change, and the sample it came at."""
+        recs = getattr(self, '_iq_recs', None)          # not yet while the window is built
+        if recs:
+            gain = self._gain_now()
+            for rec in recs:
+                rec.gain_changed(gain)
+
     def _follow_iq_agc(self, overloads, now, calm, heavy=True):
         if not self._iq_agc_on() or not self.engine.running:
             self._iq_agc = None
@@ -2672,6 +2692,7 @@ class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
                 self.radio.apply_gain(gain)
             except Exception as exc:
                 self._set_status(f"AGC could not set the gain: {exc}", 'warn')
+            self._recording_gain_moved()
             # The slider follows, quietly: a move by hand is a new ceiling.
             self.gain_slider.blockSignals(True)
             self.gain_slider.setValue(int(round(self.radio.gain_percent)))
@@ -2725,6 +2746,7 @@ class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
         self._iq_agc = None
         if self.radio is not None:
             self.cfg['gain_auto'][self.radio.kind] = self.agc_box.isChecked()
+        self._recording_gain_moved()                # AGC on or off is part of it
         self._show_gain()
         sweeper = self.engine.sweeper
         if self._mode == 'sweep' and getattr(sweeper, 'native', False):
@@ -2794,6 +2816,7 @@ class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
                     self.radio.apply_gain(value)
                 except Exception as exc:
                     self._set_status(f"Could not set gain: {exc}", 'warn')
+                self._recording_gain_moved()
 
     def _chan_bw_changed(self, hz):
         shown = self._shown_channel_hz()
@@ -2929,12 +2952,13 @@ class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
             if self.rec_channel.isChecked():
                 rec = IqRecording(rx.channel_sink, 'channel', folder, rx.channel_rate,
                                   e.station_hz, e.station_hz, name,
-                                  base=session + '-iq-channel')
+                                  base=session + '-iq-channel', gain=self._gain_now())
                 rec.start()
                 self._iq_recs.append(rec)
             if self.rec_band.isChecked():
                 rec = IqRecording(rx.band_sink, 'band', folder, e.rate, e.lo_hz,
-                                  e.station_hz, name, base=session + '-iq-band')
+                                  e.station_hz, name, base=session + '-iq-band',
+                                  gain=self._gain_now())
                 rec.start()
                 self._iq_recs.append(rec)
         except Exception as exc:

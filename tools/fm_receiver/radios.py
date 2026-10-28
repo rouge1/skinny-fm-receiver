@@ -146,6 +146,11 @@ class Radio:
         if percent is not None:
             self.gain_percent = float(percent)
 
+    def gain_db(self):
+        """The gain the radio is set to now, per element in dB, as the slider's percentage maps
+        it ({} where there is none to report): for a recording's metadata."""
+        return {}
+
     def usable_fraction(self, rate):
         return self.usable
 
@@ -261,6 +266,9 @@ class HackRF(Radio):
             for name, value in rx_gain_plan(self.gain_percent).items():
                 self.block.set_gain(0, name, value)
 
+    def gain_db(self):
+        return rx_gain_plan(self.gain_percent)
+
     def native_plan(self, start_hz, stop_hz, rbw_hz=None, **_view):
         from .hackrf_sweep import HackRFSweepPlan
         return HackRFSweepPlan(start_hz, stop_hz, rbw_hz)
@@ -336,7 +344,12 @@ class USRP(Radio):
             low, high = float(rng.start()), float(rng.stop())
         except Exception:
             low, high = 0.0, 31.5
-        self.block.set_gain(low + (high - low) * self.gain_percent / 100.0, 0)
+        self._gain = low + (high - low) * self.gain_percent / 100.0
+        self.block.set_gain(self._gain, 0)
+
+    def gain_db(self):
+        gain = getattr(self, '_gain', None)
+        return {} if gain is None else {'gain': round(gain, 2)}
 
 
 class BB60(Radio):
@@ -433,6 +446,9 @@ class BB60(Radio):
         self.block.set_gain_percent(self.gain_percent)
         if self.sweeper is not None and self.sweeper.running:
             self.sweeper.set_gain_percent(self.gain_percent)
+
+    def gain_db(self):
+        return {name: float(value) for name, value in _bb60.gain_plan(self.gain_percent).items()}
 
     def health(self):
         if self.block is None:
@@ -534,6 +550,11 @@ class RTLSDR(Radio):
         index = int(round(self.gain_percent / 100.0 * (len(steps) - 1)))
         self.block.command(CMD_GAIN_MODE, 1)
         self.block.command(CMD_GAIN, steps[index])
+        self._gain = steps[index] / 10.0                      # rtl_tcp's are tenths of a dB
+
+    def gain_db(self):
+        gain = getattr(self, '_gain', None)
+        return {} if gain is None else {'tuner': gain}
 
     def health(self):
         if self.block is None:

@@ -20,6 +20,12 @@ descriptions beside it: ``<name>.sigmf-meta`` (SigMF 1.0, naming the
 bench toolkit's capture format (``rate``, ``offset_hz``, ``station_hz``),
 which its ``scripts/test_rds_core.py`` reads. This app plays either back.
 
+**The gain** goes in both descriptions: the slider's percentage, what it set
+each of the radio's elements to in dB (``Radio.gain_db``) and whether AGC was
+on, then each change while the file was written (the slider, or AGC) with
+the sample it came at, to within a buffer. SigMF has no gain field, so these
+are ``fmrx:`` keys like the others.
+
 **A recording has one centre frequency.** Retuning while recording IQ
 closes the file and carries on in a new one (``-part2`` and on), each with
 its own description, rather than writing a file whose metadata is wrong for
@@ -195,10 +201,12 @@ class RecordingInfo:
 
 
 def write_iq_metadata(base, rate, center_hz, station_hz, kind, radio_name,
-                      samples=None, started=None):
+                      samples=None, started=None, gain=None, gain_changes=()):
     """The ``.sigmf-meta`` and ``.json`` descriptions of ``base.cfile``.
     ``started`` is when the file's first sample came (now by default): SigMF's
-    ``core:datetime`` is the time of the capture's first sample, not its end."""
+    ``core:datetime`` is the time of the capture's first sample, not its end.
+    ``gain`` is ``{'percent', 'db', 'agc'}`` at the first sample, ``gain_changes``
+    the same with ``sample`` for each change after it."""
     now = started or _utc_now()
     what = ('the tuned FM channel, station at 0 Hz' if kind == 'channel'
             else 'the whole band the radio received')
@@ -228,6 +236,13 @@ def write_iq_metadata(base, rate, center_hz, station_hz, kind, radio_name,
                'kind': kind, 'radio': radio_name, 'recorded': now}
     if samples is not None:
         toolkit['samples'] = int(samples)
+    if gain is not None:
+        sigmf['global'].update({'fmrx:gain_percent': gain.get('percent'), 'fmrx:gain_db': gain.get('db') or {},
+                                'fmrx:agc': bool(gain.get('agc'))})
+        toolkit['gain'] = dict(gain)
+        if gain_changes:
+            sigmf['global']['fmrx:gain_changes'] = [dict(c) for c in gain_changes]
+            toolkit['gain_changes'] = [dict(c) for c in gain_changes]
     for path, doc in ((base + '.sigmf-meta', sigmf), (base + '.json', toolkit)):
         _write_json(path, doc)
 
@@ -238,9 +253,10 @@ class IqRecording:
     ITEM = 8                                    # complex float32
 
     def __init__(self, sink, kind, directory, rate, center_hz, station_hz,
-                 radio_name, base=None):
+                 radio_name, base=None, gain=None):
         """``base`` names the file (less ``.cfile``); by default it is made
-        from the station, the time and the kind."""
+        from the station, the time and the kind. ``gain``: as
+        ``write_iq_metadata`` takes it, the radio's when recording starts."""
         self.sink = sink
         self.kind = kind
         self.directory = directory
@@ -249,6 +265,9 @@ class IqRecording:
         self.station_hz = float(station_hz)
         self.radio_name = radio_name
         self.paths = []
+        self.gain = None if gain is None else dict(gain)
+        self._gain_changes = []
+        self._part_gain = None
         self.base = None
         self._started = None
         self._part = 1
@@ -263,9 +282,11 @@ class IqRecording:
         else:
             self.base = f"{self._first}-part{self._part}"
         self._started = _utc_now()
+        self._gain_changes = []
+        self._part_gain = self.gain                 # at this file's first sample
         write_iq_metadata(self.base, self.rate, self.center_hz,
                           self.station_hz, self.kind, self.radio_name,
-                          started=self._started)
+                          started=self._started, gain=self._part_gain)
         if not self.sink.open(self.base + '.cfile'):
             raise OSError(f"could not open {self.base}.cfile for writing")
         self.paths.append(self.base + '.cfile')
@@ -279,7 +300,20 @@ class IqRecording:
             samples = None
         write_iq_metadata(self.base, self.rate, self.center_hz,
                           self.station_hz, self.kind, self.radio_name, samples,
-                          started=self._started)
+                          started=self._started, gain=self._part_gain,
+                          gain_changes=self._gain_changes)
+
+    def gain_changed(self, gain):
+        """The gain moved while recording: kept with the sample it came at (the
+        file's length now, to within a buffer). A next part starts with it."""
+        if self.base is None or gain is None:
+            return
+        try:
+            sample = os.path.getsize(self.base + '.cfile') // self.ITEM
+        except OSError:
+            sample = None
+        self._gain_changes.append(dict(gain, sample=sample))
+        self.gain = dict(gain)
 
     def retuned(self, center_hz, station_hz):
         """The radio or the channel moved: finish this file, start the next.

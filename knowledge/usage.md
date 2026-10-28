@@ -653,6 +653,15 @@ Recording works in Receive only.
   SDR tools read; its `core:datetime` is when the first sample came (in
   recordings made before 2026-10-23 it is the stop time). `.json` is the RF bench toolkit's capture format, so its
   `scripts/test_rds_core.py` can decode the recording.
+- **The gain is in both** (from 2026-10-28; SigMF has no field for it, so
+  these are the app's own `fmrx:` keys): `fmrx:gain_percent` (the slider),
+  `fmrx:gain_db` (what that set each of the radio's elements to: the BB60D's
+  `ATT` and `RF`, a HackRF's `AMP`, `LNA` and `VGA`, a USRP's `gain`, an
+  RTL-SDR's `tuner`, all in dB) and `fmrx:agc` (whether AGC could move it),
+  all at the first sample. If the gain moves while recording (the slider or
+  AGC), `fmrx:gain_changes` lists each change with the `sample` it came at,
+  to within a buffer. The `.json` has the same under `gain` and
+  `gain_changes`.
 - **Retuning while recording IQ** closes the file and continues in a new one
   (`-part2`, `-part3`, …), so each file has one centre frequency. A
   whole-band recording stays in the same file if only the tuner moves within

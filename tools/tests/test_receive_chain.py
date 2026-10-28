@@ -42,6 +42,8 @@ from fm_receiver.recording import IqRecording, WavWriter  # noqa: E402
 from tests import signals  # noqa: E402
 
 SECONDS = 9.0
+GAIN_START = {'percent': 60.0, 'db': {'ATT': 0.0, 'RF': 0.0}, 'agc': False}
+GAIN_MOVED = {'percent': 80.0, 'db': {'ATT': 0.0, 'RF': 10.0}, 'agc': False}
 
 
 def run_station(folder, convention):
@@ -58,7 +60,7 @@ def run_station(folder, convention):
     wav = WavWriter(os.path.join(folder, f"audio-{convention}.wav"))
     rx.tap.set_writer(wav)
     band = IqRecording(rx.band_sink, 'band', folder, tb.rate, tb.lo_hz,
-                       tb.station_hz, 'test')
+                       tb.station_hz, 'test', gain=GAIN_START)
     channel = IqRecording(rx.channel_sink, 'channel', folder, rx.channel_rate,
                           tb.station_hz, tb.station_hz, 'test')
     band_began = time.time()
@@ -75,7 +77,9 @@ def run_station(folder, convention):
 
     poller = threading.Thread(target=poll, daemon=True)
     poller.start()
-    time.sleep(1.0)
+    time.sleep(0.5)
+    band.gain_changed(GAIN_MOVED)   # the slider, half-way through
+    time.sleep(0.5)
     band.stop()                     # one second of band IQ is plenty
     band_ended = time.time()
     time.sleep(1.0)
@@ -162,6 +166,15 @@ def check(convention, expect_phase):
     assert 0.5 * 2.5e6 < n < 1.6 * 2.5e6, n
     sig = json.load(open(band[:-len('.cfile')] + '.sigmf-meta'))
     assert sig['global']['core:datatype'] == 'cf32_le'
+    # The gain: the slider's and each element's at the first sample, then the change and
+    # the sample it came at (about half-way through the second).
+    g = sig['global']
+    assert (g['fmrx:gain_percent'] == 60.0 and g['fmrx:gain_db'] == {'ATT': 0.0, 'RF': 0.0}
+            and g['fmrx:agc'] is False), g
+    moved = g['fmrx:gain_changes']
+    assert len(moved) == 1 and moved[0]['percent'] == 80.0 and moved[0]['db']['RF'] == 10.0, moved
+    assert 0.2 * 2.5e6 < moved[0]['sample'] < n, (moved[0]['sample'], n)
+    assert json.load(open(band[:-len('.cfile')] + '.json'))['gain'] == GAIN_START
     # SigMF's core:datetime is the first sample's time: the start, not the stop.
     when = datetime.datetime.fromisoformat(
         sig['captures'][0]['core:datetime'].replace('Z', '+00:00')).timestamp()
