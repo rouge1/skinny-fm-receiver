@@ -311,6 +311,34 @@ def part1():
     expect("a Sceptre recording's read is kept in the app's folder, dropped when the file is "
            "written again or gone", kept_away)
 
+    def kept_away_edges():
+        folder = tempfile.mkdtemp(prefix='cells-edges-')
+        try:
+            drive = os.path.join(folder, 'drive')
+            os.makedirs(drive)
+            away = os.path.join(drive, 'unplugged.sdvr')
+            open(away, 'wb').write(b'\0' * 8)
+            kept = cells.save(away, {'nr': nr_reply()}, 1.0)
+            os.rename(drive, drive + '-gone')                # the drive not mounted
+            rec = os.path.join(folder, 'here.sdvr')
+            open(rec, 'wb').write(b'\0' * 8)
+            open(cells.path_for(rec), 'w').write('{damaged')
+            saved = cells.save(rec, {'nr': nr_reply()}, 1.0)   # tidies, and replaces its damaged file
+            # a read kept before 'confirmed': its stored words counted a sync signal as a cell
+            old = os.path.join(folder, 'fm-600.00MHz-20260101-140000-iq-band.cfile')
+            open(old, 'wb').close()
+            cells.save(old, {'lte': unconfirmed_reply()}, 1.0)
+            doc = json.load(open(cells.path_for(old)))
+            doc['summary'] = 'LTE, 4 cells'
+            json.dump(doc, open(cells.path_for(old), 'w'))
+            words = cells.kept_summary(old)
+            return (os.path.exists(kept) and saved is not None and cells.load(rec) is not None
+                    and words == 'LTE, 2 cells'), (os.path.exists(kept), saved, words)
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+    expect("kept reads: an unmounted drive's are kept, a damaged one replaced, the list words from the models",
+           kept_away_edges)
+
 
 # ----------------------------------------------------------------- part 2
 
@@ -591,6 +619,30 @@ def part3():
             np.zeros(int(2e6 * 0.05), dtype=np.complex64).tofile(cell_rec)
             return found, state()['state']
         expect("a recording written again over the old one: this session's read of it is not shown", rewritten)
+
+        def rewritten_mid_read():
+            kept_file = cells.path_for(cell_rec)
+            saved = open(kept_file).read()
+            os.remove(kept_file)
+            pick(cell_rec)
+            pump(qapp, 3, lambda: state()['shown'] and state()['state'] == 'found')
+            cmd['cells-pane'](w, ['read'])
+            pump(qapp, 1, lambda: w._cells_job is not None and w._cells_job['read'] is not None)
+            np.zeros(int(2e6 * 0.07), dtype=np.complex64).tofile(cell_rec)        # written again
+            pick(slow_rec)
+            pump(qapp, 0.3)
+            pick(cell_rec)
+            grid = pump(qapp, 1, lambda: state()['state'] == 'reading' and state()['models'])
+            done = pump(qapp, 20, lambda: w._cells_job is None)
+            pump(qapp, 0.3)
+            st = state()
+            not_kept = (st['state'] == 'read' and 'not kept' in st['status'] and not os.path.exists(kept_file)
+                        and cell_rec not in w._cells_done)
+            np.zeros(int(2e6 * 0.05), dtype=np.complex64).tofile(cell_rec)
+            open(kept_file, 'w').write(saved)
+            return grid and done and not_kept, (grid, done, st['state'], st['status'])
+        expect("a recording written again during its read: the read goes on with its grid, and is not kept",
+               rewritten_mid_read)
 
         def other_while_reading():
             other = recording(601.0, '20260101-130000', 2e6)

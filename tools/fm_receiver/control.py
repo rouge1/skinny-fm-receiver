@@ -1355,8 +1355,8 @@ CELLS_PANE_USAGE = 'cells-pane [read|stop|open PCI ROW [SECTION]]'
          "for an IQ recording with cells: what it shows (its state, heading, status, the open "
          "detail, and per section the cells, rows and marks). read presses Read cells, stop "
          "presses Stop; open PCI ROW opens (or closes) a mark's detail, as a click does (ROW "
-         "as the rows name them, e.g. sib2; SECTION 0 unless the recording holds both LTE "
-         "and NR). Needs 'mode recordings' and a recording chosen.")
+         "as the rows name them, e.g. sib2, or sync for a sync signal not counted as a cell; "
+         "SECTION 0 unless the recording holds both LTE and NR). Needs 'mode recordings' and a recording chosen.")
 def cmd_cells_pane(w, args):
     words = _args(args, 0, 4, CELLS_PANE_USAGE)
     _recordings_tab(w)

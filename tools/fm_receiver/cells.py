@@ -567,8 +567,8 @@ def save(recording, replies, seconds):
     target = path_for(recording)
     if not os.path.exists(recording):
         return None
-    if os.path.exists(target) and _read(target) is None:
-        return None
+    if _beside(recording) and os.path.exists(target) and _read(target) is None:
+        return None                         # someone else's file beside it (cells/ is ours)
     doc = {'schema': SCHEMA, 'read': datetime.datetime.now().astimezone().isoformat(timespec='seconds'),
            'seconds': round(float(seconds), 1), 'lte': replies.get('lte'), 'nr': replies.get('nr')}
     doc['summary'] = summary(models_of(doc))
@@ -584,7 +584,8 @@ def save(recording, replies, seconds):
 
 
 def _tidy(folder):
-    """Drop the reads in ``folder`` whose recording is gone (Sceptre deletes its own files)."""
+    """Drop the reads in ``folder`` whose recording is gone (Sceptre deletes its own files):
+    its folder there and the file not, so a drive not mounted keeps its reads."""
     try:
         names = [n for n in os.listdir(folder) if n.endswith(SUFFIX)]
     except OSError:
@@ -592,7 +593,7 @@ def _tidy(folder):
     for name in names:
         doc = _read(os.path.join(folder, name))
         path = (doc or {}).get('source', {}).get('path')
-        if path and not os.path.exists(path):
+        if path and not os.path.exists(path) and os.path.isdir(os.path.dirname(path)):
             try:
                 os.remove(os.path.join(folder, name))
             except OSError:
@@ -613,7 +614,9 @@ def kept_summary(recording):
     have = _SUMMARIES.get(target)
     if have is None or have[0] != stamp:
         doc = load(recording) or {}
-        have = (stamp, (doc.get('summary') or summary(models_of(doc))) if doc else '')
+        # from the models, not the summary kept with them: one written before a change in what
+        # counts as a cell would disagree with the pane
+        have = (stamp, summary(models_of(doc)) if doc else '')
         _SUMMARIES[target] = have
     return have[1]
 

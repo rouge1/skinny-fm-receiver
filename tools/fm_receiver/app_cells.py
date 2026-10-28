@@ -179,15 +179,17 @@ class CellsWindow:
 
     def _cells_fresh(self, path):
         """Forget what is known of ``path`` if the file changed since (Sceptre writes a
-        recording again over the old one); a read of it running is left to finish."""
-        try:
-            st = os.stat(path)
-            stamp = (st.st_size, st.st_mtime_ns)
-        except OSError:
+        recording again over the old one), a quick check of the old one still running too. A
+        read of it running is left alone: it is not kept if the file changed (``_cells_follow``)."""
+        stamp = _stamp(path)
+        if stamp is None or (self._cells_job is not None and self._cells_job['path'] == path):
             return
         if self._cells_stamps.get(path, stamp) != stamp:
             for known in (self._cells_done, self._cells_quick, self._cells_words):
                 known.pop(path, None)
+            if self._cells_check is not None and self._cells_check[0] == path:
+                self._cells_check[1].cancel()
+                self._cells_check = None            # its result, if it comes, is not taken
         self._cells_stamps[path] = stamp
 
     def _cells_kept(self, path):
@@ -256,7 +258,7 @@ class CellsWindow:
         if not kinds:
             return False
         self._cells_job = {'path': path, 'kinds': kinds, 'replies': {}, 'read': None,
-                           'began': time.monotonic()}
+                           'began': time.monotonic(), 'stamp': _stamp(path)}
         self._cells_next()
         self._cells_timer.start()
         return True
@@ -359,6 +361,12 @@ class CellsWindow:
                'lte': job['replies'].get('lte'), 'nr': job['replies'].get('nr')}
         models = cells.models_of(doc)
         doc['summary'] = cells.summary(models)
+        if _stamp(job['path']) != job['stamp']:
+            # written again during the read (Sceptre): what was read is not the file now there
+            if job['path'] == self._cells_path:
+                self.cells_pane.show_read(models, f"Read in {_took(seconds)}; the recording was written "
+                                                  "again meanwhile, so this is not kept")
+            return
         self._cells_done[job['path']] = doc
         try:
             cells.save(job['path'], job['replies'], seconds)
@@ -448,6 +456,15 @@ def cells_words(rec):
             if words:
                 return words
     return ''
+
+
+def _stamp(path):
+    """(size, time) of a file, or None when it cannot be read."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st.st_size, st.st_mtime_ns
 
 
 def _took(seconds):
