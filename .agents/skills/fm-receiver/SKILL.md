@@ -189,7 +189,7 @@ Things that bit before:
 `tools/iq-measure FILE` prints the card of a recording as JSON: the level
 (in dBm only where the file has a calibration: a `.sdvr`, or a `.cdif` with
 `DATA_GAIN`), the occupied bandwidth, tones, bursts, envelope and frequency,
-the LTE and NR cells in the first 50 ms of a wideband span (`lte`, `nr`), and a class (lte, nr, lte+nr, noise, carrier, ook, ask, fsk, fm, am or unknown) with the
+the LTE and NR cells in the first 50 ms of a wideband span (`lte`, `nr`), and a class (lte, nr, lte+nr, noise, tv, pulses, carrier, ook, ask, psk, fsk, fm, am or unknown; `tv`, `pulses` and `psk` with a section of their own, FM subcarriers in `frequency`) with the
 evidence for it. Options: `--t0`, `--t1`, `--band LO HI` (absolute Hz),
 `--rate` and `--center` for a bare `.cfile`, and `--card`, which writes
 `<base>.card.json` beside a `.cfile` only. `tools/iq-picture FILE OUT.png`

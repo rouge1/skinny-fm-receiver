@@ -5,9 +5,10 @@ Behind ``tools/iq-measure`` and ``fmctl measure``. It reads a recording of IQ
 Sceptre DVR's IQ ``.sdvr``, or a BLUE ``.cdif``) a span at a time, never
 whole, and returns a card: a JSON-safe dict of the level, the occupied
 bandwidth, the tones, the bursts, the envelope and frequency behaviour, the
-symbol rate, the LTE cells and 5G NR sync blocks in a wideband span, and a
-class ('noise', 'lte', 'nr', 'lte+nr', 'carrier', 'ook', 'ask', 'fsk', 'fm',
-'am' or 'unknown') with the evidence for it. The class rules are fixed
+symbol rate, the LTE cells and 5G NR sync blocks in a wideband span, analog TV,
+a pulse train, PSK and an FM signal's subcarriers, and a class ('noise', 'lte',
+'nr', 'lte+nr', 'tv', 'pulses', 'carrier', 'ook', 'ask', 'psk', 'fsk', 'fm', 'am'
+or 'unknown') with the evidence for it. The class rules are fixed
 (CONTRACTS-measure.md), so the same recording always gives the same card.
 Numpy only, so it runs anywhere; it writes nothing but the card, when asked.
 
@@ -18,7 +19,8 @@ centroid come from a finer Hann periodogram, so a narrow signal is not
 widened to a whole bin. The envelope and the frequency are tracked in blocks
 of 16 samples, from the phase advance summed over each block, so the noise
 averages down; the 64-sample track gives the frequency's spread without the
-block-to-block noise.
+block-to-block noise. TV, pulses, PSK and subcarriers are judged sample by
+sample on the start of that track (SEG samples at its own rate).
 
 The cells are looked for only in a span sampled at 1.92 MS/s or more whose
 occupied width is 1 MHz or more, and only in its first 50 ms (``iqlte`` and
@@ -94,6 +96,56 @@ CELLS_MIN_WIDTH_HZ = 1e6
 CELLS_SPAN_S = 0.05
 #: LTE's channel raster: a carrier centre is a multiple of this.
 LTE_RASTER_HZ = 100e3
+#: The sample-level checks (tv, pulses, psk, subcarriers) read this many samples of the
+#: second pass, at its own rate: a second at 1 MS/s, 26 ms at 40 MS/s.
+SEG = 1 << 20
+#: Analog TV: the line rates of 525-line (NTSC M) and 625-line television, how far off a
+#: line may be, the narrowest TV signal, and how far a line (and its second harmonic) must
+#: stand over the median of the spectrum around it. On real NTSC (AM) and FM video the
+#: stronger track's line stood 48 to 51 dB over; on every other bench signal 100 kHz wide
+#: or more, 15 dB or less (an AM tone's envelope, 2 kHz wide, reached 34 dB). AM vision's
+#: 99 % width is mostly its carrier: 284 kHz for a synthetic 525-line picture.
+TV_LINE_HZ = {'525-line': 15734.264, '625-line': 15625.0}
+TV_TOLERANCE = 0.005
+TV_MIN_WIDTH_HZ = 100e3
+TV_LINE_DB = 36.0
+#: Pulses: a train of short pulses, at this duty or less, at least this many, and this
+#: share of the starts no more than a quarter of the median spacing off it. A pulse moves
+#: (PPM) when its start strays from the fitted clock by more than this share of the period
+#: (rms) and more than two samples: real PPM strayed 4 samples rms in 52 ms at 20 MS/s
+#: (period 500), where a fixed clock's starts stray by their rounding, 0.3 of a sample.
+PULSE_DUTY = 0.25
+PULSE_MIN = 20
+PULSE_REGULAR = 0.9
+PULSE_MOVES = 0.002
+#: PSK: the M-th power of PSK of order M is a line (the data's phases removed) while the
+#: signal itself has none (no carrier). Coherence is the strongest bin of x^M against the
+#: sum of |x|^M: 1 for a pure tone, near 0 for noise. Real QPSK gave 0.012 at M=1 and
+#: 0.52 at M=4; FM, FSK, AM, OOK and TV gave 0.1 or more at M=1, or under 0.06 at every M.
+PSK_ORDERS = (2, 4, 8)
+PSK_LINE = 0.3
+PSK_NO_CARRIER = 0.1
+#: PSK's envelope varies sample to sample (filtered: CV 0.28 to 0.30; the 16-sample blocks
+#: smooth it under 0.1). With unfiltered symbols the envelope is constant, as FM's is, and
+#: the frequency is spikes at the symbol changes: its kurtosis is high (a tone's FM is
+#: 1.5). Those spikes can look like a second frequency level, but one that holds few
+#: samples: FSK's two levels share them about evenly. Under PSK_SPIKES, PSK is looked for.
+PSK_ENVELOPE_CV = 0.1
+PSK_KURTOSIS = 6.0
+PSK_SPIKES = 0.1
+#: PSK is judged on the segment's first PSK_SPAN samples: thousands of symbols, and the
+#: transforms of a whole segment would cost more memory than the span measured (CONTRACTS m5).
+PSK_SPAN = 1 << 17
+#: FM subcarriers: lines in the demodulated frequency above the audio, this far over the
+#: median of that band (a 67 kHz subcarrier stood 86 dB over; an FM tone's noise, 38 dB).
+#: Lines closer than SUBCARRIER_GROUP_HZ are one subcarrier and its sidebands (RDS is two
+#: humps 2.4 kHz either side of 57 kHz), named at their power-weighted centre. FM video's
+#: sound subcarriers are looked for between TV_SOUND_HZ, above the picture.
+SUBCARRIER_MIN_HZ = 15e3
+SUBCARRIER_DB = 50.0
+SUBCARRIER_GROUP_HZ = 8e3
+MAX_SUBCARRIERS = 4
+TV_SOUND_HZ = (4.6e6, 9e6)
 
 
 class IQSourceError(Exception):
@@ -335,8 +387,13 @@ class _Track:
         self.env = []
         self.prod = []
         self.tail = np.empty(0, dtype=np.complex64)
+        self.seg = []
+        self.seg_n = 0
 
     def feed(self, x):
+        if self.seg_n < SEG:
+            self.seg.append(x[:SEG - self.seg_n])
+            self.seg_n += len(self.seg[-1])
         buf = np.concatenate([self.tail, x]) if self.tail.size else x
         # The last sample is kept: it is the lag partner of the next block's first.
         cut = (len(buf) - 1) // BLOCK * BLOCK
@@ -523,6 +580,137 @@ def _symbol_rate(labels, fs_block):
     den = y0 - 2 * y1 + y2
     d = 0.5 * (y0 - y2) / den if den != 0 else 0.0
     return float((k + min(max(d, -0.5), 0.5)) * fs_block / n)
+
+
+# ---- the sample-level checks: tv, pulses, psk, subcarriers -------------------
+
+def _spectrum(v, rate):
+    """(freqs, power) of a real series, its mean taken off, Hann-windowed."""
+    v = v - v.mean()
+    return np.fft.rfftfreq(len(v), 1 / rate), np.abs(np.fft.rfft(v * np.hanning(len(v)))) ** 2
+
+
+def _line(freqs, power, lo, hi):
+    """The strongest bin in lo..hi: (Hz, dB over the median of lo/2..1.5 hi), or None."""
+    w = np.flatnonzero((freqs >= lo) & (freqs <= hi))
+    ref = power[(freqs >= lo / 2) & (freqs <= 1.5 * hi)]
+    if not w.size or not ref.size:
+        return None
+    i = w[int(np.argmax(power[w]))]
+    return float(freqs[i]), 10 * math.log10(max(power[i], 1e-300) / max(float(np.median(ref)), 1e-300))
+
+
+def _tv(seg, rate, bw99, cv):
+    """Analog TV: the line rate as a line, with its second harmonic, in the envelope
+    (AM vision) or the frequency (FM video) of a signal 1 MHz wide or more. Returns
+    the card's ``tv`` section, or None."""
+    if bw99 < TV_MIN_WIDTH_HZ or len(seg) < 64 or rate < 4 * max(TV_LINE_HZ.values()):
+        return None
+    tracks = {'envelope': np.abs(seg).astype(np.float64),
+              'frequency': np.angle(seg[1:] * np.conj(seg[:-1])).astype(np.float64)}
+    best = None
+    for where, v in tracks.items():
+        freqs, power = _spectrum(v, rate)
+        for system, f_h in TV_LINE_HZ.items():
+            one = _line(freqs, power, f_h * (1 - TV_TOLERANCE), f_h * (1 + TV_TOLERANCE))
+            two = _line(freqs, power, 2 * f_h * (1 - TV_TOLERANCE), 2 * f_h * (1 + TV_TOLERANCE))
+            if one and two and min(one[1], two[1]) >= TV_LINE_DB and (best is None or one[1] > best[0]):
+                best = (one[1], system, one[0], where)
+    if best is None:
+        return None
+    return {'system': best[1], 'line_rate_hz': best[2], 'line_db': best[0], 'seen_in': best[3],
+            'modulation': 'fm' if cv < 0.1 else 'am'}
+
+
+def _pulses(seg, rate):
+    """A train of short regular pulses: the card's ``pulses`` section, or None. Each
+    pulse's start is fitted to a clock; starts that stray from it carry the data (PPM)."""
+    a = np.abs(seg)
+    if len(a) < 64:
+        return None
+    on = a > 0.5 * float(np.percentile(a, 99.9))
+    duty = float(np.mean(on))
+    rises = np.flatnonzero(~on[:-1] & on[1:]) + 1
+    falls = np.flatnonzero(on[:-1] & ~on[1:]) + 1
+    if duty > PULSE_DUTY or rises.size < PULSE_MIN:
+        return None
+    gaps = np.diff(rises)
+    med = float(np.median(gaps))
+    if not med > 0 or np.mean(np.abs(gaps - med) < 0.25 * med) < PULSE_REGULAR:
+        return None
+    falls = falls[falls > rises[0]]
+    k = min(rises.size, falls.size)
+    width = float(np.median(falls[:k] - rises[:k])) / rate if k else None
+    # The clock: starts counted in periods (a missed pulse is a skipped count), a line fitted.
+    count = np.round((rises - rises[0]) / med)
+    slope, start = np.polyfit(count, rises.astype(np.float64), 1)
+    stray = rises - (start + slope * count)
+    jitter = float(np.std(stray))
+    moves = jitter > max(PULSE_MOVES * slope, 2.0)
+    return {'rate_hz': rate / slope, 'width_s': width, 'duty': duty, 'count': int(rises.size),
+            'position_rms_s': jitter / rate, 'position_swing_s': float(np.ptp(stray)) / rate,
+            'position_modulated': bool(moves)}
+
+
+def _psk(seg, rate, base):
+    """PSK of order 2, 4 or 8: the card's ``psk`` section, or None. The order is the
+    smallest M whose M-th power is a line while the signal has no carrier line; the
+    line's frequency over M is the carrier's offset."""
+    if len(seg) < 64:
+        return None
+    # complex64 throughout, and only the start: see PSK_SPAN.
+    x = seg[:PSK_SPAN].astype(np.complex64)
+
+    def coherence(m):
+        z = x ** m
+        spec = np.abs(np.fft.fft(z))
+        i = int(np.argmax(spec))
+        return (float(spec[i]) / max(float(np.abs(z).sum(dtype=np.float64)), 1e-300),
+                float(i if i < len(x) // 2 else i - len(x)) * rate / len(x))
+
+    # A carrier line ends it first: one transform, and a CW or AM never gets further.
+    if coherence(1)[0] >= PSK_NO_CARRIER:
+        return None
+    a = np.abs(x)
+    cv = float(a.std() / a.mean()) if a.mean() > 0 else 0.0
+    d = np.angle(x[1:] * np.conj(x[:-1]))
+    d = d - d.mean()
+    var = float(np.var(d))
+    kurtosis = float(np.mean(d.astype(np.float64) ** 4)) / var ** 2 if var > 0 else 0.0
+    del d
+    if not (cv >= PSK_ENVELOPE_CV or kurtosis > PSK_KURTOSIS):
+        return None
+    for m in PSK_ORDERS:
+        c, f = coherence(m)
+        if c >= PSK_LINE:
+            env2 = np.abs(x) ** 2
+            sym = _line(*_spectrum(env2, rate), 1e3, rate / 2) if cv >= PSK_ENVELOPE_CV else None
+            return {'order': m, 'line_coherence': c, 'carrier_offset_hz': f / m + base,
+                    'symbol_rate_baud': sym[0] if sym else None}
+    return None
+
+
+def _subcarriers(seg, rate, low=SUBCARRIER_MIN_HZ, high=None):
+    """Lines in the demodulated frequency between ``low`` and ``high`` (default 0.45 of
+    the rate): [{freq_hz, level_db}], strongest first, a line's sidebands grouped with it.
+    An FM broadcast's pilot and RDS, a subcarrier's centre, TV sound in FM video."""
+    high = 0.45 * rate if high is None else min(high, 0.45 * rate)
+    if len(seg) < 64 or high <= low:
+        return []
+    d = np.angle(seg[1:] * np.conj(seg[:-1])).astype(np.float64)
+    freqs, power = _spectrum(d, rate)
+    band = (freqs >= low) & (freqs <= high)
+    if not band.any():
+        return []
+    floor = max(float(np.median(power[band])), 1e-300)
+    level = 10 * np.log10(np.maximum(power, 1e-300) / floor)
+    k = np.flatnonzero(band[1:-1] & (power[1:-1] > power[:-2]) & (power[1:-1] >= power[2:])) + 1
+    k = k[level[k] >= SUBCARRIER_DB]
+    groups = np.split(k, np.flatnonzero(np.diff(freqs[k]) > SUBCARRIER_GROUP_HZ) + 1) if k.size else []
+    out = [{'freq_hz': float(np.sum(freqs[g] * power[g]) / np.sum(power[g])),
+            'level_db': float(level[g].max())} for g in groups]
+    out.sort(key=lambda s: -s['level_db'])
+    return out[:MAX_SUBCARRIERS]
 
 
 # ---- the measurement ---------------------------------------------------------
@@ -774,6 +962,22 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
         freq_levels = [float(np.median(f16)) + base_s] if f16.size else []
         deviation = float((np.percentile(f64, 99.5) - np.percentile(f64, 0.5)) / 2) if f64.size else 0.0
 
+    # The sample-level checks, on the start of the second pass at its own rate.
+    seg = np.concatenate(track.seg) if track.seg else np.empty(0, np.complex64)
+    tv = _tv(seg, rate_s, bw99, cv)
+    pulses = None if tv else _pulses(seg, rate_s)
+    spikes = keyed_f and min(np.mean(f16 >= f_thr), np.mean(f16 < f_thr)) < PSK_SPIKES
+    psk = None if tv or pulses or keyed_env or (keyed_f and not spikes) else _psk(seg, rate_s, base_s)
+    if tv and tv['modulation'] == 'fm':
+        # FM video: its sound subcarriers sit above the 4.2 MHz of the picture.
+        subcarriers = _subcarriers(seg, rate_s, *TV_SOUND_HZ)
+    elif cv < 0.1 and fstd >= STEADY_HZ and not (keyed_f or pulses or psk):
+        subcarriers = _subcarriers(seg, rate_s)
+    else:
+        subcarriers = []
+    if psk and psk['symbol_rate_baud']:
+        sym = psk['symbol_rate_baud']
+
     lte, nr = _cells(read, n, rate, center_hz, centre, bw99, station_hz)
     lte_pcis = []
     if lte.get('verdict') == 'lte':
@@ -797,6 +1001,19 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
     elif snr < 6:
         cls = 'noise'
         ev = f"The signal is {snr:.1f} dB over the noise floor, under 6 dB."
+    elif tv:
+        cls = 'tv'
+        ev = (f"Analog TV ({tv['system']}, {tv['modulation'].upper()}): a line at "
+              f"{tv['line_rate_hz']:.0f} Hz and its harmonic in the {tv['seen_in']}, "
+              f"{tv['line_db']:.0f} dB over, {bw99 / 1e6:.3g} MHz wide"
+              + ("; sound subcarriers at " + ', '.join(f"{s['freq_hz'] / 1e6:.2f}" for s in subcarriers)
+                 + " MHz." if subcarriers else "."))
+    elif pulses:
+        cls = 'pulses'
+        ev = (f"A train of {pulses['width_s'] * 1e6:.3g} us pulses at {pulses['rate_hz']:.0f} per "
+              f"second (duty {pulses['duty']:.2f})"
+              + (f"; each start moves by {pulses['position_rms_s'] * 1e6:.3g} us rms: "
+                 "pulse-position modulation." if pulses['position_modulated'] else "; regular."))
     elif keyed_env:
         ratio = env_lo / env_hi if env_hi > 0 else 0.0
         if ratio < 0.1:
@@ -807,6 +1024,12 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
             cls = 'ask'
             ev = (f"The envelope is keyed between {env_lo:.3g} and {env_hi:.3g}; "
                   "the low level is at least 10 % of the high one.")
+    elif psk:
+        name = {2: 'BPSK', 4: 'QPSK', 8: '8PSK'}[psk['order']]
+        ev = (f"{name}: no carrier line, and the {psk['order']}th power is a line "
+              f"(coherence {psk['line_coherence']:.2f})"
+              + (f"; symbols at {psk['symbol_rate_baud']:.0f} Bd." if psk['symbol_rate_baud'] else "."))
+        cls = 'psk'
     elif keyed_f and cv < 0.1:
         cls = 'fsk'
         ev = (f"The frequency is keyed at {f_lo + base_s:.0f} and {f_hi + base_s:.0f} Hz from the "
@@ -814,7 +1037,9 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
     elif cv < 0.1 and fstd >= STEADY_HZ:
         cls = 'fm'
         ev = (f"The envelope is constant (CV {cv:.3f}) and the frequency spreads by "
-              f"{fstd:.0f} Hz (standard deviation).")
+              f"{fstd:.0f} Hz (standard deviation)"
+              + ("; subcarriers at " + ', '.join(f"{s['freq_hz'] / 1e3:.1f}" for s in subcarriers)
+                 + " kHz." if subcarriers else "."))
     elif cv >= 0.1 and fstd < STEADY_HZ:
         cls = 'am'
         ev = f"The envelope varies (CV {cv:.2f}) and the frequency is steady ({fstd:.0f} Hz)."
@@ -840,8 +1065,11 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
         'bursts': bursts,
         'envelope': {'levels': env_levels, 'depth': depth, 'keyed': bool(keyed_env)},
         'frequency': {'levels_hz': freq_levels, 'deviation_hz': deviation,
-                      'keyed': bool(keyed_f)},
+                      'keyed': bool(keyed_f), 'subcarriers': subcarriers},
         'symbol_rate_baud': sym,
+        'tv': tv,
+        'pulses': pulses,
+        'psk': psk,
         'lte': lte,
         'nr': nr,
         'class': cls,
@@ -1004,7 +1232,8 @@ def extract(path, t0=None, t1=None, band=None, max_rate=1e6, rate=None, center_h
 
 def _ordered(card):
     keys = ['schema', 'source', 'level', 'occupied', 'tones', 'bursts', 'envelope',
-            'frequency', 'symbol_rate_baud', 'lte', 'nr', 'class', 'evidence']
+            'frequency', 'symbol_rate_baud', 'tv', 'pulses', 'psk', 'lte', 'nr', 'class',
+            'evidence']
     return {k: card[k] for k in keys}
 
 

@@ -1089,8 +1089,12 @@ set `FMRX_CONTROL=/path/to.sock` for both the window and `fmctl`.
 These tools say what a signal *is*: its level, its bandwidth, its tones, its
 bursts, its envelope and frequency behaviour, the LTE cells and 5G NR sync
 blocks in a wideband span, and a class (`noise`, `lte`, `nr`, `lte+nr`,
-`carrier`, `ook`, `ask`, `fsk`, `fm`, `am` or `unknown`) with the evidence
-for it. They do not decode: a class is the most a recording gets from these
+`tv`, `pulses`, `carrier`, `ook`, `ask`, `psk`, `fsk`, `fm`, `am` or
+`unknown`) with the evidence for it. Analog TV says its line system and
+whether it is AM or FM; a pulse train its rate, width and whether the
+pulses move (PPM); PSK its order, carrier offset and symbol rate; FM the
+subcarriers it carries (a pilot, RDS, a 67 kHz subcarrier, FM video's
+sound). They do not decode: a class is the most a recording gets from these
 two (`iq-demod` and `iq-frames`, below, take a wide capture to bits and
 frames). The
 rules are fixed, so the same recording always gives the same card. The
