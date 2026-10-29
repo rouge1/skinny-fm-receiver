@@ -158,23 +158,16 @@ def spectrum_mouse(w):
     assert abs(e.station_hz - 98.8e6) < 1, e.station_hz
     assert abs(w.tuner.value() - 98.8e6) < 1
     assert view.plot.getPlotItem().getViewBox().viewRange()[0] == [x0, x1]
-    # With Shift the band goes a tenth as far, to the kHz, Snap or not:
-    # 100 kHz of pointer is 10 kHz of tuner.
+    # With Shift the band stays under the pointer, to the kHz, Snap or not.
     assert w.snap_check.isChecked()
-    view.set_center(98.9e6)                 # room to drag: 98.7-99.1 MHz
-    _middle_drag(port, _plot_point(view, 98.8e6), _plot_point(view, 98.9e6),
+    _middle_drag(port, _plot_point(view, 98.8e6), _plot_point(view, 98.837e6),
                  shift=lambda f: True)
-    assert abs(e.station_hz - 98.81e6) <= 1e3, e.station_hz
+    assert abs(e.station_hz - 98.837e6) <= 2e3, e.station_hz
     assert e.station_hz % 1e3 == 0, e.station_hz
-    # Shift pressed half way: the band carries on from where it is shown,
-    # not from the pointer. 130 kHz plain snaps to the 100 kHz Step (98.9);
-    # the last 130 kHz of pointer, fine, add 13 kHz.
-    w.tune(98.8e6)
-    _middle_drag(port, _plot_point(view, 98.8e6), _plot_point(view, 99.06e6),
-                 shift=lambda f: f > 0.5)
-    assert abs(e.station_hz - 98.913e6) <= 2e3, e.station_hz
-    w.tune(98.8e6)
-    view.set_center(98.7e6)
+    # Shift let go before the release: it lands on the Step again.
+    _middle_drag(port, _plot_point(view, 98.837e6), _plot_point(view, 98.79e6),
+                 shift=lambda f: f < 0.9)
+    assert abs(e.station_hz - 98.8e6) < 1, e.station_hz
     # Off the band, the middle button does not pan: the left drag does.
     before = view.plot.getPlotItem().getViewBox().viewRange()[0]
     _middle_drag(port, _plot_point(view, 98.52e6), _plot_point(view, 98.58e6))
