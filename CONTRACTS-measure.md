@@ -223,23 +223,28 @@ nr:   searched, reason; when searched also span_s, ssbs: [{ssb_hz, gscn, scs_khz
 - Tests: `tools/tests/test_iq_measure_cells.py` (synthetic LTE, NR, both, noise, ATSC-like; the gates; the
   centring; box timing against the synthesisers' own timing).
 
-## Amendment 2026-10-29: tv, pulses, psk and FM subcarriers
+## Amendment 2026-10-29: atsc, tv, pulses, psk and FM subcarriers
 
-Three classes for signals that came back `unknown` from the bench toolkit's transmitters (analog TV,
-a PPM pulse train, QPSK), and the subcarriers inside an FM signal. Schema stays 2: the card gains keys,
+Four classes for signals that came back `unknown` from the bench toolkit's transmitters (ATSC, analog
+TV, a PPM pulse train, QPSK), and the subcarriers inside an FM signal. Schema stays 2: the card gains keys,
 loses none.
 
 - The checks read the start of the second pass (signal centred, band-limited, decimated as above) sample by
   sample: its first 2^20 samples (`SEG`), PSK its first 2^17 (`PSK_SPAN`), so the cost does not grow with
   the span (m5).
+- `atsc: {pilot_hz, channel_centre_hz, inverted} | None`: an 8VSB block 4.8 to 6.2 MHz wide (99 %) whose
+  strongest tone, the pilot, lies within a tenth of that width of one edge (the upper edge: `inverted`);
+  the channel centre is 2.690559 MHz from the pilot. Off air: 5.51 MHz, the pilot 17 kHz from the edge.
 - `tv: {system ('525-line' | '625-line'), line_rate_hz, line_db, seen_in ('envelope' | 'frequency'),
   modulation ('am' | 'fm')} | None`: a line at a TV line rate (15734.264 or 15625 Hz, within 0.5 %) and its
   second harmonic, each 36 dB or more over the median of the spectrum around them, in the envelope or the
   instantaneous frequency of a signal 100 kHz wide or more; `fm` when the envelope is constant (CV < 0.1).
-- `pulses: {rate_hz, width_s, duty, count, position_rms_s, position_swing_s, position_modulated} | None`: at
-  least 20 pulses, duty 25 % or less, 90 % of the start-to-start spacings within a quarter of their median;
-  the starts fitted to a clock, and `position_modulated` when they stray from it by more than 2 samples and
-  0.2 % of the period (rms).
+- `pulses: {rate_hz, width_s, duty, count, position_rms_s, position_swing_s, position_modulated,
+  width_modulated} | None`: at least 20 pulses, duty 25 % or less, 90 % of the start-to-start spacings
+  within a quarter of their median, running through the whole segment (no gap over 4 periods, none at
+  either end): a sensor's burst of PWM or PPM bits in silence stays `ook`. The starts are fitted to a clock,
+  `position_modulated` when they stray from it by more than 2 samples and 0.2 % of the period (rms);
+  `width_modulated` when the widths' 10th to 90th percentile spread is over 0.3 of their median.
 - `psk: {order (2 | 4 | 8), line_coherence, carrier_offset_hz, symbol_rate_baud} | None`: no carrier line
   (the strongest bin of x holds under 0.1 of the sum of |x|) and a line in x^M (0.3 or more) for the
   smallest M of 2, 4, 8; the envelope varying sample by sample (CV >= 0.1) or the frequency spiky
@@ -250,10 +255,11 @@ loses none.
   50 dB or more over the median of 15 kHz to 0.45 x the rate (FM video: 4.6 to 9 MHz, above the picture),
   lines within 8 kHz grouped as one at their power-weighted centre, at most 4, strongest first. An FM
   broadcast lists its 19 kHz pilot and 57 kHz RDS.
-- The class rules become: 0 lte/nr, 1 `noise`, then `tv`, `pulses`, `ook`, `ask`, `psk`, `fsk`, `fm`, `am`,
+- The class rules become: 0 lte/nr, 1 `noise`, then `atsc`, `tv`, `pulses`, `ook`, `ask`, `psk`, `fsk`, `fm`, `am`,
   `carrier`, `unknown`. Every real bench recording that was `ook`, `ask`, `fsk`, `fm` or `am` before is
-  still that; nineteen older real recordings (FM, LTE, NR, ISM, ATSC) keep their class.
+  still that; of nineteen older real recordings (FM, LTE, NR, ISM, ATSC) the ATSC one becomes `atsc`
+  (it was `unknown`) and the rest keep their class.
 - Equal tones in phase are a pulse train, and are classed `pulses` (the synthetic nine-tone comb).
-- Tests: `tools/tests/test_iq_measure_classes.py` (BPSK, QPSK, 8PSK filtered and QPSK unfiltered; a fixed
-  and a position-modulated pulse train; 525- and 625-line AM and 525-line FM video with a sound subcarrier;
+- Tests: `tools/tests/test_iq_measure_classes.py` (8VSB-like, upright and inverted; BPSK, QPSK, 8PSK filtered and QPSK unfiltered; a fixed
+  and a position-modulated pulse train, a continuous PWM train, and two sensors' PWM bursts in silence; 525- and 625-line AM and 525-line FM video with a sound subcarrier;
   FM with a pilot and a 67 kHz subcarrier; FM at the zero of J0 and AM at full depth unmoved).

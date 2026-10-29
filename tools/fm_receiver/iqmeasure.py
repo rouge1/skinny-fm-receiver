@@ -5,10 +5,10 @@ Behind ``tools/iq-measure`` and ``fmctl measure``. It reads a recording of IQ
 Sceptre DVR's IQ ``.sdvr``, or a BLUE ``.cdif``) a span at a time, never
 whole, and returns a card: a JSON-safe dict of the level, the occupied
 bandwidth, the tones, the bursts, the envelope and frequency behaviour, the
-symbol rate, the LTE cells and 5G NR sync blocks in a wideband span, analog TV,
-a pulse train, PSK and an FM signal's subcarriers, and a class ('noise', 'lte',
-'nr', 'lte+nr', 'tv', 'pulses', 'carrier', 'ook', 'ask', 'psk', 'fsk', 'fm', 'am'
-or 'unknown') with the evidence for it. The class rules are fixed
+symbol rate, the LTE cells and 5G NR sync blocks in a wideband span, ATSC,
+analog TV, a pulse train, PSK and an FM signal's subcarriers, and a class
+('noise', 'lte', 'nr', 'lte+nr', 'atsc', 'tv', 'pulses', 'carrier', 'ook',
+'ask', 'psk', 'fsk', 'fm', 'am' or 'unknown') with the evidence for it. The class rules are fixed
 (CONTRACTS-measure.md), so the same recording always gives the same card.
 Numpy only, so it runs anywhere; it writes nothing but the card, when asked.
 
@@ -109,6 +109,12 @@ TV_LINE_HZ = {'525-line': 15734.264, '625-line': 15625.0}
 TV_TOLERANCE = 0.005
 TV_MIN_WIDTH_HZ = 100e3
 TV_LINE_DB = 36.0
+#: ATSC (8VSB): a block this wide whose strongest tone, the pilot, sits within ATSC_EDGE of
+#: its width from one edge (310 kHz above the lower edge of the 6 MHz channel; at the upper
+#: edge the spectrum is inverted). Off air, the block was 5.51 MHz wide (99 %) and the pilot
+#: 17 kHz from its lower edge, the strongest of its tones by 4.6 dB.
+ATSC_WIDTH_HZ = (4.8e6, 6.2e6)
+ATSC_EDGE = 0.1
 #: Pulses: a train of short pulses, at this duty or less, at least this many, and this
 #: share of the starts no more than a quarter of the median spacing off it. A pulse moves
 #: (PPM) when its start strays from the fitted clock by more than this share of the period
@@ -118,6 +124,12 @@ PULSE_DUTY = 0.25
 PULSE_MIN = 20
 PULSE_REGULAR = 0.9
 PULSE_MOVES = 0.002
+#: A train runs through the whole segment: no gap over PULSE_GAP periods, and its first and
+#: last starts within that of the segment's ends. A sensor's burst of PWM or PPM bits, with
+#: silence around it, is OOK, not a train. Widths that spread by more than PULSE_WIDTHS of
+#: their median (10th to 90th percentile) are width-modulated.
+PULSE_GAP = 4
+PULSE_WIDTHS = 0.3
 #: PSK: the M-th power of PSK of order M is a line (the data's phases removed) while the
 #: signal itself has none (no carrier). Coherence is the strongest bin of x^M against the
 #: sum of |x|^M: 1 for a pure tone, near 0 for noise. Real QPSK gave 0.012 at M=1 and
@@ -622,6 +634,25 @@ def _tv(seg, rate, bw99, cv):
             'modulation': 'fm' if cv < 0.1 else 'am'}
 
 
+def _atsc(tones, centre, bw99):
+    """ATSC 8VSB: the card's ``atsc`` section, or None. The pilot is the strongest tone,
+    at one edge of a block about 5.4 MHz wide."""
+    if not tones or not ATSC_WIDTH_HZ[0] <= bw99 <= ATSC_WIDTH_HZ[1]:
+        return None
+    pilot = tones[0]['freq_hz']
+    low, high = centre - bw99 / 2, centre + bw99 / 2
+    near = ATSC_EDGE * bw99
+    if abs(pilot - low) <= near:
+        inverted = False
+    elif abs(pilot - high) <= near:
+        inverted = True
+    else:
+        return None
+    # The channel's own centre: the pilot is 309.441 kHz inside its 6 MHz edge.
+    channel = pilot + (-1 if inverted else 1) * (3e6 - 309.441e3)
+    return {'pilot_hz': pilot, 'channel_centre_hz': channel, 'inverted': inverted}
+
+
 def _pulses(seg, rate):
     """A train of short regular pulses: the card's ``pulses`` section, or None. Each
     pulse's start is fitted to a clock; starts that stray from it carry the data (PPM)."""
@@ -638,9 +669,15 @@ def _pulses(seg, rate):
     med = float(np.median(gaps))
     if not med > 0 or np.mean(np.abs(gaps - med) < 0.25 * med) < PULSE_REGULAR:
         return None
+    reach = PULSE_GAP * med
+    if gaps.max() > reach or rises[0] > reach or len(a) - rises[-1] > reach:
+        return None
     falls = falls[falls > rises[0]]
     k = min(rises.size, falls.size)
-    width = float(np.median(falls[:k] - rises[:k])) / rate if k else None
+    widths = (falls[:k] - rises[:k]).astype(np.float64)
+    width = float(np.median(widths)) / rate if k else None
+    spread = float(np.percentile(widths, 90) - np.percentile(widths, 10)) / max(float(np.median(widths)), 1.0) \
+        if k else 0.0
     # The clock: starts counted in periods (a missed pulse is a skipped count), a line fitted.
     count = np.round((rises - rises[0]) / med)
     slope, start = np.polyfit(count, rises.astype(np.float64), 1)
@@ -649,7 +686,7 @@ def _pulses(seg, rate):
     moves = jitter > max(PULSE_MOVES * slope, 2.0)
     return {'rate_hz': rate / slope, 'width_s': width, 'duty': duty, 'count': int(rises.size),
             'position_rms_s': jitter / rate, 'position_swing_s': float(np.ptp(stray)) / rate,
-            'position_modulated': bool(moves)}
+            'position_modulated': bool(moves), 'width_modulated': bool(spread > PULSE_WIDTHS)}
 
 
 def _psk(seg, rate, base):
@@ -964,10 +1001,11 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
 
     # The sample-level checks, on the start of the second pass at its own rate.
     seg = np.concatenate(track.seg) if track.seg else np.empty(0, np.complex64)
-    tv = _tv(seg, rate_s, bw99, cv)
-    pulses = None if tv else _pulses(seg, rate_s)
+    atsc = _atsc(tones, centre, bw99)
+    tv = None if atsc else _tv(seg, rate_s, bw99, cv)
+    pulses = None if tv or atsc else _pulses(seg, rate_s)
     spikes = keyed_f and min(np.mean(f16 >= f_thr), np.mean(f16 < f_thr)) < PSK_SPIKES
-    psk = None if tv or pulses or keyed_env or (keyed_f and not spikes) else _psk(seg, rate_s, base_s)
+    psk = None if atsc or tv or pulses or keyed_env or (keyed_f and not spikes) else _psk(seg, rate_s, base_s)
     if tv and tv['modulation'] == 'fm':
         # FM video: its sound subcarriers sit above the 4.2 MHz of the picture.
         subcarriers = _subcarriers(seg, rate_s, *TV_SOUND_HZ)
@@ -1001,6 +1039,11 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
     elif snr < 6:
         cls = 'noise'
         ev = f"The signal is {snr:.1f} dB over the noise floor, under 6 dB."
+    elif atsc:
+        cls = 'atsc'
+        ev = (f"ATSC 8VSB: {bw99 / 1e6:.3g} MHz wide, its strongest tone (the pilot) at "
+              f"{atsc['pilot_hz'] / 1e6:.6g} MHz at its {'upper' if atsc['inverted'] else 'lower'} edge"
+              f"; channel centre {atsc['channel_centre_hz'] / 1e6:.6g} MHz.")
     elif tv:
         cls = 'tv'
         ev = (f"Analog TV ({tv['system']}, {tv['modulation'].upper()}): a line at "
@@ -1010,10 +1053,14 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
                  + " MHz." if subcarriers else "."))
     elif pulses:
         cls = 'pulses'
+        how = []
+        if pulses['position_modulated']:
+            how.append(f"each start moves by {pulses['position_rms_s'] * 1e6:.3g} us rms "
+                       "(pulse-position modulation)")
+        if pulses['width_modulated']:
+            how.append("the widths vary (pulse-width modulation)")
         ev = (f"A train of {pulses['width_s'] * 1e6:.3g} us pulses at {pulses['rate_hz']:.0f} per "
-              f"second (duty {pulses['duty']:.2f})"
-              + (f"; each start moves by {pulses['position_rms_s'] * 1e6:.3g} us rms: "
-                 "pulse-position modulation." if pulses['position_modulated'] else "; regular."))
+              f"second (duty {pulses['duty']:.2f}); " + ('; '.join(how) or 'regular') + ".")
     elif keyed_env:
         ratio = env_lo / env_hi if env_hi > 0 else 0.0
         if ratio < 0.1:
@@ -1067,6 +1114,7 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
         'frequency': {'levels_hz': freq_levels, 'deviation_hz': deviation,
                       'keyed': bool(keyed_f), 'subcarriers': subcarriers},
         'symbol_rate_baud': sym,
+        'atsc': atsc,
         'tv': tv,
         'pulses': pulses,
         'psk': psk,
@@ -1232,7 +1280,7 @@ def extract(path, t0=None, t1=None, band=None, max_rate=1e6, rate=None, center_h
 
 def _ordered(card):
     keys = ['schema', 'source', 'level', 'occupied', 'tones', 'bursts', 'envelope',
-            'frequency', 'symbol_rate_baud', 'tv', 'pulses', 'psk', 'lte', 'nr', 'class',
+            'frequency', 'symbol_rate_baud', 'atsc', 'tv', 'pulses', 'psk', 'lte', 'nr', 'class',
             'evidence']
     return {k: card[k] for k in keys}
 

@@ -1,4 +1,4 @@
-"""The card's psk, pulses and tv classes and FM subcarriers (CONTRACTS-measure.md, 2026-10-29).
+"""The card's atsc, psk, pulses and tv classes and FM subcarriers (CONTRACTS-measure.md, 2026-10-29).
 
 Every signal is synthetic and seeded, built here with numpy. What the checks pin:
 
@@ -7,7 +7,12 @@ Every signal is synthetic and seeded, built here with numpy. What the checks pin
   constant as FM's is, is still 'psk';
 - 'pulses': a regular 1 us train at 40,000 a second (rate within 0.1 %, width within 10 %,
   not position-modulated), and the same train with each pulse moved by a 1 kHz tone
-  (position-modulated);
+  (position-modulated); a continuous PWM train is 'pulses', width-modulated;
+- a sensor's PWM burst in silence (EV1527 and LaCrosse TX141 timings, as the bench's ISM
+  transmitter sends them) stays 'ook', not 'pulses';
+- 'atsc': an 8VSB-like signal (lte_negatives) with its pilot at the lower edge, and the
+  same signal with its spectrum inverted (pilot at the upper edge), the channel centre
+  within 50 kHz;
 - 'tv': 525-line AM vision (negative modulation), 625-line AM, and 525-line FM video with a
   6.0 MHz sound subcarrier, which is listed;
 - FM subcarriers: a 67 kHz FM subcarrier and a stereo pilot at 19 kHz are listed, at their
@@ -31,6 +36,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from fm_receiver import iqmeasure  # noqa: E402
+from tests import lte_negatives  # noqa: E402
 
 CENTRE = 400e6
 RESULTS = []
@@ -111,6 +117,28 @@ def pulse_iq(swing_s=0.0, rate=20e6, seconds=0.1, prf=40e3, width_s=1e-6, seed=2
     return noisy(x, 25.0, seed), rate
 
 
+def pwm_iq(period_us, short_us, long_us, bits=25, rows=4, row_gap_us=10000, lead_s=0.3,
+           rate=1e6, seconds=1.0, seed=8):
+    """OOK pulse-width bits: a pulse every ``period_us``, ``short_us`` or ``long_us`` long at
+    random, ``rows`` rows of ``bits`` with a gap between, after ``lead_s`` of silence. With
+    ``rows`` None the bits run through the whole span (a continuous PWM train)."""
+    rng = np.random.default_rng(seed)
+    n = int(seconds * rate)
+    env = np.zeros(n)
+    us = rate / 1e6
+    if rows is None:
+        starts = np.arange(0, n - period_us * us, period_us * us)
+    else:
+        row = np.arange(bits) * period_us * us
+        starts = np.concatenate([lead_s * rate + r * (bits * period_us + row_gap_us) * us + row
+                                 for r in range(rows)])
+    for s in starts.astype(int):
+        w = int((short_us if rng.integers(0, 2) else long_us) * us)
+        env[s:s + w] = 1.0
+    x = env * np.exp(2j * np.pi * 50e3 * np.arange(n) / rate)
+    return noisy(x, 25.0, seed), rate
+
+
 # ---- TV -----------------------------------------------------------------------
 
 def composite(rate, seconds, line_hz, lines_per_frame, sound_hz=None):
@@ -174,6 +202,11 @@ MAKERS = {
     'qpsk_rect': lambda: psk_iq(4, baud=10e3, filtered=False),
     'pulses': lambda: pulse_iq(),
     'ppm': lambda: pulse_iq(swing_s=2e-6),
+    'pwm_ev1527': lambda: pwm_iq(1868, 464, 1404),
+    'pwm_lacrosse': lambda: pwm_iq(625, 208, 417, bits=40, rows=12, row_gap_us=1000),
+    'pwm_train': lambda: pwm_iq(1000, 100, 200, rows=None),
+    'atsc': lambda: lte_negatives.synth_atsc_like(),
+    'atsc_inverted': lambda: (np.conj(lte_negatives.synth_atsc_like()[0]), 20e6),
     'tv_525': lambda: tv_am_iq('525'),
     'tv_625': lambda: tv_am_iq('625'),
     'tv_fm': lambda: tv_fm_iq(),
@@ -221,6 +254,28 @@ def check_pulses():
     expect("PPM: class pulses, position-modulated, swing near 4 us peak to peak",
            lambda: (card('ppm')['class'] == 'pulses' and p('ppm')['position_modulated']
                     and 3e-6 < p('ppm')['position_swing_s'] < 5e-6, f"{card('ppm')['class']}, {p('ppm')}"))
+    expect("pulse train and PPM: not width-modulated",
+           lambda: (not p('pulses')['width_modulated'] and not p('ppm')['width_modulated'],
+                    f"{p('pulses')}, {p('ppm')}"))
+    for name in ('pwm_ev1527', 'pwm_lacrosse'):
+        expect(f"{name}: a sensor's PWM burst in silence stays ook, not pulses",
+               lambda n=name: (card(n)['class'] == 'ook' and card(n)['pulses'] is None,
+                               f"class {card(n)['class']}, pulses {card(n)['pulses']}"))
+    expect("continuous PWM: class pulses, width-modulated, not position-modulated",
+           lambda: (card('pwm_train')['class'] == 'pulses' and p('pwm_train')['width_modulated']
+                    and not p('pwm_train')['position_modulated'],
+                    f"class {card('pwm_train')['class']}, pulses {p('pwm_train')}"))
+
+
+def check_atsc():
+    # synth_atsc_like puts the pilot 0.31 MHz above 0 Hz: the channel centre is 2.69 MHz
+    # above the pilot, at CENTRE + 3 MHz (inverted: the mirror image, CENTRE - 3 MHz).
+    for name, inverted, chan in (('atsc', False, CENTRE + 3e6), ('atsc_inverted', True, CENTRE - 3e6)):
+        expect(f"{name}: class atsc, inverted {inverted}, channel centre within 50 kHz",
+               lambda n=name, i=inverted, c=chan: (
+                   card(n)['class'] == 'atsc' and card(n)['atsc']['inverted'] is i
+                   and abs(card(n)['atsc']['channel_centre_hz'] - c) < 50e3,
+                   f"class {card(n)['class']}, atsc {card(n)['atsc']}, occupied {card(n)['occupied']}"))
 
 
 def check_tv():
@@ -255,7 +310,8 @@ def check_unmoved():
     expect("AM at full depth: still am, not pulses",
            lambda: (card('am_full')['class'] == 'am', f"class {card('am_full')['class']}"))
     expect("the new sections are None on another class",
-           lambda: (all(card(n)[k] is None for n in ('fm_tone', 'am_full') for k in ('tv', 'pulses', 'psk')),
+           lambda: (all(card(n)[k] is None for n in ('fm_tone', 'am_full')
+                        for k in ('atsc', 'tv', 'pulses', 'psk')),
                     f"{[(n, card(n)['tv'], card(n)['pulses'], card(n)['psk']) for n in ('fm_tone', 'am_full')]}"))
 
 
@@ -278,7 +334,7 @@ def check_shape():
                                "not JSON-safe or not rounded"))
 
 
-GROUPS = [check_psk, check_pulses, check_tv, check_fm, check_unmoved, check_shape]
+GROUPS = [check_psk, check_pulses, check_atsc, check_tv, check_fm, check_unmoved, check_shape]
 
 
 def main():

@@ -53,7 +53,7 @@ except ImportError as exc:       # reported as failing checks, not a crash
 
 RATE = 1e6
 CENTRE = 100e6
-CLASSES = {'noise', 'lte', 'nr', 'lte+nr', 'tv', 'pulses', 'carrier', 'ook', 'ask', 'fsk', 'psk',
+CLASSES = {'noise', 'lte', 'nr', 'lte+nr', 'atsc', 'tv', 'pulses', 'carrier', 'ook', 'ask', 'fsk', 'psk',
            'fm', 'am', 'unknown'}
 BANNED = ['gnuradio', 'PyQt5', 'scipy', 'library', 'radios', 'dsp']
 FOLDER = None
@@ -344,7 +344,7 @@ def shape_problems(card_):
     if card_.get('schema') != 2:
         bad.append('schema is not 2')
     if card_.get('class') not in CLASSES:
-        bad.append(f"class {card_.get('class')!r} is not one of the fourteen")
+        bad.append(f"class {card_.get('class')!r} is not one of the fifteen")
     ev = card_.get('evidence')
     if not (isinstance(ev, list) and ev and all(
             isinstance(e, str) and e.strip() and len(e) <= 200 for e in ev)):
