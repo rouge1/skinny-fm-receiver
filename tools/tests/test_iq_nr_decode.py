@@ -143,7 +143,9 @@ MIB = {'pci': PCI, 'sfn': 0, 'ssb_index': 0, 'half_frame': 0, 'scs_common_khz': 
        'ssb_subcarrier_offset': 0, 'dmrs_typeA_position': 'pos2', 'coreset0_index': 0,
        'search_space0_index': 0, 'cell_barred': False, 'intra_freq_reselection': 'allowed',
        'ssb_sample': 1000, 'cfo_hz': 150.0, 'snr_db': 25.0}
-PLACEHOLDER_HEX = '00' * 8                   # a block that does not parse, for tests that need none
+# A block that does not parse, for tests that need none. Not all zero bytes: the decoder
+# drops those as a CRC failure (step 5 of iqnr_decode), so it would never reach the parse.
+PLACEHOLDER_HEX = 'a5' * 8
 
 # ---- harness ----------------------------------------------------------------------------------
 
