@@ -2601,8 +2601,8 @@ class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
         self.chan_knob.setValue(self.chan_knob.value() + steps * step, emit=True)
         self.chan_knob.light()
 
-    def _band_dragged(self, hz):
-        if self.snap_check.isChecked():
+    def _band_dragged(self, hz, fine=False):
+        if self.snap_check.isChecked() and not fine:
             hz = on_raster(hz, self._step_hz())
         if abs(hz - self.tuner.value()) >= 500:
             self.tune(hz, recentre=False, final=False)

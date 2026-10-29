@@ -442,7 +442,10 @@ tuner. It brightens under the pointer.
 - **Middle-button drag on the orange band:** tunes. Only the band follows the
   pointer while you drag (it shows the step it will land on); the receiver
   is retuned once, where you let go, because a retune is slow. The tuner
-  stays inside its range, so the radio itself never moves.
+  stays inside its range, so the radio itself never moves. Hold **Shift**
+  while dragging for fine tuning: the band moves a tenth as far as the
+  pointer and lands to the kHz, even with **Snap to step** on. Shift can be
+  pressed or let go mid-drag; the band carries on from where it is.
 - **Mouse wheel over the orange band:** makes the channel filter wider or
   narrower, 5 kHz a notch (1 kHz with Shift).
 - **Left click or double-click the spectrum or the waterfall:** nothing moves the tuner. A left drag pans the view, and the readout under the pointer gives the level and frequency. The tuner moves by a middle-drag of the orange band or the right-click menu.
@@ -468,7 +471,7 @@ Top to bottom:
 | **Station** | The most consistent PS name, or the RT+ station name. |
 | **Standard** | RBDS with 75 µs de-emphasis for the Americas, or RDS with 50 µs for Europe and elsewhere. |
 | **Stereo** (under Standard) | Turn it off for mono, which is quieter on a weak station. With no pilot, the audio is mono anyway. |
-| **Snap to step** (beside Stereo) | Right-click picks and middle-drags on the spectrum tune to the nearest multiple of the Step. Off, they tune to where the pointer is, to the kHz. |
+| **Snap to step** (beside Stereo) | Right-click picks and middle-drags on the spectrum tune to the nearest multiple of the Step (not a middle-drag with Shift, which is fine tuning). Off, they tune to where the pointer is, to the kHz. |
 | **Audio** | *Stereo – pilot locked (standard phase)*, or *Mono – no stereo pilot*. Stereo needs a pilot that stands 10 dB over the noise beside it, so an empty channel, a mono station, or a station tuned slightly off reads *Mono*. *Standard phase* is what broadcasters send; *cosine phase* is what the RF bench toolkit's own transmitter sends. The app detects which by itself. |
 | **Signal** | The power in the channel and how far the station stands above the floor: green above 30 dB, amber above 15 dB, red below that. |
 | **Decode quality** | How many RDS groups have arrived, and how many blocks were good. |

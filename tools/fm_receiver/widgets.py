@@ -2028,6 +2028,8 @@ class ChannelBand(pg.LinearRegionItem):
     elsewhere still pan and zoom the view; the middle button does nothing
     there (:class:`_PanViewBox`)."""
 
+    FINE_DRAG = 0.1         # how far the band goes per pixel, Shift held
+
     def __init__(self, view):
         super().__init__(movable=False)
         self._view = view
@@ -2037,7 +2039,8 @@ class ChannelBand(pg.LinearRegionItem):
         self.setToolTip("The channel the receiver takes. Wheel: wider or narrower\n"
                         "(Shift: fine). Middle-drag: move the tuner - within the\n"
                         "band around the Center in Receive; anywhere on a sweep,\n"
-                        "where it says what Listen and Real time will start from.")
+                        "where it says what Listen and Real time will start from.\n"
+                        "Shift while dragging: a tenth as far, to the kHz.")
 
     def hoverEvent(self, ev):
         # Claiming the middle button on hover is how pyqtgraph gives this
@@ -2061,22 +2064,31 @@ class ChannelBand(pg.LinearRegionItem):
             return
         ev.accept()
         view = self._view
+        fine = bool(ev.modifiers() & QtCore.Qt.ShiftModifier)
         if ev.isStart():
             low, high = self.getRegion()
-            self._drag = ((low + high) / 2, ev.buttonDownPos().x(), (high - low) / 2)
+            self._drag = ((low + high) / 2, ev.buttonDownPos().x(), (high - low) / 2, fine)
             view._band_held = True
         if self._drag is None:
             return
-        centre, x0, half = self._drag
-        hz = (centre + ev.pos().x() - x0) * view.scale
-        if view.snap_hz:                    # show where it will land
+        centre, x0, half, was_fine = self._drag
+        if fine != was_fine:
+            # Shift pressed or let go mid-drag: carry on from where the band
+            # is, so it does not jump to the pointer (or away from it).
+            low, high = self.getRegion()
+            centre, x0 = (low + high) / 2, ev.lastPos().x()
+            self._drag = (centre, x0, half, fine)
+        hz = (centre + (ev.pos().x() - x0) * (self.FINE_DRAG if fine else 1.0)) * view.scale
+        if fine:                            # to the kHz: the Step would undo it
+            hz = on_raster(hz, 1e3)
+        elif view.snap_hz:                  # show where it will land
             hz = on_raster(hz, view.snap_hz)
         if ev.isFinish():
             # The receiver is retuned once, where the band was let go - not
             # at every spot it passed: a retune is slow.
             self._drag = None
             view._band_held = False
-            view.bandDragged.emit(hz)
+            view.bandDragged.emit(hz, fine)
             view.bandDragFinished.emit()
             view._place_band()      # back to where the tuner is, if it stayed
         else:
@@ -2206,7 +2218,7 @@ class SpectrumView(Qt.QWidget):
     the pointer gives the level and frequency. The mouse wheel zooms and dragging pans, along frequency only;
     the Span dial follows. Over the channel band the wheel emits
     :attr:`bandWheel` (notches, fine) and a middle-button drag
-    :attr:`bandDragged` (hertz) then :attr:`bandDragFinished`. With
+    :attr:`bandDragged` (hertz, fine: Shift held) then :attr:`bandDragFinished`. With
     ``tuner_menu``, a right click offers to put the tuner where the pointer
     is, and :attr:`tunerRequested` carries it (hertz). In marker mode (a
     spectrum recording, :meth:`set_marker_mode`) the left click and the
@@ -2228,7 +2240,7 @@ class SpectrumView(Qt.QWidget):
     messageClicked = pyqtSignal(str)          # the words on the plot, pressed
     averageChanged = pyqtSignal(int)
     bandWheel = pyqtSignal(int, bool)
-    bandDragged = pyqtSignal(float)
+    bandDragged = pyqtSignal(float, bool)
     bandDragFinished = pyqtSignal()
     tunerRequested = pyqtSignal(float)
     waterfallSpanChanged = pyqtSignal(float)
