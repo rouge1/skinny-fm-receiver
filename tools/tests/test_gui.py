@@ -149,6 +149,12 @@ def spectrum_mouse(w):
     _move(port, away)
     _wheel(port, away, 1)
     assert view.span_knob.value() < span * 0.99 and abs(w.chan_knob.value() - 203e3) < 1
+    # Zoomed right out, the view stops at the band the radio streams.
+    _wheel(port, away, -40)
+    (x0, x1), _ = view.plot.getPlotItem().getViewBox().viewRange()
+    low, high = view.full
+    assert x0 * view.scale >= low - 1 and x1 * view.scale <= high + 1, (x0, x1, view.full)
+    assert abs(view.span_knob.value() - (high - low)) < 1e3, view.span_knob.value()
     view.span_knob.setValue(400e3)
     view.set_center(98.7e6)
     (x0, x1), _ = view.plot.getPlotItem().getViewBox().viewRange()
@@ -655,8 +661,11 @@ def part2_sweep():
         assert w._mode == 'receive' and w.tabs.currentIndex() == 1
         assert abs(w.engine.station_hz - 95.1e6) < 1, w.engine.station_hz
         assert abs(w.engine.lo_hz - (95.1e6 - 300e3)) < 1
-        for vb in view_boxes:                            # receiving, no limits
-            assert vb.state['limits']['xLimits'] == [None, None], vb.state['limits']
+        band = [(w.engine.lo_hz - w.engine.rate / 2) / 1e6,
+                (w.engine.lo_hz + w.engine.rate / 2) / 1e6]
+        for vb in view_boxes:                            # receiving, the band streamed
+            got = vb.state['limits']['xLimits']
+            assert all(abs(a - b) < 1e-6 for a, b in zip(got, band)), (got, band)
         radio_card(w)
         w.close()
     finally:

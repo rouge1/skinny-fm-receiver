@@ -612,7 +612,8 @@ knobs. A double-click does nothing to any knob (there is no reset).
 
 You can also use the mouse on the plot: the wheel zooms, dragging pans, and
 the Span dial follows. In Sweep the view stops at 0 Hz and 6 GHz, however far
-you drag or zoom out. Hovering shows the frequency and level under the
+you drag or zoom out; in Receive and on a recording it stops at the edges of
+the band streamed or recorded, as **Full span** does. Hovering shows the frequency and level under the
 pointer. In Receive, the wheel and the middle button over the orange channel
 band work on the channel instead; see *Tuning with the mouse on the
 spectrum* above.

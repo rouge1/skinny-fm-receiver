@@ -2173,8 +2173,6 @@ class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
             'dBm' if mode == 'playback' and self._track is not None
             and self._track.kind == 'cdif' else 'dBFS')
         self.rf_view.clear_density()
-        # Receiving, the view is the band the radio streams: no limits.
-        self.rf_view.set_pan_limits(None, None)
         television = bool(self._atsc_on and rate >= ATSC_MIN_RATE)
         self.engine.start_receive(
             station_hz, rate, center_hz=center_hz, atsc=television,
@@ -2200,6 +2198,8 @@ class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
         engine has them. ``recentre`` puts a zoomed view back on the
         station - not wanted when the pointer is what moved it."""
         e = self.engine
+        # The mouse zooms and pans no further out than the band streamed.
+        self.rf_view.set_pan_limits(e.lo_hz - e.rate / 2, e.lo_hz + e.rate / 2)
         self.rf_view.set_extent(e.lo_hz - e.rate / 2, e.lo_hz + e.rate / 2,
                                 center_hz=e.station_hz if recentre else None,
                                 recording=self._recording_span_floor())
@@ -3310,6 +3310,8 @@ class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
             return
         self._prepared_kind = 'audio' if audio else 'iq'
         low, high = library.extent(track)
+        # No zooming or panning out past what the file holds.
+        view.set_pan_limits(low, high)
         if audio:
             view.load_state(self.cfg['view_audio'])
             view.set_extent(low, high, center_hz=0.0)
@@ -3319,7 +3321,6 @@ class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
                             recording=self._recording_span_floor(track))
         view.set_level_unit('dBm' if (track.kind == 'cdif' or track.is_spectrum)
                             else 'dBFS')
-        view.set_pan_limits(None, None)
         self._spectrum_fit = False
         self._fit_next = 0
         if not audio and not track.is_spectrum:
