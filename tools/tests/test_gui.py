@@ -155,6 +155,15 @@ def spectrum_mouse(w):
     low, high = view.full
     assert x0 * view.scale >= low - 1 and x1 * view.scale <= high + 1, (x0, x1, view.full)
     assert abs(view.span_knob.value() - (high - low)) < 1e3, view.span_knob.value()
+    # The multiplex too: zoomed in, then right out, it stops at its own band.
+    mpx = w.mpx_view
+    mport, middle = mpx.plot.viewport(), _plot_point(mpx, 40e3)
+    _move(mport, middle)
+    _wheel(mport, middle, 3)
+    _wheel(mport, middle, -40)
+    (x0, x1), _ = mpx.plot.getPlotItem().getViewBox().viewRange()
+    low, high = mpx.full
+    assert x0 * mpx.scale >= low - 1 and x1 * mpx.scale <= high + 1, (x0, x1, mpx.full)
     view.span_knob.setValue(400e3)
     view.set_center(98.7e6)
     (x0, x1), _ = view.plot.getPlotItem().getViewBox().viewRange()
@@ -1211,6 +1220,30 @@ def folding(w):
     knob = w.chan_knob
     ends = [x.mapTo(tuner, QtCore.QPoint(x.width(), 0)).x() for x in (last, knob)]
     assert abs(ends[0] - ends[1]) <= 3, ends
+    # The chevron, animated: the "Tuner:" label and the roller go one way
+    # only, folding and opening - they once rose while the row glided
+    # back and dropped again when the rows came.
+    label = w.tuner_label
+    def where():
+        # The words' middle (the margin lowers them in the label) and the roller.
+        return (label.mapTo(tuner, QtCore.QPoint(0, label.height() // 2)).y()
+                + label.contentsMargins().top() // 2,
+                w.roller.mapTo(tuner, QtCore.QPoint(0, 0)).y())
+    for _ in range(2):
+        y, ry = where()                           # from where they were
+        ys, rys = [y], [ry]
+        start = time.monotonic()
+        tuner.chevron.click()
+        while time.monotonic() - start < 1.0:
+            QAPP.processEvents()
+            y, ry = where()
+            ys.append(y)
+            rys.append(ry)
+            time.sleep(0.005)
+        for seq in (ys, rys):
+            steps = [b - a for a, b in zip(seq, seq[1:]) if abs(b - a) > 1]
+            assert all(s > 0 for s in steps) or all(s < 0 for s in steps), seq
+    assert not tuner.is_folded()
     # Under the Tuner, RDS and HD Radio are tabs, HD Radio's left on show.
     # A change glides the height and fades the page in.
     tabs = w.station_tabs

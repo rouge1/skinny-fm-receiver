@@ -287,13 +287,16 @@ def _coloured(text, token):
 
 
 class _Follow(QtCore.QObject):
-    """Calls ``callback`` when a watched widget moves, resizes or shows."""
+    """Calls ``callback`` when a watched widget moves, resizes or shows (or
+    on the ``events`` given)."""
 
     EVENTS = (QtCore.QEvent.Move, QtCore.QEvent.Resize, QtCore.QEvent.Show)
 
-    def __init__(self, callback, *widgets):
+    def __init__(self, callback, *widgets, events=None):
         super().__init__(widgets[0])
         self._callback = callback
+        if events is not None:
+            self.EVENTS = tuple(events)
         for widget in widgets:
             widget.installEventFilter(self)
 
@@ -1025,7 +1028,7 @@ class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
         self.chan_knob.valueChanged.connect(self._chan_bw_changed)
         tune.addWidget(self.chan_knob)
         tune.addStretch(1)
-        tune_label = Qt.QLabel("Tuner:")
+        tune_label = self.tuner_label = Qt.QLabel("Tuner:")
         form.addRow(tune_label, tune)
         hd_row, hd_status = self._build_hd_row()
         form.addRow("HD Radio:", hd_row)
@@ -1036,12 +1039,17 @@ class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
                               also=(self.step_knob, self.chan_knob, self.range_room),
                               center=True)
 
-        def level(folded):
-            drop = self.range_room.height() + column.spacing() if folded else 0
+        # Level with the room as it is shown or hidden, not when the card
+        # says it folds: opening, the card glides the row back first and
+        # shows the rows after, and the label and roller rose ahead of them.
+        def level():
+            gone = self.range_room.isHidden()
+            drop = self.range_room.maximumHeight() + column.spacing() if gone else 0
             tune_label.setContentsMargins(0, drop, 0, 0)
             roller.setContentsMargins(0, drop, 0, 0)
-        card.folded.connect(level)
-        level(card.is_folded())
+        self._range_level = _Follow(level, self.range_room, events=(
+            QtCore.QEvent.ShowToParent, QtCore.QEvent.HideToParent))
+        level()
         return card
 
     def _build_rds_page(self):
@@ -1771,6 +1779,8 @@ class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
         self.right_split.setStretchFactor(1, 2)
         self.rf_view.load_state(self.cfg['view_receive'])
         self.mpx_view.load_state(self.cfg['view_mpx'])
+        # The mouse zooms and pans no further out than the multiplex there is.
+        self.mpx_view.set_pan_limits(0, MPX_RATE / 2)
         self.mpx_view.set_extent(0, MPX_RATE / 2, keep_span=False)
         return self.right_split
 
