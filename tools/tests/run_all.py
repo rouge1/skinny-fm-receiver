@@ -1,4 +1,4 @@
-"""Run the tests: the twenty-six that need no radio, with ``--hw`` the BB60D
+"""Run the tests: the ones that need no radio, with ``--hw`` the BB60D
 check as well, with ``--hackrf`` the HackRF check (other sessions may
 use the HackRF too: make sure it is yours before running it), and with
 ``--rtl`` the RTL-SDR check (this app closed, so no rtl_tcp is running).
@@ -7,9 +7,16 @@ use the HackRF too: make sure it is yours before running it), and with
     python tools/tests/run_all.py --hw     # plus a BB60D off air
     python tools/tests/run_all.py --hackrf # plus a HackRF off air
     python tools/tests/run_all.py --rtl    # plus an RTL-SDR off air
+
+On Linux each file runs under its own memory cap (systemd-run, when there is
+one): a file over it fails alone, as "over the memory cap", and the run goes
+on. systemd-oomd killed whole sessions on one-array loads, and a cap round the
+whole run killed every file after the heavy one. FMRX_TEST_MEMORY sets the cap
+(default 6G).
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -28,6 +35,15 @@ TESTS = ['test_sweep.py', 'test_tuning.py', 'test_receive_chain.py', 'test_rds_h
          'test_spectra.py', 'test_sceptre_spectra.py',
          'test_narrow_files.py', 'test_atsc.py', 'test_cells.py']
 TIMEOUT = 600   # seconds per file
+MEMORY = os.environ.get('FMRX_TEST_MEMORY', '6G')
+
+
+def _capped(cmd):
+    """``cmd`` under its own memory cap, on Linux with systemd-run; as it is elsewhere."""
+    if sys.platform.startswith('linux') and shutil.which('systemd-run'):
+        return ['systemd-run', '--user', '--scope', '-q', '-p', f'MemoryMax={MEMORY}',
+                '-p', 'MemorySwapMax=0'] + cmd
+    return cmd
 
 
 def main():
@@ -39,9 +55,11 @@ def main():
     for name in tests:
         t0 = time.time()
         try:
-            proc = subprocess.run([sys.executable, os.path.join(HERE, name)], env=env,
+            proc = subprocess.run(_capped([sys.executable, os.path.join(HERE, name)]), env=env,
                                   capture_output=True, text=True, timeout=TIMEOUT)
             ok, why, output = proc.returncode == 0, '', proc.stdout + proc.stderr
+            if proc.returncode in (-9, 137):
+                why = f', killed: over the memory cap ({MEMORY})'
         except subprocess.TimeoutExpired as e:
             # A timeout is a failure of that file, not of the run: the output
             # so far comes back as bytes even with text=True.

@@ -114,13 +114,44 @@ def fm_iq(mpx, rate, offset_hz, snr_db=35.0, seed=1):
     return iq.astype(np.complex64)
 
 
+#: write_station makes its IQ this many MPX samples at a time (half a second), so a long
+#: station is never whole in memory: 32 s at 2.5 MS/s made at once peaked at 6.5 GB.
+STATION_CHUNK = 1 << 17
+#: Each chunk is upsampled with this many MPX samples either side, past the filter's reach
+#: (resample_poly's 201 taps at 10x span 20), so the chunks join as one upsampling would.
+STATION_MARGIN = 64
+
+
+def _fm_iq_to(fh, mpx, rate, offset_hz, snr_db=35.0, seed=1):
+    """:func:`fm_iq` written to the open file ``fh`` a chunk at a time. The same signal; the
+    noise, at the same level, is drawn chunk by chunk."""
+    up = int(round(rate / MPX_RATE))
+    rng = np.random.default_rng(seed)
+    noise_amp = math.sqrt(0.25 / 10 ** (snr_db / 10) * (rate / 200e3) / 2)
+    phase, done = 0.0, 0
+    for s in range(0, len(mpx), STATION_CHUNK):
+        e = min(s + STATION_CHUNK, len(mpx))
+        if up > 1:
+            a, b = max(0, s - STATION_MARGIN), min(len(mpx), e + STATION_MARGIN)
+            x = sps.resample_poly(mpx[a:b], up, 1)[(s - a) * up:(e - a) * up]
+        else:
+            x = mpx[s:e]
+        ph = phase + 2 * np.pi * 75e3 * np.cumsum(x) / rate
+        phase = float(ph[-1])
+        t = (done + np.arange(len(x))) / rate
+        iq = 0.5 * np.exp(1j * (ph + 2 * np.pi * offset_hz * t))
+        iq += noise_amp * (rng.standard_normal(len(x)) + 1j * rng.standard_normal(len(x)))
+        iq.astype(np.complex64).tofile(fh)
+        done += len(x)
+
+
 def write_station(path_base, seconds=8.0, rate=2.5e6, center_hz=98.4e6,
                   station_hz=98.7e6, convention='standard', **kw):
     """Write ``path_base.cfile`` + ``.json``; returns the .cfile path."""
     left, right = tones(seconds)
     mpx = multiplex(seconds, left, right, convention=convention, **kw)
-    iq = fm_iq(mpx, rate, station_hz - center_hz)
-    iq.tofile(path_base + '.cfile')
+    with open(path_base + '.cfile', 'wb') as fh:
+        _fm_iq_to(fh, mpx, rate, station_hz - center_hz)
     with open(path_base + '.json', 'w') as fh:
         json.dump({'rate': rate, 'offset_hz': station_hz - center_hz,
                    'station_hz': station_hz, 'center_hz': center_hz}, fh)
