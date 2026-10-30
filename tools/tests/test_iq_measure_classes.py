@@ -16,7 +16,8 @@ Every signal is synthetic and seeded, built here with numpy. What the checks pin
 - 'tv': 525-line AM vision (negative modulation), 625-line AM, and 525-line FM video with a
   6.0 MHz sound subcarrier, which is listed;
 - FM subcarriers: a 67 kHz FM subcarrier and a stereo pilot at 19 kHz are listed, at their
-  frequency within 500 Hz; a plain FM tone lists none;
+  frequency within 500 Hz; a plain FM tone lists none, nor does a clean one whose frequency
+  carries a line 60 dB under its deviation (a blind test's false subcarrier);
 - what must not move: FM by a tone at the first zero of J0 (no carrier line) stays 'fm', AM
   at full depth stays 'am', and the new sections are None on a class that is not theirs;
 - the card stays JSON-safe with floats to six significant digits.
@@ -189,6 +190,14 @@ def fm_tone_iq(beta=75.0, rate=1e6, seconds=1.0, seed=6):
     return noisy(np.exp(1j * beta * np.sin(2 * np.pi * 1e3 * t)), 30.0, seed), rate
 
 
+def fm_spur_iq(rate=1e6, seconds=1.0, seed=9):
+    """A clean FM tone (2.4 kHz, 40 kHz deviation, 55 dB SNR) whose frequency carries a tiny
+    line at 102 kHz, 60 dB under the tone's deviation: not a subcarrier (blind round 2)."""
+    t = np.arange(int(seconds * rate)) / rate
+    freq = 40e3 * np.sin(2 * np.pi * 2400 * t) + 40.0 * np.cos(2 * np.pi * 102e3 * t)
+    return noisy(np.exp(2j * np.pi * np.cumsum(freq) / rate), 55.0, seed), rate
+
+
 def am_full_iq(rate=1e6, seconds=1.0, seed=7):
     t = np.arange(int(seconds * rate)) / rate
     x = (1 + np.cos(2 * np.pi * 1e3 * t)) * np.exp(2j * np.pi * 20e3 * t)
@@ -212,6 +221,7 @@ MAKERS = {
     'tv_fm': lambda: tv_fm_iq(),
     'fm_sub': lambda: fm_subcarrier_iq(),
     'fm_tone': lambda: fm_tone_iq(),
+    'fm_spur': lambda: fm_spur_iq(),
     'fm_j0': lambda: fm_tone_iq(beta=2.404826),
     'am_full': lambda: am_full_iq(),
 }
@@ -302,6 +312,9 @@ def check_fm():
         expect(f"FM with a subcarrier: {hz / 1e3:.0f} kHz listed within 500 Hz",
                lambda h=hz: (any(abs(f - h) < 500 for f in subs('fm_sub')), f"{subs('fm_sub')}"))
     expect("FM tone: no subcarriers", lambda: (subs('fm_tone') == [], f"{subs('fm_tone')}"))
+    expect("clean FM tone with a tiny line at 102 kHz: class fm, no subcarriers",
+           lambda: (card('fm_spur')['class'] == 'fm' and subs('fm_spur') == [],
+                    f"class {card('fm_spur')['class']}, {card('fm_spur')['frequency']['subcarriers']}"))
 
 
 def check_unmoved():

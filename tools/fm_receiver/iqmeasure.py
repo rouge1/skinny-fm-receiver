@@ -156,6 +156,11 @@ PSK_SPAN = 1 << 17
 SUBCARRIER_MIN_HZ = 15e3
 SUBCARRIER_DB = 50.0
 SUBCARRIER_GROUP_HZ = 8e3
+#: And a subcarrier carries a share of the demodulated signal: its power within 4 kHz, against
+#: all of it above 20 Hz, this many dB or more. On a clean FM tone (blind test, 53 dB SNR) a
+#: line 83 dB over an empty band's median held -53 dB; RDS held -20, a pilot -11, FM video's
+#: sound -17, a 67 kHz subcarrier 0.
+SUBCARRIER_SHARE_DB = -35.0
 MAX_SUBCARRIERS = 4
 TV_SOUND_HZ = (4.6e6, 9e6)
 
@@ -744,8 +749,13 @@ def _subcarriers(seg, rate, low=SUBCARRIER_MIN_HZ, high=None):
     k = np.flatnonzero(band[1:-1] & (power[1:-1] > power[:-2]) & (power[1:-1] >= power[2:])) + 1
     k = k[level[k] >= SUBCARRIER_DB]
     groups = np.split(k, np.flatnonzero(np.diff(freqs[k]) > SUBCARRIER_GROUP_HZ) + 1) if k.size else []
-    out = [{'freq_hz': float(np.sum(freqs[g] * power[g]) / np.sum(power[g])),
-            'level_db': float(level[g].max())} for g in groups]
+    total = max(float(power[freqs >= 20].sum()), 1e-300)
+    out = []
+    for g in groups:
+        f = float(np.sum(freqs[g] * power[g]) / np.sum(power[g]))
+        share = 10 * math.log10(max(float(power[np.abs(freqs - f) <= SUBCARRIER_GROUP_HZ / 2].sum()), 1e-300) / total)
+        if share >= SUBCARRIER_SHARE_DB:
+            out.append({'freq_hz': f, 'level_db': float(level[g].max()), 'share_db': share})
     out.sort(key=lambda s: -s['level_db'])
     return out[:MAX_SUBCARRIERS]
 

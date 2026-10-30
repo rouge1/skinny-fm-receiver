@@ -253,7 +253,8 @@ loses none.
   it becomes the card's `symbol_rate_baud`.
 - `frequency.subcarriers: [{freq_hz, level_db}]`, for `fm` and FM `tv`: lines in the demodulated frequency
   50 dB or more over the median of 15 kHz to 0.45 x the rate (FM video: 4.6 to 9 MHz, above the picture),
-  lines within 8 kHz grouped as one at their power-weighted centre, at most 4, strongest first. An FM
+  lines within 8 kHz grouped as one at their power-weighted centre, each holding -35 dB or more of the
+  demodulated signal's power (within 4 kHz of it, `share_db`), at most 4, strongest first. An FM
   broadcast lists its 19 kHz pilot and 57 kHz RDS.
 - The class rules become: 0 lte/nr, 1 `noise`, then `atsc`, `tv`, `pulses`, `ook`, `ask`, `psk`, `fsk`, `fm`, `am`,
   `carrier`, `unknown`. Every real bench recording that was `ook`, `ask`, `fsk`, `fm` or `am` before is
