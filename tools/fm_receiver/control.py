@@ -263,6 +263,9 @@ def _rds_state(snap):
         'ps': snap['ps'] or None,
         'station': snap['station_short'] or snap['station_name'] or None,
         'radiotext': snap['radiotext'] or None,
+        # Every RadioText heard whole, most often first: a station taking
+        # turns between messages shows only one in `radiotext` at a time.
+        'radiotext_heard': snap.get('radiotext_heard') or None,
         'pty': snap['pty'] or None,
         'groups': snap['groups'],
         'blocks_good_percent': good,

@@ -326,6 +326,11 @@ class RdsProtocol:
         self._rtplus_group = None
         self._rtplus_toggle = None  # the RT+ item toggle bit last seen
         self._rt_message = 0        # counts the messages put on display
+        # FM receiver: every RadioText heard whole, and how many times. A
+        # station that takes turns between a typed message and the song shows
+        # only one of them at any moment; this keeps both.
+        self.rt_heard = collections.Counter()
+        self._rt_done = {0: None, 1: None}  # the last message completed per page
         self._rtplus_message = None  # the message the item fields came from
         self.pty = None
         self.tp = None
@@ -517,6 +522,8 @@ class RdsProtocol:
                         self._rt_message += 1     # a new message on display
                 for j, ch in enumerate(chars):
                     buf.put(base + j, ch, trusted)
+                if trusted:
+                    self._note_complete(ab, buf)
             # Switch which buffer is reported only once the new flag has been
             # seen twice in believed groups, so one bad bit cannot flash a
             # half-empty page up.
@@ -537,6 +544,21 @@ class RdsProtocol:
                 self.rt = self.rt_pages[self._rt_show]
         elif gtype == 4 and not ver_b and 'C' in b and 'D' in b:
             self._decode_clock(b)
+
+    def _note_complete(self, ab, buf):
+        """Count a page's message once every character of it, up to its
+        carriage return, has come in believed segments (FM receiver)."""
+        end = buf.size
+        for pos in sorted(buf.written):
+            if buf.committed[pos] == '\r':
+                end = pos
+                break
+        if end == 0 or not buf.range_written(0, end):
+            return
+        message = buf.message()
+        if message and message != self._rt_done[ab]:
+            self._rt_done[ab] = message
+            self.rt_heard[message] += 1
 
     def _parse_rtplus(self, b):
         """Pull the two RT+ tags out of a group and slice them from RadioText.
@@ -732,6 +754,7 @@ class RdsProtocol:
             'station_name': name,
             'radiotext': self.rt.message(),
             'rt_ab': self._rt_show,
+            'radiotext_heard': [m for m, _ in self.rt_heard.most_common(8)],
             'pty': table[self.pty] if self.pty is not None else None,
             'rtplus': dict(self.rtplus),
             'title': self.rtplus.get('title'),
