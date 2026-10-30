@@ -47,6 +47,7 @@ SPEED_LIMIT_S = 10.0
 FS = 250000.0
 FS_WIDE = 2000000.0
 CENTRE = 433.92e6
+HIGH_CENTRE = 1859.84e6
 WIDE_OFFSET = 200e3
 WIDE_BAND = ('434.07e6', '434.17e6')
 WIDE_CENTRE = 434.12e6
@@ -241,9 +242,12 @@ def write_recording(folder, name, iq, rate, centre):
 
 def build_fixtures():
     """The recordings the checks read, in FOLDER (each in a folder of its own)."""
-    global FRAME, SCALED, SCALED_GAIN, WIDE, NOISE, LONG
+    global FRAME, HIGH, SCALED, SCALED_GAIN, WIDE, NOISE, LONG
     clean = clean_frame()
     FRAME = write_recording(fresh('fix-frame'), 'frame', with_noise(clean, 1), FS, CENTRE)
+    # The same frame recorded at a centre above 800 MHz: rtl_433 changes its defaults for
+    # such a -f, and with -s given first it then decoded nothing.
+    HIGH = write_recording(fresh('fix-high'), 'high', with_noise(clean, 1), FS, HIGH_CENTRE)
     scaled = mix(with_noise(clean, 1) * 0.005, FS, 30e3)
     SCALED = write_recording(fresh('fix-scaled'), 'scaled', scaled, FS, CENTRE)
     SCALED_GAIN = 20 * np.log10(0.5 / np.percentile(np.abs(np.asarray(scaled, np.complex64)), 99.9))
@@ -277,6 +281,11 @@ def check_frame():
         isinstance(c.get('decodes'), list) and len(c['decodes']) > 0
         and c['decodes'][0].get('temperature_C') == 19.0,
         f"decodes[0] {c.get('decodes', [None])[0]!r}")))
+
+
+def check_high_centre():
+    expect('1 frame at an 1860 MHz centre: summary has Nexus-TH id 181',
+           lambda: printed(memo(('decode', 'high'), lambda: run([HIGH], WORK)), nexus_ok))
 
 
 def scaled_decode():
@@ -543,7 +552,7 @@ def check_flags():
            '433920000 and Nexus-TH id 181 decoded', bare)
 
 
-GROUPS = [check_frame, check_scaled, check_wide, check_noise, check_refusals, check_keep, check_paths,
+GROUPS = [check_frame, check_high_centre, check_scaled, check_wide, check_noise, check_refusals, check_keep, check_paths,
           check_source, check_flags, check_speed]
 
 

@@ -447,11 +447,15 @@ def main(argv=None):
         for number in (args.R or []):
             extra.extend(['-R', str(int(number))])
         # stdout is a file, not a pipe: a pipe dropped decodes when this was tried.
+        # -f before -s, and -Y classic: a -f above 800 MHz switches rtl_433 to other defaults,
+        # which a -s given before it does not undo, and on-off sensors then decode nothing
+        # (a 1.86 GHz LaCrosse frame: 0 decodes with -s first, 1 with -f first).
         try:
             with open(out_path, 'w') as out_fh, open(err_path, 'w') as err_fh:
                 proc = subprocess.run(
-                    ['rtl_433', '-r', 'cf32:' + os.path.basename(cf32), '-s', str(_json_num(rate_sps)),
-                     '-f', str(_json_num(sl.center_hz)), '-F', 'json', '-M', 'level'] + extra,
+                    ['rtl_433', '-r', 'cf32:' + os.path.basename(cf32),
+                     '-f', str(_json_num(sl.center_hz)), '-s', str(_json_num(rate_sps)),
+                     '-Y', 'classic', '-F', 'json', '-M', 'level'] + extra,
                     stdout=out_fh, stderr=err_fh, timeout=args.timeout, cwd=tmp)
         except subprocess.TimeoutExpired:
             return _refuse(f"rtl_433 timed out after {args.timeout:g} s.")
