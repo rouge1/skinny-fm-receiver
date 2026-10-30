@@ -19,8 +19,9 @@ centroid come from a finer Hann periodogram, so a narrow signal is not
 widened to a whole bin. The envelope and the frequency are tracked in blocks
 of 16 samples, from the phase advance summed over each block, so the noise
 averages down; the 64-sample track gives the frequency's spread without the
-block-to-block noise. TV, pulses, PSK and subcarriers are judged sample by
-sample on the start of that track (SEG samples at its own rate).
+block-to-block noise. TV, pulses, PSK, subcarriers and keying of 4 or 8
+levels are judged sample by sample on the start of that track (SEG samples
+at its own rate).
 
 The cells are looked for only in a span sampled at 1.92 MS/s or more whose
 occupied width is 1 MHz or more, and only in its first 50 ms (``iqlte`` and
@@ -148,6 +149,33 @@ PSK_SPIKES = 0.1
 #: PSK is judged on the segment's first PSK_SPAN samples: thousands of symbols, and the
 #: transforms of a whole segment would cost more memory than the span measured (CONTRACTS m5).
 PSK_SPAN = 1 << 17
+#: Keying of more than two levels (4ASK, 8ASK, 4FSK), which the 16-sample blocks split
+#: into two clusters with a crowded middle: looked for sample by sample, when the blocks
+#: find no keying, at the symbol clock (a line this far over the median in the spectrum
+#: of the series' steps, at LEVEL_MIN_BAUD or more), over LEVEL_MIN_SYMBOLS symbols or
+#: more of the segment's first LEVEL_SPAN samples (PSK's: at 1 MS/s, 0.13 s, so down to
+#: about 1.5 kBd; a whole segment broke the memory bound at 28 MS/s). Each level holds
+#: LEVEL_SHARE of its fair share or more, and the symbols are white: their spectrum's
+#: top bin under LEVEL_WHITE times its mean. The smallest of LEVEL_ORDERS that fits is
+#: the order; two levels are left to the blocks. A symbol is averaged over the middle
+#: LEVEL_WINDOW of it, where shaped symbols (Gaussian, RRC) have settled: 8ASK's levels
+#: stood 12 deviations apart so, 5 over the whole symbol.
+#: Measured through ``measure`` on the tests' signals (2026-10-30): the keyed ones' clock
+#: lines stood 41 to 59 dB over and their symbols' whiteness 6 to 11. What keeps the rest
+#: out is mostly not the clock: AM and FM by noise (speech-like) made lines up to 44 dB,
+#: but slow ones (under LEVEL_MIN_SYMBOLS in the span); tones made lines up to 86 dB, but
+#: their symbols repeat (whiteness 130 to 3079); two equal tones' beat keys the frequency
+#: between two values, white (10), at an 80 kHz clock: hence no order 2 here.
+LEVEL_ORDERS = (4, 8)
+LEVEL_SPAN = PSK_SPAN
+LEVEL_CLOCK_DB = 35.0
+LEVEL_MIN_BAUD = 100.0
+LEVEL_MIN_SYMBOLS = 200
+LEVEL_PHASES = 16
+LEVEL_WINDOW = 0.5
+LEVEL_ITERATIONS = 30
+LEVEL_SHARE = 0.5
+LEVEL_WHITE = 50.0
 #: FM subcarriers: lines in the demodulated frequency above the audio, this far over the
 #: median of that band (a 67 kHz subcarrier stood 86 dB over; an FM tone's noise, 38 dB).
 #: Lines closer than SUBCARRIER_GROUP_HZ are one subcarrier and its sidebands (RDS is two
@@ -732,6 +760,78 @@ def _psk(seg, rate, base):
     return None
 
 
+def _clock(v, rate, smooth):
+    """The symbol clock of a keyed series: the lowest strong line in the spectrum of its
+    steps (``|v'|`` after a ``smooth``-sample average). Returns (Hz, dB over the median)."""
+    if smooth > 1:
+        c = np.concatenate([[0.0], np.cumsum(v)])
+        v = (c[smooth:] - c[:-smooth]) / smooth
+    d = np.abs(np.diff(v))
+    if d.size < 64:
+        return None
+    freqs, power = _spectrum(d, rate)
+    band = np.flatnonzero((freqs >= LEVEL_MIN_BAUD) & (freqs <= rate / 8))
+    if band.size < 3:
+        return None
+    p = power[band]
+    peaks = np.flatnonzero((p[1:-1] >= p[:-2]) & (p[1:-1] > p[2:]) & (p[1:-1] >= 0.5 * p.max())) + 1
+    i = int(band[peaks[0]]) if peaks.size else int(band[int(np.argmax(p))])
+    return float(freqs[i]), 10 * math.log10(max(power[i], 1e-300) / max(float(np.median(p)), 1e-300))
+
+
+def _fit_levels(s, m):
+    """``m`` levels in the symbol values ``s`` (1-D, medians from quantile seeds). Returns
+    (levels low first, smallest share times m, smallest gap over the within-level robust
+    deviation, the largest share of values in the middle quarter of a gap)."""
+    c = np.quantile(s, (np.arange(m) + 0.5) / m)
+    for _ in range(LEVEL_ITERATIONS):
+        lab = np.argmin(np.abs(s[:, None] - c[None, :]), axis=1)
+        c = np.array([np.median(s[lab == j]) if np.any(lab == j) else c[j] for j in range(m)])
+    c = np.sort(c)
+    lab = np.argmin(np.abs(s[:, None] - c[None, :]), axis=1)
+    share = float(np.bincount(lab, minlength=m).min()) / s.size * m
+    dev = max(1.4826 * float(np.median(np.abs(s[lab == j] - c[j]))) for j in range(m) if np.any(lab == j))
+    gaps = np.diff(c)
+    sep = float(gaps.min()) / dev if dev > 0 else math.inf
+    middle = max(float(np.mean(np.abs(s - (a + b) / 2) < (b - a) / 4)) for a, b in zip(c[:-1], c[1:]))
+    return c.tolist(), share, sep, middle
+
+
+def _keyed_levels(v, rate, smooth):
+    """Keying of 4 or 8 levels in a sample-rate series (an envelope or a frequency),
+    found at its symbol clock: each symbol is averaged over its middle (at the phase
+    where the symbols spread most), and the smallest order whose levels stand clear is it.
+    Returns {order, levels, symbol_rate_baud, clock_db} or None."""
+    v = v.astype(np.float64)
+    clock = _clock(v, rate, smooth)
+    if clock is None or clock[1] < LEVEL_CLOCK_DB:
+        return None
+    baud = clock[0]
+    sps = rate / baud
+    n = int(round(LEVEL_WINDOW * sps))
+    if n < 2 or len(v) < LEVEL_MIN_SYMBOLS * sps:
+        return None
+    c = np.concatenate([[0.0], np.cumsum(v)])
+    avg = (c[n:] - c[:-n]) / n
+    best = None
+    for phase in np.linspace(0, sps, LEVEL_PHASES, endpoint=False):
+        idx = np.round(phase + np.arange(int((len(avg) - 1 - phase) / sps)) * sps).astype(np.int64)
+        s = avg[idx]
+        if best is None or s.var() > best.var():
+            best = s
+    s = best
+    # Data is white at the symbol rate. A sum of tones sampled at a clock it made (their
+    # difference) repeats a few values, which can look like levels: its spectrum is lines.
+    z = np.abs(np.fft.rfft(s - s.mean()))[1:] ** 2
+    if not z.size or z.max() > LEVEL_WHITE * z.mean():
+        return None
+    for m in LEVEL_ORDERS:
+        levels, share, sep, middle = _fit_levels(s, m)
+        if share >= LEVEL_SHARE and sep > KEYED_SIGMA and middle < MIDDLE_MAX:
+            return {'order': m, 'levels': levels, 'symbol_rate_baud': baud, 'clock_db': clock[1]}
+    return None
+
+
 def _subcarriers(seg, rate, low=SUBCARRIER_MIN_HZ, high=None):
     """Lines in the demodulated frequency between ``low`` and ``high`` (default 0.45 of
     the rate): [{freq_hz, level_db}], strongest first, a line's sidebands grouped with it.
@@ -1016,6 +1116,24 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
     pulses = None if tv or atsc else _pulses(seg, rate_s)
     spikes = keyed_f and min(np.mean(f16 >= f_thr), np.mean(f16 < f_thr)) < PSK_SPIKES
     psk = None if atsc or tv or pulses or keyed_env or (keyed_f and not spikes) else _psk(seg, rate_s, base_s)
+    env_order = 2 if keyed_env else None
+    freq_order = 2 if keyed_f else None
+    if not (atsc or tv or pulses or psk or keyed_env or keyed_f) and len(seg) >= 64:
+        head = seg[:LEVEL_SPAN + 1]
+        many = _keyed_levels(np.abs(head), rate_s, 1)
+        if many:
+            keyed_env, env_order, sym = True, many['order'], many['symbol_rate_baud']
+            env_lo, env_hi = many['levels'][0], many['levels'][-1]
+            bursts, env_levels = burst_card, many['levels']
+            depth = (env_hi - env_lo) / (env_hi + env_lo) if env_hi + env_lo > 0 else 0.0
+        elif cv < 0.1:
+            fr = np.angle(head[1:] * np.conj(head[:-1])).astype(np.float64) * (rate_s / (2 * np.pi))
+            many = _keyed_levels(fr, rate_s, 1)
+            if many:
+                keyed_f, freq_order, sym = True, many['order'], many['symbol_rate_baud']
+                f_lo, f_hi = many['levels'][0], many['levels'][-1]
+                freq_levels = [f + base_s for f in many['levels']]
+                deviation = (f_hi - f_lo) / 2
     if tv and tv['modulation'] == 'fm':
         # FM video: its sound subcarriers sit above the 4.2 MHz of the picture.
         subcarriers = _subcarriers(seg, rate_s, *TV_SOUND_HZ)
@@ -1073,7 +1191,11 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
               f"second (duty {pulses['duty']:.2f}); " + ('; '.join(how) or 'regular') + ".")
     elif keyed_env:
         ratio = env_lo / env_hi if env_hi > 0 else 0.0
-        if ratio < 0.1:
+        if env_order > 2:
+            cls = 'ask'
+            ev = (f"The envelope is keyed between {env_order} levels, {env_lo:.3g} to {env_hi:.3g}, "
+                  f"at {sym:.0f} Bd.")
+        elif ratio < 0.1:
             cls = 'ook'
             ev = (f"The envelope is keyed between {env_lo:.3g} and {env_hi:.3g}; "
                   f"the low level is {-20 * math.log10(max(ratio, 1e-12)):.0f} dB under the high one.")
@@ -1089,8 +1211,13 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
         cls = 'psk'
     elif keyed_f and cv < 0.1:
         cls = 'fsk'
-        ev = (f"The frequency is keyed at {f_lo + base_s:.0f} and {f_hi + base_s:.0f} Hz from the "
-              f"centre, and the envelope is constant (CV {cv:.3f}).")
+        if freq_order > 2:
+            ev = (f"The frequency is keyed between {freq_order} levels, {f_lo + base_s:.0f} to "
+                  f"{f_hi + base_s:.0f} Hz from the centre, at {sym:.0f} Bd, and the envelope "
+                  f"is constant (CV {cv:.3f}).")
+        else:
+            ev = (f"The frequency is keyed at {f_lo + base_s:.0f} and {f_hi + base_s:.0f} Hz from the "
+                  f"centre, and the envelope is constant (CV {cv:.3f}).")
     elif cv < 0.1 and fstd >= STEADY_HZ:
         cls = 'fm'
         ev = (f"The envelope is constant (CV {cv:.3f}) and the frequency spreads by "
@@ -1120,9 +1247,9 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
         'occupied': {'bandwidth_hz': bw99, 'bandwidth_20db_hz': bw20, 'centre_hz': centre},
         'tones': tones,
         'bursts': bursts,
-        'envelope': {'levels': env_levels, 'depth': depth, 'keyed': bool(keyed_env)},
+        'envelope': {'levels': env_levels, 'depth': depth, 'keyed': bool(keyed_env), 'order': env_order},
         'frequency': {'levels_hz': freq_levels, 'deviation_hz': deviation,
-                      'keyed': bool(keyed_f), 'subcarriers': subcarriers},
+                      'keyed': bool(keyed_f), 'order': freq_order, 'subcarriers': subcarriers},
         'symbol_rate_baud': sym,
         'atsc': atsc,
         'tv': tv,

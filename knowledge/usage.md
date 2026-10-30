@@ -1167,8 +1167,9 @@ The card is a JSON object. A value that cannot be measured is `null`. Its keys:
   (above the floor).
 - `bursts`: `count`, `durations_s`, `median_duration_s`, `gaps_s`,
   `repeat_interval_s` (`null` under 3 bursts), `duty`.
-- `envelope`: `levels` (one or two amplitudes), `depth`, `keyed`.
-- `frequency`: `levels_hz` (offsets from the centre), `deviation_hz`, `keyed`.
+- `envelope`: `levels` (one amplitude, or the 2, 4 or 8 it is keyed between), `depth`,
+  `keyed`, `order` (2, 4, 8, or null when not keyed).
+- `frequency`: `levels_hz` (offsets from the centre), `deviation_hz`, `keyed`, `order`.
 - `symbol_rate_baud`.
 - `lte` and `nr`: the cells in the span's first 50 ms. Each has `searched`
   and `reason`. A span under 1.92 MS/s, or narrower than 1 MHz, is not

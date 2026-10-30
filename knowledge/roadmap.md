@@ -1741,3 +1741,59 @@ first build, 15 px text with a scroll.
   the PCI); the pane shows an unconfirmed one, still read, as a line under
   the grid, not a column.
 
+
+## Round 31: what the bench night missed (requested 2026-10-30)
+
+Why: a night of blind rounds (a signal generator cabled into the BB60D,
+an app and its settings chosen at random) scored most signals right, and
+the misses fell in a few places: iq-measure only knows two-level keying and
+reads symbol rates up to about 15 kBd, a subcarrier is found but not
+named, and things that look like part of the programme (a tone under
+speech, DTMF, a narrow line beside a TV signal) were passed over.
+In order:
+
+### Phase 1: keying with more than two levels
+- [x] 4 and 8 levels found, not only 2 (2026-10-30): 4ASK and 8ASK with
+  the carrier on were called AM, and 4FSK FM. When the blocks find no
+  keying, the sample-rate envelope and frequency are read at their symbol
+  clock (`_keyed_levels`); the card says the order (`envelope.order`,
+  `frequency.order`), the class is `ask`/`fsk`. Two levels stay with the
+  blocks (two equal tones' beat fitted two levels).
+- [x] The symbol rate from the series' steps, not one threshold's
+  crossings, so a 4-level signal's clock shows; this path reaches 19 kBd.
+- [x] Tests (`test_iq_measure_levels.py`): 4ASK, 8ASK, RRC 4ASK, 4FSK,
+  19 kBd Gaussian 4FSK (BT 0.5), against FM and AM by two tones and by noise.
+- [ ] Gaussian 4FSK at BT 0.3 (the night's signal) is still `fm`: the
+  shaping smears every level (the gap stood 2.9 deviations, the test asks
+  3). A dip test (fewer symbols mid-gap than at the levels) may read it;
+  it needs negatives that pass the clock first.
+- [ ] Check on a recording of a 4-level signal.
+
+### Phase 2: faster symbols, and the pulse shape
+- [ ] The symbol rate past `fs_block / 4`: a 19 kBd 4FSK was out of
+  reach. Track wide keyed signals at a higher rate.
+- [ ] RRC roll-off estimated from the spectrum's edges against the symbol
+  rate (a 4ASK at 0.5 was read wrongly).
+- [ ] FM video: the deviation in the `tv` section.
+- [ ] ASK with the carrier off (bipolar levels, RRC) is named BPSK: say
+  its amplitude levels too (the envelope at the symbol clock has two).
+
+### Phase 3: what rides on a carrier
+- [ ] A subcarrier's own class: demodulate it and run the same rules
+  (an SSB subcarrier with its carrier was called AM).
+- [ ] Stereo only with a pilot: a mono station with RDS was called stereo.
+  Find where the call came from first.
+
+### Phase 4: things that look like the programme
+- [ ] Lines in demodulated audio: a steady narrow tone under speech, and
+  DTMF pairs, listed in the card.
+- [ ] A line beside a strong signal: compare it with that signal's image
+  (width, level, mirror offset) and call it a signal when it is not one.
+- [ ] Warn when a capture is shorter than the repeat the card measured.
+- [ ] The bench's own steady lines with the generator off, in a
+  known-spurs note (ops folder, not the repo), so they are not chased.
+
+### Phase 5: the method
+- [ ] `rf-ctf.md`: the night's rules (follow every pure line in programme
+  audio; capture longer than the loop; a line with its own width is a
+  signal until shown otherwise).

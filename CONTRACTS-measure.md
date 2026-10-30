@@ -50,8 +50,10 @@ tones:   [{freq_hz (absolute), level_db (above the floor)}], strongest first, at
          the floor, at least 8 bins apart (two peaks closer than that are one tone), and within 60 dB of the strongest (a window's sidelobes are not tones)
 bursts:  count, durations_s (first 32), median_duration_s, gaps_s (first 32), repeat_interval_s (median start
          to start; None under 3 bursts), duty (0..1)
-envelope: levels (1 or 2 amplitude levels, low first), depth (0..1), keyed (bool)
-frequency: levels_hz (offsets from the centre, 1 or 2, low first), deviation_hz, keyed (bool)
+envelope: levels (1, 2, 4 or 8 amplitude levels, low first), depth (0..1), keyed (bool),
+          order (2, 4, 8 or None: the levels it is keyed between; amendment 2026-10-30)
+frequency: levels_hz (offsets from the centre, 1, 2, 4 or 8, low first), deviation_hz, keyed (bool),
+          order (2, 4, 8 or None)
 symbol_rate_baud: float | None
 class:   'noise' | 'carrier' | 'ook' | 'ask' | 'fsk' | 'fm' | 'am' | 'unknown'
          (schema 2 adds 'lte' | 'nr' | 'lte+nr', and the lte and nr sections: amendment 2026-10-24)
@@ -67,15 +69,19 @@ frequency steadiness, not the noise of the whole band.
 ### The class rules (deterministic, applied in this order)
 1. `noise`: `snr_db` < 6.
 2. `ook`: the envelope is keyed with two levels and the low level is below 10 % of the high one (< -20 dB).
-3. `ask`: the envelope is keyed with two levels and the low level is at least 10 % of the high one.
-4. `fsk`: the instantaneous frequency is keyed (two levels more than 3 within-level standard deviations
-   apart) and the envelope is constant (coefficient of variation < 0.1).
+3. `ask`: the envelope is keyed with two levels and the low level is at least 10 % of the high one, or
+   with 4 or 8 levels (whatever the lowest).
+4. `fsk`: the instantaneous frequency is keyed (two, four or eight levels, each next pair more than 3
+   within-level standard deviations apart) and the envelope is constant (coefficient of variation < 0.1).
 5. `fm`: continuous, the envelope constant (< 0.1), the frequency's standard deviation >= 500 Hz.
 6. `am`: continuous, the envelope varying (coefficient of variation >= 0.1), the frequency steady.
 7. `carrier`: one tone, no modulation measured.
 8. `unknown` otherwise (never guess).
 "Keyed" means the values (taken inside bursts, or over the whole span when there are none) form two clusters
-that a threshold separates cleanly.
+that a threshold separates cleanly. When the 16-sample blocks find no keying, 4 or 8 levels are looked for
+sample by sample (amendment 2026-10-30): at the symbol clock (a line in the spectrum of the series' steps),
+each symbol averaged over its middle half, the levels each holding half their fair share or more, clear of
+each other as above, and the symbols white (a sum of tones sampled at their difference is not).
 
 ## fmctl additions (`tools/fm_receiver/control.py`)
 | command | does | refuses |
