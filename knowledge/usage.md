@@ -1214,6 +1214,11 @@ reported in `gain_db`: a weak capture needs tens of dB.
 It needs rtl_433 on the PATH. Install it with `apt install rtl-433` on Debian
 or Ubuntu, or `brew install rtl_433` on a Mac. conda has no rtl_433.
 
+Running rtl_433 by hand on a recording above 800 MHz: give `-f` before `-s`
+(and `-Y classic`). A `-f` up there switches rtl_433 to other defaults that a
+`-s` given earlier does not undo, and on-off sensors then decode nothing.
+iq-decode passes them in that order.
+
 ```sh
 tools/iq-decode FILE                                        # the whole span, rtl_433's own protocols
 tools/iq-decode FILE --t0 2 --t1 5 --band 433.8e6 434.1e6   # seconds 2 to 5, only this absolute band
