@@ -44,15 +44,15 @@ def _check_options(args):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('file', help="the recording (.cfile, .sdvr or .cdif)")
+    ap.add_argument('file', help="the recording (.cfile, .cf32, .sigmf-data, .sdvr or .cdif)")
     ap.add_argument('--t0', type=float, metavar='S', help="start of the span, seconds")
     ap.add_argument('--t1', type=float, metavar='S', help="end of the span, seconds")
     ap.add_argument('--band', nargs=2, type=float, metavar=('LO', 'HI'),
                     help="Hz to analyse, absolute (default: the whole band)")
     ap.add_argument('--rate', type=float, metavar='R',
-                    help="samples/s, for a .cfile with no .sigmf-meta")
+                    help="samples/s, for a .cfile or .cf32 with no .sigmf-meta")
     ap.add_argument('--center', type=float, metavar='HZ',
-                    help="centre frequency in Hz, for a bare .cfile")
+                    help="centre frequency in Hz, for a bare .cfile or .cf32")
     ap.add_argument('--card', action='store_true',
                     help="also write <base>.card.json beside a .cfile")
     args = ap.parse_args(argv)

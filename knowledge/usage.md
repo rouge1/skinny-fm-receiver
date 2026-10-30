@@ -1114,7 +1114,8 @@ tools/iq-measure FILE --rate 2e6 --center 433.92e6  # a bare .cfile, with no .si
 tools/iq-measure FILE --card                        # also write the card beside a .cfile
 ```
 
-`FILE` is a `.cfile`, a Sceptre DVR's IQ (`.sdvr`) or a BLUE `.cdif`. `--t0`
+`FILE` is a `.cfile` (or the same bytes as `.cf32`, or SigMF's `.sigmf-data` when its
+meta says `cf32_le`), a Sceptre DVR's IQ (`.sdvr`) or a BLUE `.cdif`. `--t0`
 and `--t1` are seconds into the file; left out, the span is the first 30 s.
 `--band LO HI` is absolute Hz. `--rate` (samples/s) and `--center` (Hz) are for
 a bare `.cfile`. The tool needs numpy only. On a file it cannot measure (not

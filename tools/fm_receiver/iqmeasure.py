@@ -1,7 +1,8 @@
 """Measuring a signal from an IQ recording: what it is, as numbers and a class.
 
 Behind ``tools/iq-measure`` and ``fmctl measure``. It reads a recording of IQ
-(a ``.cfile`` with its ``.sigmf-meta``, a bare ``.cfile`` given its rate, a
+(a ``.cfile`` with its ``.sigmf-meta``, a bare ``.cfile`` given its rate, the same
+bytes as ``.cf32`` or SigMF's cf32_le ``.sigmf-data``, a
 Sceptre DVR's IQ ``.sdvr``, or a BLUE ``.cdif``) a span at a time, never
 whole, and returns a card: a JSON-safe dict of the level, the occupied
 bandwidth, the tones, the bursts, the envelope and frequency behaviour, the
@@ -328,12 +329,22 @@ def _sidecar_meta(path):
         raise IQSourceError(f"{os.path.basename(meta)} is not readable: {exc}") from exc
 
 
-def _open_cfile(path, rate, center_hz):
+#: Complex float32 IQ, interleaved little-endian, under any of these names: GNU Radio's
+#: .cfile, rtl_433's and the bench toolkit's .cf32, and SigMF's .sigmf-data when its meta says
+#: cf32_le. One reader serves them all; the kind in the card is the extension's.
+CF32_KINDS = {'.cfile': 'cfile', '.cf32': 'cf32', '.sigmf-data': 'sigmf'}
+
+
+def _open_cfile(path, rate, center_hz, kind='cfile'):
     name = os.path.basename(path)
     samples = os.path.getsize(path) // 8
     if samples < MIN_SAMPLES:
         raise IQSourceError(f"{name} holds {samples} samples; at least {MIN_SAMPLES} are needed.")
     meta = _sidecar_meta(path)
+    datatype = meta.get('global', {}).get('core:datatype')
+    if kind == 'sigmf' and datatype not in ('cf32_le', 'cf32'):
+        raise IQSourceError(f"{name} holds {datatype or 'no datatype'} by its .sigmf-meta; "
+                            "only cf32_le is read.")
     meta_rate = meta.get('global', {}).get('core:sample_rate')
     captures = meta.get('captures') or [{}]
     meta_centre = captures[0].get('core:frequency')
@@ -341,12 +352,12 @@ def _open_cfile(path, rate, center_hz):
         rate = meta_rate
     if rate is None:
         raise IQSourceError(f"{name} has no .sigmf-meta giving its rate: pass rate= "
-                            "(and center_hz=) to measure a bare .cfile.")
+                            f"(and center_hz=) to measure a bare {os.path.splitext(name)[1]}.")
     if rate <= 0:
         raise IQSourceError("the sample rate must be positive.")
     centre = center_hz if center_hz is not None else (meta_centre or 0.0)
     data = np.memmap(path, dtype=np.complex64, mode='r', shape=(samples,))
-    return IQSource(path, 'cfile', rate, centre, samples, None,
+    return IQSource(path, kind, rate, centre, samples, None,
                     lambda a, b: data[a:b],
                     station_hz=meta.get('global', {}).get('fmrx:station_frequency'))
 
@@ -412,15 +423,15 @@ def open_iq(path, rate=None, center_hz=None):
     if not os.path.isfile(path):
         raise IQSourceError(f"{name} does not exist.")
     ext = os.path.splitext(path)[1].lower()
-    if ext == '.cfile':
-        return _open_cfile(path, rate, center_hz)
+    if ext in CF32_KINDS:
+        return _open_cfile(path, rate, center_hz, CF32_KINDS[ext])
     if ext == '.sdvr':
         return _open_sdvr(path, rate, center_hz)
     if ext == '.cdif':
         return _open_cdif(path, rate, center_hz)
     if ext == '.fft':
         raise IQSourceError(f"{name} is a spectrum, not IQ: nothing to measure.")
-    raise IQSourceError(f"{name} is not a type this reads (.cfile, .sdvr, .cdif).")
+    raise IQSourceError(f"{name} is not a type this reads (.cfile, .cf32, .sigmf-data, .sdvr, .cdif).")
 
 
 # ---- spectra -----------------------------------------------------------------

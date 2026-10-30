@@ -1829,7 +1829,8 @@ run, 6 of 11 right; after the fixes below, 11 of 11.
 - [x] Test makers built as the generators build (held symbols, then RRC;
   the ASK mapping; a carrier-dominated USB; a DSB tone pair; pre-emphasised
   video): six of them fail on the merged phase 2.
-- [ ] `iq-measure` reads `.cf32` (the same bytes as `.cfile`) by name.
+- [x] `iq-measure` reads `.cf32` and SigMF's cf32_le `.sigmf-data` by name
+  (the same bytes as `.cfile`), so the other IQ tools do too.
 
 ### Phase 4: things that look like the programme
 - [ ] Lines in demodulated audio: a steady narrow tone under speech, and

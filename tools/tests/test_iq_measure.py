@@ -1611,5 +1611,34 @@ def check_extract_fallback():
 GROUPS.append(check_extract_fallback)
 
 
+def check_cf32_names():
+    """The same complex float32 bytes as .cfile, .cf32 and SigMF's .sigmf-data (2026-10-30):
+    each reads back the samples exactly, with the kind of its name, and a .sigmf-data whose
+    meta names another datatype is refused."""
+    folder = fresh('cf32-names')
+    data = (np.exp(2j * np.pi * 0.01 * np.arange(20000))).astype(np.complex64)
+    paths = {}
+    for ext in ('.cfile', '.cf32', '.sigmf-data'):
+        base = os.path.join(folder, 'tone' + ext.replace('.', '_'))
+        paths[ext] = write_cfile(base + ext, data)
+        write_sigmf(base, 1e6, CENTRE)
+    for ext, kind in (('.cfile', 'cfile'), ('.cf32', 'cf32'), ('.sigmf-data', 'sigmf')):
+        expect(f"{ext}: read back exactly, kind {kind}, rate from its .sigmf-meta",
+               lambda e=ext, k=kind: (api().open_iq(paths[e]).kind == k
+                                      and np.array_equal(api().open_iq(paths[e]).read(0, len(data)), data)
+                                      and api().open_iq(paths[e]).rate == 1e6,
+                                      f"kind {api().open_iq(paths[e]).kind}"))
+    bare = write_cfile(os.path.join(folder, 'bare.cf32'), data)
+    expect("a bare .cf32 with rate= is read", lambda: eq(api().open_iq(bare, rate=RATE).samples, len(data)))
+    other = os.path.join(folder, 'ci16.sigmf-data')
+    write_cfile(other, data)
+    with open(os.path.join(folder, 'ci16.sigmf-meta'), 'w') as fh:
+        json.dump({'global': {'core:datatype': 'ci16_le', 'core:sample_rate': 1e6}, 'captures': [{}]}, fh)
+    expect("a .sigmf-data of ci16_le is refused", lambda: refused(lambda: api().open_iq(other), api().IQSourceError))
+
+
+GROUPS.append(check_cf32_names)
+
+
 if __name__ == '__main__':
     sys.exit(main())
