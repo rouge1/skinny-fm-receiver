@@ -245,6 +245,8 @@ loses none.
   modulation ('am' | 'fm')} | None`: a line at a TV line rate (15734.264 or 15625 Hz, within 0.5 %) and its
   second harmonic, each 36 dB or more over the median of the spectrum around them, in the envelope or the
   instantaneous frequency of a signal 100 kHz wide or more; `fm` when the envelope is constant (CV < 0.1).
+  Amendment 2026-10-30: `deviation_hz` and `peak_to_peak_hz` (FM video's: the card's
+  `frequency.deviation_hz` and twice it; None for AM vision).
 - `pulses: {rate_hz, width_s, duty, count, position_rms_s, position_swing_s, position_modulated,
   width_modulated} | None`: at least 20 pulses, duty 25 % or less, 90 % of the start-to-start spacings
   within a quarter of their median, running through the whole segment (no gap over 4 periods, none at
@@ -256,7 +258,18 @@ loses none.
   smallest M of 2, 4, 8; the envelope varying sample by sample (CV >= 0.1) or the frequency spiky
   (kurtosis > 6, unfiltered symbols). A frequency "keyed" into two levels one of which holds under 10 % of
   the samples is spikes, not FSK, and PSK is still looked for. The symbol rate is the line in |x|^2;
-  it becomes the card's `symbol_rate_baud`.
+  it becomes the card's `symbol_rate_baud`. Amendment 2026-10-30: `amplitude_levels` ([low, high] | None):
+  BPSK whose symbols, at that rate, take two amplitudes is class `ask`, 4-level ASK with the carrier
+  suppressed (bipolar levels).
+- `pulse: {rolloff (float | None), sidelobe_db, shape ('raised cosine' | 'rectangular' | None)} | None`
+  (amendment 2026-10-30), for `psk` and `ask` with a symbol rate: the spectrum about the carrier (its own
+  bins left out) fitted with a raised cosine, roll-off 0.05 to 1 in steps of 0.01; `sidelobe_db` is the
+  most power 1.1 to 1.5 symbol rates out against the top. A roll-off only under -25 dB (a raised cosine
+  leaves nothing there); over -18 dB, `rectangular` (a sinc's sidelobe).
+- Fast symbols (amendment 2026-10-30): when the sample-rate envelope or frequency holds a symbol clock 35 dB
+  or more over, past a quarter of the block rate, a keyed signal's `symbol_rate_baud` is that clock, and a
+  card that came out `am`, `fm` or `unknown` is taken again in blocks a quarter of a symbol long, kept when
+  that one is `ook`, `ask` or `fsk`. Two levels' threshold is the middle of an empty gap, not its edge.
 - `frequency.subcarriers: [{freq_hz, level_db}]`, for `fm` and FM `tv`: lines in the demodulated frequency
   50 dB or more over the median of 15 kHz to 0.45 x the rate (FM video: 4.6 to 9 MHz, above the picture),
   lines within 8 kHz grouped as one at their power-weighted centre, each holding -35 dB or more of the

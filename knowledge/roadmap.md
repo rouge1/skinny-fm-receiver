@@ -1770,13 +1770,22 @@ In order:
 - [ ] Check on a recording of a 4-level signal.
 
 ### Phase 2: faster symbols, and the pulse shape
-- [ ] The symbol rate past `fs_block / 4`: a 19 kBd 4FSK was out of
-  reach. Track wide keyed signals at a higher rate.
-- [ ] RRC roll-off estimated from the spectrum's edges against the symbol
-  rate (a 4ASK at 0.5 was read wrongly).
-- [ ] FM video: the deviation in the `tv` section.
-- [ ] ASK with the carrier off (bipolar levels, RRC) is named BPSK: say
-  its amplitude levels too (the envelope at the symbol clock has two).
+- [x] The symbol rate past `fs_block / 4` (2026-10-30): two-level FSK and
+  ASK read 12.5 kBd at 20 kBd and became `fm`/`am` from about 30 kBd. A
+  strong sample-rate clock past the blocks' reach is now the rate, and an
+  `am`/`fm`/`unknown` card with one is taken again in shorter blocks (kept
+  only when keyed); right from 5 to 200 kBd. The two-level threshold sat
+  at the low edge of an empty gap, which failed fast clean ASK: now its middle.
+- [x] RRC roll-off (2026-10-30): the card's `pulse` section, a raised
+  cosine fitted to the spectrum; within 0.02 on QPSK, 8PSK and 4ASK (0.05
+  on BPSK). Rectangular symbols (a sinc's sidelobe) are named, not given
+  a roll-off.
+- [x] FM video: `deviation_hz` and `peak_to_peak_hz` in the `tv` section.
+  The card's `frequency.deviation_hz` already had it right; it was not
+  where a TV reading looks. Pre-emphasis is not read: blind, it needs the
+  picture's own spectrum.
+- [x] ASK with the carrier off (bipolar levels): BPSK with two amplitudes
+  at the symbol clock is now `ask`, its `psk.amplitude_levels` given.
 
 ### Phase 3: what rides on a carrier
 - [ ] A subcarrier's own class: demodulate it and run the same rules

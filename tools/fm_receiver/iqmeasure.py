@@ -5,8 +5,8 @@ Behind ``tools/iq-measure`` and ``fmctl measure``. It reads a recording of IQ
 Sceptre DVR's IQ ``.sdvr``, or a BLUE ``.cdif``) a span at a time, never
 whole, and returns a card: a JSON-safe dict of the level, the occupied
 bandwidth, the tones, the bursts, the envelope and frequency behaviour, the
-symbol rate, the LTE cells and 5G NR sync blocks in a wideband span, ATSC,
-analog TV, a pulse train, PSK and an FM signal's subcarriers, and a class
+symbol rate and pulse shape, the LTE cells and 5G NR sync blocks in a wideband
+span, ATSC, analog TV, a pulse train, PSK and an FM signal's subcarriers, and a class
 ('noise', 'lte', 'nr', 'lte+nr', 'atsc', 'tv', 'pulses', 'carrier', 'ook',
 'ask', 'psk', 'fsk', 'fm', 'am' or 'unknown') with the evidence for it. The class rules are fixed
 (CONTRACTS-measure.md), so the same recording always gives the same card.
@@ -50,6 +50,11 @@ CARD_SUFFIX = '.card.json'
 CHUNK = 1 << 16
 #: Samples per envelope and frequency block.
 BLOCK = 16
+#: Symbols faster than a quarter of the block rate (62.5 kblocks/s at 1 MS/s) blur in 16-sample
+#: blocks: a 20 kBd FSK read 12.5 kBd, a 50 kBd one FM. Such a card is taken again in blocks
+#: of a quarter symbol, BLOCK_MIN samples or more (see _analyse).
+BLOCK_MIN = 2
+BLOCKS_PER_SYMBOL = 4
 COARSE_NFFT = 1024
 FINE_NFFT = 16384
 #: Padding either side of a block for the frequency-domain band filter: at least this.
@@ -176,6 +181,13 @@ LEVEL_WINDOW = 0.5
 LEVEL_ITERATIONS = 30
 LEVEL_SHARE = 0.5
 LEVEL_WHITE = 50.0
+#: The pulse shape: the spectrum in PULSE_NFFT-bin pieces of the segment's first PSK_SPAN
+#: samples. Fitted on synthetic QPSK (20 to 100 kBd, roll-off 0.2 to 0.8) and 4ASK, the
+#: roll-off came within 0.02; their power 1.1 to 1.5 symbol rates out stood -34 to -57 dB
+#: under the top, rectangular symbols' (a sinc's first sidelobe) -12 to -13 dB.
+PULSE_NFFT = 4096
+PULSE_SIDELOBE_DB = -25.0
+PULSE_RECT_DB = -18.0
 #: FM subcarriers: lines in the demodulated frequency above the audio, this far over the
 #: median of that band (a 67 kHz subcarrier stood 86 dB over; an FM tone's noise, 38 dB).
 #: Lines closer than SUBCARRIER_GROUP_HZ are one subcarrier and its sidebands (RDS is two
@@ -428,7 +440,8 @@ class _Scan:
 class _Track:
     """One pass over the samples: the envelope and the phase advance, in blocks."""
 
-    def __init__(self):
+    def __init__(self, block=BLOCK):
+        self.block = block
         self.env = []
         self.prod = []
         self.tail = np.empty(0, dtype=np.complex64)
@@ -441,11 +454,12 @@ class _Track:
             self.seg_n += len(self.seg[-1])
         buf = np.concatenate([self.tail, x]) if self.tail.size else x
         # The last sample is kept: it is the lag partner of the next block's first.
-        cut = (len(buf) - 1) // BLOCK * BLOCK
+        b = self.block
+        cut = (len(buf) - 1) // b * b
         if cut:
-            self.env.append(np.abs(buf[:cut].reshape(-1, BLOCK)).mean(axis=1))
+            self.env.append(np.abs(buf[:cut].reshape(-1, b)).mean(axis=1))
             prod = buf[1:cut + 1] * np.conj(buf[:cut])
-            self.prod.append(prod.reshape(-1, BLOCK).sum(axis=1))
+            self.prod.append(prod.reshape(-1, b).sum(axis=1))
         self.tail = buf[cut:]
 
 
@@ -539,7 +553,10 @@ def _levels(v):
     m0 = np.divide(s0, w0, out=np.zeros_like(s0), where=valid)
     m1 = np.divide(s0[-1] - s0, w1, out=np.zeros_like(s0), where=valid)
     between = np.where(valid, w0 * w1 * (m0 - m1) ** 2, 0.0)
-    k = int(np.argmax(between))
+    # An empty gap ties every split in it: the middle of the tie, not its low edge.
+    ties = np.flatnonzero(between >= between.max())
+    k = int(ties[(len(ties) - 1) // 2]) if ties.size and ties[-1] - ties[0] == len(ties) - 1 \
+        else int(np.argmax(between))
     thr = float(edges[k + 1])
     low = v < thr
     n_low = int(np.count_nonzero(low))
@@ -797,16 +814,9 @@ def _fit_levels(s, m):
     return c.tolist(), share, sep, middle
 
 
-def _keyed_levels(v, rate, smooth):
-    """Keying of 4 or 8 levels in a sample-rate series (an envelope or a frequency),
-    found at its symbol clock: each symbol is averaged over its middle (at the phase
-    where the symbols spread most), and the smallest order whose levels stand clear is it.
-    Returns {order, levels, symbol_rate_baud, clock_db} or None."""
-    v = v.astype(np.float64)
-    clock = _clock(v, rate, smooth)
-    if clock is None or clock[1] < LEVEL_CLOCK_DB:
-        return None
-    baud = clock[0]
+def _symbols(v, rate, baud):
+    """The symbols of a sample-rate series at ``baud``: each averaged over its middle
+    LEVEL_WINDOW, at the phase where they spread most. None when too few or too short."""
     sps = rate / baud
     n = int(round(LEVEL_WINDOW * sps))
     if n < 2 or len(v) < LEVEL_MIN_SYMBOLS * sps:
@@ -819,17 +829,81 @@ def _keyed_levels(v, rate, smooth):
         s = avg[idx]
         if best is None or s.var() > best.var():
             best = s
-    s = best
-    # Data is white at the symbol rate. A sum of tones sampled at a clock it made (their
-    # difference) repeats a few values, which can look like levels: its spectrum is lines.
+    return best
+
+
+def _level_order(s, orders):
+    """The smallest of ``orders`` whose levels stand clear in the symbols ``s``, with its
+    levels: (order, levels) or None. The symbols must be white: a sum of tones sampled at
+    a clock it made (their difference) repeats a few values, its spectrum lines."""
     z = np.abs(np.fft.rfft(s - s.mean()))[1:] ** 2
     if not z.size or z.max() > LEVEL_WHITE * z.mean():
         return None
-    for m in LEVEL_ORDERS:
+    for m in orders:
         levels, share, sep, middle = _fit_levels(s, m)
         if share >= LEVEL_SHARE and sep > KEYED_SIGMA and middle < MIDDLE_MAX:
-            return {'order': m, 'levels': levels, 'symbol_rate_baud': baud, 'clock_db': clock[1]}
+            return m, levels
     return None
+
+
+def _keyed_levels(v, rate, smooth, clock=None):
+    """Keying of 4 or 8 levels in a sample-rate series (an envelope or a frequency),
+    found at its symbol clock. Returns {order, levels, symbol_rate_baud, clock_db} or None."""
+    v = v.astype(np.float64)
+    clock = _clock(v, rate, smooth) if clock is None else clock
+    if clock is None or clock[1] < LEVEL_CLOCK_DB:
+        return None
+    s = _symbols(v, rate, clock[0])
+    fit = _level_order(s, LEVEL_ORDERS) if s is not None else None
+    if fit is None:
+        return None
+    return {'order': fit[0], 'levels': fit[1], 'symbol_rate_baud': clock[0], 'clock_db': clock[1]}
+
+
+def _rc_power(f, baud, beta):
+    """A raised cosine's power at ``f`` from the centre: what an RRC-shaped signal shows."""
+    a = np.abs(f) / baud
+    lo, hi = (1 - beta) / 2, (1 + beta) / 2
+    p = np.where(a <= lo, 1.0, 0.0)
+    mid = (a > lo) & (a < hi)
+    p[mid] = 0.5 * (1 + np.cos(math.pi / beta * (a[mid] - lo)))
+    return p
+
+
+def _pulse(seg, rate, offset, baud):
+    """The pulse shape of a linear modulation (PSK, ASK) at ``baud``, centred ``offset``
+    from the segment's centre: the card's ``pulse`` section. Its spectrum (the carrier's
+    own bins left out) is fitted with a raised cosine; ``sidelobe_db`` is the most power
+    from 1.1 to 1.5 symbol rates out, against the top. Rectangular symbols leave a sinc's
+    sidelobe there and a raised cosine none, so a roll-off is given only under PULSE_SIDELOBE_DB."""
+    nfft = PULSE_NFFT
+    x = seg[:PSK_SPAN]
+    k = len(x) // nfft
+    if k < 4 or not baud or baud * 1.5 > rate / 2:
+        return None
+    x = x[:k * nfft] * np.exp(-2j * np.pi * offset * np.arange(k * nfft) / rate).astype(np.complex64)
+    P = np.fft.fftshift(np.mean(np.abs(np.fft.fft(x.reshape(k, nfft) * np.hanning(nfft), axis=1)) ** 2, axis=0))
+    f = np.fft.fftshift(np.fft.fftfreq(nfft, 1 / rate))
+    a = np.abs(f) / baud
+    off_carrier = np.abs(f) > 2 * rate / nfft
+    centre = (a <= 0.2) & off_carrier
+    ring = (a >= 1.0) & (a <= 1.5)
+    if not centre.any() or not ring.any():
+        return None
+    top = float(np.median(P[centre]))
+    floor = float(np.percentile(P[ring], 10))
+    if not top > floor:
+        return None
+    side = (a >= 1.1) & (a <= 1.5)
+    sidelobe = 10 * math.log10(max(float(np.max(P[side] - floor)) / (top - floor), 1e-12))
+    keep = (a <= 1.2) & off_carrier
+    y = (P[keep] - floor) / (top - floor)
+    errors = [(float(np.mean((y - _rc_power(f[keep], baud, b)) ** 2)), float(b))
+              for b in np.arange(0.05, 1.0 + 1e-9, 0.01)]
+    error, beta = min(errors)
+    shaped = sidelobe < PULSE_SIDELOBE_DB
+    return {'rolloff': beta if shaped else None, 'sidelobe_db': sidelobe,
+            'shape': 'raised cosine' if shaped else 'rectangular' if sidelobe > PULSE_RECT_DB else None}
 
 
 def _subcarriers(seg, rate, low=SUBCARRIER_MIN_HZ, high=None):
@@ -996,7 +1070,7 @@ def _cells(read, n, rate, center_hz, centre, bw99, station_hz):
     return lte, nr
 
 
-def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
+def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, block=BLOCK, cells=None):
     """The card's sections for ``n`` samples from ``read(start, count)``.
 
     Two passes. The first, over the band (or the whole span), gives the level,
@@ -1052,12 +1126,12 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
     n_s = -(-n // dec_s)
     if n_s < 64:
         raise IQSourceError(f"the band leaves {n_s} samples after decimation: too few to measure.")
-    track = _Track()
+    track = _Track(block)
     for x in chunks:
         track.feed(x)
     env = np.concatenate(track.env).astype(np.float64)
     prod = np.concatenate(track.prod)
-    fs_b = rate_s / BLOCK
+    fs_b = rate_s / block
     span_s = len(env) / fs_b
     # The angle of a block's summed products is the phase step per sample.
     track16 = np.angle(prod).astype(np.float64) * (rate_s / (2 * np.pi))
@@ -1118,17 +1192,32 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
     psk = None if atsc or tv or pulses or keyed_env or (keyed_f and not spikes) else _psk(seg, rate_s, base_s)
     env_order = 2 if keyed_env else None
     freq_order = 2 if keyed_f else None
-    if not (atsc or tv or pulses or psk or keyed_env or keyed_f) and len(seg) >= 64:
+    fast = None
+    if (keyed_env or keyed_f) and not (atsc or tv or pulses or psk) and len(seg) >= 64:
+        # Keyed in blocks, but a symbol clock past their reach is the rate: the blocks'
+        # own reading of it is an alias (a 20 kBd FSK read 12.5 kBd).
         head = seg[:LEVEL_SPAN + 1]
-        many = _keyed_levels(np.abs(head), rate_s, 1)
+        v = np.abs(head).astype(np.float64) if keyed_env else \
+            np.angle(head[1:] * np.conj(head[:-1])).astype(np.float64) * (rate_s / (2 * np.pi))
+        c = _clock(v, rate_s, 1)
+        if c and c[1] >= LEVEL_CLOCK_DB and c[0] > fs_b / 4:
+            sym = c[0]
+    elif not (atsc or tv or pulses or psk or keyed_env or keyed_f) and len(seg) >= 64:
+        head = seg[:LEVEL_SPAN + 1]
+        a = np.abs(head).astype(np.float64)
+        fr = np.angle(head[1:] * np.conj(head[:-1])).astype(np.float64) * (rate_s / (2 * np.pi))
+        clocks = [_clock(a, rate_s, 1), _clock(fr, rate_s, 1)]
+        # A clock the blocks cannot follow: read again in shorter blocks (below).
+        strong = [c for c in clocks if c and c[1] >= LEVEL_CLOCK_DB and c[0] > fs_b / 4]
+        fast = max(strong, key=lambda c: c[1])[0] if strong else None
+        many = _keyed_levels(a, rate_s, 1, clocks[0])
         if many:
             keyed_env, env_order, sym = True, many['order'], many['symbol_rate_baud']
             env_lo, env_hi = many['levels'][0], many['levels'][-1]
             bursts, env_levels = burst_card, many['levels']
             depth = (env_hi - env_lo) / (env_hi + env_lo) if env_hi + env_lo > 0 else 0.0
         elif cv < 0.1:
-            fr = np.angle(head[1:] * np.conj(head[:-1])).astype(np.float64) * (rate_s / (2 * np.pi))
-            many = _keyed_levels(fr, rate_s, 1)
+            many = _keyed_levels(fr, rate_s, 1, clocks[1])
             if many:
                 keyed_f, freq_order, sym = True, many['order'], many['symbol_rate_baud']
                 f_lo, f_hi = many['levels'][0], many['levels'][-1]
@@ -1143,8 +1232,22 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
         subcarriers = []
     if psk and psk['symbol_rate_baud']:
         sym = psk['symbol_rate_baud']
+        # BPSK whose symbols take two amplitudes is 4-level ASK with the carrier suppressed
+        # (bipolar levels): its envelope at the symbol clock has those two.
+        psk['amplitude_levels'] = None
+        if psk['order'] == 2:
+            s2 = _symbols(np.abs(seg[:LEVEL_SPAN]).astype(np.float64), rate_s, sym)
+            fit = _level_order(s2, (2,)) if s2 is not None else None
+            if fit:
+                psk['amplitude_levels'] = fit[1]
+    elif psk:
+        psk['amplitude_levels'] = None
+    if tv:
+        fm_video = tv['modulation'] == 'fm'
+        tv['deviation_hz'] = deviation if fm_video else None
+        tv['peak_to_peak_hz'] = 2 * deviation if fm_video else None
 
-    lte, nr = _cells(read, n, rate, center_hz, centre, bw99, station_hz)
+    lte, nr = _cells(read, n, rate, center_hz, centre, bw99, station_hz) if cells is None else cells
     lte_pcis = []
     if lte.get('verdict') == 'lte':
         # Confirmed: CP, PSS and SSS agree, and the SSS gives a PCI.
@@ -1203,6 +1306,12 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
             cls = 'ask'
             ev = (f"The envelope is keyed between {env_lo:.3g} and {env_hi:.3g}; "
                   "the low level is at least 10 % of the high one.")
+    elif psk and psk['amplitude_levels']:
+        lo, hi = psk['amplitude_levels']
+        cls = 'ask'
+        ev = (f"4-level ASK with the carrier suppressed: no carrier line, the square is a line "
+              f"(BPSK's two phases), and the symbols take two amplitudes, {lo:.3g} and {hi:.3g}"
+              + (f"; symbols at {psk['symbol_rate_baud']:.0f} Bd." if psk['symbol_rate_baud'] else "."))
     elif psk:
         name = {2: 'BPSK', 4: 'QPSK', 8: '8PSK'}[psk['order']]
         ev = (f"{name}: no carrier line, and the {psk['order']}th power is a line "
@@ -1236,7 +1345,15 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
         ev = (f"No rule fits: {tone_n} tones, envelope CV {cv:.2f}, "
               f"frequency spread {fstd:.0f} Hz.")
 
-    return {
+    pulse = None
+    if cls in ('psk', 'ask') and sym and len(seg) >= 64:
+        off = (psk['carrier_offset_hz'] if psk else centre - center_hz) - base_s
+        pulse = _pulse(seg, rate_s, off, sym)
+        if pulse and pulse['rolloff'] is not None:
+            ev += f" Raised-cosine symbols, roll-off {pulse['rolloff']:.2f}."
+        elif pulse and pulse['shape'] == 'rectangular':
+            ev += " Rectangular symbols (a sinc's sidelobes)."
+    card = {
         'level': {
             'power_dbfs': power_dbfs,
             'power_dbm': (power_dbfs + full_scale_dbm)
@@ -1251,6 +1368,7 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
         'frequency': {'levels_hz': freq_levels, 'deviation_hz': deviation,
                       'keyed': bool(keyed_f), 'order': freq_order, 'subcarriers': subcarriers},
         'symbol_rate_baud': sym,
+        'pulse': pulse,
         'atsc': atsc,
         'tv': tv,
         'pulses': pulses,
@@ -1260,6 +1378,16 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None):
         'class': cls,
         'evidence': [ev],
     }
+    if fast and block == BLOCK and cls in ('am', 'fm', 'unknown'):
+        # Symbols faster than a quarter of the block rate blur into a crowded middle. Taken
+        # again in blocks a quarter of a symbol long, and kept only if that finds keying.
+        short = int(max(BLOCK_MIN, min(BLOCK - 1, rate_s // (BLOCKS_PER_SYMBOL * fast))))
+        again = _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz, short, (lte, nr))
+        if again['class'] in ('ook', 'ask', 'fsk'):
+            again['evidence'].append(f"Read in {short}-sample blocks: a {fast:.0f} Hz symbol clock "
+                                     f"is beyond {BLOCK}-sample blocks.")
+            return again
+    return card
 
 
 def measure(iq, rate, center_hz=0.0, full_scale_dbm=None, t0=0.0, band=None):
@@ -1417,7 +1545,7 @@ def extract(path, t0=None, t1=None, band=None, max_rate=1e6, rate=None, center_h
 
 def _ordered(card):
     keys = ['schema', 'source', 'level', 'occupied', 'tones', 'bursts', 'envelope',
-            'frequency', 'symbol_rate_baud', 'atsc', 'tv', 'pulses', 'psk', 'lte', 'nr', 'class',
+            'frequency', 'symbol_rate_baud', 'pulse', 'atsc', 'tv', 'pulses', 'psk', 'lte', 'nr', 'class',
             'evidence']
     return {k: card[k] for k in keys}
 

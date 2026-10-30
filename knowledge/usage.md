@@ -1170,6 +1170,10 @@ The card is a JSON object. A value that cannot be measured is `null`. Its keys:
 - `envelope`: `levels` (one amplitude, or the 2, 4 or 8 it is keyed between), `depth`,
   `keyed`, `order` (2, 4, 8, or null when not keyed).
 - `frequency`: `levels_hz` (offsets from the centre), `deviation_hz`, `keyed`, `order`.
+- `pulse`: for PSK and ASK, `rolloff` (a raised cosine's, or null), `sidelobe_db`, and
+  `shape` (`raised cosine` or `rectangular`).
+- `tv`: FM video's `deviation_hz` and `peak_to_peak_hz` with the line rate; `psk`:
+  `amplitude_levels`, set when BPSK is really 4-level ASK with the carrier suppressed.
 - `symbol_rate_baud`.
 - `lte` and `nr`: the cells in the span's first 50 ms. Each has `searched`
   and `reason`. A span under 1.92 MS/s, or narrower than 1 MHz, is not
