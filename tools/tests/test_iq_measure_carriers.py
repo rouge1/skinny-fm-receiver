@@ -6,7 +6,9 @@ Every signal is synthetic and seeded, built here with numpy (the broadcast multi
 - a 92 kHz subcarrier in an FM signal's multiplex, under a 19 kHz pilot and 1 kHz audio,
   is read for what it carries: FM (by a tone and by speech-like noise), AM, USB and LSB
   with their carrier (by speech-like noise and by a tone), and DSB with the carrier
-  suppressed; the pilot carries nothing named;
+  suppressed (by noise and by a tone, two equal lines as stereo's L-R makes); USB whose
+  carrier holds nearly all its power (98 %, as the bench's subcarrier did) is still USB;
+  the pilot carries nothing named;
 - ``broadcast``: a station with a pilot is stereo when its L-R carries something (left
   1 kHz, right 2.5 kHz, at 35 and 15 dB SNR) and not when left and right are the same
   (a mono programme sent with a pilot, as the bench transmitter does), with or without an
@@ -56,6 +58,8 @@ def sub_iq(kind, seconds=1.0, seed=3):
         'lsb': 0.1 * (np.cos(w) + np.real(np.conj(hil) * np.exp(1j * w))),
         'usb_tone': 0.1 * (np.cos(w) + 0.5 * np.cos(w + 2 * np.pi * 1e3 * t)),
         'dsb': 0.3 * sp * np.cos(w),
+        'dsb_tone': 0.1 * np.cos(2 * np.pi * 1e3 * t) * np.cos(w),
+        'usb_strong': 0.1 * (np.cos(w) + 0.15 * np.real(hil * np.exp(1j * w))),
     }[kind]
     mpx = 0.09 * np.sin(2 * np.pi * 19e3 * t) + 0.4 * np.sin(2 * np.pi * 1e3 * t) + sub
     return noisy(np.exp(2j * np.pi * 75e3 * np.cumsum(mpx) / RATE), 35.0, seed), RATE
@@ -71,7 +75,8 @@ def station_iq(left_hz, right_hz, pilot=0.09, snr_db=35.0, sca=False, seconds=1.
 
 
 MAKERS = {
-    **{f'sub_{k}': (lambda k=k: sub_iq(k)) for k in ('fm_tone', 'fm_speech', 'am', 'usb', 'lsb', 'usb_tone', 'dsb')},
+    **{f'sub_{k}': (lambda k=k: sub_iq(k)) for k in ('fm_tone', 'fm_speech', 'am', 'usb', 'lsb', 'usb_tone', 'dsb',
+                                                            'dsb_tone', 'usb_strong')},
     'stereo': lambda: station_iq(1e3, 2.5e3),
     'stereo_15db': lambda: station_iq(1e3, 2.5e3, snr_db=15.0),
     'mono_pilot': lambda: station_iq(1e3, 1e3),
@@ -98,7 +103,8 @@ def at(name, hz, near=1500.0):
 
 def check_subcarriers():
     for kind, want in (('fm_tone', 'fm'), ('fm_speech', 'fm'), ('am', 'am'), ('usb', 'usb'),
-                       ('lsb', 'lsb'), ('usb_tone', 'usb'), ('dsb', 'dsb')):
+                       ('lsb', 'lsb'), ('usb_tone', 'usb'), ('dsb', 'dsb'), ('dsb_tone', 'dsb'),
+                       ('usb_strong', 'usb')):
         name = f'sub_{kind}'
         expect(f"92 kHz subcarrier, {kind}: read as {want}",
                lambda n=name, w=want: (at(n, SUB_HZ, 4500.0) is not None and at(n, SUB_HZ, 4500.0)['carries'] == w,

@@ -121,6 +121,10 @@ TV_LINE_DB = 36.0
 #: 17 kHz from its lower edge, the strongest of its tones by 4.6 dB.
 ATSC_WIDTH_HZ = (4.8e6, 6.2e6)
 ATSC_EDGE = 0.1
+#: FM video's swing is read with the frequency averaged to these bands (see _video_swing).
+VIDEO_BAND_HZ = 5e6
+VIDEO_LOW_HZ = 0.3e6
+VIDEO_PRE_RATIO = 1.4
 #: Pulses: a train of short pulses, at this duty or less, at least this many, and this
 #: share of the starts no more than a quarter of the median spacing off it. A pulse moves
 #: (PPM) when its start strays from the fitted clock by more than this share of the period
@@ -196,8 +200,11 @@ LEVEL_ISI_MAX = 0.4
 #: roll-off came within 0.02; their power 1.1 to 1.5 symbol rates out stood -34 to -57 dB
 #: under the top, rectangular symbols' (a sinc's first sidelobe) -12 to -13 dB.
 PULSE_NFFT = 4096
+#: Carrier-off ASK is read on the real axis, its phase followed in pieces this long.
+BIPOLAR_BLOCK = 4096
 PULSE_SIDELOBE_DB = -25.0
 PULSE_RECT_DB = -18.0
+PULSE_FIT_DB = 25.0
 #: FM subcarriers: lines in the demodulated frequency above the audio, this far over the
 #: median of that band (a 67 kHz subcarrier stood 86 dB over; an FM tone's noise, 38 dB).
 #: Lines closer than SUBCARRIER_GROUP_HZ are one subcarrier and its sidebands (RDS is two
@@ -223,15 +230,17 @@ MAX_SUBCARRIERS = 4
 BROADCAST_NEAR_HZ = 200.0
 #: What a subcarrier carries: the demodulated frequency within SUB_HALF_HZ of it, as a complex
 #: baseband. Its carrier is its strongest line (the pilot, RDS and TV sound are named apart);
-#: the sidebands are the power past SUB_CARRIER_HZ either side. One side SUB_SSB_DB over the
+#: the sidebands are the power past SUB_CARRIER_HZ either side, less the noise. One side SUB_SSB_DB over the
 #: other is SSB; else a constant envelope (CV under SUB_FM_CV) with a frequency spread is FM,
 #: a carrier holding SUB_CARRIER_SHARE of the power or more is AM, and none DSB.
 SUB_HALF_HZ = 8e3
 SUB_CARRIER_HZ = 150.0
-SUB_SSB_DB = 15.0
+SUB_SSB_DB = 10.0
 SUB_FM_CV = 0.15
 SUB_FM_HZ = 200.0
 SUB_CARRIER_SHARE = 0.05
+SUB_MIRROR = 0.25
+SUB_NOISE_HZ = 12e3
 BROADCAST_STEREO_DB = 6.0
 TV_SOUND_HZ = (4.6e6, 9e6)
 
@@ -715,6 +724,27 @@ def _tv(seg, rate, bw99, cv):
             'modulation': 'fm' if cv < 0.1 else 'am'}
 
 
+def _video_swing(seg, rate):
+    """FM video's swing: {deviation_hz, peak_to_peak_hz, low_peak_to_peak_hz, pre_emphasis}.
+    The peak to peak (0.1 to 99.9 %) of the frequency averaged to the video band
+    (VIDEO_BAND_HZ) and to its low part (VIDEO_LOW_HZ). Pre-emphasis lifts the high video
+    frequencies, so the edges overshoot: the video band's swing over the low one's was 2.2
+    on the bench's F.405 PAL, 1.02 on video without it. Over VIDEO_PRE_RATIO is pre-emphasis,
+    and then a nominal deviation (F.405's "8 MHz for 1 V", at the network's crossover) is
+    not what either swing shows."""
+    d = np.angle(seg[1:] * np.conj(seg[:-1])).astype(np.float64) * (rate / (2 * np.pi))
+
+    def swing(band):
+        n = max(1, int(round(rate / band)))
+        v = np.convolve(d, np.ones(n) / n, 'valid') if n > 1 else d
+        lo, hi = np.percentile(v, [0.1, 99.9])
+        return float(hi - lo)
+
+    video, low = swing(VIDEO_BAND_HZ), swing(VIDEO_LOW_HZ)
+    return {'deviation_hz': video / 2, 'peak_to_peak_hz': video, 'low_peak_to_peak_hz': low,
+            'pre_emphasis': bool(low > 0 and video / low > VIDEO_PRE_RATIO)}
+
+
 def _atsc(tones, centre, bw99):
     """ATSC 8VSB: the card's ``atsc`` section, or None. The pilot is the strongest tone,
     at one edge of a block about 5.4 MHz wide."""
@@ -928,6 +958,23 @@ def _keyed_levels(v, rate, smooth, clock=None):
             'neighbour_share': fit[2]}
 
 
+def _bipolar(x, rate, offset):
+    """The real axis of a carrierless BPSK-like signal: ``x`` brought from ``offset`` Hz to
+    0 and turned so its symbols lie on the real line, then the real part. The phase is
+    half the angle of the square's mean, followed through the span in BIPOLAR_BLOCK pieces
+    (the M-th power line gives the offset to a few hertz, a turn or so over the span)."""
+    n = len(x)
+    z = x.astype(np.complex128) * np.exp(-2j * np.pi * offset * np.arange(n) / rate)
+    k = n // BIPOLAR_BLOCK
+    if k < 2:
+        return np.real(z * np.exp(-0.5j * np.angle(np.mean(z ** 2))))
+    sq = (z[:k * BIPOLAR_BLOCK] ** 2).reshape(k, BIPOLAR_BLOCK).mean(axis=1)
+    ang = np.unwrap(np.angle(sq))
+    centres = (np.arange(k) + 0.5) * BIPOLAR_BLOCK
+    slope, start = np.polyfit(centres, ang, 1)
+    return np.real(z * np.exp(-0.5j * (start + slope * np.arange(n))))
+
+
 def _rc_power(f, baud, beta):
     """A raised cosine's power at ``f`` from the centre: what an RRC-shaped signal shows."""
     a = np.abs(f) / baud
@@ -953,7 +1000,7 @@ def _pulse(seg, rate, offset, baud):
     P = np.fft.fftshift(np.mean(np.abs(np.fft.fft(x.reshape(k, nfft) * np.hanning(nfft), axis=1)) ** 2, axis=0))
     f = np.fft.fftshift(np.fft.fftfreq(nfft, 1 / rate))
     a = np.abs(f) / baud
-    off_carrier = np.abs(f) > 2 * rate / nfft
+    off_carrier = np.abs(f) > 4 * rate / nfft      # a carrier and its Hann leakage out
     centre = (a <= 0.2) & off_carrier
     ring = (a >= 1.0) & (a <= 1.5)
     if not centre.any() or not ring.any():
@@ -966,12 +1013,22 @@ def _pulse(seg, rate, offset, baud):
     sidelobe = 10 * math.log10(max(float(np.max(P[side] - floor)) / (top - floor), 1e-12))
     keep = (a <= 1.2) & off_carrier
     y = (P[keep] - floor) / (top - floor)
-    errors = [(float(np.mean((y - _rc_power(f[keep], baud, b)) ** 2)), float(b))
-              for b in np.arange(0.05, 1.0 + 1e-9, 0.01)]
-    error, beta = min(errors)
+    # Two shapes: impulses through a root raised cosine (the spectrum a raised cosine), and
+    # held symbols through one (a sinc times it; the bench generators filter that way, and
+    # fitted as the first their roll-off read 0.62 to 0.68 for 0.35 and 0.5).
+    # In dB, where the spectrum is within PULSE_FIT_DB of the top: the edges carry the roll-off,
+    # and in power the passband's ripple (the data's own, about 1 dB over the span) outweighed
+    # them (a bench QPSK at 0.35 fitted 0.25).
+    held = np.sinc(f[keep] / baud) ** 2
+    fit = y > 10 ** (-PULSE_FIT_DB / 10)
+    y_db = 10 * np.log10(y[fit])
+    best = min((float(np.mean((y_db - 10 * np.log10(np.maximum(_rc_power(f[keep], baud, b) * w, 1e-12))[fit]) ** 2)),
+                float(b), name)
+               for name, w in (('raised cosine', np.ones_like(held)), ('held raised cosine', held))
+               for b in np.arange(0.05, 1.0 + 1e-9, 0.01))
     shaped = sidelobe < PULSE_SIDELOBE_DB
-    return {'rolloff': beta if shaped else None, 'sidelobe_db': sidelobe,
-            'shape': 'raised cosine' if shaped else 'rectangular' if sidelobe > PULSE_RECT_DB else None}
+    return {'rolloff': best[1] if shaped else None, 'sidelobe_db': sidelobe,
+            'shape': best[2] if shaped else 'rectangular' if sidelobe > PULSE_RECT_DB else None}
 
 
 def _broadcast(seg, rate, subcarriers):
@@ -1020,15 +1077,22 @@ def _subcarriers(seg, rate, low=SUBCARRIER_MIN_HZ, high=None, carried=True):
     out.sort(key=lambda s: -s['level_db'])
     out = out[:MAX_SUBCARRIERS]
     spectrum = np.fft.rfft(d) if out and carried else None
+    # Sideband powers from a windowed spectrum: a subcarrier's carrier can hold nearly all of
+    # its power (98.6 % on a bench USB subcarrier), and unwindowed its leakage filled both
+    # sides alike. The baseband for FM's test is taken unwindowed, as a window shapes it.
+    windowed = np.fft.rfft(d * np.hanning(len(d))) if out and carried else None
     for s in out:
-        s.update(_carried(spectrum, rate, len(d), s['peak_hz'], s['freq_hz']) if carried
+        s.update(_carried(spectrum, windowed, rate, len(d), s['peak_hz'], s['freq_hz']) if carried
                  else {'carries': None, 'sidebands_db': None})
     return out
 
 
 def _about(spectrum, rate, n, f0):
     """The bins within SUB_HALF_HZ of ``f0``: (bins, offsets in Hz, power upper, lower, carrier),
-    or None at the spectrum's edge."""
+    or None at the spectrum's edge. The sidebands' powers have the noise taken off: its
+    density, as a discriminator's rises with f squared, from the bins SUB_HALF_HZ to
+    SUB_NOISE_HZ out (a weak sideband over noise read 9 dB lopsided with it, 15 or more
+    without)."""
     df = rate / n
     i0 = int(round(f0 / df))
     half = int(SUB_HALF_HZ / df)
@@ -1037,11 +1101,20 @@ def _about(spectrum, rate, n, f0):
     band = spectrum[i0 - half:i0 + half + 1]
     off = (np.arange(band.size) - half) * df
     p = np.abs(band) ** 2
-    return (band, off, float(p[off > SUB_CARRIER_HZ].sum()), float(p[off < -SUB_CARRIER_HZ].sum()),
-            float(p[np.abs(off) <= SUB_CARRIER_HZ].sum()))
+    up, lo = off > SUB_CARRIER_HZ, off < -SUB_CARRIER_HZ
+    upper, lower = float(p[up].sum()), float(p[lo].sum())
+    reach = int(SUB_NOISE_HZ / df)
+    if i0 - reach >= 1 and i0 + reach < spectrum.size:
+        idx = np.concatenate([np.arange(i0 - reach, i0 - half), np.arange(i0 + half + 1, i0 + reach + 1)])
+        f_out = idx * df
+        k = float(np.median(np.abs(spectrum[idx]) ** 2 / f_out ** 2))
+        f_in = f0 + off
+        upper = max(upper - k * float((f_in[up] ** 2).sum()), 1e-300)
+        lower = max(lower - k * float((f_in[lo] ** 2).sum()), 1e-300)
+    return band, off, upper, lower, float(p[np.abs(off) <= SUB_CARRIER_HZ].sum())
 
 
-def _carried(spectrum, rate, n, peak, centre):
+def _carried(spectrum, windowed, rate, n, peak, centre):
     """What a subcarrier carries: {carries, sidebands_db}. ``carries`` is 'usb' or 'lsb' (its
     strongest line a carrier, SUB_CARRIER_SHARE of the power or more, with the sidebands on
     one side of it), else, about its power-weighted ``centre``, 'fm', 'am' or 'dsb'; None for
@@ -1051,20 +1124,27 @@ def _carried(spectrum, rate, n, peak, centre):
     # RDS's strongest line is one of its humps, 2.4 kHz off 57 kHz (a real station's read 'dsb').
     if any(abs(f - 19e3) <= BROADCAST_NEAR_HZ or abs(f - 57e3) <= 5 * BROADCAST_NEAR_HZ for f in (peak, centre)):
         return none
-    at = _about(spectrum, rate, n, peak)
+    at = _about(windowed, rate, n, peak)
     if at is None:
         return none
     _, _, upper, lower, car = at
     sidebands = 10 * math.log10(max(upper, 1e-300) / max(lower, 1e-300))
-    if abs(sidebands) >= SUB_SSB_DB and car >= SUB_CARRIER_SHARE * (upper + lower + car):
+    # DSB by a tone has two equal lines, either side of its centre: about one of them all the
+    # rest is on one side (stereo's L-R read USB). A line at the strongest's mirror is DSB.
+    df = rate / n
+    mirror = 2 * centre - peak
+    pw = np.abs(windowed) ** 2
+    near = lambda f: float(pw[max(0, int(round(f / df)) - 2):int(round(f / df)) + 3].max())
+    paired = abs(mirror - peak) > SUB_CARRIER_HZ and near(mirror) >= SUB_MIRROR * near(peak)
+    if abs(sidebands) >= SUB_SSB_DB and car >= SUB_CARRIER_SHARE * (upper + lower + car) and not paired:
         return {'carries': 'usb' if sidebands > 0 else 'lsb', 'sidebands_db': sidebands}
     at = _about(spectrum, rate, n, centre)
     if at is None:
         return none
-    band, off, upper, lower, car = at
+    band, off, _, _, _ = at
+    _, _, upper, lower, car = _about(windowed, rate, n, centre)
     sidebands = 10 * math.log10(max(upper, 1e-300) / max(lower, 1e-300))
     # The baseband: the bins about the centre brought to 0 Hz, a few times oversampled.
-    df = rate / n
     size = 1 << int(4 * band.size - 1).bit_length()
     z = np.zeros(size, complex)
     z[np.round(off / df).astype(np.int64) % size] = band
@@ -1336,7 +1416,19 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, bl
     tv = None if atsc else _tv(seg, rate_s, bw99, cv)
     pulses = None if tv or atsc else _pulses(seg, rate_s)
     spikes = keyed_f and min(np.mean(f16 >= f_thr), np.mean(f16 < f_thr)) < PSK_SPIKES
-    psk = None if atsc or tv or pulses or keyed_env or (keyed_f and not spikes) else _psk(seg, rate_s, base_s)
+    psk = None if atsc or tv or pulses or (keyed_f and not spikes) else _psk(seg, rate_s, base_s)
+    if psk and keyed_env:
+        # No carrier and a line in the M-th power is PSK, whatever its blocks' envelope: a
+        # bench BPSK at 125 kBd (8 samples a symbol) left blocks of three envelope values,
+        # two of which looked like ASK at 248 Bd. OOK and carrier-on ASK keep their carrier
+        # line, so _psk passes them by.
+        keyed_env, env_order = False, None
+        bursts = {'count': 0, 'durations_s': [], 'median_duration_s': None, 'gaps_s': [],
+                  'repeat_interval_s': None, 'duty': None}
+        p_lo, p_hi = np.percentile(env, [0.5, 99.5])
+        env_levels = [float(np.median(env))]
+        depth = (p_hi - p_lo) / (p_hi + p_lo) if p_hi + p_lo > 0 else 0.0
+        sym = None
     env_order = 2 if keyed_env else None
     freq_order = 2 if keyed_f else None
     fast = None
@@ -1391,16 +1483,17 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, bl
         # (bipolar levels): its envelope at the symbol clock has those two.
         psk['amplitude_levels'] = None
         if psk['order'] == 2:
-            s2 = _symbols(np.abs(seg[:LEVEL_SPAN]).astype(np.float64), rate_s, sym)
-            fit = _level_order(s2, (2,)) if s2 is not None else None
-            if fit:
-                psk['amplitude_levels'] = fit[1]
+            s2 = _symbols(_bipolar(seg[:LEVEL_SPAN], rate_s, psk['carrier_offset_hz'] - base_s), rate_s, sym)
+            fit = _level_order(s2, (2, 4)) if s2 is not None else None
+            if fit and fit[0] == 4:
+                mags = np.sort(np.abs(np.asarray(fit[1])))
+                psk['amplitude_levels'] = [float(mags[:2].mean()), float(mags[2:].mean())]
     elif psk:
         psk['amplitude_levels'] = None
     if tv:
-        fm_video = tv['modulation'] == 'fm'
-        tv['deviation_hz'] = deviation if fm_video else None
-        tv['peak_to_peak_hz'] = 2 * deviation if fm_video else None
+        tv.update(_video_swing(seg, rate_s) if tv['modulation'] == 'fm' else
+                  {'deviation_hz': None, 'peak_to_peak_hz': None, 'low_peak_to_peak_hz': None,
+                   'pre_emphasis': None})
 
     lte, nr = _cells(read, n, rate, center_hz, centre, bw99, station_hz) if cells is None else cells
     lte_pcis = []
@@ -1436,7 +1529,11 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, bl
               f"{tv['line_rate_hz']:.0f} Hz and its harmonic in the {tv['seen_in']}, "
               f"{tv['line_db']:.0f} dB over, {bw99 / 1e6:.3g} MHz wide"
               + ("; sound subcarriers at " + ', '.join(f"{s['freq_hz'] / 1e6:.2f}" for s in subcarriers)
-                 + " MHz." if subcarriers else "."))
+                 + " MHz." if subcarriers else ".")
+              + (f" It swings {tv['peak_to_peak_hz'] / 1e6:.3g} MHz peak to peak in the video band, "
+                 f"{tv['low_peak_to_peak_hz'] / 1e6:.3g} MHz below 0.3 MHz"
+                 + (": pre-emphasis (its edges overshoot)." if tv['pre_emphasis'] else ".")
+                 if tv['peak_to_peak_hz'] else ""))
     elif pulses:
         cls = 'pulses'
         how = []

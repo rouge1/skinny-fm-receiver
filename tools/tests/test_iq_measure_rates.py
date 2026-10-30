@@ -11,7 +11,13 @@ Every signal is synthetic and seeded, built here with numpy. What the checks pin
 - 4ASK with the carrier suppressed (bipolar levels, RRC 0.5) is 'ask', not BPSK, with two
   amplitudes a third of each other within 10 %;
 - FM video's deviation in the ``tv`` section, 4 MHz (8 MHz peak to peak) within 3 %; AM
-  vision has none.
+  vision has none. Video with pre-emphasis (a first-order lift of the high frequencies,
+  as F.405's network does) is flagged, video without it not;
+- signals built as the bench generators build them (each symbol held, then a root raised
+  cosine of 11 symbols' taps; ASK levels k/(M-1) - 0.5, plus the carrier when on): QPSK at
+  0.35 and 4ASK, carrier off, at 0.5 fit as a held raised cosine within 0.03; BPSK at
+  125 kBd, 8 samples a symbol, is 'psk' at its rate (it was 'ask' at 248 Bd); 2ASK with the
+  carrier off is BPSK; 4ASK with the carrier off is 'ask', amplitudes 1 : 3 within 10 %.
 
 Run:  QT_QPA_PLATFORM=offscreen PYTHONPATH=tools python tools/tests/test_iq_measure_rates.py
 (about half a minute)
@@ -53,6 +59,44 @@ def qpsk_rrc_iq(beta, baud=100e3, rate=1e6, seconds=0.5, offset=30e3, seed=1):
     return noisy(x, 25.0, seed + 100), rate
 
 
+def held_iq(levels, baud, beta, rate=1e6, seconds=0.5, offset=30e3, seed=11, carrier=0.0, complex_=None):
+    """Symbols held for a symbol each, then a root raised cosine of 11 symbols' taps, as the
+    bench generators make them. ``levels`` are real (ASK: k/(M-1) - 0.5, plus ``carrier``) or,
+    with ``complex_``, that many PSK phases."""
+    rng = np.random.default_rng(seed)
+    sps = int(round(rate / baud))
+    count = int(seconds * baud)
+    if complex_:
+        sym = np.exp(2j * np.pi * rng.integers(0, complex_, count) / complex_ + 1j * math.pi / complex_)
+    else:
+        sym = np.asarray(levels, float)[rng.integers(0, len(levels), count)]
+    taps = rrc(beta, sps, span=5)
+    x = np.convolve(np.repeat(sym, sps), taps / taps.sum(), 'same') + carrier
+    x = 0.475 * x * np.exp(2j * np.pi * offset * np.arange(len(x)) / rate)
+    return noisy(x, 30.0, seed + 100), rate
+
+
+def ask_levels(m):
+    return [k / (m - 1) - 0.5 for k in range(m)]
+
+
+def pre_emphasised_tv_iq(rate=20e6, seconds=0.05, seed=4):
+    """FM video whose picture is lifted above 1 MHz (first order, 10 dB at the top), at the
+    same peak to peak as tv_fm_iq's at low frequency."""
+    from tests.test_iq_measure_classes import composite
+    v = composite(rate, seconds, 15734.264, 525) - 0.5
+    a = math.exp(-2 * math.pi * 1e6 / rate)
+    lifted = v + 2.2 * (v - np.concatenate([[v[0]], sps_lfilter(v, a)[:-1]]))
+    x = np.exp(2j * np.pi * np.cumsum(lifted * 8e6) / rate)
+    return noisy(x, 35.0, seed), rate
+
+
+def sps_lfilter(v, a):
+    """A one-pole low-pass: y[n] = (1 - a) v[n] + a y[n-1]."""
+    from scipy import signal as sps
+    return sps.lfilter([1 - a], [1, -a], v)
+
+
 MAKERS = {
     **{f'2fsk_{int(b / 1e3)}k': (lambda b=b: fsk2_iq(b)) for b in (20e3, 50e3, 200e3)},
     **{f'2ask_{int(b / 1e3)}k': (lambda b=b: ask_iq([0.3, 1.0], b)) for b in (20e3, 50e3, 200e3)},
@@ -66,6 +110,11 @@ MAKERS = {
     '4ask_off': lambda: ask_iq([-3, -1, 1, 3], 10e3, beta=0.5),
     'tv_fm': lambda: tv_fm_iq(),
     'tv_am': lambda: tv_am_iq('525'),
+    'tv_pre': lambda: pre_emphasised_tv_iq(),
+    'held_qpsk35': lambda: held_iq(None, 50e3, 0.35, complex_=4),
+    'held_bpsk_fast': lambda: held_iq(None, 125e3, 0.35, complex_=2),
+    'held_2ask_off': lambda: held_iq(ask_levels(2), 25e3, 0.35),
+    'held_4ask_off': lambda: held_iq(ask_levels(4), 25e3, 0.5),
 }
 
 
@@ -121,7 +170,29 @@ def check_tv():
            lambda: (t('tv_am')['deviation_hz'] is None, f"{t('tv_am')}"))
 
 
-GROUPS = [check_rates, check_pulse, check_carrier_off, check_tv]
+def check_held():
+    p = lambda n: card(n)['pulse']
+    for name, beta in (('held_qpsk35', 0.35), ('held_4ask_off', 0.5)):
+        expect(f"{name}: a held raised cosine, roll-off {beta} within 0.03",
+               lambda n=name, b=beta: (p(n) is not None and p(n)['shape'] == 'held raised cosine'
+                                       and abs(p(n)['rolloff'] - b) <= 0.03, f"{p(n)}"))
+    expect("held BPSK at 125 kBd, 8 samples a symbol: psk at its rate within 1 %",
+           lambda: (card('held_bpsk_fast')['class'] == 'psk'
+                    and abs(card('held_bpsk_fast')['symbol_rate_baud'] / 125e3 - 1) < 0.01,
+                    f"class {card('held_bpsk_fast')['class']}, {card('held_bpsk_fast')['symbol_rate_baud']}"))
+    expect("held 2ASK, carrier off: BPSK, no amplitudes",
+           lambda: (card('held_2ask_off')['class'] == 'psk' and card('held_2ask_off')['psk']['amplitude_levels'] is None,
+                    f"class {card('held_2ask_off')['class']}, {card('held_2ask_off')['psk']}"))
+    expect("held 4ASK, carrier off: ask, amplitudes 1 : 3 within 10 %",
+           lambda: (card('held_4ask_off')['class'] == 'ask' and card('held_4ask_off')['psk']['amplitude_levels']
+                    and abs(np.divide(*card('held_4ask_off')['psk']['amplitude_levels']) * 3 - 1) < 0.1,
+                    f"class {card('held_4ask_off')['class']}, {card('held_4ask_off')['psk']}"))
+    expect("FM video with pre-emphasis: flagged; without: not",
+           lambda: (card('tv_pre')['tv']['pre_emphasis'] is True and card('tv_fm')['tv']['pre_emphasis'] is False,
+                    f"{card('tv_pre')['tv']}, {card('tv_fm')['tv']}"))
+
+
+GROUPS = [check_rates, check_pulse, check_carrier_off, check_tv, check_held]
 
 
 def main():

@@ -1804,21 +1804,32 @@ In order:
 
 ### Held out: the bench generators' own baseband (2026-10-30)
 Eleven 8 s clips of the night's rounds, rendered clean by the SDR session
-(kept on that machine, not in the repo), against their settings. On the
-branch 6 of 11 right: 8ASK, 4FSK at BT 0.3, 2FSK at 25 kBd, mono and
-stereo FM + RDS, and FM video's line rate. Missed:
-- [ ] BPSK at 125 kBd read `ask` at 248 Bd, and 2ASK with the carrier off
-  (which is BPSK: the generator maps levels to -0.5..+0.5) read 4-level
-  ASK: both regressions from phase 2 (before it, both `psk`).
-- [ ] The roll-off read high (0.62, 0.68, 0.54 for 0.35, 0.5, 0.35): the
-  generators filter held (NRZ) symbols, whose spectrum is a sinc times
-  the raised cosine; only an impulse-shaped one was fitted.
-- [ ] 4ASK with the carrier off still read BPSK (its amplitudes smeared).
-- [ ] The 92 kHz USB subcarrier read AM; stereo's 38 kHz L-R (a tone
-  pair) read USB: the subcarrier reading is 0 of 2 on real output.
-- [ ] FM video's deviation comes from 64-sample averages (about a
-  150 kHz low-pass at 20 MS/s), so it reads low; take it sample by sample.
-- [ ] Test makers built as the generators build (held symbols, then RRC).
+(kept on that machine, not in the repo), against their settings. First
+run, 6 of 11 right; after the fixes below, 11 of 11.
+- [x] BPSK at 125 kBd read `ask` at 248 Bd, and 2ASK with the carrier off
+  (BPSK: the generator maps levels to -0.5..+0.5) read 4-level ASK: phase
+  2 regressions (the two-level threshold's move, the envelope's
+  amplitudes). PSK now wins over a block-keyed envelope when it finds its
+  line with no carrier.
+- [x] The roll-off read high (0.62 to 0.68 for 0.35 and 0.5): the
+  generators filter held symbols (a sinc times the raised cosine), and the
+  fit was in power, where the passband's ripple outweighed the edges. Both
+  shapes are fitted, in dB within 25 dB of the top: 0.35 to 0.36 and 0.49.
+- [x] 4ASK with the carrier off read BPSK: now read on the signed real
+  axis (the BPSK line's phase followed through the span): 'ask',
+  amplitudes 1 : 3.04.
+- [x] The 92 kHz USB subcarrier read AM (its carrier held 98.6 % of the
+  power, and an unwindowed spectrum leaked it to both sides) and stereo's
+  38 kHz L-R tone pair read USB: the sidebands now come from a windowed
+  spectrum less the noise, and a line at the strongest's mirror is DSB.
+- [x] FM video's swing is read sample by sample in the video band and
+  below 0.3 MHz; their ratio flags pre-emphasis (2.2 on F.405, 1.02
+  without). F.405's nominal "8 MHz for 1 V" holds at its crossover only,
+  so neither swing shows it.
+- [x] Test makers built as the generators build (held symbols, then RRC;
+  the ASK mapping; a carrier-dominated USB; a DSB tone pair; pre-emphasised
+  video): six of them fail on the merged phase 2.
+- [ ] `iq-measure` reads `.cf32` (the same bytes as `.cfile`) by name.
 
 ### Phase 4: things that look like the programme
 - [ ] Lines in demodulated audio: a steady narrow tone under speech, and

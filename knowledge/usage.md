@@ -1171,8 +1171,10 @@ The card is a JSON object. A value that cannot be measured is `null`. Its keys:
   `keyed`, `order` (2, 4, 8, or null when not keyed).
 - `frequency`: `levels_hz` (offsets from the centre), `deviation_hz`, `keyed`, `order`.
 - `pulse`: for PSK and ASK, `rolloff` (a raised cosine's, or null), `sidelobe_db`, and
-  `shape` (`raised cosine` or `rectangular`).
-- `tv`: FM video's `deviation_hz` and `peak_to_peak_hz` with the line rate; `psk`:
+  `shape` (`raised cosine`, `held raised cosine` for held symbols through an RRC filter, or
+  `rectangular`).
+- `tv`: FM video's `peak_to_peak_hz` (the video band), `low_peak_to_peak_hz` (below
+  0.3 MHz) and `pre_emphasis` with the line rate; `psk`:
   `amplitude_levels`, set when BPSK is really 4-level ASK with the carrier suppressed.
 - `frequency.subcarriers[].carries`: what a subcarrier carries (`fm`, `am`, `usb`, `lsb`,
   `dsb`). `broadcast`: an FM station's pilot, `rds`, `l_minus_r_db` and `stereo`. A pilot

@@ -265,7 +265,17 @@ loses none.
   (amendment 2026-10-30), for `psk` and `ask` with a symbol rate: the spectrum about the carrier (its own
   bins left out) fitted with a raised cosine, roll-off 0.05 to 1 in steps of 0.01; `sidelobe_db` is the
   most power 1.1 to 1.5 symbol rates out against the top. A roll-off only under -25 dB (a raised cosine
-  leaves nothing there); over -18 dB, `rectangular` (a sinc's sidelobe).
+  leaves nothing there); over -18 dB, `rectangular` (a sinc's sidelobe). Amendment 2026-10-30 (later):
+  `shape` may also be 'held raised cosine' (held symbols through an RRC filter: the spectrum a sinc times
+  the raised cosine); both shapes are fitted, in dB, where the spectrum is within 25 dB of the top, and the
+  better one taken. The carrier's own 4 bins either side are left out.
+- PSK before a keyed envelope (amendment 2026-10-30, later): PSK is looked for even when the blocks call
+  the envelope keyed; found (no carrier line, a line in x^M), it is the class. `amplitude_levels` is read
+  on the signed real axis (the BPSK line's phase followed through the span) at the symbol clock: 4 levels
+  is 4-level ASK with the carrier suppressed; 2 is BPSK (None).
+- `tv` (amendment 2026-10-30, later): `peak_to_peak_hz` is the frequency's 0.1 to 99.9 % swing averaged
+  to 5 MHz, `deviation_hz` half of it, `low_peak_to_peak_hz` the same averaged to 0.3 MHz, and
+  `pre_emphasis` when the first is over 1.4 times the second.
 - Fast symbols (amendment 2026-10-30): when the sample-rate envelope or frequency holds a symbol clock 35 dB
   or more over, past a quarter of the block rate, a keyed signal's `symbol_rate_baud` is that clock, and a
   card that came out `am`, `fm` or `unknown` is taken again in blocks a quarter of a symbol long, kept when
@@ -277,7 +287,9 @@ loses none.
   broadcast lists its 19 kHz pilot and 57 kHz RDS.
   Amendment 2026-10-30: `peak_hz` (the group's strongest line), `carries` ('fm' | 'am' | 'usb' | 'lsb' |
   'dsb' | None) and `sidebands_db` (upper over lower). Within 8 kHz: SSB when the strongest line holds 5 %
-  of the power or more and the sidebands about it differ by 15 dB or more; else, about the power-weighted
+  of the power or more, the sidebands about it (from a Hann-windowed spectrum, less the noise measured 8 to
+  12 kHz out and scaled by f squared) differ by 10 dB or more, and no line a quarter as strong sits at its
+  mirror about the centre (a DSB pair); else, about the power-weighted
   centre, FM when the baseband's envelope is constant (CV < 0.15) and its frequency spreads 200 Hz or more,
   AM when a carrier (within 150 Hz) holds 5 % or more, DSB otherwise. None for the pilot, RDS and FM video's
   sound.
