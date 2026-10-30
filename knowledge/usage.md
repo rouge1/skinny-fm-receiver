@@ -1174,6 +1174,9 @@ The card is a JSON object. A value that cannot be measured is `null`. Its keys:
   `shape` (`raised cosine` or `rectangular`).
 - `tv`: FM video's `deviation_hz` and `peak_to_peak_hz` with the line rate; `psk`:
   `amplitude_levels`, set when BPSK is really 4-level ASK with the carrier suppressed.
+- `frequency.subcarriers[].carries`: what a subcarrier carries (`fm`, `am`, `usb`, `lsb`,
+  `dsb`). `broadcast`: an FM station's pilot, `rds`, `l_minus_r_db` and `stereo`. A pilot
+  is not enough for stereo: some transmitters send one with a mono programme.
 - `symbol_rate_baud`.
 - `lte` and `nr`: the cells in the span's first 50 ms. Each has `searched`
   and `reason`. A span under 1.92 MS/s, or narrower than 1 MHz, is not

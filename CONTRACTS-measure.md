@@ -275,6 +275,20 @@ loses none.
   lines within 8 kHz grouped as one at their power-weighted centre, each holding -35 dB or more of the
   demodulated signal's power (within 4 kHz of it, `share_db`), at most 4, strongest first. An FM
   broadcast lists its 19 kHz pilot and 57 kHz RDS.
+  Amendment 2026-10-30: `peak_hz` (the group's strongest line), `carries` ('fm' | 'am' | 'usb' | 'lsb' |
+  'dsb' | None) and `sidebands_db` (upper over lower). Within 8 kHz: SSB when the strongest line holds 5 %
+  of the power or more and the sidebands about it differ by 15 dB or more; else, about the power-weighted
+  centre, FM when the baseband's envelope is constant (CV < 0.15) and its frequency spreads 200 Hz or more,
+  AM when a carrier (within 150 Hz) holds 5 % or more, DSB otherwise. None for the pilot, RDS and FM video's
+  sound.
+- `broadcast: {pilot_hz, pilot_db, rds, l_minus_r_db, stereo} | None` (amendment 2026-10-30), when a
+  subcarrier is within 200 Hz of 19 kHz: `l_minus_r_db` is the demodulated power 23 to 53 kHz (38 kHz's own
+  1 kHz out) over the noise there, estimated at 16 to 22 kHz beside the pilot and scaled by f squared;
+  `stereo` from 6 dB. A pilot alone is not stereo.
+- Levels with neighbours (amendment 2026-10-30): when 4 or 8 levels do not stand clear, each symbol is
+  decided, its two neighbours' share fitted (least squares) and taken off, three times; kept when the share
+  is 0.05 to 0.4 and the levels then stand clear, the levels given as a run of one symbol settles (spread
+  times 1 + 2 x share). The clock is taken on the series averaged over rate / (2 x `bandwidth_hz`) samples.
 - The class rules become: 0 lte/nr, 1 `noise`, then `atsc`, `tv`, `pulses`, `ook`, `ask`, `psk`, `fsk`, `fm`, `am`,
   `carrier`, `unknown`. Every real bench recording that was `ook`, `ask`, `fsk`, `fm` or `am` before is
   still that; of nineteen older real recordings (FM, LTE, NR, ISM, ATSC) the ATSC one becomes `atsc`

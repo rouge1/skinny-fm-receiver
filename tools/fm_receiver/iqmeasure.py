@@ -181,6 +181,16 @@ LEVEL_WINDOW = 0.5
 LEVEL_ITERATIONS = 30
 LEVEL_SHARE = 0.5
 LEVEL_WHITE = 50.0
+#: Shaped symbols (Gaussian BT 0.3 4FSK) hold a share of each neighbour, which splits every
+#: level into sub-levels: the gap stood 2.2 to 3 deviations. When a fit fails, each symbol
+#: is decided, the share of its two neighbours' decided levels fitted (least squares) and
+#: taken off, LEVEL_ISI_ROUNDS times; kept when the share is LEVEL_ISI_MIN to LEVEL_ISI_MAX
+#: and the levels then stand clear. Gaussian 4FSK's share was 0.20 and its gap rose to 10 to
+#: 24 deviations; on the tests' FM, AM and tones the share was under 0.01 or the symbols not
+#: white, and nothing changed.
+LEVEL_ISI_ROUNDS = 3
+LEVEL_ISI_MIN = 0.05
+LEVEL_ISI_MAX = 0.4
 #: The pulse shape: the spectrum in PULSE_NFFT-bin pieces of the segment's first PSK_SPAN
 #: samples. Fitted on synthetic QPSK (20 to 100 kBd, roll-off 0.2 to 0.8) and 4ASK, the
 #: roll-off came within 0.02; their power 1.1 to 1.5 symbol rates out stood -34 to -57 dB
@@ -202,6 +212,27 @@ SUBCARRIER_GROUP_HZ = 8e3
 #: sound -17, a 67 kHz subcarrier 0.
 SUBCARRIER_SHARE_DB = -35.0
 MAX_SUBCARRIERS = 4
+#: FM broadcast: a pilot is a subcarrier within BROADCAST_NEAR_HZ of 19 kHz, RDS one of 57 kHz.
+#: A pilot alone does not make stereo: the bench transmitter sends one with a mono programme
+#: (left and right the same, L-R empty), and a blind round called that stereo. L-R is the
+#: demodulated power 23 to 53 kHz (the 38 kHz carrier's own 1 kHz left out), against the
+#: noise there, which is estimated beside the pilot (16 to 22 kHz, where nothing is sent) and
+#: scaled by f squared, as a discriminator's noise rises (an SCA at 67 kHz, where the noise
+#: might else be read, does not move it). Synthetic mono read 0.0 dB over (35 and 15 dB SNR,
+#: with an SCA), stereo 11 to 31 dB: stereo from BROADCAST_STEREO_DB.
+BROADCAST_NEAR_HZ = 200.0
+#: What a subcarrier carries: the demodulated frequency within SUB_HALF_HZ of it, as a complex
+#: baseband. Its carrier is its strongest line (the pilot, RDS and TV sound are named apart);
+#: the sidebands are the power past SUB_CARRIER_HZ either side. One side SUB_SSB_DB over the
+#: other is SSB; else a constant envelope (CV under SUB_FM_CV) with a frequency spread is FM,
+#: a carrier holding SUB_CARRIER_SHARE of the power or more is AM, and none DSB.
+SUB_HALF_HZ = 8e3
+SUB_CARRIER_HZ = 150.0
+SUB_SSB_DB = 15.0
+SUB_FM_CV = 0.15
+SUB_FM_HZ = 200.0
+SUB_CARRIER_SHARE = 0.05
+BROADCAST_STEREO_DB = 6.0
 TV_SOUND_HZ = (4.6e6, 9e6)
 
 
@@ -832,18 +863,54 @@ def _symbols(v, rate, baud):
     return best
 
 
+def _neighbours_off(s, m):
+    """The symbols ``s`` with their neighbours' share taken off, for ``m`` levels: each
+    decided, ``s = g0 a[k] + g1 (a[k-1] + a[k+1]) + d`` fitted, and ``g1`` times the
+    neighbours subtracted. Returns (symbols, g1 / g0)."""
+    x, ratio = s, 0.0
+    for _ in range(LEVEL_ISI_ROUNDS):
+        c = np.asarray(_fit_levels(x, m)[0])
+        a = c[np.argmin(np.abs(x[:, None] - c[None, :]), axis=1)]
+        nb = np.zeros_like(a)
+        nb[1:] += a[:-1]
+        nb[:-1] += a[1:]
+        g0, g1, _ = np.linalg.lstsq(np.column_stack([a, nb, np.ones_like(a)]), s, rcond=None)[0]
+        ratio = float(g1 / g0) if g0 else 0.0
+        x = s - g1 * nb
+    return x, ratio
+
+
 def _level_order(s, orders):
-    """The smallest of ``orders`` whose levels stand clear in the symbols ``s``, with its
-    levels: (order, levels) or None. The symbols must be white: a sum of tones sampled at
-    a clock it made (their difference) repeats a few values, its spectrum lines."""
+    """The smallest of ``orders`` whose levels stand clear in the symbols ``s``, as they are
+    or with their neighbours' share taken off: (order, levels, share) or None. The symbols
+    must be white: a sum of tones sampled at a clock it made (their difference) repeats a
+    few values, its spectrum lines."""
     z = np.abs(np.fft.rfft(s - s.mean()))[1:] ** 2
     if not z.size or z.max() > LEVEL_WHITE * z.mean():
         return None
+
+    def clear(fit):
+        _, share, sep, middle = fit
+        return share >= LEVEL_SHARE and sep > KEYED_SIGMA and middle < MIDDLE_MAX
+
     for m in orders:
-        levels, share, sep, middle = _fit_levels(s, m)
-        if share >= LEVEL_SHARE and sep > KEYED_SIGMA and middle < MIDDLE_MAX:
-            return m, levels
+        fit = _fit_levels(s, m)
+        if clear(fit):
+            return m, fit[0], 0.0
+        x, ratio = _neighbours_off(s, m)
+        if LEVEL_ISI_MIN <= ratio <= LEVEL_ISI_MAX:
+            fit = _fit_levels(x, m)
+            if clear(fit):
+                # The levels a run of one symbol settles to: its own and both neighbours'.
+                c = np.asarray(fit[0])
+                return m, (c.mean() + (c - c.mean()) * (1 + 2 * ratio)).tolist(), ratio
     return None
+
+
+def _shaped(share):
+    """The evidence's words for a neighbour share taken off, or nothing."""
+    return (f" Read with each neighbour's {share:.2f} share taken off (shaped symbols, "
+            "Gaussian or the like)." if share else "")
 
 
 def _keyed_levels(v, rate, smooth, clock=None):
@@ -857,7 +924,8 @@ def _keyed_levels(v, rate, smooth, clock=None):
     fit = _level_order(s, LEVEL_ORDERS) if s is not None else None
     if fit is None:
         return None
-    return {'order': fit[0], 'levels': fit[1], 'symbol_rate_baud': clock[0], 'clock_db': clock[1]}
+    return {'order': fit[0], 'levels': fit[1], 'symbol_rate_baud': clock[0], 'clock_db': clock[1],
+            'neighbour_share': fit[2]}
 
 
 def _rc_power(f, baud, beta):
@@ -906,10 +974,28 @@ def _pulse(seg, rate, offset, baud):
             'shape': 'raised cosine' if shaped else 'rectangular' if sidelobe > PULSE_RECT_DB else None}
 
 
-def _subcarriers(seg, rate, low=SUBCARRIER_MIN_HZ, high=None):
+def _broadcast(seg, rate, subcarriers):
+    """An FM broadcast's multiplex, when a pilot is among ``subcarriers``: the card's
+    ``broadcast`` section {pilot_hz, pilot_db, rds, l_minus_r_db, stereo}, or None."""
+    pilot = next((s for s in subcarriers if abs(s['freq_hz'] - 19e3) <= BROADCAST_NEAR_HZ), None)
+    if pilot is None or rate < 2 * 53e3 or len(seg) < 64:
+        return None
+    d = np.angle(seg[1:] * np.conj(seg[:-1])).astype(np.float64)
+    f, p = _spectrum(d, rate)
+    ref = ((f >= 16e3) & (f <= 18.5e3)) | ((f >= 19.5e3) & (f <= 22e3))
+    band = ((f >= 23e3) & (f <= 37.5e3)) | ((f >= 38.5e3) & (f <= 53e3))
+    noise = float(p[ref].sum()) / max(float((f[ref] ** 2).sum()), 1e-300) * float((f[band] ** 2).sum())
+    lr = 10 * math.log10(max(float(p[band].sum()), 1e-300) / max(noise, 1e-300))
+    return {'pilot_hz': pilot['freq_hz'], 'pilot_db': pilot['level_db'],
+            'rds': any(abs(s['freq_hz'] - 57e3) <= BROADCAST_NEAR_HZ * 5 for s in subcarriers),
+            'l_minus_r_db': lr, 'stereo': lr >= BROADCAST_STEREO_DB}
+
+
+def _subcarriers(seg, rate, low=SUBCARRIER_MIN_HZ, high=None, carried=True):
     """Lines in the demodulated frequency between ``low`` and ``high`` (default 0.45 of
-    the rate): [{freq_hz, level_db}], strongest first, a line's sidebands grouped with it.
-    An FM broadcast's pilot and RDS, a subcarrier's centre, TV sound in FM video."""
+    the rate): [{freq_hz, level_db, share_db, peak_hz, carries, sidebands_db}], strongest
+    first, a line's sidebands grouped with it. An FM broadcast's pilot and RDS, a
+    subcarrier's centre, TV sound in FM video (whose wide FM ``carried`` leaves unread)."""
     high = 0.45 * rate if high is None else min(high, 0.45 * rate)
     if len(seg) < 64 or high <= low:
         return []
@@ -929,9 +1015,70 @@ def _subcarriers(seg, rate, low=SUBCARRIER_MIN_HZ, high=None):
         f = float(np.sum(freqs[g] * power[g]) / np.sum(power[g]))
         share = 10 * math.log10(max(float(power[np.abs(freqs - f) <= SUBCARRIER_GROUP_HZ / 2].sum()), 1e-300) / total)
         if share >= SUBCARRIER_SHARE_DB:
-            out.append({'freq_hz': f, 'level_db': float(level[g].max()), 'share_db': share})
+            out.append({'freq_hz': f, 'level_db': float(level[g].max()), 'share_db': share,
+                        'peak_hz': float(freqs[g[int(np.argmax(power[g]))]])})
     out.sort(key=lambda s: -s['level_db'])
-    return out[:MAX_SUBCARRIERS]
+    out = out[:MAX_SUBCARRIERS]
+    spectrum = np.fft.rfft(d) if out and carried else None
+    for s in out:
+        s.update(_carried(spectrum, rate, len(d), s['peak_hz'], s['freq_hz']) if carried
+                 else {'carries': None, 'sidebands_db': None})
+    return out
+
+
+def _about(spectrum, rate, n, f0):
+    """The bins within SUB_HALF_HZ of ``f0``: (bins, offsets in Hz, power upper, lower, carrier),
+    or None at the spectrum's edge."""
+    df = rate / n
+    i0 = int(round(f0 / df))
+    half = int(SUB_HALF_HZ / df)
+    if i0 - half < 1 or i0 + half >= spectrum.size:
+        return None
+    band = spectrum[i0 - half:i0 + half + 1]
+    off = (np.arange(band.size) - half) * df
+    p = np.abs(band) ** 2
+    return (band, off, float(p[off > SUB_CARRIER_HZ].sum()), float(p[off < -SUB_CARRIER_HZ].sum()),
+            float(p[np.abs(off) <= SUB_CARRIER_HZ].sum()))
+
+
+def _carried(spectrum, rate, n, peak, centre):
+    """What a subcarrier carries: {carries, sidebands_db}. ``carries`` is 'usb' or 'lsb' (its
+    strongest line a carrier, SUB_CARRIER_SHARE of the power or more, with the sidebands on
+    one side of it), else, about its power-weighted ``centre``, 'fm', 'am' or 'dsb'; None for
+    a pilot, RDS's 57 kHz and a subcarrier at the edge. ``sidebands_db`` is the upper's power
+    over the lower's about the reference taken."""
+    none = {'carries': None, 'sidebands_db': None}
+    # RDS's strongest line is one of its humps, 2.4 kHz off 57 kHz (a real station's read 'dsb').
+    if any(abs(f - 19e3) <= BROADCAST_NEAR_HZ or abs(f - 57e3) <= 5 * BROADCAST_NEAR_HZ for f in (peak, centre)):
+        return none
+    at = _about(spectrum, rate, n, peak)
+    if at is None:
+        return none
+    _, _, upper, lower, car = at
+    sidebands = 10 * math.log10(max(upper, 1e-300) / max(lower, 1e-300))
+    if abs(sidebands) >= SUB_SSB_DB and car >= SUB_CARRIER_SHARE * (upper + lower + car):
+        return {'carries': 'usb' if sidebands > 0 else 'lsb', 'sidebands_db': sidebands}
+    at = _about(spectrum, rate, n, centre)
+    if at is None:
+        return none
+    band, off, upper, lower, car = at
+    sidebands = 10 * math.log10(max(upper, 1e-300) / max(lower, 1e-300))
+    # The baseband: the bins about the centre brought to 0 Hz, a few times oversampled.
+    df = rate / n
+    size = 1 << int(4 * band.size - 1).bit_length()
+    z = np.zeros(size, complex)
+    z[np.round(off / df).astype(np.int64) % size] = band
+    z = np.fft.ifft(z)
+    a = np.abs(z)
+    cv = float(a.std() / a.mean()) if a.mean() > 0 else 0.0
+    spread = float(np.std(np.angle(z[1:] * np.conj(z[:-1])))) * size * df / (2 * np.pi)
+    if cv < SUB_FM_CV and spread >= SUB_FM_HZ:
+        kind = 'fm'
+    elif car >= SUB_CARRIER_SHARE * (upper + lower + car):
+        kind = 'am'
+    else:
+        kind = 'dsb'
+    return {'carries': kind, 'sidebands_db': sidebands}
 
 
 # ---- the measurement ---------------------------------------------------------
@@ -1193,43 +1340,51 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, bl
     env_order = 2 if keyed_env else None
     freq_order = 2 if keyed_f else None
     fast = None
+    isi = 0.0
+    # The steps are taken after an average over half the occupied width's inverse: a symbol's
+    # share or less (a symbol lasts about that or longer), and the clock line stands higher
+    # (Gaussian 4FSK at 15 kHz deviation: 34 dB unsmoothed, 45 so).
+    smooth = max(1, int(rate_s // (2 * max(bw99, 1.0))))
     if (keyed_env or keyed_f) and not (atsc or tv or pulses or psk) and len(seg) >= 64:
         # Keyed in blocks, but a symbol clock past their reach is the rate: the blocks'
         # own reading of it is an alias (a 20 kBd FSK read 12.5 kBd).
         head = seg[:LEVEL_SPAN + 1]
         v = np.abs(head).astype(np.float64) if keyed_env else \
             np.angle(head[1:] * np.conj(head[:-1])).astype(np.float64) * (rate_s / (2 * np.pi))
-        c = _clock(v, rate_s, 1)
+        c = _clock(v, rate_s, smooth)
         if c and c[1] >= LEVEL_CLOCK_DB and c[0] > fs_b / 4:
             sym = c[0]
     elif not (atsc or tv or pulses or psk or keyed_env or keyed_f) and len(seg) >= 64:
         head = seg[:LEVEL_SPAN + 1]
         a = np.abs(head).astype(np.float64)
         fr = np.angle(head[1:] * np.conj(head[:-1])).astype(np.float64) * (rate_s / (2 * np.pi))
-        clocks = [_clock(a, rate_s, 1), _clock(fr, rate_s, 1)]
+        clocks = [_clock(a, rate_s, smooth), _clock(fr, rate_s, smooth)]
         # A clock the blocks cannot follow: read again in shorter blocks (below).
         strong = [c for c in clocks if c and c[1] >= LEVEL_CLOCK_DB and c[0] > fs_b / 4]
         fast = max(strong, key=lambda c: c[1])[0] if strong else None
-        many = _keyed_levels(a, rate_s, 1, clocks[0])
+        many = _keyed_levels(a, rate_s, smooth, clocks[0])
         if many:
             keyed_env, env_order, sym = True, many['order'], many['symbol_rate_baud']
+            isi = many['neighbour_share']
             env_lo, env_hi = many['levels'][0], many['levels'][-1]
             bursts, env_levels = burst_card, many['levels']
             depth = (env_hi - env_lo) / (env_hi + env_lo) if env_hi + env_lo > 0 else 0.0
         elif cv < 0.1:
-            many = _keyed_levels(fr, rate_s, 1, clocks[1])
+            many = _keyed_levels(fr, rate_s, smooth, clocks[1])
             if many:
                 keyed_f, freq_order, sym = True, many['order'], many['symbol_rate_baud']
+                isi = many['neighbour_share']
                 f_lo, f_hi = many['levels'][0], many['levels'][-1]
                 freq_levels = [f + base_s for f in many['levels']]
                 deviation = (f_hi - f_lo) / 2
     if tv and tv['modulation'] == 'fm':
         # FM video: its sound subcarriers sit above the 4.2 MHz of the picture.
-        subcarriers = _subcarriers(seg, rate_s, *TV_SOUND_HZ)
+        subcarriers = _subcarriers(seg, rate_s, *TV_SOUND_HZ, carried=False)
     elif cv < 0.1 and fstd >= STEADY_HZ and not (keyed_f or pulses or psk):
         subcarriers = _subcarriers(seg, rate_s)
     else:
         subcarriers = []
+    broadcast = _broadcast(seg, rate_s, subcarriers) if not tv else None
     if psk and psk['symbol_rate_baud']:
         sym = psk['symbol_rate_baud']
         # BPSK whose symbols take two amplitudes is 4-level ASK with the carrier suppressed
@@ -1297,7 +1452,7 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, bl
         if env_order > 2:
             cls = 'ask'
             ev = (f"The envelope is keyed between {env_order} levels, {env_lo:.3g} to {env_hi:.3g}, "
-                  f"at {sym:.0f} Bd.")
+                  f"at {sym:.0f} Bd." + _shaped(isi))
         elif ratio < 0.1:
             cls = 'ook'
             ev = (f"The envelope is keyed between {env_lo:.3g} and {env_hi:.3g}; "
@@ -1323,7 +1478,7 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, bl
         if freq_order > 2:
             ev = (f"The frequency is keyed between {freq_order} levels, {f_lo + base_s:.0f} to "
                   f"{f_hi + base_s:.0f} Hz from the centre, at {sym:.0f} Bd, and the envelope "
-                  f"is constant (CV {cv:.3f}).")
+                  f"is constant (CV {cv:.3f})." + _shaped(isi))
         else:
             ev = (f"The frequency is keyed at {f_lo + base_s:.0f} and {f_hi + base_s:.0f} Hz from the "
                   f"centre, and the envelope is constant (CV {cv:.3f}).")
@@ -1331,8 +1486,16 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, bl
         cls = 'fm'
         ev = (f"The envelope is constant (CV {cv:.3f}) and the frequency spreads by "
               f"{fstd:.0f} Hz (standard deviation)"
-              + ("; subcarriers at " + ', '.join(f"{s['freq_hz'] / 1e3:.1f}" for s in subcarriers)
+              + ("; subcarriers at " + ', '.join(f"{s['freq_hz'] / 1e3:.1f}"
+                                                  + (f" ({s['carries'].upper()})" if s.get('carries') else "")
+                                                  for s in subcarriers)
                  + " kHz." if subcarriers else "."))
+        if broadcast:
+            ev += (" A broadcast multiplex: a 19 kHz pilot"
+                   + (", RDS at 57 kHz" if broadcast['rds'] else "")
+                   + (f"; stereo, L-R {broadcast['l_minus_r_db']:.0f} dB over its noise." if broadcast['stereo']
+                      else f"; L-R empty ({broadcast['l_minus_r_db']:.0f} dB over its noise): a mono "
+                           "programme sent with a pilot."))
     elif cv >= 0.1 and fstd < STEADY_HZ:
         cls = 'am'
         ev = f"The envelope varies (CV {cv:.2f}) and the frequency is steady ({fstd:.0f} Hz)."
@@ -1369,6 +1532,7 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, bl
                       'keyed': bool(keyed_f), 'order': freq_order, 'subcarriers': subcarriers},
         'symbol_rate_baud': sym,
         'pulse': pulse,
+        'broadcast': broadcast,
         'atsc': atsc,
         'tv': tv,
         'pulses': pulses,
@@ -1545,7 +1709,7 @@ def extract(path, t0=None, t1=None, band=None, max_rate=1e6, rate=None, center_h
 
 def _ordered(card):
     keys = ['schema', 'source', 'level', 'occupied', 'tones', 'bursts', 'envelope',
-            'frequency', 'symbol_rate_baud', 'pulse', 'atsc', 'tv', 'pulses', 'psk', 'lte', 'nr', 'class',
+            'frequency', 'symbol_rate_baud', 'pulse', 'broadcast', 'atsc', 'tv', 'pulses', 'psk', 'lte', 'nr', 'class',
             'evidence']
     return {k: card[k] for k in keys}
 

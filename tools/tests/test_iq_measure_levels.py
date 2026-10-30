@@ -7,7 +7,9 @@ Every signal is synthetic and seeded, built here with numpy. What the checks pin
   the symbol rate within 1 %; their 16-sample blocks call them 'am';
 - 4FSK (4.8 kBd, rectangular) is 'fsk' with ``frequency.order`` 4, its levels within
   150 Hz, and lists no subcarriers; Gaussian 4FSK at 19 kBd (BT 0.5), above the blocks'
-  reach, is 'fsk' of order 4 at its rate;
+  reach, is 'fsk' of order 4 at its rate; so is Gaussian 4FSK at BT 0.3 (19 kBd at 9 and
+  15 kHz, 4.8 kBd at 3.6 kHz), whose shaping smears every level until each neighbour's
+  share is taken off, its levels within 3 % of the deviation;
 - a two-level ASK keeps order 2, as the blocks found it;
 - what must not move: FM and AM by two tones (whose samples at their difference repeat a
   few values) and FM and AM by noise stay 'fm' and 'am', with no order.
@@ -93,6 +95,9 @@ MAKERS = {
     '2ask': lambda: ask_iq([0.3, 1.0], 10e3),
     '4fsk': lambda: fsk4_iq(4.8e3, 3.6e3),
     '4gfsk_fast': lambda: fsk4_iq(19e3, 9e3, bt=0.5),
+    'gfsk03_19k': lambda: fsk4_iq(19e3, 9e3, bt=0.3),
+    'gfsk03_19k_wide': lambda: fsk4_iq(19e3, 15e3, bt=0.3),
+    'gfsk03_4k8': lambda: fsk4_iq(4.8e3, 3.6e3, bt=0.3),
     'fm_tones': lambda: tones_iq('fm'),
     'am_tones': lambda: tones_iq('am'),
     'fm_noise': lambda: noise_mod_iq('fm'),
@@ -147,6 +152,20 @@ def check_fsk():
                     f"{card('4gfsk_fast')['symbol_rate_baud']}"))
 
 
+def check_gaussian():
+    for name, baud, dev in (('gfsk03_19k', 19e3, 9e3), ('gfsk03_19k_wide', 19e3, 15e3), ('gfsk03_4k8', 4.8e3, 3.6e3)):
+        true = 2e6 / int(2e6 // baud)
+        lv = lambda n=name: np.asarray(card(n)['frequency']['levels_hz']) + 20e3
+        expect(f"{name} (BT 0.3): fsk, order 4, rate within 1 %",
+               lambda n=name, t=true: (card(n)['class'] == 'fsk' and card(n)['frequency']['order'] == 4
+                                       and abs(card(n)['symbol_rate_baud'] / t - 1) < 0.01,
+                                       f"class {card(n)['class']}, order {card(n)['frequency']['order']}, "
+                                       f"{card(n)['symbol_rate_baud']}"))
+        expect(f"{name} (BT 0.3): levels within 3 % of the deviation",
+               lambda lv=lv, d=dev: (len(lv()) == 4 and np.allclose(lv(), [-d, -d / 3, d / 3, d], atol=0.03 * d),
+                                     f"{lv().tolist()}"))
+
+
 def check_unmoved():
     for name, cls in (('fm_tones', 'fm'), ('am_tones', 'am'), ('fm_noise', 'fm'), ('am_noise', 'am')):
         expect(f"{name}: still {cls}, no order",
@@ -156,7 +175,7 @@ def check_unmoved():
                                       f"{card(n)['frequency']['order']}"))
 
 
-GROUPS = [check_ask, check_fsk, check_unmoved]
+GROUPS = [check_ask, check_fsk, check_gaussian, check_unmoved]
 
 
 def main():

@@ -1763,10 +1763,12 @@ In order:
   crossings, so a 4-level signal's clock shows; this path reaches 19 kBd.
 - [x] Tests (`test_iq_measure_levels.py`): 4ASK, 8ASK, RRC 4ASK, 4FSK,
   19 kBd Gaussian 4FSK (BT 0.5), against FM and AM by two tones and by noise.
-- [ ] Gaussian 4FSK at BT 0.3 (the night's signal) is still `fm`: the
-  shaping smears every level (the gap stood 2.9 deviations, the test asks
-  3). A dip test (fewer symbols mid-gap than at the levels) may read it;
-  it needs negatives that pass the clock first.
+- [x] Gaussian 4FSK at BT 0.3 (the night's signal), 2026-10-30: the
+  shaping put a fifth of each neighbour in every symbol, smearing the
+  levels (gap 2.2 to 3 deviations). Each neighbour's share is now fitted
+  and taken off when a fit fails (gap 10 to 24 deviations after), and the
+  clock taken on a lightly smoothed series (a wide one's line stood 34 dB,
+  under the 35 asked, unsmoothed); levels within 1 % at 4.8 and 19 kBd.
 - [ ] Check on a recording of a 4-level signal.
 
 ### Phase 2: faster symbols, and the pulse shape
@@ -1788,10 +1790,35 @@ In order:
   at the symbol clock is now `ask`, its `psk.amplitude_levels` given.
 
 ### Phase 3: what rides on a carrier
-- [ ] A subcarrier's own class: demodulate it and run the same rules
-  (an SSB subcarrier with its carrier was called AM).
-- [ ] Stereo only with a pilot: a mono station with RDS was called stereo.
-  Find where the call came from first.
+- [x] What a subcarrier carries (2026-10-30): each listed subcarrier is
+  read as FM, AM, USB, LSB or DSB (`carries`, `sidebands_db`, `peak_hz`):
+  SSB by its sidebands on one side of its carrier line, the rest about
+  its power centre as a baseband. Synthetic only (an SSB subcarrier with
+  its carrier was called AM in a blind round).
+- [x] Stereo only with L-R (2026-10-30). The call came from the pilot: the
+  bench transmitter sends one with a mono programme too (its mono is
+  left = right). The card's `broadcast` section gives the pilot, RDS and
+  L-R against its own noise; stereo from 6 dB (synthetic mono 0 dB,
+  stereo 11 to 31). The app's Receive tab still says stereo by the pilot:
+  [ ] the same test there, as a UI change (a sketch first).
+
+### Held out: the bench generators' own baseband (2026-10-30)
+Eleven 8 s clips of the night's rounds, rendered clean by the SDR session
+(kept on that machine, not in the repo), against their settings. On the
+branch 6 of 11 right: 8ASK, 4FSK at BT 0.3, 2FSK at 25 kBd, mono and
+stereo FM + RDS, and FM video's line rate. Missed:
+- [ ] BPSK at 125 kBd read `ask` at 248 Bd, and 2ASK with the carrier off
+  (which is BPSK: the generator maps levels to -0.5..+0.5) read 4-level
+  ASK: both regressions from phase 2 (before it, both `psk`).
+- [ ] The roll-off read high (0.62, 0.68, 0.54 for 0.35, 0.5, 0.35): the
+  generators filter held (NRZ) symbols, whose spectrum is a sinc times
+  the raised cosine; only an impulse-shaped one was fitted.
+- [ ] 4ASK with the carrier off still read BPSK (its amplitudes smeared).
+- [ ] The 92 kHz USB subcarrier read AM; stereo's 38 kHz L-R (a tone
+  pair) read USB: the subcarrier reading is 0 of 2 on real output.
+- [ ] FM video's deviation comes from 64-sample averages (about a
+  150 kHz low-pass at 20 MS/s), so it reads low; take it sample by sample.
+- [ ] Test makers built as the generators build (held symbols, then RRC).
 
 ### Phase 4: things that look like the programme
 - [ ] Lines in demodulated audio: a steady narrow tone under speech, and

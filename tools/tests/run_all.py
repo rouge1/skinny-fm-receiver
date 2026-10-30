@@ -25,7 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TESTS = ['test_sweep.py', 'test_tuning.py', 'test_receive_chain.py', 'test_rds_heard.py', 'test_gui.py',
          'test_recordings.py', 'test_rtl_tcp.py', 'test_bb60_lost.py',
          'test_control.py', 'test_control_more.py',
-         'test_iq_measure.py', 'test_iq_measure_cells.py', 'test_iq_measure_classes.py', 'test_iq_measure_levels.py', 'test_iq_measure_rates.py', 'test_iq_tools.py', 'test_iq_decode.py',
+         'test_iq_measure.py', 'test_iq_measure_cells.py', 'test_iq_measure_classes.py', 'test_iq_measure_levels.py', 'test_iq_measure_rates.py', 'test_iq_measure_carriers.py', 'test_iq_tools.py', 'test_iq_decode.py',
          'test_iq_catalog.py', 'test_iq_frames.py', 'test_iq_decode_bursts.py',
          'test_iqlte.py', 'test_iqlte_crs.py', 'test_iqlte_tdd.py', 'test_iqlte_idle.py', 'test_iqlte_si.py', 'test_iqlte_phy.py', 'test_iqlte_pdcch.py', 'test_iqlte_pdsch.py', 'test_iqlte_cancel.py', 'test_iqlte_timing.py', 'test_iqlte_memory.py', 'test_iqlte_own_si.py', 'test_iqlte_si_cancel.py',
          'test_iq_lte.py', 'test_iqnr.py', 'test_iq_nr.py', 'test_iq_nr_decode.py', 'test_iqnr_phy.py',
