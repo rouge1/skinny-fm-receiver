@@ -12,7 +12,9 @@ Every signal is synthetic and seeded, built here with numpy. What the checks pin
   share is taken off, its levels within 3 % of the deviation;
 - a two-level ASK keeps order 2, as the blocks found it;
 - what must not move: FM and AM by two tones (whose samples at their difference repeat a
-  few values) and FM and AM by noise stay 'fm' and 'am', with no order.
+  few values) and FM and AM by noise stay 'fm' and 'am', with no order;
+- read in 2-sample blocks, envelope levels 1e-4 apart are not keying, while 4ASK from 0.4
+  to 1 still is.
 
 Run:  QT_QPA_PLATFORM=offscreen PYTHONPATH=tools python tools/tests/test_iq_measure_levels.py
 (about half a minute)
@@ -175,7 +177,34 @@ def check_unmoved():
                                       f"{card(n)['frequency']['order']}"))
 
 
-GROUPS = [check_ask, check_fsk, check_gaussian, check_unmoved]
+def short_card(levels, rate=2e6, baud=20e3, seconds=0.5, seed=5):
+    """Clean keying between ``levels`` under a 2 kHz FM tone, read in 2-sample blocks (the
+    re-read a fast clock asks for)."""
+    rng = np.random.default_rng(seed)
+    a = np.repeat(np.asarray(levels, float)[rng.integers(0, len(levels), int(seconds * baud))],
+                  int(rate // baud))
+    t = np.arange(len(a)) / rate
+    x = (a * np.exp(2j * np.pi * (30e3 * t + 2e3 * np.sin(2 * np.pi * 4e3 * t) / (2 * np.pi * 4e3))))
+    x = x.astype(np.complex64)
+    return iqmeasure._analyse(lambda s, k: x[s:s + k], len(x), rate, CENTRE, None, None, None, 2,
+                              ({}, {}))
+
+
+def check_shallow():
+    # A bench FM with a subcarrier read 'ask' in 2-sample blocks, its "levels" 0.99992 and
+    # 0.99999: levels closer than KEYED_DEPTH are not keying. (That clip stays outside the
+    # repo; these keep both sides of the floor.)
+    c = short_card([1.0, 0.9999, 0.9998, 0.9997])
+    expect("levels 1e-4 apart, 2-sample blocks: not keyed",
+           lambda: (c['class'] not in ('ook', 'ask') and not c['envelope']['keyed'],
+                    f"class {c['class']}, keyed {c['envelope']['keyed']}"))
+    d = short_card([0.4, 0.6, 0.8, 1.0])
+    expect("4ASK 0.4 to 1, 2-sample blocks: still ask, order 4",
+           lambda: (d['class'] == 'ask' and d['envelope']['order'] == 4,
+                    f"class {d['class']}, order {d['envelope']['order']}"))
+
+
+GROUPS = [check_ask, check_fsk, check_gaussian, check_unmoved, check_shallow]
 
 
 def main():

@@ -1778,6 +1778,12 @@ In order:
   `am`/`fm`/`unknown` card with one is taken again in shorter blocks (kept
   only when keyed); right from 5 to 200 kBd. The two-level threshold sat
   at the low edge of an empty gap, which failed fast clean ASK: now its middle.
+  Fixed after phase 4: over 8 s a bench FM with a 92 kHz subcarrier came back
+  `ask` from the short blocks, its levels 0.99992 and 0.99999 (the decimator's
+  ripple). Levels whose depth is under 1e-3 are no longer keying.
+- [ ] Shallow clean ASK: two levels 1.0 and 0.8, rectangular with no noise, read
+  `unknown` (and so before the fix above). The decimator rings at each step, so
+  the block envelope runs from 0.54 to 1.10 and fills the gap between the levels.
 - [x] RRC roll-off (2026-10-30): the card's `pulse` section, a raised
   cosine fitted to the spectrum; within 0.02 on QPSK, 8PSK and 4ASK (0.05
   on BPSK). Rectangular symbols (a sinc's sidelobe) are named, not given

@@ -98,6 +98,11 @@ TONE_GAP = 8
 LISTED = 32
 KEYED_SIGMA = 3.0
 MIDDLE_MAX = 0.12
+#: An envelope is keyed only if its levels are this far apart, as (high - low) /
+#: (high + low): a clean constant envelope's ripple splits cleanly too (a bench FM with a
+#: 92 kHz subcarrier, read in 2-sample blocks, gave levels 0.99992 and 0.99999, a depth of
+#: 4e-5). Ripple deeper than this (a wide FM cut by the decimator) still passes.
+KEYED_DEPTH = 1e-3
 MIN_CLUSTER = 0.005
 STEADY_HZ = 500.0
 #: The cells are looked for only at this rate and occupied width or more, in this much of the span.
@@ -1889,6 +1894,8 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, bl
     burst_card, in_burst = _bursts(active, fs_b, span_s)
     keyed_env, env_lo, env_hi, env_thr = _levels(env[in_burst]) if in_burst.any() \
         else (False, None, None, None)
+    if keyed_env and env_hi - env_lo < KEYED_DEPTH * (env_hi + env_lo):
+        keyed_env = False
     on = in_burst if keyed_env else np.ones(env.size, dtype=bool)
     env_on = env[on]
     mean_on = float(np.mean(env_on))
@@ -1975,6 +1982,9 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, bl
         strong = [c for c in clocks if c and c[1] >= LEVEL_CLOCK_DB and c[0] > fs_b / 4]
         fast = max(strong, key=lambda c: c[1])[0] if strong else None
         many = _keyed_levels(a, rate_s, smooth, clocks[0])
+        if many and many['levels'][-1] - many['levels'][0] < KEYED_DEPTH * (
+                many['levels'][-1] + many['levels'][0]):
+            many = None
         if many:
             keyed_env, env_order, sym = True, many['order'], many['symbol_rate_baud']
             isi = many['neighbour_share']
