@@ -1837,13 +1837,32 @@ run, 6 of 11 right; after the fixes below, 11 of 11.
   (the same bytes as `.cfile`), so the other IQ tools do too.
 
 ### Phase 4: things that look like the programme
-- [ ] Lines in demodulated audio: a steady narrow tone under speech, and
-  DTMF pairs, listed in the card.
-- [ ] A line beside a strong signal: compare it with that signal's image
-  (width, level, mirror offset) and call it a signal when it is not one.
-- [ ] Warn when a capture is shorter than the repeat the card measured.
-- [ ] The bench's own steady lines with the generator off, in a
+- [x] Lines in demodulated audio: a steady narrow tone under speech, and
+  DTMF pairs, listed in the card (2026-10-30, the `audio` section of an
+  `am` or `fm` card): the occupied band taken again and demodulated. A tone
+  keyed 12 dB under speech (a square wave, and Morse at 20 wpm) is listed
+  and called keyed. A steady tone 20 dB under speech, and a swelling musical
+  note, are listed and not keyed. DTMF is read in order, early in the span
+  and late. A looped clip's repeat is found. Speech alone lists nothing.
+  On the recordings, a recording's AM tone first showed a comb of lines at
+  the band filter's block rate (203 Hz): the audio pass now has a skirt as
+  wide as its band, and keeps to half of it.
+- [x] A line beside a strong signal: compare it with that signal's image
+  (width, level, mirror offset) and call it a signal when it is not one
+  (`beside`). An image needs its mirror 20 dB stronger with the same shape,
+  neighbourhood and all. The signal's own sidebands (a twin about its
+  centre) and a TV signal's channel are left out, and so is the outer tenth
+  of the span (the radio's filter edge).
+- [x] Warn when a capture is shorter than the repeat the card measured
+  (`warnings`): under three bursts, under two repeats of a looped
+  programme, or a recording longer than the span read; programme audio
+  that does not repeat in the span says so in the evidence (the night's DTMF
+  came in a 72 s loop, after a 30 s capture had ended).
+- [x] The bench's own steady lines with the generator off, in a
   known-spurs note (ops folder, not the repo), so they are not chased.
+- [ ] Check on recordings of a tone under speech, DTMF and a beacon beside a
+  TV signal (synthetic only so far); mostly-off bursts (a tenth on) are
+  still not found at all (the night's M2), so they get no warning yet.
 
 ### Phase 5: the method
 - [ ] `rf-ctf.md`: the night's rules (follow every pure line in programme

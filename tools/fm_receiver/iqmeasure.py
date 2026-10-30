@@ -7,7 +7,10 @@ Sceptre DVR's IQ ``.sdvr``, or a BLUE ``.cdif``) a span at a time, never
 whole, and returns a card: a JSON-safe dict of the level, the occupied
 bandwidth, the tones, the bursts, the envelope and frequency behaviour, the
 symbol rate and pulse shape, the LTE cells and 5G NR sync blocks in a wideband
-span, ATSC, analog TV, a pulse train, PSK and an FM signal's subcarriers, and a class
+span, ATSC, analog TV, a pulse train, PSK and an FM signal's subcarriers, the lines
+beside the signal (each an image of its mirror or not), an AM or FM programme's audio
+(its pure lines, keyed or steady, DTMF digits and its repeat), warnings where the span is
+too short to see a repeat, and a class
 ('noise', 'lte', 'nr', 'lte+nr', 'atsc', 'tv', 'pulses', 'carrier', 'ook',
 'ask', 'psk', 'fsk', 'fm', 'am' or 'unknown') with the evidence for it. The class rules are fixed
 (CONTRACTS-measure.md), so the same recording always gives the same card.
@@ -245,6 +248,111 @@ SUB_MIRROR = 0.25
 SUB_NOISE_HZ = 12e3
 BROADCAST_STEREO_DB = 3.0
 TV_SOUND_HZ = (4.6e6, 9e6)
+#: Lines beside the signal (Round 31, phase 4): peaks of the fine spectrum outside the
+#: occupied band (BESIDE_MARGIN x its half width) and outside the signal's skirt (the bins
+#: about its peak whose neighbourhood's strongest stays within BESIDE_SKIRT_DB of it: a
+#: tone's FM lines and OOK's sidebands are its own) and with no twin at their mirror about the
+#: signal's centre (BESIDE_PAIR_DB: its own sidebands), BESIDE_DC_BINS from the tuned centre
+#: (where a mirror cannot judge) and inside BESIDE_SPAN of the span (the radio's filter rolls
+#: off at its edges: a 40 MS/s recording showed a line 19.8 MHz out), BESIDE_DB over the floor and over the median of
+#: BESIDE_LOCAL bins either side, at most MAX_BESIDE, strongest first. A line is the image
+#: of its mirror about the tuned centre only when that mirror is IMAGE_DB or more stronger
+#: and its spectrum, taken down by that much and flipped, fits the line's within
+#: IMAGE_FIT_DB on IMAGE_FIT_SHARE of the bins either shows: an image brings its parent's
+#: neighbourhood with it. A blind round's faint beacon beside a TV signal was taken for an
+#: image without that check; a line is a signal until its mirror shows otherwise.
+BESIDE_MARGIN = 1.2
+BESIDE_SKIRT_DB = 40.0
+BESIDE_PAIR_DB = 6.0
+#: A TV signal's own carriers and picture lines lie across its channel, not its 99 % band: AM
+#: TV's channel runs from TV_VISION_LOW_HZ under its vision carrier (its strongest tone) for
+#: TV_CHANNEL_HZ, FM video's sound subcarriers reach TV_SOUND_HZ[1] either side, ATSC's channel
+#: is 6 MHz. Lines are beside a TV signal only outside those.
+TV_CHANNEL_HZ = {'525-line': 6e6, '625-line': 8e6}
+TV_VISION_LOW_HZ = 1.25e6
+ATSC_CHANNEL_HZ = 6e6
+BESIDE_DC_BINS = 3
+BESIDE_SPAN = 0.9
+BESIDE_DB = 10.0
+BESIDE_LOCAL = 32
+MAX_BESIDE = 8
+BESIDE_MAX_BINS = 64
+IMAGE_DB = 20.0
+IMAGE_HALF = 16
+IMAGE_FIT_DB = 4.0
+IMAGE_FIT_SHARE = 0.8
+#: Programme audio (phase 4), for `am` and `fm` cards no wider than AUDIO_MAX_WIDTH_HZ (one
+#: programme, an FM station with a 92 kHz subcarrier included; a band of several stations
+#: read 3.3 MHz): the occupied band (AUDIO_REACH x its
+#: width, AUDIO_MIN_HZ at least) taken again, demodulated (the envelope or the frequency) and
+#: brought to AUDIO_RATE or a little over, cut at AUDIO_BAND_HZ or at AUDIO_EDGE of the band
+#: taken: near that band's edge the band filter's block joins (every rate / step samples)
+#: leave lines at multiples of that rate (a recording's AM tone showed a comb at 203 Hz
+#: spacing, 7.7 to 8.5 kHz, cut at 10 kHz), and a discriminator's rising noise falls off.
+AUDIO_REACH = 1.2
+AUDIO_MAX_WIDTH_HZ = 500e3
+AUDIO_MIN_HZ = 20e3
+AUDIO_RATE = 32e3
+AUDIO_EDGE = 0.5
+AUDIO_BAND_HZ = 15e3
+AUDIO_PAD = 2048
+AUDIO_TAPER_HZ = 1000.0
+AUDIO_BLOCK = 1 << 16
+#: Lines in the audio: peaks of a long average (AUDIO_LINE_BIN_HZ bins) AUDIO_LINE_DB over the
+#: median of AUDIO_LOCAL_HZ either side, AUDIO_LINE_MAX_HZ wide or less at -6 dB, from
+#: AUDIO_LINE_LO_HZ up; a tone under speech stands there, speech's harmonics move and do not.
+#: A keyed line is not in the long average: in short frames (AUDIO_FRAME_HZ bins) it is a
+#: peak AUDIO_KEYED_DB over the frame's median beside it in AUDIO_KEYED_SHARE of them or more.
+#: A line is keyed when it is absent from AUDIO_KEYED_SHARE of the frames where its usual
+#: power stands AUDIO_KEYED_DB over the median beside it (where it would have shown), so a
+#: steady line hidden by loud speech is not keyed, nor a weak one that flickers, and its power
+#: when on spreads AUDIO_KEYED_SPREAD_DB or less (10th to 90th percentile): a key holds one
+#: level (Morse at 12 to 25 wpm spread 0.4 to 1.3 dB), a note in music swells and fades (7.3).
+AUDIO_LINE_BIN_HZ = 4.0
+AUDIO_LINE_DB = 10.0
+AUDIO_LOCAL_HZ = 100.0
+AUDIO_LINE_MAX_HZ = 30.0
+AUDIO_LINE_LO_HZ = 50.0
+MAX_AUDIO_LINES = 8
+AUDIO_FRAME_HZ = 16.0
+AUDIO_KEYED_SHARE = 0.1
+AUDIO_KEYED_DB = 16.0
+AUDIO_KEYED_SPREAD_DB = 4.0
+#: Keyed or steady is said only of a line on in AUDIO_KEYED_MIN frames or more (else None).
+#: A line with AUDIO_CLUSTER others within AUDIO_CLUSTER_HZ is a band of content (music's
+#: highs held 8 within 500 Hz), not a tone, and is not listed.
+AUDIO_KEYED_MIN = 5
+AUDIO_CLUSTER = 2
+AUDIO_CLUSTER_HZ = 250.0
+#: DTMF: 40 ms frames every 10 ms (25 Hz resolution, the grid 73 Hz apart at the least), the
+#: power at the eight frequencies: the strongest of each group DTMF_SEP_DB over the rest of
+#: it, the two within DTMF_TWIST_DB, holding DTMF_SHARE of the frame's power together; a
+#: digit is DTMF_MIN_FRAMES such frames in a row. A tone of D ms in quiet passes about D / 10
+#: frames (its edges in a Hann frame's tails count too: 15 ms passed 2, 45 ms 5), so its
+#: length is the run times the hop and it is centred on the run's frames; four frames is a
+#: tone of about 35 ms (the standard takes 40 ms and up, and refuses under 23).
+DTMF_LOW = (697.0, 770.0, 852.0, 941.0)
+DTMF_HIGH = (1209.0, 1336.0, 1477.0, 1633.0)
+DTMF_KEYS = ('123A', '456B', '789C', '*0#D')
+DTMF_FRAME_S = 0.04
+DTMF_HOP_S = 0.01
+DTMF_SEP_DB = 10.0
+DTMF_TWIST_DB = 8.0
+DTMF_SHARE = 0.3
+DTMF_MIN_FRAMES = 4
+#: A programme that repeats (a looped clip): the short frames' energy in AUDIO_LOOP_BANDS bands
+#: (log, each band's mean and spread taken off), correlated with itself at every lag from
+#: AUDIO_LOOP_MIN_S, with AUDIO_LOOP_OVERLAP_S of overlap at least: a loop is the first lag to
+#: reach AUDIO_LOOP_CORR. Only audio that varies is looked at (its bands' median spread
+#: AUDIO_VARIES or more, log10 units): a steady tone correlates at every lag.
+AUDIO_LOOP_BANDS = 16
+#: Under three bursts in a span, the card cannot measure their repeat (and warns), unless one
+#: burst fills BURSTS_FILL of the span or more: that is a continuous signal.
+BURSTS_FILL = 0.9
+AUDIO_LOOP_MIN_S = 1.0
+AUDIO_LOOP_OVERLAP_S = 3.0
+AUDIO_LOOP_CORR = 0.8
+AUDIO_VARIES = 0.2
 
 
 class IQSourceError(Exception):
@@ -1043,6 +1151,398 @@ def _pulse(seg, rate, offset, baud):
             'shape': best[2] if shaped else 'rectangular' if sidelobe > PULSE_RECT_DB else None}
 
 
+def _run_width(P, k, share):
+    """Bins either side of ``k`` (and ``k``) where ``P`` stays at ``share`` of ``P[k]`` or more."""
+    lo, hi = k, k
+    while lo > 0 and P[lo - 1] >= share * P[k]:
+        lo -= 1
+    while hi < len(P) - 1 and P[hi + 1] >= share * P[k]:
+        hi += 1
+    return lo, hi
+
+
+def _image_check(P, floor, k, j, half):
+    """(mirror over the line in dB, image or not) for the line at bin ``k`` of the shifted
+    spectrum ``P`` and its mirror at bin ``j``: see IMAGE_DB."""
+    n = len(P)
+    a = P[max(0, j - half):min(n, j + half + 1)]
+    jm = max(0, j - half) + int(np.argmax(a))
+    over = 10 * math.log10(P[jm] / P[k]) if P[k] > 0 and P[jm] > 0 else 0.0
+    if over < IMAGE_DB:
+        return over, False
+    # The mirror's neighbourhood, flipped and taken down to the line's level, against the line's.
+    d = np.arange(-IMAGE_HALF, IMAGE_HALF + 1)
+    ok = (k + d >= 0) & (k + d < n) & (jm - d >= 0) & (jm - d < n)
+    line = P[k + d[ok]]
+    pred = P[jm - d[ok]] * (P[k] / P[jm])
+    shown = (line >= 2 * floor) | (pred >= 2 * floor)
+    if not shown.any():
+        return over, False
+    fit = np.abs(10 * np.log10((line[shown] + floor) / (pred[shown] + floor))) <= IMAGE_FIT_DB
+    return over, bool(np.mean(fit) >= IMAGE_FIT_SHARE)
+
+
+def _beside(P, floor, bin_hz, origin, centre, bw99, center_hz, inband):
+    """Lines of the fine spectrum ``P`` (shifted) outside the occupied band, each with its
+    mirror about the tuned centre: see BESIDE_MARGIN."""
+    n = len(P)
+    f = origin + (np.arange(n) - n // 2) * bin_hz
+    out_band = np.abs(f - centre) > BESIDE_MARGIN * bw99 / 2 + 3 * bin_hz
+    out_band &= np.abs(f - center_hz) > BESIDE_DC_BINS * bin_hz
+    out_band &= np.abs(f - origin) <= BESIDE_SPAN * n * bin_hz / 2
+    if inband is not None:
+        out_band &= inband
+    w = 2 * BESIDE_LOCAL + 1
+    if n < 4 * w or not out_band.any():
+        return []
+    padded = np.concatenate([P[BESIDE_LOCAL:0:-1], P, P[-2:-BESIDE_LOCAL - 2:-1]])
+    windows = np.lib.stride_tricks.sliding_window_view(padded, w)
+    local = np.median(windows, axis=1)
+    # The signal's skirt: about its peak, while the neighbourhood's strongest stays within
+    # BESIDE_SKIRT_DB of it.
+    top = windows.max(axis=1) >= float(P.max()) * 10 ** (-BESIDE_SKIRT_DB / 10)
+    pk = int(np.argmax(P))
+    lo_s = pk - (int(np.argmin(top[pk::-1])) if not top[pk::-1].all() else pk + 1) + 1
+    hi_s = pk + (int(np.argmin(top[pk:])) if not top[pk:].all() else n - pk) - 1
+    out_band[max(0, lo_s):hi_s + 1] = False
+    ref = np.maximum(local, floor)
+    level = 10 * np.log10(np.maximum(P, 1e-300) / ref)
+    k = np.flatnonzero((P[1:-1] > P[:-2]) & (P[1:-1] >= P[2:])) + 1
+    k = k[out_band[k] & (level[k] >= BESIDE_DB)]
+    # A line with its twin at its mirror about the signal's centre (within a few bins and
+    # BESIDE_PAIR_DB) is the signal's own sideband: a tone's FM lines, OOK's keying lines.
+    pivot = (centre - origin) / bin_hz + n // 2
+    lines, taken = [], []
+    for c in k[np.argsort(-P[k], kind='stable')]:
+        if any(lo - TONE_GAP <= c <= hi + TONE_GAP for lo, hi in taken):
+            continue
+        lo, hi = _run_width(P, int(c), 0.25)
+        taken.append((lo, hi))
+        if hi - lo + 1 > BESIDE_MAX_BINS:
+            continue
+        t = int(round(2 * pivot - c))
+        if 0 <= t < n:
+            twin = float(P[max(0, t - BESIDE_DC_BINS):t + BESIDE_DC_BINS + 1].max())
+            if abs(10 * math.log10(max(twin, 1e-300) / P[c])) <= BESIDE_PAIR_DB:
+                continue
+        fhz = float(f[c])
+        j = int(round((2 * center_hz - fhz - origin) / bin_hz)) + n // 2
+        line = {'freq_hz': fhz, 'level_db': float(10 * math.log10(P[c] / floor)),
+                'width_hz': float((hi - lo + 1) * bin_hz), 'mirror_hz': 2 * center_hz - fhz,
+                'mirror_db': None, 'image': None}
+        if 0 <= j < n and (inband is None or inband[j]):
+            line['mirror_db'], line['image'] = _image_check(P, floor, int(c), j, max(2, (hi - lo) // 2 + 1))
+        lines.append(line)
+        if len(lines) == MAX_BESIDE:
+            break
+    return lines
+
+
+def _beside_evidence(lines):
+    """One sentence on the lines beside the signal, or None."""
+    if not lines:
+        return None
+    parts = []
+    for b in lines[:4]:
+        where = f"{b['freq_hz'] / 1e6:.6f} MHz, {b['level_db']:.0f} dB over the floor, {b['width_hz'] / 1e3:.3g} kHz wide"
+        if b['image'] is None:
+            parts.append(f"{where} (its mirror is outside the band read: a signal until shown otherwise)")
+        elif b['image']:
+            parts.append(f"{where}: the image of its mirror at {b['mirror_hz'] / 1e6:.6f} MHz "
+                         f"({b['mirror_db']:.0f} dB stronger, the same shape)")
+        else:
+            parts.append(f"{where}: not an image (its mirror at {b['mirror_hz'] / 1e6:.6f} MHz does not "
+                         "match): a signal until shown otherwise")
+    more = f" and {len(lines) - 4} more" if len(lines) > 4 else ""
+    return "Beside the signal: " + '; '.join(parts) + more + "."
+
+
+# ---- programme audio (am and fm cards) ---------------------------------------
+
+def _audio_stream(chunks, rate_in, kind, half_band):
+    """The demodulated audio of ``chunks`` (complex, at ``rate_in``, ``half_band`` either side
+    of 0 Hz): ``(audio, rate, cutoff)``, the envelope (``kind`` 'am') or the frequency in Hz
+    ('fm'), cut by overlap-save at AUDIO_BAND_HZ or AUDIO_EDGE of the band taken, and
+    decimated to AUDIO_RATE or a little over. Read once, in order."""
+    dec = max(1, int(rate_in // AUDIO_RATE))
+    rate_a = rate_in / dec
+    cutoff = min(AUDIO_BAND_HZ, 0.45 * rate_a, AUDIO_EDGE * half_band)
+    L, P = AUDIO_BLOCK, AUDIO_PAD
+    # A cosine taper of AUDIO_TAPER_HZ past the cut, under the new rate's half: a hard mask
+    # rings past the overlap and leaves a small comb at the block rate.
+    f = np.fft.rfftfreq(L, 1 / rate_in)
+    taper = min(AUDIO_TAPER_HZ, rate_a / 2 - cutoff)
+    keep = np.where(f <= cutoff, 1.0, np.where(f < cutoff + taper,
+                                               0.5 * (1 + np.cos(np.pi * (f - cutoff) / max(taper, 1e-9))), 0.0))
+    out = []
+    buf = np.zeros(P, np.float64)          # P zeros ahead of the stream's first sample
+    start = -P                             # the stream index of buf[0]
+    last = np.empty(0, np.complex64)
+    total = 0
+
+    def blocks(final):
+        nonlocal buf, start
+        while len(buf) >= L or (final and len(buf) > 2 * P):
+            blk = buf[:L] if len(buf) >= L else np.concatenate([buf, np.zeros(L - len(buf))])
+            y = np.fft.irfft(np.fft.rfft(blk) * keep, L)
+            g0 = start + P
+            g1 = min(start + L - P, total) if final else start + L - P
+            first = max(0, -(-g0 // dec) * dec)
+            idx = np.arange(first, g1, dec)
+            out.append(y[idx - start])
+            buf, start = buf[L - 2 * P:], start + L - 2 * P
+            if final and g1 >= total:
+                break
+
+    for x in chunks:
+        if kind == 'fm':
+            s = np.concatenate([last, x]) if last.size else x
+            v = np.angle(s[1:] * np.conj(s[:-1])).astype(np.float64) * (rate_in / (2 * np.pi))
+            if not last.size and len(x):
+                v = np.concatenate([[v[0] if v.size else 0.0], v])
+            last = x[-1:] if len(x) else last
+        else:
+            v = np.abs(x).astype(np.float64)
+        total += len(v)
+        buf = np.concatenate([buf, v])
+        blocks(False)
+    buf = np.concatenate([buf, np.zeros(P)])
+    blocks(True)
+    a = np.concatenate(out) if out else np.empty(0)
+    return a - (float(np.mean(a)) if a.size else 0.0), rate_a, cutoff
+
+
+def _frames(a, nfft):
+    """Hann-windowed power spectra of ``a`` in whole frames of ``nfft`` (frames x bins)."""
+    m = len(a) // nfft
+    if m < 1:
+        return np.empty((0, nfft // 2 + 1))
+    seg = a[:m * nfft].reshape(m, nfft) * np.hanning(nfft)
+    return np.abs(np.fft.rfft(seg, axis=1)) ** 2
+
+
+def _running_median(P, half):
+    """The median of ``2 half + 1`` bins about each, along the last axis (ends reflected)."""
+    w = 2 * half + 1
+    padded = np.concatenate([P[..., half:0:-1], P, P[..., -2:-half - 2:-1]], axis=-1)
+    return np.median(np.lib.stride_tricks.sliding_window_view(padded, w, axis=-1), axis=-1)
+
+
+def _audio_lines(a, rate_a, cutoff):
+    """Steady or keyed lines in the audio: see AUDIO_LINE_DB."""
+    nfft = 1 << int(round(math.log2(rate_a / AUDIO_LINE_BIN_HZ)))
+    S = _frames(a, nfft)
+    nfft_s = 1 << int(round(math.log2(rate_a / AUDIO_FRAME_HZ)))
+    Ss = _frames(a, nfft_s)
+    if len(S) < 2 or len(Ss) < 8:
+        return []
+    # Steady lines from the long average; keyed ones from the short frames (AUDIO_KEYED_DB).
+    P = S.mean(axis=0)
+    bin_hz, bin_s = rate_a / nfft, rate_a / nfft_s
+    ref = np.maximum(_running_median(P, max(2, int(round(AUDIO_LOCAL_HZ / bin_hz)))), 1e-300)
+    level = 10 * np.log10(np.maximum(P, 1e-300) / ref)
+    f = np.arange(len(P)) * bin_hz
+    k = np.flatnonzero((P[1:-1] > P[:-2]) & (P[1:-1] >= P[2:])) + 1
+    k = k[(f[k] >= AUDIO_LINE_LO_HZ) & (f[k] <= 0.95 * cutoff) & (level[k] >= AUDIO_LINE_DB)]
+    half_s = max(2, int(round(AUDIO_LOCAL_HZ / bin_s)))
+    local = np.maximum(_running_median(Ss, half_s), 1e-300)
+    peaks = np.zeros(Ss.shape, bool)
+    peaks[:, 1:-1] = (Ss[:, 1:-1] > Ss[:, :-2]) & (Ss[:, 1:-1] >= Ss[:, 2:])
+    hit = peaks & (Ss >= 10 ** (AUDIO_KEYED_DB / 10) * local)
+    near = hit.copy()
+    near[:, 1:] |= hit[:, :-1]
+    near[:, :-1] |= hit[:, 1:]
+    share = near.mean(axis=0)
+    fs_ = np.arange(Ss.shape[1]) * bin_s
+    ks = np.flatnonzero((share >= max(AUDIO_KEYED_SHARE, 5 / len(Ss))) & (fs_ >= AUDIO_LINE_LO_HZ)
+                        & (fs_ <= 0.95 * cutoff))
+    cands = [(float(level[c]), float(f[c]), True) for c in k]
+    raw = hit.mean(axis=0)
+    # Neighbouring bins that pass are one line, at the bin its peaks fall in most often.
+    for run in np.split(ks, np.flatnonzero(np.diff(ks) > 1) + 1) if ks.size else []:
+        c = int(run[np.argmax(raw[run])])
+        if not any(abs(fc - fs_[c]) <= 1.5 * bin_s for _, fc, _ in cands):
+            on = near[:, c]
+            cands.append((10 * math.log10(float(np.median(Ss[on, c] / local[on, c]))), float(fs_[c]), False))
+    lines, chosen = [], []
+    for lev, fc, steady in sorted(cands, key=lambda x: -x[0]):
+        if any(abs(fc - o) <= 1.5 * bin_s for o in chosen):
+            continue
+        if sum(abs(fc - o) <= AUDIO_CLUSTER_HZ for _, o, _ in cands) - 1 >= AUDIO_CLUSTER:
+            continue
+        c = int(round(fc / bin_hz))
+        if not steady:
+            # Its frequency from the long average's finer bins, within the frame's bin.
+            w = max(1, int(round(bin_s / bin_hz)))
+            c = max(1, c - w) + int(np.argmax(P[max(1, c - w):c + w + 1]))
+        if c + 1 < len(P):
+            if steady:
+                lo, hi = _run_width(P, c, 0.25)
+                if (hi - lo + 1) * bin_hz > AUDIO_LINE_MAX_HZ:
+                    continue
+            lp = np.log(np.maximum(P[c - 1:c + 2], 1e-300))
+            den = lp[0] - 2 * lp[1] + lp[2]
+            d = 0.5 * (lp[0] - lp[2]) / den if den < 0 else 0.0
+            fc = (c + min(max(d, -0.5), 0.5)) * bin_hz
+        chosen.append(fc)
+        # On in a frame: the line's peak there. Off where it would have shown (its usual level
+        # over the frame's median beside it) and does not: keyed, not hidden by the programme.
+        j = int(round(fc / bin_s))
+        cols = slice(max(0, j - 1), j + 2)
+        on = near[:, j]
+        held = Ss[on, cols].max(axis=1)
+        power = float(np.median(held)) if on.any() else 0.0
+        off_visible = (~on) & (power >= 10 ** (AUDIO_KEYED_DB / 10) * local[:, j])
+        spread = float(np.diff(10 * np.log10(np.percentile(held, [10, 90])))[0]) if held.size >= 2 else math.inf
+        keyed = None
+        if held.size >= AUDIO_KEYED_MIN:
+            keyed = bool(np.mean(off_visible) >= AUDIO_KEYED_SHARE and spread <= AUDIO_KEYED_SPREAD_DB)
+        lines.append({'freq_hz': float(fc), 'level_db': float(lev), 'keyed': keyed, 'duty': float(np.mean(on))})
+        if len(lines) == MAX_AUDIO_LINES:
+            break
+    return lines
+
+
+def _dtmf(a, rate_a):
+    """DTMF digits in the audio: [{digit, t_s, duration_s}], see DTMF_SEP_DB."""
+    N = int(round(DTMF_FRAME_S * rate_a))
+    hop = int(round(DTMF_HOP_S * rate_a))
+    if len(a) < N + hop:
+        return []
+    starts = np.arange(0, len(a) - N + 1, hop)
+    w = np.hanning(N)
+    freqs = np.array(DTMF_LOW + DTMF_HIGH)
+    basis = np.exp(-2j * np.pi * np.outer(freqs, np.arange(N)) / rate_a) * w
+    frames = np.lib.stride_tricks.sliding_window_view(a, N)[starts]
+    X = frames @ basis.T
+    # A tone of amplitude A gives |X| = A sum(w) / 2; its power A^2 / 2 is 2 |X|^2 / sum(w)^2.
+    p = 2 * np.abs(X) ** 2 / np.sum(w) ** 2
+    power = (frames ** 2 * w ** 2).sum(axis=1) / np.sum(w ** 2)
+    sep = 10 ** (DTMF_SEP_DB / 10)
+    digits = []
+    for g in range(len(starts)):
+        lo, hi = p[g, :4], p[g, 4:]
+        il, ih = int(np.argmax(lo)), int(np.argmax(hi))
+        ok = (lo[il] > 0 and hi[ih] > 0
+              and lo[il] >= sep * np.max(np.delete(lo, il)) and hi[ih] >= sep * np.max(np.delete(hi, ih))
+              and abs(10 * math.log10(lo[il] / hi[ih])) <= DTMF_TWIST_DB
+              and lo[il] + hi[ih] >= DTMF_SHARE * power[g])
+        digits.append(DTMF_KEYS[il][ih] if ok else None)
+    out, g = [], 0
+    while g < len(digits):
+        if digits[g] is None:
+            g += 1
+            continue
+        e = g
+        while e + 1 < len(digits) and digits[e + 1] == digits[g]:
+            e += 1
+        if e - g + 1 >= DTMF_MIN_FRAMES:
+            length = (e - g + 1) * hop
+            middle = (starts[g] + starts[e] + N) / 2
+            out.append({'digit': digits[g], 't_s': float((middle - length / 2) / rate_a),
+                        'duration_s': float(length / rate_a)})
+        g = e + 1
+    return out
+
+
+def _loop(a, rate_a, cutoff):
+    """(varies, the seconds after which the programme repeats or None): see AUDIO_LOOP_CORR."""
+    nfft = 1 << int(round(math.log2(rate_a / AUDIO_FRAME_HZ)))
+    S = _frames(a, nfft)
+    frame_s = nfft / rate_a
+    if len(S) * frame_s < AUDIO_LOOP_MIN_S + AUDIO_LOOP_OVERLAP_S:
+        return False, None
+    f = np.arange(S.shape[1]) * rate_a / nfft
+    edges = np.geomspace(100.0, cutoff, AUDIO_LOOP_BANDS + 1)
+    E = np.stack([S[:, (f >= lo) & (f < hi)].sum(axis=1) for lo, hi in zip(edges[:-1], edges[1:])], axis=1)
+    E = np.log10(np.maximum(E, 1e-30))
+    spread = E.std(axis=0)
+    varies = bool(np.median(spread) >= AUDIO_VARIES)
+    if not varies:
+        return False, None
+    z = (E - E.mean(axis=0)) / np.where(spread > 0, spread, 1.0)
+    T = len(z)
+    m = 1 << (2 * T - 1).bit_length()
+    Z = np.fft.rfft(z, m, axis=0)
+    corr = np.fft.irfft((Z * np.conj(Z)).sum(axis=1), m)[:T] / (z.shape[1] * (T - np.arange(T)))
+    first = int(math.ceil(AUDIO_LOOP_MIN_S / frame_s))
+    last = T - int(math.ceil(AUDIO_LOOP_OVERLAP_S / frame_s))
+    for L in range(first, last + 1):
+        if corr[L] >= AUDIO_LOOP_CORR and corr[L] >= corr[L - 1] and (L + 1 >= T or corr[L] >= corr[L + 1]):
+            return True, float(L * frame_s)
+    return True, None
+
+
+def _programme(read, n, rate, center_hz, card, band=None):
+    """``(audio section, evidence, warnings)`` of an ``am`` or ``fm`` card: its occupied band
+    taken again and demodulated, within ``band`` when one was given. See AUDIO_REACH."""
+    kind = card['class']
+    centre, bw99 = card['occupied']['centre_hz'], card['occupied']['bandwidth_hz']
+    reach = max(AUDIO_REACH * bw99, AUDIO_MIN_HZ) / 2
+    c = centre - center_hz
+    edge_lo, edge_hi = (-rate / 2, rate / 2) if band is None else _band_offsets(band, center_hz, rate)
+    lo, hi = max(c - reach, edge_lo), min(c + reach, edge_hi)
+    # A skirt half the band's width either side (the joins of a narrow one left a comb at
+    # rate / step), kept inside the span: past its edge it would not wrap.
+    skirt = max(0.0, min((hi - lo) / 2, lo + rate / 2, rate / 2 - hi))
+    dec, chunks = _decimated(read, n, rate, lo, hi, 2 * AUDIO_RATE, skirt)
+    a, rate_a, cutoff = _audio_stream(chunks, rate / dec, kind, (hi - lo) / 2)
+    span_s = len(a) / rate_a
+    lines = _audio_lines(a, rate_a, cutoff)
+    dtmf = _dtmf(a, rate_a)
+    varies, loop_s = _loop(a, rate_a, cutoff)
+    audio = {'source': 'envelope' if kind == 'am' else 'frequency', 'rate_hz': rate_a,
+             'band_hz': cutoff, 'lines': lines, 'dtmf': dtmf, 'varies': varies, 'loop_s': loop_s}
+    ev, warn = [], []
+    if lines:
+        ev.append(f"Lines in the {kind.upper()} audio: " + ', '.join(
+            f"{x['freq_hz']:.0f} Hz ({x['level_db']:.0f} dB over the audio beside it"
+            + (f", keyed on and off, on {x['duty']:.0%} of the time)" if x['keyed']
+               else ", steady)" if x['keyed'] is False else ")")
+            for x in lines) + ".")
+    if dtmf:
+        ev.append(f"DTMF in the audio: {' '.join(d['digit'] for d in dtmf)} "
+                  f"({len(dtmf)} digit{'s' if len(dtmf) > 1 else ''}, from {dtmf[0]['t_s']:.2f} s).")
+    if loop_s:
+        ev.append(f"The programme repeats every {loop_s:.1f} s.")
+        if span_s < 2 * loop_s:
+            warn.append(f"The span holds under two repeats of the programme ({span_s:.1f} s of a "
+                        f"{loop_s:.1f} s loop): what is sent once a loop may be missing; read a longer span.")
+    elif varies:
+        ev.append(f"The programme does not repeat within the {span_s:.1f} s read: a loop, if it is "
+                  "one, is longer, and what is sent once a loop may be outside the span.")
+    return audio, ev, warn
+
+
+def _warnings(card, span_s):
+    """What the card cannot see in a span this short."""
+    out = []
+    count, duty = card['bursts']['count'], card['bursts']['duty']
+    # One burst that fills the span is a continuous signal, not a burst.
+    if card['envelope']['keyed'] and count in (1, 2) and duty is not None and duty < BURSTS_FILL:
+        out.append(f"Only {count} burst{'s' if count > 1 else ''} in the {span_s:.3g} s read: "
+                   "read a longer span to see whether, and how often, it repeats.")
+    return out
+
+
+def _finish(card, read, n, rate, center_hz, recording_s=None, band=None):
+    """The programme audio, the lines' evidence and the warnings, on a card ``_analyse`` gave."""
+    span_s = n / rate
+    card['audio'] = None
+    card['warnings'] = _warnings(card, span_s)
+    beside = _beside_evidence(card['beside'])
+    if card['class'] in ('am', 'fm') and card['occupied']['bandwidth_hz'] <= AUDIO_MAX_WIDTH_HZ:
+        card['audio'], ev, warn = _programme(read, n, rate, center_hz, card, band)
+        card['evidence'].extend(ev)
+        card['warnings'].extend(warn)
+    if beside:
+        card['evidence'].append(beside)
+    if recording_s is not None and recording_s > span_s + 1.0:
+        card['warnings'].append(f"The recording runs {recording_s:.1f} s and {span_s:.1f} s of it was read "
+                                "(t0 and t1 choose the span).")
+    return card
+
+
 def _broadcast(seg, rate, subcarriers):
     """An FM broadcast's multiplex, when a pilot is among ``subcarriers``: the card's
     ``broadcast`` section {pilot_hz, pilot_db, rds, l_minus_r_db, stereo}, or None."""
@@ -1206,7 +1706,7 @@ def _band_offsets(band, centre_hz, rate):
     return lo, hi
 
 
-def _banded(read, n, rate, lo, hi, dec):
+def _banded(read, n, rate, lo, hi, dec, skirt_hz=0.0):
     """The band lo..hi (offsets from the centre) of the samples, brick-wall
     filtered by overlap-save in blocks (see the constants above), moved to 0 Hz
     and decimated by ``dec``. Outputs lie on multiples of ``dec``.
@@ -1216,9 +1716,13 @@ def _banded(read, n, rate, lo, hi, dec):
     transform keeps the band's bins. The padding is widened for a narrow band (its
     ringing is longer) and the block with it, up to MAX_BLOCK. Outputs sit at the
     multiples of ``dec`` by sample index, whether or not a block holds a whole
-    output step. The file is read once, in order: the overlap is carried over."""
+    output step. The file is read once, in order: the overlap is carried over.
+
+    ``skirt_hz`` widens the skirt (outside the band) to that, and the overlap with it: the
+    filter's ringing then fits the overlap closely, so the block joins leave no comb (the
+    programme audio's own pass; the other passes keep the narrow skirt and their results)."""
     fc = (lo + hi) / 2
-    pad = int(min(max(PAD, math.ceil(RING_LENGTHS * rate / (hi - lo))), MAX_PAD))
+    pad = int(min(max(PAD, math.ceil(RING_LENGTHS * rate / min(hi - lo, skirt_hz or hi - lo))), MAX_PAD))
     length = min(MAX_BLOCK, 1 << (max(FILTER_BLOCK, 4 * pad) - 1).bit_length())
     room = length - 2 * pad
     step = dec * (room // dec) if room >= dec else room
@@ -1226,7 +1730,7 @@ def _banded(read, n, rate, lo, hi, dec):
     # A cosine skirt of a few bins, outside the band: the passband stays flat,
     # and the shorter ringing fits the overlap, so the blocks agree at the splice.
     dist = np.maximum(lo - f, f - hi)
-    skirt = SKIRT_BINS * rate / length
+    skirt = max(SKIRT_BINS * rate / length, skirt_hz)
     weight = np.zeros(length, np.float64)
     weight[dist <= 0] = 1.0
     edge = (dist > 0) & (dist < skirt)
@@ -1264,12 +1768,12 @@ def _banded(read, n, rate, lo, hi, dec):
             buf, first = buf[nxt - first:], nxt
 
 
-def _decimated(read, n, rate, lo, hi, min_rate=0.0):
+def _decimated(read, n, rate, lo, hi, min_rate=0.0, skirt_hz=0.0):
     """The band lo..hi (offsets from the centre) of ``n`` samples, decimated to at
-    least twice its width and to at least ``min_rate``: ``(decimation, chunks)``,
-    as :func:`_banded` gives them."""
-    dec = max(1, int(rate // max(2 * (hi - lo), min_rate)))
-    return dec, _banded(read, n, rate, lo, hi, dec)
+    least twice its width (and its skirt) and to at least ``min_rate``:
+    ``(decimation, chunks)``, as :func:`_banded` gives them."""
+    dec = max(1, int(rate // max(2 * (hi - lo + 2 * skirt_hz) if skirt_hz else 2 * (hi - lo), min_rate)))
+    return dec, _banded(read, n, rate, lo, hi, dec, skirt_hz)
 
 
 def _cells(read, n, rate, center_hz, centre, bw99, station_hz):
@@ -1353,6 +1857,10 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, bl
     signal = np.maximum(Pf - floor, 0.0)
     centre, bw99, bw20 = _occupied(signal if signal.sum() > 0 else Pf,
                                    rate_1 / len(Pf), origin)
+    inband_f = None
+    if half_band is not None:
+        inband_f = np.abs((np.arange(len(Pf)) - len(Pf) // 2) * rate_1 / len(Pf)) <= half_band
+    beside = _beside(Pf, floor, rate_1 / len(Pf), origin, centre, bw99, center_hz, inband_f)
 
     # The second pass: the signal at its occupied centre, within the first pass's band.
     half_span = rate / 2 if half_band is None else half_band
@@ -1502,6 +2010,14 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, bl
                 psk['amplitude_levels'] = [float(mags[:2].mean()), float(mags[2:].mean())]
     elif psk:
         psk['amplitude_levels'] = None
+    if tv and tv['modulation'] == 'am' and tones:
+        vision = tones[0]['freq_hz']
+        beside = [b for b in beside if not (vision - TV_VISION_LOW_HZ <= b['freq_hz']
+                                            <= vision - TV_VISION_LOW_HZ + TV_CHANNEL_HZ[tv['system']])]
+    elif tv:
+        beside = [b for b in beside if abs(b['freq_hz'] - centre) > TV_SOUND_HZ[1]]
+    elif atsc:
+        beside = [b for b in beside if abs(b['freq_hz'] - atsc['channel_centre_hz']) > ATSC_CHANNEL_HZ / 2]
     if tv:
         tv.update(_video_swing(seg, rate_s) if tv['modulation'] == 'fm' else
                   {'deviation_hz': None, 'peak_to_peak_hz': None, 'low_peak_to_peak_hz': None,
@@ -1635,6 +2151,7 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, bl
         },
         'occupied': {'bandwidth_hz': bw99, 'bandwidth_20db_hz': bw20, 'centre_hz': centre},
         'tones': tones,
+        'beside': beside,
         'bursts': bursts,
         'envelope': {'levels': env_levels, 'depth': depth, 'keyed': bool(keyed_env), 'order': env_order},
         'frequency': {'levels_hz': freq_levels, 'deviation_hz': deviation,
@@ -1679,6 +2196,7 @@ def measure(iq, rate, center_hz=0.0, full_scale_dbm=None, t0=0.0, band=None):
         'path': None, 'kind': 'array', 'rate_sps': float(rate), 'center_hz': float(center_hz),
         't0_s': float(t0), 't1_s': float(t0) + n / rate, 'samples': n}}
     card.update(_analyse(read, n, float(rate), float(center_hz), full_scale_dbm, band))
+    _finish(card, read, n, float(rate), float(center_hz), band=band)
     return _clean(_ordered(card))
 
 
@@ -1720,8 +2238,9 @@ def measure_file(path, t0=None, t1=None, band=None, rate=None, center_hz=None):
     card = {'schema': SCHEMA, 'source': {
         'path': str(path), 'kind': src.kind, 'rate_sps': src.rate, 'center_hz': src.center_hz,
         't0_s': i0 / src.rate, 't1_s': i1 / src.rate, 'samples': n}}
-    card.update(_analyse(lambda a, c: src.read(i0 + a, c), n, src.rate, src.center_hz,
-                         src.full_scale_dbm, band, src.station_hz))
+    read = lambda a, c: src.read(i0 + a, c)        # noqa: E731
+    card.update(_analyse(read, n, src.rate, src.center_hz, src.full_scale_dbm, band, src.station_hz))
+    _finish(card, read, n, src.rate, src.center_hz, src.seconds - i0 / src.rate if t1 is None else None, band)
     return _clean(_ordered(card))
 
 
@@ -1817,9 +2336,9 @@ def extract(path, t0=None, t1=None, band=None, max_rate=1e6, rate=None, center_h
 
 
 def _ordered(card):
-    keys = ['schema', 'source', 'level', 'occupied', 'tones', 'bursts', 'envelope',
-            'frequency', 'symbol_rate_baud', 'pulse', 'broadcast', 'atsc', 'tv', 'pulses', 'psk', 'lte', 'nr', 'class',
-            'evidence']
+    keys = ['schema', 'source', 'level', 'occupied', 'tones', 'beside', 'bursts', 'envelope',
+            'frequency', 'symbol_rate_baud', 'pulse', 'broadcast', 'audio', 'atsc', 'tv', 'pulses', 'psk', 'lte',
+            'nr', 'class', 'evidence', 'warnings']
     return {k: card[k] for k in keys}
 
 

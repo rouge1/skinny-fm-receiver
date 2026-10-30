@@ -297,6 +297,42 @@ loses none.
   subcarrier is within 200 Hz of 19 kHz: `l_minus_r_db` is the demodulated power 23 to 53 kHz (38 kHz's own
   1 kHz out) over the noise there, estimated at 16 to 22 kHz beside the pilot and scaled by f squared;
   `stereo` from 3 dB (the Receive tab's own threshold). A pilot alone is not stereo.
+- Programme, lines beside, warnings (amendment 2026-10-30, Round 31 phase 4; schema stays 2):
+  - `beside: [{freq_hz, level_db, width_hz, mirror_hz, mirror_db, image}]`, at most 8, strongest
+    first: peaks of the fine spectrum 10 dB over the floor and over the median of 32 bins either
+    side, 64 bins wide or less at -6 dB, 8 bins clear of a stronger one; outside 1.2 x the
+    occupied half width, the skirt (the bins about the peak whose 65-bin neighbourhood's
+    strongest is within 40 dB of it), 3 bins of the tuned centre and the outer tenth of the
+    span; not with a twin (within 6 dB, 3 bins) at its mirror about the occupied centre; for
+    `tv`, outside the channel (AM: 1.25 MHz under the vision carrier for 6 or 8 MHz; FM: 9 MHz
+    either side), for `atsc` its 6 MHz. `image` true when the mirror about the tuned centre is
+    20 dB or more stronger and, taken down by that and flipped, fits the line's 33 bins within
+    4 dB on 80 % of those either shows; false otherwise; null when the mirror is outside the
+    band read.
+  - `audio: {source, rate_hz, band_hz, lines, dtmf, varies, loop_s} | None`, for `am` and `fm`
+    cards 500 kHz wide or less. The occupied band (1.2 x its width, 20 kHz at least, within the
+    `band` given) is taken again with a skirt of half its width either side (less at the
+    span's edge), the envelope or the frequency taken, cut at 15 kHz or half the band (a 1 kHz
+    cosine taper past the cut), and brought to 32 to 48 kS/s.
+    - `lines: [{freq_hz, level_db, keyed, duty}]`, at most 8: peaks of the long average (4 Hz
+      bins) 10 dB over the median of 100 Hz either side and 30 Hz wide or less, or a peak 16 dB
+      over that in 10 % of 16 Hz frames (5 frames at the least); from 50 Hz to 0.95 of the cut; none with two others
+      within 250 Hz. `keyed` when it is absent from 10 % of the frames where it would show
+      16 dB over, and its power when on spreads 4 dB or less (10th to 90th percentile); null
+      when it is on in under 5 frames.
+    - `dtmf: [{digit, t_s, duration_s}]`: 40 ms Hann frames every 10 ms, the strongest of
+      each group 10 dB over the rest of it, the pair within 8 dB, holding 30 % of the frame's
+      power; four such frames in a row, the same digit (a tone of about 35 ms or more). Its
+      `duration_s` is the run times 10 ms, `t_s` its start, centred on the run's frames.
+    - `varies`: the median spread of 16 log band energies (100 Hz to the cut) 0.2 or more;
+      `loop_s`: the first lag from 1 s, with 3 s of overlap, where those bands' correlation
+      reaches 0.8 at a local maximum.
+  - `warnings: [str]`: a keyed envelope with 1 or 2 bursts filling under 0.9 of the span; a
+    loop with under two repeats in the span; a recording more than 1 s longer than a span read
+    by default.
+  - Evidence: a sentence each for the audio's lines, its DTMF, its repeat (or that it does not
+    repeat in the span) and the lines beside.
+  - Tests: `tools/tests/test_iq_measure_programme.py`.
 - Levels with neighbours (amendment 2026-10-30): when 4 or 8 levels do not stand clear, each symbol is
   decided, its two neighbours' share fitted (least squares) and taken off, three times; kept when the share
   is 0.05 to 0.4 and the levels then stand clear, the levels given as a run of one symbol settles (spread

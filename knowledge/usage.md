@@ -1166,6 +1166,13 @@ The card is a JSON object. A value that cannot be measured is `null`. Its keys:
   `bandwidth_20db_hz` (the width 20 dB below the peak), `centre_hz` (absolute).
 - `tones`: up to 8, strongest first, each `freq_hz` (absolute) and `level_db`
   (above the floor).
+- `beside`: narrow lines outside the signal (its occupied band, its skirt, a TV signal's
+  channel), each with `freq_hz`, `level_db`, `width_hz`, its mirror about the tuned centre
+  (`mirror_hz`, and `mirror_db`: how much stronger the mirror is) and `image`. `image` is
+  true only when the mirror is 20 dB or more stronger and has the same shape, its
+  neighbourhood included; otherwise false, and a line is a signal until shown otherwise.
+  `null` when the mirror is outside the band read. The signal's own sidebands (a line
+  with a twin about its centre) are left out.
 - `bursts`: `count`, `durations_s`, `median_duration_s`, `gaps_s`,
   `repeat_interval_s` (`null` under 3 bursts), `duty`.
 - `envelope`: `levels` (one amplitude, or the 2, 4 or 8 it is keyed between), `depth`,
@@ -1180,6 +1187,15 @@ The card is a JSON object. A value that cannot be measured is `null`. Its keys:
 - `frequency.subcarriers[].carries`: what a subcarrier carries (`fm`, `am`, `usb`, `lsb`,
   `dsb`). `broadcast`: an FM station's pilot, `rds`, `l_minus_r_db` and `stereo`. A pilot
   is not enough for stereo: some transmitters send one with a mono programme.
+- `audio`: for an `am` or `fm` card of one programme (500 kHz wide or less), its
+  demodulated audio: `source` (`envelope` or `frequency`), `rate_hz`, `band_hz`, and
+  - `lines`: pure tones in it, each `freq_hz`, `level_db` (over the audio beside it),
+    `duty` and `keyed`. A tone under speech is listed, and `keyed` is true when it goes on
+    and off at one level, as Morse does. A note in music swells and fades and is not
+    keyed. `keyed` is null when it was on too briefly to say.
+  - `dtmf`: digits found, each `digit`, `t_s` (from the span's start) and `duration_s`.
+  - `varies` (the programme changes, not a steady tone), and `loop_s`: the seconds after
+    which it repeats (a looped clip), or null.
 - `symbol_rate_baud`.
 - `lte` and `nr`: the cells in the span's first 50 ms. Each has `searched`
   and `reason`. A span under 1.92 MS/s, or narrower than 1 MHz, is not
@@ -1195,6 +1211,9 @@ The card is a JSON object. A value that cannot be measured is `null`. Its keys:
   the 100 kHz raster. A cell is listed only when its reference signals
   confirm its PCI. To read a cell's broadcast, use `fmctl cells lte|nr
   decode`. The card does not decode.
+- `warnings`: what the span is too short to see: under three bursts (no repeat
+  measured), under two repeats of a looped programme, a recording longer than the span
+  read (30 s by default; `--t0` and `--t1` choose it).
 - `class`, and `evidence`: one sentence for each rule that fired. A cell
   found makes the class `lte`, `nr` or `lte+nr`, ahead of every other rule,
   even `noise`: a band full of carriers leaves no noise floor to measure.
