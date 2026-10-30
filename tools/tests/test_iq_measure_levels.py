@@ -10,7 +10,9 @@ Every signal is synthetic and seeded, built here with numpy. What the checks pin
   reach, is 'fsk' of order 4 at its rate; so is Gaussian 4FSK at BT 0.3 (19 kBd at 9 and
   15 kHz, 4.8 kBd at 3.6 kHz), whose shaping smears every level until each neighbour's
   share is taken off, its levels within 3 % of the deviation;
-- a two-level ASK keeps order 2, as the blocks found it;
+- a two-level ASK keeps order 2, as the blocks found it; shallow ASK under a strong carrier
+  (1 to 0.8 at 20 and 100 kBd, 1 to 0.9 at 20 kBd) is 'ask', its levels within 3 % and its
+  rate within 1 %;
 - what must not move: FM and AM by two tones (whose samples at their difference repeat a
   few values) and FM and AM by noise stay 'fm' and 'am', with no order;
 - read in 2-sample blocks, envelope levels 1e-4 apart are not keying, while 4ASK from 0.4
@@ -95,6 +97,9 @@ MAKERS = {
     '4ask': lambda: ask_iq(np.linspace(0.25, 1.0, 4), 10e3),
     '4ask_rrc': lambda: ask_iq(np.linspace(0.25, 1.0, 4), 10e3, beta=0.35),
     '2ask': lambda: ask_iq([0.3, 1.0], 10e3),
+    'ask_shallow': lambda: ask_iq([0.8, 1.0], 20e3),
+    'ask_shallow_fast': lambda: ask_iq([0.8, 1.0], 100e3),
+    'ask_shallower': lambda: ask_iq([0.9, 1.0], 20e3),
     '4fsk': lambda: fsk4_iq(4.8e3, 3.6e3),
     '4gfsk_fast': lambda: fsk4_iq(19e3, 9e3, bt=0.5),
     'gfsk03_19k': lambda: fsk4_iq(19e3, 9e3, bt=0.3),
@@ -177,6 +182,20 @@ def check_unmoved():
                                       f"{card(n)['frequency']['order']}"))
 
 
+def check_shallow_ask():
+    # The carrier holds 98 % of the power or more, so the 99 % width was the carrier's: the
+    # band cut the keying's sidebands, each step rang, and 1 to 0.8 read 'unknown'.
+    for name, lv, baud in (('ask_shallow', (0.8, 1.0), 20e3), ('ask_shallow_fast', (0.8, 1.0), 100e3),
+                           ('ask_shallower', (0.9, 1.0), 20e3)):
+        expect(f"{name}: ask, levels {lv[0]} and {lv[1]} within 3 %, {baud / 1e3:.0f} kBd within 1 %",
+               lambda n=name, lv=lv, b=baud: (
+                   card(n)['class'] == 'ask' and card(n)['envelope']['order'] == 2
+                   and all(abs(x - y) < 0.03 for x, y in zip(card(n)['envelope']['levels'], lv))
+                   and card(n)['symbol_rate_baud'] and abs(card(n)['symbol_rate_baud'] / b - 1) < 0.01,
+                   f"class {card(n)['class']}, levels {card(n)['envelope']['levels']}, "
+                   f"rate {card(n)['symbol_rate_baud']}"))
+
+
 def short_card(levels, rate=2e6, baud=20e3, seconds=0.5, seed=5):
     """Clean keying between ``levels`` under a 2 kHz FM tone, read in 2-sample blocks (the
     re-read a fast clock asks for)."""
@@ -204,7 +223,7 @@ def check_shallow():
                     f"class {d['class']}, order {d['envelope']['order']}"))
 
 
-GROUPS = [check_ask, check_fsk, check_gaussian, check_unmoved, check_shallow]
+GROUPS = [check_ask, check_fsk, check_gaussian, check_unmoved, check_shallow_ask, check_shallow]
 
 
 def main():

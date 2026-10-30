@@ -90,6 +90,17 @@ TONE_RANGE_DB = 60.0
 #: The band the envelope and frequency are taken in: 3 x the occupied width, at least this.
 TRACK_WIDTH = 3.0
 TRACK_MIN_HZ = 20e3
+#: A line holding this share of the signal's power or more sets the occupied width by
+#: itself, so the band is set by what is left with the line taken off (its width 20 dB
+#: down; the 99 % of rectangular keying reaches far out on its sidelobes), when that is at
+#: least MOD_SHARE of the power and MOD_FLOOR times the noise floor per bin: ASK keyed
+#: from 1 to 0.8 at 20 kBd has 99 % of its power in the carrier, and a band that narrow
+#: rang at each step until the two levels ran together.
+CARRIER_SHARE = 0.5
+MOD_SHARE = 3e-4
+MOD_FLOOR = 2.0
+#: The line's own bins: those at this share of its peak or more (the window's leakage).
+CARRIER_RUN = 1e-3
 #: The envelope and frequency are tracked at no less than this rate, so a block of
 #: samples lasts no longer than at 1 MS/s and a symbol clock is still resolved.
 TRACK_RATE = 1e6
@@ -1156,6 +1167,25 @@ def _pulse(seg, rate, offset, baud):
             'shape': best[2] if shaped else 'rectangular' if sidelobe > PULSE_RECT_DB else None}
 
 
+def _modulation_width(signal, P, floor, bin_hz):
+    """The width 20 dB down of the fine spectrum with its strongest line taken off, when that
+    line holds CARRIER_SHARE of the ``signal`` (``P`` less the ``floor``) and enough is left
+    (MOD_SHARE, MOD_FLOOR); otherwise 0. Twice the run beside the line, which ends at the
+    line's taken-off bins."""
+    total = float(signal.sum())
+    if not total > 0:
+        return 0.0
+    k = int(np.argmax(signal))
+    lo, hi = _run_width(signal, k, CARRIER_RUN)
+    if float(signal[lo:hi + 1].sum()) < CARRIER_SHARE * total:
+        return 0.0
+    rest = np.maximum(P - MOD_FLOOR * floor, 0.0)
+    rest[lo:hi + 1] = 0.0
+    if float(rest.sum()) < MOD_SHARE * total:
+        return 0.0
+    return 2 * _occupied(rest, bin_hz, 0.0)[2]
+
+
 def _run_width(P, k, share):
     """Bins either side of ``k`` (and ``k``) where ``P`` stays at ``share`` of ``P[k]`` or more."""
     lo, hi = k, k
@@ -1869,8 +1899,13 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, bl
 
     # The second pass: the signal at its occupied centre, within the first pass's band.
     half_span = rate / 2 if half_band is None else half_band
-    reach = max(TRACK_WIDTH * bw99, TRACK_MIN_HZ) / 2
+    wide = _modulation_width(signal, Pf, floor, rate_1 / len(Pf))
+    reach = max(TRACK_WIDTH * max(bw99, wide), TRACK_MIN_HZ) / 2
     c = centre - center_hz
+    if wide > bw99:
+        # Even about the line: a band cut on one side only turns an AM step into a phase
+        # step (ASK at 100 kBd read 'fsk').
+        reach = max(min(reach, c - (base - half_span), base + half_span - c), TRACK_MIN_HZ / 2)
     lo_s, hi_s = max(c - reach, base - half_span), min(c + reach, base + half_span)
     base_s = (lo_s + hi_s) / 2
     dec_s, chunks = _decimated(read, n, rate, lo_s, hi_s, TRACK_RATE)
@@ -1962,8 +1997,9 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, bl
     isi = 0.0
     # The steps are taken after an average over half the occupied width's inverse: a symbol's
     # share or less (a symbol lasts about that or longer), and the clock line stands higher
-    # (Gaussian 4FSK at 15 kHz deviation: 34 dB unsmoothed, 45 so).
-    smooth = max(1, int(rate_s // (2 * max(bw99, 1.0))))
+    # (Gaussian 4FSK at 15 kHz deviation: 34 dB unsmoothed, 45 so). Under a strong carrier the
+    # width is the modulation's (see CARRIER_SHARE), or the average spans several symbols.
+    smooth = max(1, int(rate_s // (2 * max(bw99, wide, 1.0))))
     if (keyed_env or keyed_f) and not (atsc or tv or pulses or psk) and len(seg) >= 64:
         # Keyed in blocks, but a symbol clock past their reach is the rate: the blocks'
         # own reading of it is an alias (a 20 kBd FSK read 12.5 kBd).

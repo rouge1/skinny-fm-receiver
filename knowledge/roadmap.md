@@ -1781,9 +1781,15 @@ In order:
   Fixed after phase 4: over 8 s a bench FM with a 92 kHz subcarrier came back
   `ask` from the short blocks, its levels 0.99992 and 0.99999 (the decimator's
   ripple). Levels whose depth is under 1e-3 are no longer keying.
-- [ ] Shallow clean ASK: two levels 1.0 and 0.8, rectangular with no noise, read
-  `unknown` (and so before the fix above). The decimator rings at each step, so
-  the block envelope runs from 0.54 to 1.10 and fills the gap between the levels.
+- [x] Shallow ASK (2026-10-30): two levels 1.0 and 0.8 read `unknown` or
+  `carrier`. The carrier held 99 % of the power, so the 99 % width was its own
+  and the second pass's band cut the keying's sidebands: each step rang (the
+  block envelope ran from 0.54 to 1.10) and the levels ran together. Under a
+  line holding half the power or more, the band and the clock's smoothing now
+  come from the modulation's width 20 dB down, the line taken off, the band even
+  about the line. 1 to 0.8 at 20 and 100 kBd and 1 to 0.9 at 20 kBd read `ask`,
+  levels within 3 %, rate within 1 %. Still not read: keying 0.4 dB deep (1 to
+  0.95), and 1 to 0.9 at 15 dB SNR.
 - [x] RRC roll-off (2026-10-30): the card's `pulse` section, a raised
   cosine fitted to the spectrum; within 0.02 on QPSK, 8PSK and 4ASK (0.05
   on BPSK). Rectangular symbols (a sinc's sidelobe) are named, not given
