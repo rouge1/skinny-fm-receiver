@@ -1792,6 +1792,36 @@ def part10_iq_agc():
     print("part 10 passed")
 
 
+def part11_zoomed_shade():
+    """Zoomed in far inside the tuner's reach, the out-of-reach shades stay
+    off the plot. Drawn to a fixed far edge they grew past 2**31 pixels
+    under about 300 kHz, wrapped, and veiled the whole spectrum."""
+    import pyqtgraph as pg
+    from fm_receiver.widgets import SpectrumView
+    view = SpectrumView('test', unit='MHz', waterfall=False)
+    view.resize(700, 260)
+    view.show()
+    view.set_extent(98e6, 103e6)
+    view.set_tuner_range(98.2e6, 102.8e6)
+    line = pg.InfiniteLine(angle=0, pos=-120, pen=pg.mkPen('#ffffff', width=5))
+    view.plot.addItem(line)
+    view.plot.setYRange(-140, -90, padding=0)
+    vb = view.plot.getPlotItem().getViewBox()
+    for span in (1.0, 0.25, 0.05, 0.001):
+        view.plot.setXRange(100.0 - span / 2, 100.0 + span / 2, padding=0)
+        pump(0.2)
+        (x0, x1), _ = vb.viewRange()
+        for region in view.outside:
+            low, high = region.getRegion()
+            assert high - low <= 3.01 * (x1 - x0), (span, low, high)
+            assert high <= x0 or low >= x1, (span, low, high)
+        img = view.plot.grab().toImage()
+        y = int(vb.mapViewToScene(pg.Point(0, -120)).y())
+        assert img.pixelColor(img.width() // 2, y).lightness() > 200, span
+    view.close()
+    print("part 11 passed")
+
+
 if __name__ == '__main__':
     keep = '--keep' in sys.argv
     try:
@@ -1804,6 +1834,7 @@ if __name__ == '__main__':
         part7_lost_radio()
         part8_reopen()
         part10_iq_agc()
+        part11_zoomed_shade()
         print("GUI: all checks passed")
     finally:
         # A failed check must not leave a flowgraph running into interpreter

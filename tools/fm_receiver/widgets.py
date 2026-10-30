@@ -3272,11 +3272,23 @@ class SpectrumView(Qt.QWidget):
             for region in self.outside:
                 region.setVisible(False)
             return
-        far = 1e12 / self.scale
-        self.outside[0].setRegion((-far, low_hz / self.scale))
-        self.outside[1].setRegion((high_hz / self.scale, far))
+        self._place_outside()
         for region in self.outside:
             region.setVisible(True)
+
+    def _place_outside(self):
+        """The out-of-reach shades, kept to the view and one view's width
+        either side. Drawn out to a fixed "far" they were over 2**31 pixels
+        wide when zoomed in (under about 300 kHz), wrapped, and veiled the
+        whole plot."""
+        if self._usable is None:
+            return
+        low, high = self._usable
+        (x0, x1), _ = self.plot.getPlotItem().getViewBox().viewRange()
+        w = max(x1 - x0, 1e-12)
+        a, b = x0 - w, x1 + w
+        self.outside[0].setRegion((a, min(max(low, a), b)))
+        self.outside[1].setRegion((min(max(high, a), b), b))
 
     def set_pan_limits(self, low_hz, high_hz):
         """How far the mouse may drag or zoom the view out: to ``low_hz`` and
@@ -3357,6 +3369,7 @@ class SpectrumView(Qt.QWidget):
     def _range_changed(self, _vb, rng):
         # Zoomed out, the band may now be thinner than it is drawn.
         self._place_band()
+        self._place_outside()
         self._map_window()
         self.windowChanged.emit()
         if self._syncing:
