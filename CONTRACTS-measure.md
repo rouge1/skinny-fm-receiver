@@ -296,7 +296,7 @@ loses none.
 - `broadcast: {pilot_hz, pilot_db, rds, l_minus_r_db, stereo} | None` (amendment 2026-10-30), when a
   subcarrier is within 200 Hz of 19 kHz: `l_minus_r_db` is the demodulated power 23 to 53 kHz (38 kHz's own
   1 kHz out) over the noise there, estimated at 16 to 22 kHz beside the pilot and scaled by f squared;
-  `stereo` from 6 dB. A pilot alone is not stereo.
+  `stereo` from 3 dB (the Receive tab's own threshold). A pilot alone is not stereo.
 - Levels with neighbours (amendment 2026-10-30): when 4 or 8 levels do not stand clear, each symbol is
   decided, its two neighbours' share fitted (least squares) and taken off, three times; kept when the share
   is 0.05 to 0.4 and the levels then stand clear, the levels given as a run of one symbol settles (spread

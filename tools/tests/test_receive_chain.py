@@ -209,22 +209,22 @@ def test_volume_law():
     assert abs(ReceiveChain._gain(Chain()) - 1.5 * 0.49) < 1e-9
 
 
-def pilot_readings(iq, rate=2e6, offset_hz=300e3):
+def pilot_readings(iq, rate=2e6, offset_hz=300e3, channel_bw=200e3):
     """``iq`` through a receive chain as fast as it goes; the pilot as the
-    window polls it, every few ms: (pilot_level, pilot_snr_db, locked) each
-    time, from half a second in (the averages settled)."""
+    window polls it, every few ms: (pilot_level, pilot_snr_db, locked,
+    l_minus_r_db) each time, from half a second in (the averages settled)."""
     from gnuradio import blocks, gr  # type: ignore
     from fm_receiver.dsp import ReceiveChain
     tb = gr.top_block()
     src = blocks.vector_source_c(iq, False)
-    rx = ReceiveChain(tb, src, rate, offset_hz, audio_sink=None)
+    rx = ReceiveChain(tb, src, rate, offset_hz, audio_sink=None, channel_bw=channel_bw)
     tb.start()
     out = []
     try:
         while rx.mpx.nitems_written(0) < 0.5 * 250e3:
             time.sleep(0.002)
         while src.nitems_written(0) < len(iq) - rate * 0.05:
-            out.append((rx.pilot_level(), rx.pilot_snr_db(), rx.pilot_locked()))
+            out.append((rx.pilot_level(), rx.pilot_snr_db(), rx.pilot_locked(), rx.l_minus_r_db()))
             time.sleep(0.005)
     finally:
         tb.stop()
@@ -262,9 +262,43 @@ def test_pilot_stands_out_from_noise():
             assert min(levels) > 1e-3, min(levels)
 
 
+def test_l_minus_r_heard():
+    """L-R heard only when it carries something: a pilot alone is not stereo (2026-10-30: the
+    bench transmitter sends one with a mono programme, which read "Stereo - pilot locked")."""
+    from fm_receiver.dsp import STEREO_LR_DB
+    seconds, rate = 2.0, 2e6
+    left, right = signals.tones(seconds)
+    same, _ = signals.tones(seconds, 1000.0, None)
+    stereo = signals.multiplex(seconds, left, right)
+    mono = signals.multiplex(seconds, same, same)           # left = right, the pilot on
+    stereo_10 = signals.fm_iq(stereo, rate, 300e3, snr_db=10)
+    mono_10 = signals.fm_iq(mono, rate, 300e3, snr_db=10)
+    # A narrow channel filter cuts the noise at 38-53 kHz below f squared: the scale allows for
+    # it, so stereo is still stereo at the dial's narrowest (it read -4 dB before it did).
+    cases = [('stereo, SNR 35 dB', signals.fm_iq(stereo, rate, 300e3, snr_db=35), 200e3, True),
+             ('stereo, SNR 10 dB', stereo_10, 200e3, True),
+             ('stereo, 10 dB, 100k', stereo_10, 100e3, True),
+             ('stereo, 10 dB, 60k', stereo_10, 60e3, True),
+             ('mono + pilot, 35 dB', signals.fm_iq(mono, rate, 300e3, snr_db=35), 200e3, False),
+             ('mono + pilot, 10 dB', mono_10, 200e3, False),
+             ('mono, 10 dB, 100k', mono_10, 100e3, False)]
+    for name, iq, bw, want in cases:
+        got = pilot_readings(iq, rate, channel_bw=bw)
+        lr = [g[3] for g in got]
+        locked = sum(g[2] for g in got)
+        print(f"    {name:20s} L-R {min(lr):5.1f} to {max(lr):5.1f} dB over its noise, "
+              f"pilot locked {locked}/{len(got)}")
+        assert locked == len(got), (name, locked, len(got))
+        if want:
+            assert min(lr) >= STEREO_LR_DB, (name, min(lr))
+        else:
+            assert max(lr) < STEREO_LR_DB, (name, max(lr))
+
+
 if __name__ == '__main__':
     test_volume_law()
     test_pilot_stands_out_from_noise()
+    test_l_minus_r_heard()
     folders = [check('standard', PHASE_STANDARD), check('cosine', PHASE_COSINE)]
     print("receive chain: all checks passed")
     if '--keep' not in sys.argv:

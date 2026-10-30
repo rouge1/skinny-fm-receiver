@@ -1798,9 +1798,13 @@ In order:
 - [x] Stereo only with L-R (2026-10-30). The call came from the pilot: the
   bench transmitter sends one with a mono programme too (its mono is
   left = right). The card's `broadcast` section gives the pilot, RDS and
-  L-R against its own noise; stereo from 6 dB (synthetic mono 0 dB,
-  stereo 11 to 31). The app's Receive tab still says stereo by the pilot:
-  [ ] the same test there, as a UI change (a sketch first).
+  L-R against its own noise; stereo from 3 dB (synthetic mono 0 dB,
+  stereo 11 to 31). The Receive tab too (2026-10-30, the user's sketch:
+  amber, after a 10 s hold): an L-R probe in the receive chain (23 to
+  53 kHz against the guard band's noise carried up as f squared; mono with
+  a pilot reads 0 dB, stereo 6 to 31), "Mono programme - pilot locked,
+  L-R silent" fading from green to amber, `fmctl status` stereo's
+  `l_minus_r_db` and `programme`.
 
 ### Held out: the bench generators' own baseband (2026-10-30)
 Eleven 8 s clips of the night's rounds, rendered clean by the SDR session

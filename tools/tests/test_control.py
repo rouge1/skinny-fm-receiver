@@ -272,6 +272,8 @@ def main():
         assert s['rds']['pi'] == '0x1234' and s['rds']['ps'].strip() == 'TEST FM', s['rds']
         assert s['signal']['snr_db'] is not None and s['signal']['snr_db'] > 15, s['signal']
         assert s['stereo']['enabled'], s['stereo']
+        # L-R carries the stereo tones: heard, the programme stereo (not by the pilot alone).
+        assert s['stereo']['l_minus_r_db'] > 3 and s['stereo']['programme'] == 'stereo', s['stereo']
         print(f"status: {s['radio_name']}, {s['tuner_mhz']} MHz, PS {s['rds']['ps']!r}, "
               f"PI {s['rds']['pi']}, SNR {s['signal']['snr_db']} dB")
 

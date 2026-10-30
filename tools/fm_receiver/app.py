@@ -53,6 +53,7 @@ from .style import apply_window_theme
 from .sweep import SweepPlan, to_db
 from .widgets import (Card, DigitEntry, Form, PageTabs, Knob, LevelMeter, Marquee, Orb,
                       RevealList, SpectrumView, StepRoller, ThemeDisc, fade, on_raster)
+from .widgets import FADE_MS, _mix as _mix_colour
 from .widgets import HEADER_ROLE, GROUP_ROLE
 
 #: (name, start MHz, stop MHz); 'full' is the whole of the radio's sweep
@@ -110,6 +111,10 @@ STALL_S = 3.0
 LOST_POLL_S = 1.0
 BACK_SETTLE_S = 2.0
 REOPEN_TRIES = 3
+#: With a pilot locked, the Audio line says stereo until L-R has been silent this long, then
+#: "Mono programme" in amber: stereo music has quiet, near-mono moments, and a station may
+#: send a pilot with a mono programme (the bench transmitter does). Tuning starts it again.
+STEREO_HOLD_S = 10.0
 #: Below any reference level AGC would pick: from here it always rises.
 REF_FLOOR_DB = -200.0
 #: Over this share of samples clipped, an overload is heavy and AGC takes
@@ -1095,6 +1100,14 @@ class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
         self.stereo_label = _wrapping(Qt.QLabel("-"))
         self.stereo_label.setTextFormat(QtCore.Qt.RichText)
         form.addRow("Audio:", self.stereo_label)
+        # L-R heard (for STEREO_HOLD_S) and the stereo line's colour, green 0 to amber 1.
+        self._lr_heard_at = None
+        self._lr_station = None
+        self.programme = None
+        self._audio_mix = 0.0
+        self._audio_target = 0.0
+        self._audio_anim = None
+        self._audio_text = None
         self.sig_label = _wrapping(Qt.QLabel("-"))
         self.sig_label.setTextFormat(QtCore.Qt.RichText)
         form.addRow("Signal:", self.sig_label)
@@ -4397,20 +4410,74 @@ class MainWindow(CellsWindow, AtscWindow, Qt.QWidget):
                 f"{plan.describe()}<br>{s.sweep_seconds * 1e3:.0f} ms per sweep "
                 f"({rate:.1f}/s, {speed})")
 
+    def _paint_audio(self):
+        """The Audio line: its text, a stereo line in its colour of the moment (green to amber
+        as ``_audio_mix`` goes 0 to 1), and "muted" after it."""
+        text = self._audio_text
+        if isinstance(text, tuple):
+            colour = _mix_colour(theme.TOKENS['good'], theme.TOKENS['warn'], self._audio_mix).name()
+            text = f"<span style='color:{colour}'>{text[0]}</span>"
+        if text is None:
+            return
+        if self.mute_btn.isChecked():
+            text += " - " + _coloured("muted", 'bad')
+        self.stereo_label.setText(text)
+
+    def _stop_audio_fade(self):
+        if self._audio_anim is not None:
+            self._audio_anim.stop()
+            self._audio_anim.deleteLater()
+            self._audio_anim = None
+
+    def _fade_audio(self, target):
+        """Fade the stereo line's colour to ``target`` (0 green, 1 amber) over two fades."""
+        if target == self._audio_target:
+            return
+        self._audio_target = target
+        self._stop_audio_fade()
+        anim = QtCore.QVariantAnimation(self)
+        anim.setDuration(2 * FADE_MS)
+        anim.setEasingCurve(QtCore.QEasingCurve.InOutCubic)
+        anim.setStartValue(float(self._audio_mix))
+        anim.setEndValue(float(target))
+
+        def step(v):
+            try:
+                self._audio_mix = float(v)
+                self._paint_audio()
+            except Exception as exc:           # never abort the app
+                print(f"audio fade: {exc}")
+
+        anim.valueChanged.connect(step)
+        self._audio_anim = anim
+        anim.start()
+
     def _refresh_receive(self):
         rx = self.engine.rx
         stereo, phase, _ = rx.update_stereo()
-        if not rx.pilot_locked():
-            audio = _coloured("Mono - no stereo pilot", 'ink_2')
-        elif not self.stereo_check.isChecked():
-            audio = "Mono (stereo switched off)"
+        now = time.monotonic()
+        locked = rx.pilot_locked()
+        # A new station, no pilot or stereo off starts the hold again: green for its first seconds.
+        if self.engine.station_hz != self._lr_station or not locked or not self.stereo_check.isChecked():
+            self._lr_station = self.engine.station_hz
+            self._lr_heard_at = now
+        if rx.l_minus_r_heard():
+            self._lr_heard_at = now
+        self.programme = (None if not locked else
+                          'stereo' if now - self._lr_heard_at < STEREO_HOLD_S else 'mono')
+        if not locked or not self.stereo_check.isChecked():
+            # The stereo line comes back green (its hold starts again), not in its old colour.
+            self._stop_audio_fade()
+            self._audio_mix = self._audio_target = 0.0
+            self._audio_text = (_coloured("Mono - no stereo pilot", 'ink_2') if not locked
+                                else "Mono (stereo switched off)")
         else:
             kind = ('standard phase' if abs(math.degrees(phase) - 90) < 45
                     else 'cosine phase')
-            audio = _coloured(f"Stereo - pilot locked ({kind})", 'good')
-        if self.mute_btn.isChecked():
-            audio += " - " + _coloured("muted", 'bad')
-        self.stereo_label.setText(audio)
+            self._fade_audio(1.0 if self.programme == 'mono' else 0.0)
+            self._audio_text = (("Mono programme - pilot locked, L\u2212R silent"
+                                 if self.programme == 'mono' else f"Stereo - pilot locked ({kind})"), None)
+        self._paint_audio()
         self.sig_label.setText(self._signal_text(rx))
         self._refresh_rds(rx.rds.snapshot())
         if self._atsc_active():

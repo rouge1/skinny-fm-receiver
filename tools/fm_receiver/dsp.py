@@ -89,6 +89,11 @@ PILOT_HZ = 19e3
 #: reads 9 dB at an SNR of 5 dB, where mono is better anyway.
 PILOT_LOCK_DB = 10.0
 PILOT_UNLOCK_DB = 6.0
+#: L-R heard: the 38 kHz subcarrier's band this far over its noise. A pilot alone is not
+#: stereo: the bench transmitter sends one with a mono programme. Through this chain,
+#: synthetic mono with a pilot read -0.8 to 0.6 dB, stereo 6.4 to 7.4 at 10 dB SNR and 31 at
+#: 35 (test_receive_chain); iqmeasure's broadcast section asks the same.
+STEREO_LR_DB = 3.0
 #: Taps of the audio low-pass-and-resample, 250 kHz -> 48 kHz (24/125).
 AUDIO_INTERP, AUDIO_DECIM = 24, 125
 #: The lowest rate after the first stage that still holds HD Radio's
@@ -156,6 +161,32 @@ def guard_taps(ntaps=1601, inner=1000.0, outer=3000.0):
     band = sps.firwin(ntaps, outer, fs=MPX_RATE) - sps.firwin(ntaps, inner, fs=MPX_RATE)
     n = np.arange(ntaps)
     return (band * np.exp(2j * np.pi * PILOT_HZ / MPX_RATE * n)).astype(np.complex64).tolist()
+
+
+def l_minus_r_taps(ntaps=1601, inner=500.0, outer=15e3):
+    """A complex band-pass around 38 kHz, 23 to 53 kHz less the 38 kHz carrier's own
+    kilohertz: L-R's sidebands, and none of the pilot or RDS."""
+    band = sps.firwin(ntaps, outer, fs=MPX_RATE) - sps.firwin(ntaps, inner, fs=MPX_RATE)
+    n = np.arange(ntaps)
+    return (band * np.exp(2j * np.pi * 2 * PILOT_HZ / MPX_RATE * n)).astype(np.complex64).tolist()
+
+
+def f2_bandwidth(taps, nfft=1 << 16, channel=None):
+    """What a filter passes of the discriminator's noise, whose density rises as f squared:
+    the sum of |H(f)|^2 f^2 (f in Hz), on an nfft-point grid. ``channel`` is (taps, rate) of
+    the channel filter ahead of the discriminator, whose edge takes the f squared down."""
+    h = np.fft.fft(np.asarray(taps), nfft)
+    f = np.fft.fftfreq(nfft, 1 / MPX_RATE)
+    weight = f ** 2
+    if channel is not None:
+        c, rate = channel
+        c = np.asarray(c, dtype=float)
+        # |C(f)|^2 on the grid, from an FFT of the channel taps at their own rate (50 Hz bins).
+        n = 1 << int(np.ceil(np.log2(max(c.size, rate / 50.0))))
+        cf = np.abs(np.fft.rfft(c, n)) ** 2
+        cf = cf / cf[0]
+        weight = weight * np.interp(np.abs(f), np.arange(cf.size) * rate / n, cf)
+    return float(np.sum(np.abs(h) ** 2 * weight)) / nfft
 
 
 def noise_bandwidth(taps):
@@ -558,6 +589,14 @@ class ReceiveChain:
         # Scales the guard's noise to the pilot band's width.
         self._guard_to_pilot = noise_bandwidth(pilot_taps()) / noise_bandwidth(taps)
         self._pilot_on = False
+        # L-R's band, against the guard's noise carried up to 38 kHz as f squared.
+        lr = l_minus_r_taps()
+        self.lr_bpf = filter.fft_filter_ccc(1, lr)
+        self.lr_mag = blocks.complex_to_mag_squared(1)
+        self.lr_avg = filter.single_pole_iir_filter_ff(1e-4)
+        self.lr_probe = blocks.probe_signal_f()
+        tb.connect(self.mpx_c, self.lr_bpf, self.lr_mag, self.lr_avg, self.lr_probe)
+        self._scale_lr_noise()
 
         # 38 kHz from the pilot, at the phase in use; and the probe that
         # finds that phase.
@@ -719,6 +758,14 @@ class ReceiveChain:
     def set_channel_bw(self, bandwidth_hz):
         self.channel_bw = float(bandwidth_hz)
         self.stage2.set_taps(channel_taps(self.mid_rate, self.up, self.channel_bw))
+        self._scale_lr_noise()
+
+    def _scale_lr_noise(self):
+        """Scales the guard's noise to L-R's band: f squared, cut by the channel filter's edge
+        (a narrow channel leaves less noise at 38-53 kHz than f squared says)."""
+        channel = (channel_taps(self.mid_rate, self.up, self.channel_bw), self.mid_rate * self.up)
+        self._guard_to_lr = (f2_bandwidth(l_minus_r_taps(), channel=channel)
+                             / f2_bandwidth(guard_taps(), channel=channel))
 
     def set_region(self, region):
         self.region = region
@@ -793,6 +840,20 @@ class ReceiveChain:
         need = PILOT_UNLOCK_DB if self._pilot_on else PILOT_LOCK_DB
         self._pilot_on = self.pilot_level() > 1e-4 and self.pilot_snr_db() > need
         return self._pilot_on
+
+    def l_minus_r_db(self):
+        """How far L-R's band stands over the noise there: 0 dB is no L-R (a mono programme,
+        even with a pilot), stereo programmes 6 dB and more at 10 dB SNR (``STEREO_LR_DB``)."""
+        lr = self.lr_probe.level()
+        noise = self.guard_probe.level() * self._guard_to_lr
+        if lr <= 0:
+            return -200.0
+        if noise <= 0:
+            return 200.0
+        return 10 * math.log10(lr / noise)
+
+    def l_minus_r_heard(self):
+        return self.l_minus_r_db() >= STEREO_LR_DB
 
     def channel_power_db(self):
         level = self.ch_probe.level()

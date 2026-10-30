@@ -227,7 +227,8 @@ MAX_SUBCARRIERS = 4
 #: noise there, which is estimated beside the pilot (16 to 22 kHz, where nothing is sent) and
 #: scaled by f squared, as a discriminator's noise rises (an SCA at 67 kHz, where the noise
 #: might else be read, does not move it). Synthetic mono read 0.0 dB over (35 and 15 dB SNR,
-#: with an SCA), stereo 11 to 31 dB: stereo from BROADCAST_STEREO_DB.
+#: with an SCA), stereo 11 to 31 dB: stereo from BROADCAST_STEREO_DB, the receive
+#: chain's own STEREO_LR_DB (through it, stereo at 10 dB SNR read 6.4 dB).
 BROADCAST_NEAR_HZ = 200.0
 #: What a subcarrier carries: the demodulated frequency within SUB_HALF_HZ of it, as a complex
 #: baseband. Its carrier is its strongest line (the pilot, RDS and TV sound are named apart);
@@ -242,7 +243,7 @@ SUB_FM_HZ = 200.0
 SUB_CARRIER_SHARE = 0.05
 SUB_MIRROR = 0.25
 SUB_NOISE_HZ = 12e3
-BROADCAST_STEREO_DB = 6.0
+BROADCAST_STEREO_DB = 3.0
 TV_SOUND_HZ = (4.6e6, 9e6)
 
 

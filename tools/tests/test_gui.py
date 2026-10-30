@@ -392,8 +392,36 @@ def part1_file_receiver():
     ok = pump(15, lambda: w.lbl['station_name'].text() == 'TEST FM')
     assert ok, f"RDS never showed: {w.lbl['station_name'].text()!r}"
     assert 'Stereo' in w.stereo_label.text(), w.stereo_label.text()
+    assert w.programme == 'stereo' and e.rx.l_minus_r_heard(), (w.programme, e.rx.l_minus_r_db())
     print("RDS on screen:", w.lbl['station_name'].text(), w.lbl['pi'].text(),
           '|', w.lbl['radiotext'].text())
+
+    # A pilot with L-R silent (a mono programme sent with a pilot): after the hold the line
+    # says so in amber, faded from green; L-R heard again, it is stereo in green.
+    hold, heard = fmapp.STEREO_HOLD_S, e.rx.l_minus_r_heard
+    fmapp.STEREO_HOLD_S = 0.5
+    e.rx.l_minus_r_heard = lambda: False
+    try:
+        seen = []
+        ok = pump(3, lambda: seen.append(w._audio_mix) or (w.programme == 'mono' and w._audio_mix == 1.0))
+        assert ok, (w.programme, w._audio_mix, w.stereo_label.text())
+        assert any(0.0 < m < 1.0 for m in seen), f"no colour between green and amber: {seen}"
+        amber = Qt.QColor(fmapp.theme.TOKENS['warn']).name()
+        assert 'Mono programme' in w.stereo_label.text() and amber in w.stereo_label.text(), \
+            w.stereo_label.text()
+        # Stereo off then on: the line comes back green, its hold started again.
+        w.stereo_check.setChecked(False)
+        ok = pump(3, lambda: 'switched off' in w.stereo_label.text())
+        assert ok and w._audio_mix == 0.0, (w._audio_mix, w.stereo_label.text())
+        w.stereo_check.setChecked(True)
+        ok = pump(3, lambda: 'Stereo - pilot locked' in w.stereo_label.text())
+        green = Qt.QColor(fmapp.theme.TOKENS['good']).name()
+        assert ok and green in w.stereo_label.text(), w.stereo_label.text()
+    finally:
+        fmapp.STEREO_HOLD_S = hold
+        e.rx.l_minus_r_heard = heard
+    ok = pump(3, lambda: w.programme == 'stereo' and w._audio_mix == 0.0)
+    assert ok and 'Stereo - pilot locked' in w.stereo_label.text(), w.stereo_label.text()
 
     # Mute and volume act on the running chain.
     rx = e.rx

@@ -191,7 +191,9 @@ def cmd_status(w, args):
             'snr_db': round(snr, 1) if snr is not None else None,
         }
         out['stereo'] = {'enabled': w.stereo_check.isChecked(),
-                         'pilot_locked': bool(rx.pilot_locked())}
+                         'pilot_locked': bool(rx.pilot_locked()),
+                         'l_minus_r_db': round(float(rx.l_minus_r_db()), 1),
+                         'programme': w.programme}
         out['rds'] = _rds_state(rx.rds.snapshot())
         out['hd'] = _hd_state(w)
     if w._atsc_on:
