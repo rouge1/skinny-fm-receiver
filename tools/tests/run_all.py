@@ -13,12 +13,16 @@ one): a file over it fails alone, as "over the memory cap", and the run goes
 on. systemd-oomd killed whole sessions on one-array loads, and a cap round the
 whole run killed every file after the heavy one. FMRX_TEST_MEMORY sets the cap
 (default 6G).
+
+Each file gets a temp folder of its own (TMPDIR), removed when it ends: some
+files leave their folders behind, and runs piled up 16 GB of them in /tmp.
 """
 
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -54,8 +58,10 @@ def main():
     failed = []
     for name in tests:
         t0 = time.time()
+        tmp = tempfile.mkdtemp(prefix='fmrx-run-')
         try:
-            proc = subprocess.run(_capped([sys.executable, os.path.join(HERE, name)]), env=env,
+            proc = subprocess.run(_capped([sys.executable, os.path.join(HERE, name)]),
+                                  env=dict(env, TMPDIR=tmp),
                                   capture_output=True, text=True, timeout=TIMEOUT)
             ok, why, output = proc.returncode == 0, '', proc.stdout + proc.stderr
             if proc.returncode in (-9, 137):
@@ -66,6 +72,8 @@ def main():
             ok, why = False, f', timed out after {TIMEOUT} s'
             output = ''.join(o.decode(errors='replace') if isinstance(o, bytes) else o
                              for o in (e.stdout, e.stderr) if o)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
         print(f"{'PASS' if ok else 'FAIL'}  {name}  ({time.time() - t0:.0f} s{why})",
               flush=True)
         if not ok:
