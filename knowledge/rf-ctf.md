@@ -78,6 +78,43 @@ NFC/RFID challenges need a Proxmark-class reader, not these radios.
 6. **Get the flag.** Read the ASCII. Otherwise try base64 or hex, or
    CyberChef (cyberchef.io, or a local copy). A picture may simply show it.
 
+## Rules from the bench night (2026-10-29/30)
+
+A night of blind rounds, with a signal generator cabled into the BB60D,
+scored most signals right. The misses came from what looked like part of
+something else, so it was passed over. Three rules came out of it
+(roadmap Round 31). `iq-measure` now flags each case. The rules still
+apply where it does not.
+
+1. **Follow every pure line in programme audio.** A steady or keyed tone
+   under speech or music, or a DTMF pair, can be the challenge, with the
+   programme only its cover. Demodulate it and look at the audio's
+   spectrum, not only at the RF. A narrow line that stands over the audio
+   beside it is a lead. One that comes and goes is keyed (Morse-like). The
+   card's `audio` section lists the lines, says which are keyed, and gives
+   the DTMF digits in order.
+2. **Capture longer than the loop.** A challenge often repeats, and what
+   it sends once a loop can sit anywhere in it. That night a DTMF burst
+   came in a 72 s loop, after a 30 s capture had ended. Find the repeat
+   (the bursts' `repeat_interval_s`, or the audio's `loop_s`). Then
+   capture at least two repeats. If the repeat is unknown, capture longer
+   than the longest gap you have seen. The card's `warnings` say when the
+   span read is shorter than that, and when the recording is longer than
+   the part that was read.
+3. **A line with its own width is a signal until shown otherwise.** A
+   narrow line beside a strong signal (a beacon next to a TV picture, say)
+   is not a spur or an image just because it is small. It is ruled out
+   only when one of these shows it:
+   - its mirror about the centre is at least 20 dB stronger with the same
+     shape (an image: `beside`'s `image: true`);
+   - it moves when the radio is retuned by an odd amount, such as
+     1.234 MHz, so it belongs to the receiver;
+   - it stays with the generator off and the cable off;
+   - it is in the bench's known-spurs list (kept in the ops folder, not in
+     this public repo).
+
+   Otherwise demodulate it like any other signal.
+
 ## Our own hunts (AFT{...})
 
 - 453.086 MHz: 2-FSK, ±10 kHz, 2000 baud, UART 8N1 LSB-first ASCII.

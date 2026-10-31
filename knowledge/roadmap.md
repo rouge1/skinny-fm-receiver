@@ -1879,6 +1879,7 @@ run, 6 of 11 right; after the fixes below, 11 of 11.
   still not found at all (the night's M2), so they get no warning yet.
 
 ### Phase 5: the method
-- [ ] `rf-ctf.md`: the night's rules (follow every pure line in programme
+- [x] `rf-ctf.md`: the night's rules (follow every pure line in programme
   audio; capture longer than the loop; a line with its own width is a
-  signal until shown otherwise).
+  signal until shown otherwise), 2026-10-30: "Rules from the bench night",
+  each with what the card gives for it.
