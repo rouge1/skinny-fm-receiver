@@ -11,7 +11,7 @@ Every signal is synthetic and seeded, built here with numpy. What the checks pin
   15 kHz, 4.8 kBd at 3.6 kHz), whose shaping smears every level until each neighbour's
   share is taken off, its levels within 3 % of the deviation;
 - a two-level ASK keeps order 2, as the blocks found it; shallow ASK under a strong carrier
-  (1 to 0.8 at 20 and 100 kBd, 1 to 0.9 at 20 kBd) is 'ask', its levels within 3 % and its
+  (1 to 0.8 at 20 and 100 kBd, 1 to 0.9 at 20 kBd) is 'ask', its levels within 0.03 and its
   rate within 1 %;
 - what must not move: FM and AM by two tones (whose samples at their difference repeat a
   few values) and FM and AM by noise stay 'fm' and 'am', with no order;
@@ -187,7 +187,7 @@ def check_shallow_ask():
     # band cut the keying's sidebands, each step rang, and 1 to 0.8 read 'unknown'.
     for name, lv, baud in (('ask_shallow', (0.8, 1.0), 20e3), ('ask_shallow_fast', (0.8, 1.0), 100e3),
                            ('ask_shallower', (0.9, 1.0), 20e3)):
-        expect(f"{name}: ask, levels {lv[0]} and {lv[1]} within 3 %, {baud / 1e3:.0f} kBd within 1 %",
+        expect(f"{name}: ask, levels {lv[0]} and {lv[1]} within 0.03, {baud / 1e3:.0f} kBd within 1 %",
                lambda n=name, lv=lv, b=baud: (
                    card(n)['class'] == 'ask' and card(n)['envelope']['order'] == 2
                    and all(abs(x - y) < 0.03 for x, y in zip(card(n)['envelope']['levels'], lv))

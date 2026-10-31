@@ -1788,8 +1788,10 @@ In order:
   line holding half the power or more, the band and the clock's smoothing now
   come from the modulation's width 20 dB down, the line taken off, the band even
   about the line. 1 to 0.8 at 20 and 100 kBd and 1 to 0.9 at 20 kBd read `ask`,
-  levels within 3 %, rate within 1 %. Still not read: keying 0.4 dB deep (1 to
-  0.95), and 1 to 0.9 at 15 dB SNR.
+  levels within 0.03, rate within 1 %. Still not read: keying 0.4 dB deep (1 to
+  0.95), and 1 to 0.9 at 15 dB SNR. Reviewed by Grok, its findings fixed
+  (`knowledge/review-grok-shallow-ask.md`); a wider band can cost a second pass
+  that is thrown away (100 kBd ASK near the span's edge).
 - [x] RRC roll-off (2026-10-30): the card's `pulse` section, a raised
   cosine fitted to the spectrum; within 0.02 on QPSK, 8PSK and 4ASK (0.05
   on BPSK). Rectangular symbols (a sinc's sidelobe) are named, not given

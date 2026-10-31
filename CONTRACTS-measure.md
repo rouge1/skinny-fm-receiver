@@ -337,6 +337,15 @@ loses none.
   decided, its two neighbours' share fitted (least squares) and taken off, three times; kept when the share
   is 0.05 to 0.4 and the levels then stand clear, the levels given as a run of one symbol settles (spread
   times 1 + 2 x share). The clock is taken on the series averaged over rate / (2 x `bandwidth_hz`) samples.
+- Under a strong line (amendment 2026-10-30, after phase 4): when one line of the fine spectrum
+  (8 bins or fewer at 1e-3 of its peak) holds half the signal's power or more, the clock's
+  average uses max(`bandwidth_hz`, the modulation's width) for `bandwidth_hz`. That width is
+  twice the reach, 20 dB down, of what touches the line on either side (above twice the floor,
+  the line's own bins taken off); a line or blob apart from it does not count. When it is the
+  wider, the tracking band is 3 x that width centred on the line, cut to stay even about it
+  inside the span, and used only when wider than the band above. `bandwidth_hz` itself is
+  unchanged. Envelope levels, two or more, whose (high - low) / (high + low) is under 1e-3 are
+  not keying. Tests: `tools/tests/test_iq_measure_levels.py`.
 - The class rules become: 0 lte/nr, 1 `noise`, then `atsc`, `tv`, `pulses`, `ook`, `ask`, `psk`, `fsk`, `fm`, `am`,
   `carrier`, `unknown`. Every real bench recording that was `ook`, `ask`, `fsk`, `fm` or `am` before is
   still that; of nineteen older real recordings (FM, LTE, NR, ISM, ATSC) the ATSC one becomes `atsc`

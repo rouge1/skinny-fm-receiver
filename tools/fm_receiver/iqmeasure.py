@@ -99,8 +99,11 @@ TRACK_MIN_HZ = 20e3
 CARRIER_SHARE = 0.5
 MOD_SHARE = 3e-4
 MOD_FLOOR = 2.0
-#: The line's own bins: those at this share of its peak or more (the window's leakage).
+#: The line's own bins: those at this share of its peak or more (the window's leakage), at
+#: most CARRIER_BINS of them (a Hann line off the bin grid takes 4); wider is a spectrum's
+#: own peak, not a line (a 4FSK's whole spectrum ran at 1e-3).
 CARRIER_RUN = 1e-3
+CARRIER_BINS = 8
 #: The envelope and frequency are tracked at no less than this rate, so a block of
 #: samples lasts no longer than at 1 MS/s and a symbol clock is still resolved.
 TRACK_RATE = 1e6
@@ -112,7 +115,7 @@ MIDDLE_MAX = 0.12
 #: An envelope is keyed only if its levels are this far apart, as (high - low) /
 #: (high + low): a clean constant envelope's ripple splits cleanly too (a bench FM with a
 #: 92 kHz subcarrier, read in 2-sample blocks, gave levels 0.99992 and 0.99999, a depth of
-#: 4e-5). Ripple deeper than this (a wide FM cut by the decimator) still passes.
+#: 3.5e-5). Ripple deeper than this (a wide FM cut by the decimator) still passes.
 KEYED_DEPTH = 1e-3
 MIN_CLUSTER = 0.005
 STEADY_HZ = 500.0
@@ -1167,23 +1170,44 @@ def _pulse(seg, rate, offset, baud):
             'shape': best[2] if shaped else 'rectangular' if sidelobe > PULSE_RECT_DB else None}
 
 
-def _modulation_width(signal, P, floor, bin_hz):
-    """The width 20 dB down of the fine spectrum with its strongest line taken off, when that
-    line holds CARRIER_SHARE of the ``signal`` (``P`` less the ``floor``) and enough is left
-    (MOD_SHARE, MOD_FLOOR); otherwise 0. Twice the run beside the line, which ends at the
-    line's taken-off bins."""
+def _modulation_width(signal, P, floor, bin_hz, origin):
+    """``(width, line)``: twice the reach, 20 dB down, of the spectrum beside the strongest line
+    of the fine spectrum ``P`` (absolute Hz of its centre bin ``origin``), and that line's
+    frequency, when the line (CARRIER_BINS or fewer) holds CARRIER_SHARE of the ``signal`` (``P`` less the ``floor``) and
+    enough is left (MOD_SHARE, MOD_FLOOR); otherwise ``(0, None)``. Only what touches the line
+    counts: the runs above MOD_FLOOR times the floor that start at its bins, each followed out
+    while it stays within 20 dB of their peak. A line or blob apart from it is a neighbour."""
+    none = (0.0, None)
     total = float(signal.sum())
     if not total > 0:
-        return 0.0
+        return none
+    n = len(P)
     k = int(np.argmax(signal))
     lo, hi = _run_width(signal, k, CARRIER_RUN)
-    if float(signal[lo:hi + 1].sum()) < CARRIER_SHARE * total:
-        return 0.0
+    if hi - lo + 1 > CARRIER_BINS or float(signal[lo:hi + 1].sum()) < CARRIER_SHARE * total:
+        return none
     rest = np.maximum(P - MOD_FLOOR * floor, 0.0)
     rest[lo:hi + 1] = 0.0
     if float(rest.sum()) < MOD_SHARE * total:
-        return 0.0
-    return 2 * _occupied(rest, bin_hz, 0.0)[2]
+        return none
+    a = lo
+    while a > 0 and rest[a - 1] > 0:
+        a -= 1
+    b = hi
+    while b < n - 1 and rest[b + 1] > 0:
+        b += 1
+    left, right = rest[a:lo], rest[hi + 1:b + 1]
+    peak = max(float(left.max()) if left.size else 0.0, float(right.max()) if right.size else 0.0)
+    if not peak > 0:
+        return none
+    out = 0
+    if left.size:
+        below = np.flatnonzero(left[::-1] < peak / 100)
+        out = max(out, k - (lo - (int(below[0]) if below.size else left.size)))
+    if right.size:
+        below = np.flatnonzero(right < peak / 100)
+        out = max(out, (hi + (int(below[0]) if below.size else right.size)) - k)
+    return 2 * out * bin_hz, origin + (k - n // 2) * bin_hz
 
 
 def _run_width(P, k, share):
@@ -1899,13 +1923,17 @@ def _analyse(read, n, rate, center_hz, full_scale_dbm, band, station_hz=None, bl
 
     # The second pass: the signal at its occupied centre, within the first pass's band.
     half_span = rate / 2 if half_band is None else half_band
-    wide = _modulation_width(signal, Pf, floor, rate_1 / len(Pf))
-    reach = max(TRACK_WIDTH * max(bw99, wide), TRACK_MIN_HZ) / 2
+    reach = max(TRACK_WIDTH * bw99, TRACK_MIN_HZ) / 2
     c = centre - center_hz
+    wide, line = _modulation_width(signal, Pf, floor, rate_1 / len(Pf), origin)
     if wide > bw99:
-        # Even about the line: a band cut on one side only turns an AM step into a phase
-        # step (ASK at 100 kBd read 'fsk').
-        reach = max(min(reach, c - (base - half_span), base + half_span - c), TRACK_MIN_HZ / 2)
+        # On the line and even about it: a band cut on one side only turns an AM step into a
+        # phase step (ASK at 100 kBd read 'fsk'). A line too near the span's edge for that
+        # keeps the band above, rather than a narrower one.
+        c_line = line - center_hz
+        even = min(TRACK_WIDTH * wide / 2, c_line - (base - half_span), base + half_span - c_line)
+        if even > reach:
+            c, reach = c_line, even
     lo_s, hi_s = max(c - reach, base - half_span), min(c + reach, base + half_span)
     base_s = (lo_s + hi_s) / 2
     dec_s, chunks = _decimated(read, n, rate, lo_s, hi_s, TRACK_RATE)
