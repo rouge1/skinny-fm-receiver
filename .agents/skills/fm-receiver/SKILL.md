@@ -246,8 +246,8 @@ Details in rtl-software.md, "What this machine already has".
   the `.sigmf-meta`). `urh_cli` receives from a radio only, and can
   transmit (`-tx`).
 - apt: rtl_433, multimon-ng, direwolf, minimodem, fldigi, qsstv,
-  dump1090-mutability, inspectrum, gqrx, sox, audacity, sonic-visualiser
-  (checked 2026-10-31; gr-satellites, welle.io, wsjtx are not installed). SDR++ (.deb). gr-lora_sdr in the `lora` env, not `gnu`.
+  dump1090-mutability, sox (checked 2026-10-31; inspectrum, gqrx, audacity,
+  sonic-visualiser, gr-satellites, welle.io and wsjtx are not installed). SDR++ (.deb). gr-lora_sdr in the `lora` env, not `gnu`.
 
 ## The repo is public
 

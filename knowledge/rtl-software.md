@@ -24,13 +24,15 @@ list here said much more was installed than is now.
   `rtl-sdr` is not installed, so with the env off there are none.
 - apt: `rtl-433` 23.11 (inputs file, rtl_tcp, RTL-SDR, SoapySDR), `hackrf`
   (includes `hackrf_sweep`), `soapysdr-tools`, `python3-soapysdr`, `pipx`.
-  `gqrx-sdr` pulled in apt's `gnuradio` 3.10.9 and `gr-osmosdr`; the `gnu`
-  env still loads its own 3.10.12 (checked: `gr.version()`, and
+  apt's `gnuradio` 3.10.9 and `gr-osmosdr` are installed too, left from
+  `gqrx-sdr` (since removed; `sudo apt autoremove` would take them). The
+  `gnu` env loads its own 3.10.12 regardless (checked: `gr.version()`, and
   test_receive_chain passes).
 - apt, from the lists below: `multimon-ng` 1.3.0, `direwolf` 1.7,
   `minimodem` 0.24, `fldigi` 4.2.03, `qsstv` 9.5.8, `dump1090-mutability`,
-  `gqrx-sdr` 2.17.4, `inspectrum` 0.3.1, `sox`, `audacity` 3.4.2,
-  `sonic-visualiser` 4.5.2. Not installed from the lists: `welle.io`,
+  `sox`. Not installed from the lists: `gqrx-sdr`, `inspectrum`,
+  `audacity`, `sonic-visualiser` (installed and removed again on
+  2026-10-31: viewers, not used headless), `welle.io`,
   `gpredict`, `gr-satellites`, `wsjtx`, `gnss-sdr`, `ubertooth`, `codec2`, `cubicsdr`,
   `soapyremote-server` and `aircrack-ng`.
 - SDR++ 1.2.1 (`sdrpp`, its .deb).
