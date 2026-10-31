@@ -29,8 +29,8 @@ record, or an IQ file handed out (`.cfile`/`.cf32`, `.cu8`, `.cs16`,
 
 | Type | How the flag is carried | Decode with | apt on 24.04 |
 |---|---|---|---|
-| OOK / ASK | pulse widths or on/off bits, often UART 8N1 or a PT2262/EV1527 code | URH, inspectrum, `rtl_433 -A` (pulse analyser), GNU Radio | `inspectrum`, `rtl-433`; URH through pipx (all installed) |
-| 2-FSK / GFSK | two tones become bits, then UART 8N1 or a sync word + packet | URH (auto demod), inspectrum (measure baud), GNU Radio quad demod + clock recovery, minimodem | `inspectrum`, `minimodem`, GNU Radio; URH through pipx (all installed) |
+| OOK / ASK | pulse widths or on/off bits, often UART 8N1 or a PT2262/EV1527 code | URH, inspectrum, `rtl_433 -A` (pulse analyser), GNU Radio | `inspectrum`, `rtl-433`; URH through pipx |
+| 2-FSK / GFSK | two tones become bits, then UART 8N1 or a sync word + packet | URH (auto demod), inspectrum (measure baud), GNU Radio quad demod + clock recovery, minimodem | `inspectrum`, `minimodem`, GNU Radio; URH through pipx |
 | PSK (BPSK/QPSK) | symbols need Costas + timing recovery, sometimes differential | GNU Radio, SigDigger, URH, fldigi (PSK31), gr-satellites | `fldigi`, `gr-satellites`; SigDigger AppImage |
 | QAM / exotic | Hack-A-Sat style constellations | GNU Radio, numpy | – |
 | AFSK / Bell 202 | 1200/2200 Hz audio tones | minimodem `1200`, multimon-ng `AFSK1200`, direwolf | `minimodem`, `multimon-ng`, `direwolf` |
@@ -45,11 +45,11 @@ record, or an IQ file handed out (`.cfile`/`.cf32`, `.cu8`, `.cs16`,
 | Waterfall art | text or a QR code drawn in the spectrum | inspectrum, gqrx/SDR++, sonic-visualiser, Audacity spectrogram, this app's waterfall | `inspectrum`, `gqrx-sdr`, `sonic-visualiser`, `audacity` |
 | Audio stego | text in the audio spectrum, LSBs, reversed or sped-up speech | sonic-visualiser, Audacity, sox | same |
 | RDS | PS / RadioText on an FM station | this app, redsea, gr-rds | `gr-rds`; redsea build |
-| FM subcarrier / SCA | audio on 67/92 kHz above the stereo MPX | GNU Radio, then FM-demod the subcarrier | GNU Radio (installed) |
+| FM subcarrier / SCA | audio on 67/92 kHz above the stereo MPX | GNU Radio, then FM-demod the subcarrier | GNU Radio (the `gnu` env) |
 | DMR / P25 / D-Star | digital voice speaking the flag, or data | dsd-fme / dsd-neo | not in apt: build |
-| LoRa | chirp spread spectrum payload | gr-lora_sdr | conda into `gnu`, or build |
-| Zigbee / 802.15.4 | 2.4 GHz O-QPSK packets (HackRF) | gr-ieee802-15-4 → Wireshark | build; `wireshark` (installed) |
-| BLE | advertising payloads | Ubertooth, Wireshark; ble-scanner on this machine | `ubertooth`, `wireshark` (installed) |
+| LoRa | chirp spread spectrum payload | gr-lora_sdr | the `lora` conda env (not `gnu`) |
+| Zigbee / 802.15.4 | 2.4 GHz O-QPSK packets (HackRF) | gr-ieee802-15-4 → Wireshark | build; `wireshark` |
+| BLE | advertising payloads | Ubertooth, Wireshark; ble-scanner on this machine | `ubertooth`, `wireshark` |
 | Wi-Fi | beacons / handshakes | aircrack-ng suite, Wireshark (needs a Wi-Fi card, not an SDR) | `aircrack-ng` |
 | ADS-B | callsign or squawk fields | dump1090 / readsb | `dump1090-mutability`; readsb script |
 | AIS | ship name / message text | AIS-catcher | install script / build |
@@ -141,8 +141,22 @@ repeat. The ISM band's real GFSK meter traffic was a decoy: `rtl_433` or
 
 ## Install for CTF
 
-apt (all present in 24.04; all installed on this machine by 2026-09-25
-except `aircrack-ng`):
+What this machine has, checked on 2026-10-31 (`dpkg-query`, `command -v`):
+
+- Installed: `rtl-433` 23.11, `multimon-ng` 1.3.0, `direwolf` 1.7,
+  `minimodem` 0.24, `fldigi` 4.2.03, `qsstv` 9.5.8, `dump1090-mutability`,
+  `hackrf`, `soapysdr-tools`, SDR++ 1.2.1 (`sdrpp`, .deb), URH 2.10.0 with
+  sigmf (pipx). The `rtl_*` tools are in the `gnu` env only.
+- gr-lora_sdr: in the `lora` conda env (GNU Radio 3.10.11), not `gnu`
+  (below).
+- Speech to text: faster-whisper 1.2.1 in the `audio_llm` env, with the
+  tiny, small and medium models downloaded.
+- Not installed: `inspectrum`, `gqrx-sdr`, `sox`, `audacity`,
+  `sonic-visualiser`, `gr-satellites`, `gnss-sdr`, `welle.io`, `wsjtx`,
+  `ubertooth`, `aircrack-ng`; aptdec, AIS-catcher, readsb, redsea,
+  dsd-fme, SatDump, SigDigger, gr-ieee802-11.
+
+apt (all present in 24.04):
 
 ```bash
 sudo apt install rtl-sdr inspectrum gqrx-sdr sox multimon-ng minimodem direwolf \
@@ -161,8 +175,17 @@ Not in apt:
   of the `gnu` env unless they are needed next to GNU Radio.
 - SigDigger: AppImage from https://github.com/BatchDrake/SigDigger/releases
 - SDR++: .deb from https://github.com/AlexandreRouma/SDRPlusPlus/releases
-- gr-lora_sdr: `conda install -n gnu -c tapparelj -c conda-forge gnuradio-lora_sdr`
-  (unverified that the channel's build matches the env's GNU Radio)
-- redsea, dsd-fme, aptdec, gps-sdr-sim, gr-ieee802-15-4: build from source
+- gr-lora_sdr: in its own env, `lora` (`conda run -n lora python ...`).
+  It needs gnuradio-core older than 3.10.12, so installing it into `gnu`
+  (3.10.12) does not solve. A transmit-to-receive loopback through it
+  (2026-10-31) decoded every frame at SF7, SF9 (0 dB, 2 kHz off) and SF12
+  (-10 dB, 1 kHz off). At SF12 with 4 samples a chip, the receiver wants
+  16k samples at once, over GNU Radio's default buffer: call
+  `set_min_output_buffer(65536)` on the block that feeds `lora_sdr_lora_rx`,
+  or it stops with "requesting more input data than we can provide" and
+  decodes nothing.
+- redsea, dsd-fme, aptdec, gps-sdr-sim, gr-ieee802-15-4, gr-ieee802-11:
+  build from source (gr-ieee802-11 and gr-ieee802-15-4 into a conda env,
+  with gr-foo, branch `maint-3.10`)
 - AIS-catcher: its install script. SatDump: its release .deb.
 - baudline: free binary from baudline.com (dormant)

@@ -245,9 +245,9 @@ Details in rtl-software.md, "What this machine already has".
 - URH (pipx): `urh` opens `.cfile` recordings as cf32 (set the rate from
   the `.sigmf-meta`). `urh_cli` receives from a radio only, and can
   transmit (`-tx`).
-- apt: rtl_433, inspectrum, gqrx, multimon-ng, direwolf, minimodem, fldigi,
-  qsstv, welle.io, dump1090-mutability, gr-satellites, wsjtx, sox, audacity,
-  sonic-visualiser.
+- apt: rtl_433, multimon-ng, direwolf, minimodem, fldigi, qsstv,
+  dump1090-mutability (checked 2026-10-31; inspectrum, gqrx, sox and the rest
+  are not installed). SDR++ (.deb). gr-lora_sdr in the `lora` env, not `gnu`.
 
 ## The repo is public
 
