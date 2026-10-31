@@ -15,25 +15,29 @@ confirmed.
 
 ## What this machine already has
 
-Checked again on 2026-09-25, after the "What to install" apt lines below
-were run.
+Checked again on 2026-10-31 (`dpkg-query`, `command -v`). The 2026-09-25
+list here said much more was installed than is now.
 
 - The `rtl_*` tools (`rtl_sdr`, `rtl_tcp`, `rtl_fm`, `rtl_power`, `rtl_test`,
-  `rtl_eeprom`, `rtl_adsb`, `rtl_biast`) are in two places. The `gnu` conda
-  env has conda-forge's `rtl-sdr` 2.0.2, which `environment.yml` pins, and
-  these come first while the env is active. Ubuntu's `rtl-sdr` 2.0.1 is
-  installed too, so with the env off they are in `/usr/bin`.
+  `rtl_eeprom`, `rtl_adsb`, `rtl_biast`) are in the `gnu` conda env only:
+  conda-forge's `rtl-sdr` 2.0.2, which `environment.yml` pins. Ubuntu's
+  `rtl-sdr` is not installed, so with the env off there are none.
 - apt: `rtl-433` 23.11 (inputs file, rtl_tcp, RTL-SDR, SoapySDR), `hackrf`
-  (includes `hackrf_sweep`), `ubertooth`, `gnuradio` 3.10.9 (includes
-  `gnuradio-companion`), `soapysdr-tools`, `python3-soapysdr`, and SoapySDR
-  modules for RTL-SDR, HackRF, Airspy, bladeRF, LMS7, UHD, Mirics and the
-  SoapyRemote client.
-- apt, from the lists below: `gqrx-sdr` 2.17.4, `inspectrum` 0.3.1, `sox`,
-  `multimon-ng` 1.3.0, `direwolf` 1.7, `minimodem` 0.24, `fldigi` 4.2.03,
-  `qsstv` 9.5.8, `welle.io` 2.4 (`welle-io`, `welle-cli`),
-  `dump1090-mutability`, `gpredict`, `gr-satellites` 5.5, `wsjtx` 2.7.0-rc3,
-  `audacity`, `sonic-visualiser` and `gnss-sdr`. Not installed from the
-  lists: `codec2`, `cubicsdr`, `soapyremote-server` and `aircrack-ng`.
+  (includes `hackrf_sweep`), `soapysdr-tools`, `python3-soapysdr`, `pipx`.
+  GNU Radio is the `gnu` env's only: apt's `gnuradio` and `gr-osmosdr`
+  came with `gqrx-sdr` and went with it (`apt autoremove`, 2026-10-31).
+- apt, from the lists below: `multimon-ng` 1.3.0, `direwolf` 1.7,
+  `minimodem` 0.24, `qsstv` 9.5.8, `dump1090-mutability`, `sox`, `xvfb`.
+  Not installed from the lists: `gqrx-sdr`, `inspectrum`, `audacity`,
+  `sonic-visualiser`, `fldigi` (all installed and removed again on
+  2026-10-31: programs for a person at the screen; fldigi decodes only
+  through its window, see fldigi.md), `welle.io`,
+  `gpredict`, `gr-satellites`, `wsjtx`, `gnss-sdr`, `ubertooth`, `codec2`, `cubicsdr`,
+  `soapyremote-server` and `aircrack-ng`.
+- SDR++: installed and removed again on 2026-10-31 (a receiver like this app).
+- gr-lora_sdr, in a conda env of its own, `lora` (GNU Radio 3.10.11): it
+  needs gnuradio-core older than the `gnu` env's 3.10.12. See rf-ctf.md,
+  "Install for CTF", for the SF12 buffer setting.
 - **Universal Radio Hacker 2.10.0**, through pipx (`sudo apt install pipx`,
   then `pipx install urh`; upgrade with `pipx upgrade urh`). It lives in its
   own venv (`~/.local/share/pipx/venvs/urh`, Qt 6.11), apart from the `gnu`
@@ -41,9 +45,8 @@ were run.
   wheel includes the native device modules: HackRF, RTL-SDR and USRP load
   (Airspy, bladeRF, LimeSDR, PlutoSDR and SDRplay are built too), and
   RTL-TCP needs none. Not yet tried on a radio. See "URH" below.
-- Nothing else from the not-in-apt list (SDR++, SigDigger, readsb,
-  AIS-catcher, dsd-fme, redsea, SatDump, rtlamr, csdr, dumpvdl2, dumphfdl,
-  acarsdec, gr-lora_sdr).
+- Nothing else from the not-in-apt list (SigDigger, readsb, AIS-catcher,
+  dsd-fme, redsea, SatDump, rtlamr, csdr, dumpvdl2, dumphfdl, acarsdec).
 - `sigmf` 1.13.0, injected into URH's venv (`pipx inject urh sigmf`). It
   has no command: use `~/.local/share/pipx/venvs/urh/bin/python` to read
   or write `.sigmf-meta` files. It isn't in the `gnu` env.
@@ -151,7 +154,7 @@ SDR# is Windows only.
 | minimodem | Bell 103/202, RTTY, generic FSK at any baud | any | `minimodem` 0.24 | audio → text | github.com/kamalmostafa/minimodem |
 | rtlamr | Itron ERT/AMI meters: SCM, SCM+, IDM, NetIDM, R900 | 900 MHz ISM (US) | not in apt: `go install github.com/bemasher/rtlamr@latest` | **rtl_tcp** → text/JSON | github.com/bemasher/rtlamr |
 | rtl-wmbus + wmbusmeters | Wireless M-Bus meters (T1/C1/S1) | 868.95 / 868.3 MHz | not in apt: build rtl-wmbus; wmbusmeters from its own repo, snap or build | rtl_sdr IQ on stdin → telegrams → wmbusmeters JSON/MQTT | github.com/xaelsouth/rtl-wmbus, github.com/wmbusmeters/wmbusmeters |
-| gr-lora_sdr | LoRa PHY (SF7-12), Meshtastic frames | 433/868/915 MHz | not in apt: `conda install -c tapparelj -c conda-forge gnuradio-lora_sdr` into `gnu`, or build | GNU Radio blocks | github.com/tapparelj/gr-lora_sdr |
+| gr-lora_sdr | LoRa PHY (SF7-12), Meshtastic frames | 433/868/915 MHz | not in apt: installed in its own conda env, `lora` (it does not solve into `gnu`) | GNU Radio blocks | github.com/tapparelj/gr-lora_sdr |
 | TPMS | tyre pressure sensors | 315/433 MHz | via `rtl-433` (many TPMS decoders) | as rtl_433 | standalone rtl_tpms is unmaintained |
 
 Example pipelines:
@@ -179,7 +182,7 @@ rtl_sdr -f 868.95M -s 1600000 - | rtl_wmbus | wmbusmeters stdin:rtlwmbus auto   
 | AIS-catcher | AIS channels A and B | 161.975 / 162.025 MHz | not in apt: build, install script (.deb), Docker | RTL, Soapy, HackRF, rtl_tcp, SpyServer, files → NMEA, JSON, web map | github.com/jvde-github/AIS-catcher, very active (0.70, 2026) |
 | rtl-ais | AIS | 162 MHz | not in apt: build | RTL direct only → NMEA over UDP | github.com/dgiardini/rtl-ais, stale |
 | gnuais | AIS | 162 MHz | `gnuais` 0.3.3 | discriminator audio only → NMEA | old |
-| fldigi (NAVTEX mode) | NAVTEX / SITOR-B | 518 / 490 kHz | `fldigi` 4.2.03 | USB audio → GUI, log | w1hkj.com |
+| fldigi (NAVTEX mode) | NAVTEX / SITOR-B | 518 / 490 kHz | `fldigi` 4.2.03 (not installed: fldigi.md) | USB audio → GUI, log | w1hkj.com |
 | acarshub + acars_router | Web dashboard for acarsdec/dumpvdl2/dumphfdl JSON | – | Docker only (sdr-enthusiasts) | JSON/ZMQ | github.com/sdr-enthusiasts/docker-acarshub |
 
 ## Digital voice and trunking
@@ -249,9 +252,10 @@ SoapyRemote.
 
 ## What to install
 
-The Ubuntu names starting `rtl` are only `rtl-sdr` and `rtl-433` (installed).
+The Ubuntu names starting `rtl` are only `rtl-sdr` and `rtl-433`.
 The rest have their own names. All of the packages below exist in 24.04's
-apt (checked 2026-09-25), and all but the optional line are now installed:
+apt (checked 2026-09-25); which are installed is under "What this machine
+already has":
 
 ```bash
 # The base: system rtl_* tools (off the conda env), a receiver GUI, IQ analysis
@@ -273,14 +277,14 @@ sudo apt install codec2 cubicsdr soapyremote-server
 Not in apt, but worth having, roughly in order:
 
 1. **Universal Radio Hacker**: installed (`pipx install urh`, 2.10.0). Unknown OOK/FSK/PSK to bits.
-2. **SDR++**: the .deb from GitHub releases.
+2. **SDR++**: the .deb from GitHub releases (tried 2026-10-31 and removed: a receiver like this app).
 3. **redsea**: build it. It decodes RDS to JSON, useful for checking `rds_core.py`.
 4. **AIS-catcher**: its install script, or build it.
 5. **readsb + tar1090**: wiedehopf's install script (use instead of dump1090-mutability).
 6. **dsd-fme** (or dsd-neo): build it, for DMR/P25/NXDN voice.
 7. **SatDump**: the .deb from GitHub releases, for Meteor-M.
 8. **dumpvdl2 / dumphfdl / acarsdec**: build them (libacars first).
-9. **rtlamr**: `go install`. **gr-lora_sdr**: conda into `gnu`.
+9. **rtlamr**: `go install`. **gr-lora_sdr**: installed, in the `lora` env (not `gnu`).
 10. **SigDigger**: AppImage.
 
 Installing `gqrx-sdr`, `gr-satellites` or `gr-osmosdr` pulls in more of
