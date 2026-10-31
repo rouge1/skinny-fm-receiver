@@ -144,16 +144,20 @@ repeat. The ISM band's real GFSK meter traffic was a decoy: `rtl_433` or
 What this machine has, checked on 2026-10-31 (`dpkg-query`, `command -v`):
 
 - Installed: `rtl-433` 23.11, `multimon-ng` 1.3.0, `direwolf` 1.7,
-  `minimodem` 0.24, `fldigi` 4.2.03, `qsstv` 9.5.8, `dump1090-mutability`,
-  `hackrf`, `soapysdr-tools`, SDR++ 1.2.1 (`sdrpp`, .deb), URH 2.10.0 with
-  sigmf (pipx), `sox` 14.4.2. The `rtl_*` tools are in the `gnu` env only.
+  `minimodem` 0.24, `qsstv` 9.5.8, `dump1090-mutability`, `hackrf`,
+  `soapysdr-tools`, URH 2.10.0 with sigmf (pipx), `sox` 14.4.2, `xvfb`
+  (an invisible screen, for checking a desktop program). The `rtl_*` tools
+  are in the `gnu` env only.
 - gr-lora_sdr: in the `lora` conda env (GNU Radio 3.10.11), not `gnu`
   (below).
 - Speech to text: faster-whisper 1.2.1 in the `audio_llm` env, with the
   tiny, small and medium models downloaded.
 - Not installed: `inspectrum`, `gqrx-sdr`, `audacity`, `sonic-visualiser`
   (installed and removed again on 2026-10-31: viewers for a person at the
-  screen, which a headless session does not use), `gr-satellites`, `gnss-sdr`, `welle.io`, `wsjtx`,
+  screen, which a headless session does not use); `fldigi` and SDR++
+  (installed and removed the same day: fldigi decodes only through its
+  window, see [fldigi.md](fldigi.md); SDR++ is a receiver like this app),
+  `gr-satellites`, `gnss-sdr`, `welle.io`, `wsjtx`,
   `ubertooth`, `aircrack-ng`; aptdec, AIS-catcher, readsb, redsea,
   dsd-fme, SatDump, SigDigger, gr-ieee802-11.
 

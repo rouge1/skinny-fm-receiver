@@ -24,18 +24,17 @@ list here said much more was installed than is now.
   `rtl-sdr` is not installed, so with the env off there are none.
 - apt: `rtl-433` 23.11 (inputs file, rtl_tcp, RTL-SDR, SoapySDR), `hackrf`
   (includes `hackrf_sweep`), `soapysdr-tools`, `python3-soapysdr`, `pipx`.
-  apt's `gnuradio` 3.10.9 and `gr-osmosdr` are installed too, left from
-  `gqrx-sdr` (since removed; `sudo apt autoremove` would take them). The
-  `gnu` env loads its own 3.10.12 regardless (checked: `gr.version()`, and
-  test_receive_chain passes).
+  GNU Radio is the `gnu` env's only: apt's `gnuradio` and `gr-osmosdr`
+  came with `gqrx-sdr` and went with it (`apt autoremove`, 2026-10-31).
 - apt, from the lists below: `multimon-ng` 1.3.0, `direwolf` 1.7,
-  `minimodem` 0.24, `fldigi` 4.2.03, `qsstv` 9.5.8, `dump1090-mutability`,
-  `sox`. Not installed from the lists: `gqrx-sdr`, `inspectrum`,
-  `audacity`, `sonic-visualiser` (installed and removed again on
-  2026-10-31: viewers, not used headless), `welle.io`,
+  `minimodem` 0.24, `qsstv` 9.5.8, `dump1090-mutability`, `sox`, `xvfb`.
+  Not installed from the lists: `gqrx-sdr`, `inspectrum`, `audacity`,
+  `sonic-visualiser`, `fldigi` (all installed and removed again on
+  2026-10-31: programs for a person at the screen; fldigi decodes only
+  through its window, see fldigi.md), `welle.io`,
   `gpredict`, `gr-satellites`, `wsjtx`, `gnss-sdr`, `ubertooth`, `codec2`, `cubicsdr`,
   `soapyremote-server` and `aircrack-ng`.
-- SDR++ 1.2.1 (`sdrpp`, its .deb).
+- SDR++: installed and removed again on 2026-10-31 (a receiver like this app).
 - gr-lora_sdr, in a conda env of its own, `lora` (GNU Radio 3.10.11): it
   needs gnuradio-core older than the `gnu` env's 3.10.12. See rf-ctf.md,
   "Install for CTF", for the SF12 buffer setting.
@@ -183,7 +182,7 @@ rtl_sdr -f 868.95M -s 1600000 - | rtl_wmbus | wmbusmeters stdin:rtlwmbus auto   
 | AIS-catcher | AIS channels A and B | 161.975 / 162.025 MHz | not in apt: build, install script (.deb), Docker | RTL, Soapy, HackRF, rtl_tcp, SpyServer, files → NMEA, JSON, web map | github.com/jvde-github/AIS-catcher, very active (0.70, 2026) |
 | rtl-ais | AIS | 162 MHz | not in apt: build | RTL direct only → NMEA over UDP | github.com/dgiardini/rtl-ais, stale |
 | gnuais | AIS | 162 MHz | `gnuais` 0.3.3 | discriminator audio only → NMEA | old |
-| fldigi (NAVTEX mode) | NAVTEX / SITOR-B | 518 / 490 kHz | `fldigi` 4.2.03 | USB audio → GUI, log | w1hkj.com |
+| fldigi (NAVTEX mode) | NAVTEX / SITOR-B | 518 / 490 kHz | `fldigi` 4.2.03 (not installed: fldigi.md) | USB audio → GUI, log | w1hkj.com |
 | acarshub + acars_router | Web dashboard for acarsdec/dumpvdl2/dumphfdl JSON | – | Docker only (sdr-enthusiasts) | JSON/ZMQ | github.com/sdr-enthusiasts/docker-acarshub |
 
 ## Digital voice and trunking
@@ -278,7 +277,7 @@ sudo apt install codec2 cubicsdr soapyremote-server
 Not in apt, but worth having, roughly in order:
 
 1. **Universal Radio Hacker**: installed (`pipx install urh`, 2.10.0). Unknown OOK/FSK/PSK to bits.
-2. **SDR++**: installed (the .deb from GitHub releases, 1.2.1).
+2. **SDR++**: the .deb from GitHub releases (tried 2026-10-31 and removed: a receiver like this app).
 3. **redsea**: build it. It decodes RDS to JSON, useful for checking `rds_core.py`.
 4. **AIS-catcher**: its install script, or build it.
 5. **readsb + tar1090**: wiedehopf's install script (use instead of dump1090-mutability).
