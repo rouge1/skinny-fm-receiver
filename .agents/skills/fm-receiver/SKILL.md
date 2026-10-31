@@ -66,6 +66,9 @@ workflows, commands and constraints. Read the file that fits before acting:
   rates 100-300 kBd, and the wrong turns on the way
 - knowledge/rtl-software.md: the SDR tools on this machine and in apt, and
   which could be fed from a recording
+- knowledge/fldigi.md: fldigi's sound-card modes (PSK, MFSK, Olivia, MT63,
+  Hell, NAVTEX, WEFAX and more), why it suits no headless session, and
+  what a command-line decoder of ours would need, in order
 - knowledge/rf-ctf.md: RF CTF challenge types and the tools that decode them; the bench night's three rules (pure lines in programme audio, capture past the loop, a line is a signal until shown otherwise)
 - knowledge/google_bb60d.md: links to Signal Hound's BB60 API documentation
 - knowledge/sceptre-dvr.md: the layout of Sceptre's DVR file (`.sdvr`), which

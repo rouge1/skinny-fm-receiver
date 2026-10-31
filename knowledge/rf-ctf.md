@@ -58,6 +58,9 @@ record, or an IQ file handed out (`.cfile`/`.cf32`, `.cu8`, `.cs16`,
 
 NFC/RFID challenges need a Proxmark-class reader, not these radios.
 
+fldigi's own modes (PSK31, MFSK, Olivia, MT63, Hell, NAVTEX, WEFAX), and the
+command-line decoder of ours planned for them: [fldigi.md](fldigi.md).
+
 ## Solving workflow
 
 1. **Find it.** Use this app's sweep, the waterfall, gqrx or SDR++. Compare
