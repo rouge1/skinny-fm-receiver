@@ -431,8 +431,15 @@ class RdsProtocol:
         self.groups += 1
         gtype = (b['B'] >> 12) & 0xF
         ver_b = (b['B'] >> 11) & 1
-        self.tp = (b['B'] >> 10) & 1
-        self.pty = (b['B'] >> 5) & 0x1F
+        # FM receiver: TP and PTY ride in every group's block B, so a block B
+        # repaired wrongly (it also makes the false 0B/5A/10A groups) would
+        # overwrite them; a bench signal showed PTY 4 for a station sending 5.
+        # Only an intact block B counts: the same wrong repair came back 30
+        # times in a minute there, so agreeing repairs prove nothing, and
+        # every group carries PTY, so the intact ones are plenty.
+        if 'B' not in corrected:
+            self.tp = (b['B'] >> 10) & 1
+            self.pty = (b['B'] >> 5) & 0x1F
         self.group_counts[f"{gtype}{'B' if ver_b else 'A'}"] += 1
         if ver_b and 'C' in b:
             self.pi_votes[b['C']] += 1
