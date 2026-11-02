@@ -66,9 +66,9 @@ carrier-plus-sidebands or a single-sideband look, with skip fading.
 | Mode | Channel | Modulation | Rate | Frame / sync |
 |---|---|---|---|---|
 | DMR (Tier I/II/III; MotoTRBO, Hytera) | 12.5 kHz | 4FSK, h=0.27: +-648 / +-1944 Hz | 4800 sym/s, 9600 bit/s | 2-slot TDMA, 30 ms slot, 60 ms frame, 360 ms voice superframe. 48-bit syncs in the **ETSI table** (TS 102 361-1 Table 9.2): see below |
-| P25 Phase 1 | 12.5 kHz | C4FM (CQPSK also permitted) | 4800 sym/s, 9600 bit/s | 48-bit frame sync 0x5575F5FF77FF (2012 mailing list, *unverified*); NAC 12 bit |
-| P25 Phase 2 | 12.5 kHz, trunked only | H-DQPSK outbound, H-CPM inbound | 6000 sym/s, 12 kbit/s | 2-slot TDMA, 30 ms slots |
-| NXDN | 6.25 or 12.5 kHz | 4FSK, symbols +-1 = +-350 Hz, +-3 = +-1050 Hz, RC alpha 0.2 | 2400 baud, 4800 bit/s (6.25 kHz, read in TS 1-E); the 12.5 kHz 9600 bit/s variant is *unverified* | frame sync word CDF59 (20 bit = 10 symbols -3,+1,-3,+3,-3,-3,+3,+3,-1,+3); 80 ms frame of 384 bits: preamble, FSW 20, LICH 16, SCCH 60, then FACCH1 or 4 x VCH 72 (NXDN TS 1-E v1.1, 4.4-4.5) |
+| P25 Phase 1 | 12.5 kHz | C4FM (CQPSK also permitted) | 4800 sym/s, 9600 bit/s | 48-bit (24 symbol) frame sync; 0x5575F5FF77FF is the value shown in a lab capture (Blaze et al., USENIX Security 2011, Fig. 8), not read as a normative constant; NAC 12 bit (0x293 in that capture) |
+| P25 Phase 2 | 12.5 kHz, trunked only | H-DQPSK outbound, H-CPM inbound | 6000 sym/s (Viavi Phase 2 note; H-DQPSK outbound), 12 kbit/s | 2-slot TDMA, 30 ms slots |
+| NXDN | 6.25 or 12.5 kHz | 4FSK, symbols +-1 = +-350 Hz, +-3 = +-1050 Hz, RC alpha 0.2 | 2400 baud, 4800 bit/s (6.25 kHz, read in TS 1-E); 12.5 kHz mode: 9600 bit/s, 4800 sym/s, dibit deviations +-800 / +-2400 Hz (TS 1-A v1.3 Tables 2.3-1 and 3.3-1, read in a second project's text extract) | frame sync word CDF59 (20 bit = 10 symbols -3,+1,-3,+3,-3,-3,+3,+3,-1,+3); 80 ms frame of 384 bits: preamble, FSW 20, LICH 16, SCCH 60, then FACCH1 or 4 x VCH 72 (NXDN TS 1-E v1.1, 4.4-4.5) |
 | dPMR | 6.25 kHz | 4FSK, h=0.29, 1050 Hz outer deviation | 2400 baud, 4800 bit/s | 80 ms frame, 320 ms superframe. Frame syncs FS1 57FF5F75D577 (48 bit, header), FS2 5FF77D and FS3 7DDFF5 (24 bit; superframe / end), FS4 FD55F5DF7FDD (48 bit, packet data); ETSI TS 102 490 and 658 agree |
 | TETRA (not US-common) | 25 kHz (*unverified* in spec text), 4 slots | pi/4-DQPSK | 18 ksym/s (derived from the 255-symbol, 14.17 ms slot), 36 kbit/s | 56.67 ms frame, 18-frame multiframe (1.02 s), 60 multiframes = 61.2 s hyperframe. Training sequences, EN 300 392-2 9.4.4.3: normal 1 `1101000011101001110100`, normal 2 `0111101001000011011110`, sync burst (38 bit) `11000001100111001110100111000001100111` |
 | D-STAR DV | 6 kHz or less (JARL v6.0a 3.1.2) | GMSK (QPSK, 4FSK allowed), BT 0.5 | 4.8 kbit/s max; header 1200 bit/s MSK | 64-bit `1010` bit sync, 15-bit frame sync `111011001010000`, 24-bit resync `101010101011010001101000` (JARL 4.1.1, p.25/29) |
@@ -228,12 +228,15 @@ Crown-copyright MPT 1327 have their own terms; link, do not copy).
   raised cosine, roll-off 0.2; preamble of repeated +3 +3 -3 -3 ending in
   5775FD; frame sync word CDF59 (10 symbols); necessary bandwidth 4K00. The
   frame is 80 ms and 384 bits (FSW 20, LICH 16, SCCH 60, then FACCH1 144 or
-  voice 4 x 72). Not checked: LICH field values, Type-C (sub-part C) and the
-  12.5 kHz variant.
+  voice 4 x 72). Not checked: LICH field values, Type-C (sub-part C). The 12.5 kHz
+  mode is in TS 1-A (see the table).
 - **P25**: the FAQ says the standards are free to US government agencies
   through TIA's request form (not used). The 48-bit sync
-  0x5575F5FF77FF, NAC default 0x293 (RadioReference) and a Phase 2 sync
-  0x575D57F7FF (a Go package) remain unverified leads.
+  0x5575F5FF77FF appears in Blaze et al. (USENIX 2011, Fig. 8) as a frame
+  sync followed by NID 293...; a second project (SDR, branch ptt-research)
+  found it and the Phase 2 rate of 6000 sym/s in a Viavi note. No normative
+  TIA text read. The Phase 2 sync 0x575D57F7FF (a Go package) remains an
+  unverified lead.
 
 ## What Sceptre labels (from the new-voice-journey project)
 
@@ -297,8 +300,7 @@ nothing above has been checked on air here.
 
 ## Open questions (unverified)
 
-- Sync words and symbol rates for Fusion; P25 (all); NXDN Type-C and the
-  12.5 kHz variant; Phase 2 sync.
+- Sync words and symbol rates for Fusion; P25 (all); NXDN Type-C; P25 Phase 2 sync; normative P25 text.
 - FRS deviation, marine and ham deviation, CB FM status, CTCSS deviation.
 - Squelch tail timing; DCS parameters beyond the 134.4 bit/s rate.
 - Whether any carrier uses SC-PTM or eMBMS for MCPTT group calls.
