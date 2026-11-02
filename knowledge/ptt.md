@@ -342,9 +342,18 @@ which protocol a channel carries.
   - A discriminator seen through a filter as wide as the channel spacing
     shows the neighbour's energy as extra levels: use a filter well inside
     half the spacing (6.5 kHz for 12.5 kHz).
-  The rest were analog FM (a two-level or tone-like discriminator with a
-  100-130 Hz line, which looks like CTCSS) or not resolved. No P25 sync
-  matched anywhere. Not read: the content of any burst.
+  One more channel showed the same four levels with no DMR hit and
+  **matched the NXDN frame sync word CDF59 (20 bit, symbols -3 +1 -3 +3 -3 -3
+  +3 +3 -1 +3) with 0 errors, 87 of 87 hit-to-hit spacings exactly 192 symbols
+  = 384 bits = the 80 ms frame at 4800 sym/s**: the 12.5 kHz NXDN mode
+  (9600 bit/s) of TS 1-A, first check of our NXDN sync and frame length. The
+  measured inner level was 700 Hz against a nominal 800 (the filters used
+  droop the outer levels), so the +-800/+-2400 Hz figures were not confirmed
+  by this pass, only the level ratio and the framing. The rest were analog FM
+  (a two-level or tone-like discriminator with a 100-130 Hz line, which looks
+  like CTCSS, though the capture's own decoder labels two of them otherwise) or
+  not resolved. No P25 sync matched anywhere. Not read: the content of any
+  burst.
 - Still to do: a polarity check, colour code and slot occupancy per channel,
   the unresolved channels, and the same coarse pass over a TETRA capture.
 
