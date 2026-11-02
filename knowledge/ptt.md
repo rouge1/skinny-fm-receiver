@@ -323,8 +323,30 @@ which protocol a channel carries.
   bandwidth class and symbol rate measured, and its slot timing (30 ms DMR /
   P25 Phase 2, 56.67 ms TETRA) read from the envelope. That is the classifier
   this note has been heading for, and this capture is a test case for it.
-- Still to do: per-channel mixing, deviation histograms and envelope slotting
-  on the strongest channels, and the same coarse pass over a TETRA capture.
+- **Per-channel pass (same capture, 20 s, two clusters of 12.5 kHz-spaced
+  channels, mixed to baseband, 6.5 kHz filter, FM discriminator).** Nine of
+  the fourteen channels tried show a four-level staircase with adjacent
+  levels about 1300 Hz apart, i.e. symbol levels near +-650 and +-1950 Hz
+  (measured 641-674 Hz for the inner level): 4FSK at 4800 sym/s, h = 0.27. In
+  those, **the DMR 48-bit sync of TS 102 361-1 Table 9.2 matched with 0 of 24
+  symbol errors**, again every 144 symbols (one 30 ms slot), over runs of 4
+  to 15 s. This is the first check of our DMR deviation, symbol rate and sync
+  values against an off-air signal. Two things it exposed:
+  - In the table **each data sync is the symbol-for-symbol negation of the
+    matching voice sync** (BS, MS and both direct-mode pairs). A receiver that
+    does not know its polarity cannot tell BS voice from BS data. Here the
+    sync appeared in nearly every slot, which fits data/control bursts
+    (voice carries it only in burst A of a superframe), so the reading is BS
+    data in normal polarity; the polarity itself was not independently
+    checked.
+  - A discriminator seen through a filter as wide as the channel spacing
+    shows the neighbour's energy as extra levels: use a filter well inside
+    half the spacing (6.5 kHz for 12.5 kHz).
+  The rest were analog FM (a two-level or tone-like discriminator with a
+  100-130 Hz line, which looks like CTCSS) or not resolved. No P25 sync
+  matched anywhere. Not read: the content of any burst.
+- Still to do: a polarity check, colour code and slot occupancy per channel,
+  the unresolved channels, and the same coarse pass over a TETRA capture.
 
 ## Open questions (unverified)
 
