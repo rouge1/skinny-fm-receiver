@@ -342,6 +342,18 @@ which protocol a channel carries.
   - A discriminator seen through a filter as wide as the channel spacing
     shows the neighbour's energy as extra levels: use a filter well inside
     half the spacing (6.5 kHz for 12.5 kHz).
+  **Slot type decoded (Golay (20,8), TS 102 361-1 B.3.1, Table 9.22):** the
+  10 bits either side of the 48-bit sync, 5 symbols each, decode to a colour
+  code and data type with at most 2 bit errors on essentially every sync
+  hit (about 1700 bursts on 9 channels; a hit's stray decodes are rare). The
+  colour code agreed with the capture's own decoder on all five channels
+  that overlapped it in time. Data types are CSBK, Idle, Terminator with LC
+  and a few Voice LC headers, never voice frames: this settles that the sync
+  is the **BS data** sync in normal polarity (the voice-sync reading would
+  give nonsense types). So the receive chain keeps polarity and the
+  voice/data negation above is resolved here. A CSBK on a base-station
+  channel is what a Capacity Plus control channel sends (a guess; the
+  CSBK opcodes were not decoded).
   One more channel showed the same four levels with no DMR hit and
   **matched the NXDN frame sync word CDF59 (20 bit, symbols -3 +1 -3 +3 -3 -3
   +3 +3 -1 +3) with 0 errors, 87 of 87 hit-to-hit spacings exactly 192 symbols
