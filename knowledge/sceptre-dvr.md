@@ -183,6 +183,27 @@ in dB (100.309 at a -20 dBm reference level). `sceptre_blue.py` reads them
 makes the same kind of channel from a DVR, and matches Sceptre's own (0.998
 correlation, 0.04 dB), so a `.cdif` is only needed for its metadata.
 
+**Header map** (read in a set of 2021-2023 exports from Sceptre 4.11 to 4.16;
+all little-endian although the tag says `EEEI`). The header is 512 bytes and the
+keyword block (2048 bytes in these) follows the **data**, so a file is
+`512 + data_size + ext_size` bytes:
+
+| offset | field |
+|---|---|
+| 24, 28 | `ext_start` (512-byte blocks), `ext_size` (int32) |
+| 32, 40 | `data_start` (512.0), `data_size` (bytes), float64 |
+| 48, 52 | type (1001 = IQ), format: `CF` complex float32, **`CI` complex int16** (I then Q) |
+| 56 | timecode, float64, seconds since 1950-01-01 (X-Midas epoch); equals `TIME_EPOCH` |
+| 256, 264 | `xstart`, `xdelta`: a start offset and the **sample interval** in seconds (5e-08 is 20 MS/s) |
+
+A `CI` file from a raw input holds counts: `dBm = 10*log10(|x|²) - DATA_GAIN`
+(the same relation as above). A `CF` file made by a processing chain can have
+`DATA_GAIN` 0 and floats of about +-0.1 (not counts: no dBm from it).
+Rates seen: 20 and 28 MS/s. Keywords also give `RF_FREQ`, `SCEPTRE_BANDWIDTH`,
+`SCEPTRE_VER` and free-text `SCEPTRE_TAG1..3` (a person's label: not for notes).
+A file is 3-37 GB, so read it as a memmap in chunks and cap the job with
+`systemd-run --user --scope -p MemoryMax=` (see the oomd rule).
+
 A `.fft` (type 2001, format `SF`) is rows of float32 dBm: a row a sweep,
 1,228,800 bins. In a type 2001 file the **first axis runs along a row**
 (`xstart` and `xdelta` at 256 are the first bin and bin step, 4,882.8125 Hz

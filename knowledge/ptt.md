@@ -298,6 +298,34 @@ sub-audible tone line. Voice decoding is out of scope, as with the other
 modes. If this goes onto `knowledge/roadmap.md`, it needs a capture first:
 nothing above has been checked on air here.
 
+## What a wide UHF capture of a PTT band looks like (first look, 2026-11-02)
+
+One 20 MS/s IQ capture of 20 MHz of the UHF land-mobile band (93 s, int16,
+a training recording of mixed traffic; details are not kept here), looked at
+with a 9.8 kHz-bin spectrogram of the whole file and a 12.5 kHz x 2 ms
+spectrogram of 10 s. Spectrum only: no demodulation, so nothing below says
+which protocol a channel carries.
+
+- **Crowded and mixed.** About 80 occupied groups over the 20 MHz, from 10 kHz
+  (one channel) up to 300-400 kHz (many adjacent channels, as on a trunked
+  site), 40 to 65 dB over a flat floor. About 90 of the 1600 12.5 kHz bins are
+  on all the time (continuous carriers: control channels, repeaters or data),
+  the rest are keyed.
+- **Keyed activity has three timescales**: voice-like transmissions of 1 to 9 s
+  with gaps of 0.6 to 5 s; repeating bursts of 180 to 300 ms about 1.8 s
+  apart (data or beacons, on three separate groups, so the same kind of
+  thing); and many on-times under 10 ms. The last are mostly an artefact of
+  looking at one FSK channel through 12.5 kHz bins (the energy hops between
+  bins), so **burst timing needs a channel filter first, not a bin**.
+- **What it settles for the app.** A fixed-bin occupancy plot separates
+  continuous from keyed channels and gives transmission and gap lengths, but
+  not the protocol: for that the channel has to be mixed to baseband, its
+  bandwidth class and symbol rate measured, and its slot timing (30 ms DMR /
+  P25 Phase 2, 56.67 ms TETRA) read from the envelope. That is the classifier
+  this note has been heading for, and this capture is a test case for it.
+- Still to do: per-channel mixing, deviation histograms and envelope slotting
+  on the strongest channels, and the same coarse pass over a TETRA capture.
+
 ## Open questions (unverified)
 
 - Sync words and symbol rates for Fusion; P25 (all); NXDN Type-C; P25 Phase 2 sync; normative P25 text.
